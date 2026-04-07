@@ -1,72 +1,33 @@
 # Endpoint Toolkit
 
-Production-ready PowerShell tools for Windows endpoint security, compliance assessment, and operational management across Azure Virtual Desktop, Intune, and hybrid-joined environments.
+A collection of scripts, templates, and tools for managing Windows endpoints at scale — covering Azure Virtual Desktop image builds, session host lifecycle, and day-to-day operational tasks.
 
-## What's Inside
+## Repository Structure
 
-| Tool | Description | Status |
-|------|-------------|--------|
-| **BaselineAssessor** | Security baseline collector + assessor with 323 checks mapped to Microsoft SCT, CIS, and Intune baselines. Collects 22 data areas, evaluates GPO + CSP/MDM policies, generates compliance reports. | Active |
-| **Reset-Dot3SvcMigration** | Wired 802.1x profile remediation for post-upgrade scenarios. Handles symlinks, Windows.old recovery, iterative service resets. | Active |
-| *More tools coming* | WinGet manifest management, image builder automation, AVD operations | Planned |
+```
+avd/
+├── bicep/          # Bicep templates for AVD session host deployment
+│   ├── modules/    # Reusable modules (session hosts, image templates)
+│   └── main-*.bicep
+├── pipelines/      # Azure DevOps YAML pipelines
+└── scripts/        # PowerShell scripts used by pipelines
 
-## Quick Start
+devops/
+└── aib-task-v1-patched/   # Patched Azure Image Builder DevOps task (v2)
 
-### BaselineAssessor
-
-**Collect** (run as admin on target machine):
-
-```powershell
-.\Invoke-BaselineCollection.ps1
+tools/              # Standalone PowerShell/WPF utilities
+windows/            # Windows OS-level fixes and helpers
 ```
 
-**Assess** (run on any machine with the JSON):
+## Getting Started
 
-```powershell
-.\BaselinePilot.ps1
-# Import the collection JSON via the UI
-```
-
-### Reset-Dot3SvcMigration
-
-```powershell
-.\Reset-Dot3SvcMigration.ps1 -RepairPolicies
-```
+Most pipeline files use `<YOURVALUE>` placeholders — search for `<YOUR` and replace with your environment-specific values before use.
 
 ## Requirements
 
-- PowerShell 5.1+ (Windows built-in)
-- Local administrator for data collection
-- No external modules required
-
-## Supported Environments
-
-- **Azure Virtual Desktop** (session hosts, personal desktops)
-- **Windows 365 Cloud PC**
-- **Intune-managed devices** (Entra ID joined)
-- **Hybrid Azure AD joined** (GPO + MDM co-management)
-- **Domain-joined** (traditional AD DS with GPO)
-- **Windows 11 22H2+** (25H2 recommended)
-
-## Architecture
-
-### BaselineAssessor
-
-```
-Invoke-BaselineCollection.ps1    Headless collector (22 areas, ~45s)
-        |
-        v
-  hostname_baseline_<ts>.json    Machine security snapshot
-        |
-        v
-BaselinePilot.ps1                WPF assessor UI (323 checks)
-        |
-    checks.json                  Check definitions + baselines
-    csp_metadata.json            CSP-to-registry mappings
-    admx_metadata.json           ADMX policy definitions
-```
-
-**Dual-path evaluation**: Checks resolve against both GPO registry paths (`SOFTWARE\Policies\`) and CSP/MDM paths (`SOFTWARE\Microsoft\`) with `MDMWinsOverGP` precedence for hybrid devices.
+- PowerShell 5.1+
+- Azure CLI / Az PowerShell modules (for AVD scripts and pipelines)
+- Windows 11 (for WPF-based tools)
 
 ## License
 
