@@ -1,0 +1,1469 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:sys="clr-namespace:System;assembly=mscorlib"
+        xmlns:PresentationOptions="http://schemas.microsoft.com/winfx/2006/xaml/presentation/options"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="PresentationOptions"
+        Title="AIB Packer Log Monitor" Height="860" Width="1240"
+        WindowState="Maximized"
+        WindowStartupLocation="CenterScreen" ResizeMode="CanResize"
+        UseLayoutRounding="True"
+        SnapsToDevicePixels="True"
+        TextOptions.TextFormattingMode="Display"
+        TextOptions.TextRenderingMode="ClearType"
+        RenderOptions.BitmapScalingMode="HighQuality"
+        Background="{DynamicResource ThemeAppBg}" Foreground="{DynamicResource ThemeTextBody}" FontFamily="Inter, Segoe UI Variable Display, Segoe UI">
+
+    <WindowChrome.WindowChrome>
+        <WindowChrome CaptionHeight="32" ResizeBorderThickness="4" GlassFrameThickness="1" CornerRadius="0"/>
+    </WindowChrome.WindowChrome>
+
+    <Window.Resources>
+        <!-- THEME BRUSHES (Dark defaults, mutated at runtime for Light Mode) -->
+        <SolidColorBrush x:Key="ThemeAppBg"           Color="#111111" PresentationOptions:Freeze="False"/>
+        <SolidColorBrush x:Key="ThemePanelBg"         Color="#1A1A1A" PresentationOptions:Freeze="False"/>
+        <SolidColorBrush x:Key="ThemeCardBg"          Color="#222222" PresentationOptions:Freeze="False"/>
+        <SolidColorBrush x:Key="ThemeCardAltBg"       Color="#252528" PresentationOptions:Freeze="False"/>
+        <SolidColorBrush x:Key="ThemeInputBg"         Color="#141414" PresentationOptions:Freeze="False"/>
+        <SolidColorBrush x:Key="ThemeDeepBg"          Color="#0D0D0D" PresentationOptions:Freeze="False"/>
+        <SolidColorBrush x:Key="ThemeOutputBg"        Color="#080808" PresentationOptions:Freeze="False"/>
+        <SolidColorBrush x:Key="ThemeSurfaceBg"       Color="#2A2A2A" PresentationOptions:Freeze="False"/>
+        <SolidColorBrush x:Key="ThemeHoverBg"         Color="#333333" PresentationOptions:Freeze="False"/>
+        <SolidColorBrush x:Key="ThemeSelectedBg"      Color="#2E2E32" PresentationOptions:Freeze="False"/>
+        <SolidColorBrush x:Key="ThemePressedBg"       Color="#181818" PresentationOptions:Freeze="False"/>
+        <SolidColorBrush x:Key="ThemeAccent"          Color="#0078D4" PresentationOptions:Freeze="False"/>
+        <SolidColorBrush x:Key="ThemeAccentHover"     Color="#1A8AD4" PresentationOptions:Freeze="False"/>
+        <SolidColorBrush x:Key="ThemeAccentLight"     Color="#60CDFF" PresentationOptions:Freeze="False"/>
+        <SolidColorBrush x:Key="ThemeAccentDim"       Color="#004578" PresentationOptions:Freeze="False"/>
+        <SolidColorBrush x:Key="ThemeGreenAccent"     Color="#00C853" PresentationOptions:Freeze="False"/>
+        <SolidColorBrush x:Key="ThemeTextPrimary"     Color="#FFFFFF" PresentationOptions:Freeze="False"/>
+        <SolidColorBrush x:Key="ThemeTextBody"        Color="#E0E0E0" PresentationOptions:Freeze="False"/>
+        <SolidColorBrush x:Key="ThemeTextSecondary"   Color="#CCCCCC" PresentationOptions:Freeze="False"/>
+        <SolidColorBrush x:Key="ThemeTextMuted"       Color="#AAAAAA" PresentationOptions:Freeze="False"/>
+        <SolidColorBrush x:Key="ThemeTextDim"         Color="#888888" PresentationOptions:Freeze="False"/>
+        <SolidColorBrush x:Key="ThemeTextDisabled"    Color="#555555" PresentationOptions:Freeze="False"/>
+        <SolidColorBrush x:Key="ThemeTextFaintest"    Color="#3A3A3A" PresentationOptions:Freeze="False"/>
+        <SolidColorBrush x:Key="ThemeBorder"          Color="#2A2A2A" PresentationOptions:Freeze="False"/>
+        <SolidColorBrush x:Key="ThemeBorderCard"      Color="#333333" PresentationOptions:Freeze="False"/>
+        <SolidColorBrush x:Key="ThemeBorderElevated"  Color="#3E3E3E" PresentationOptions:Freeze="False"/>
+        <SolidColorBrush x:Key="ThemeBorderHover"     Color="#505050" PresentationOptions:Freeze="False"/>
+        <SolidColorBrush x:Key="ThemeScrollThumb"     Color="#383838" PresentationOptions:Freeze="False"/>
+        <SolidColorBrush x:Key="ThemeSuccess"         Color="#00C853" PresentationOptions:Freeze="False"/>
+        <SolidColorBrush x:Key="ThemeWarning"         Color="#FFB900" PresentationOptions:Freeze="False"/>
+        <SolidColorBrush x:Key="ThemeError"           Color="#D13438" PresentationOptions:Freeze="False"/>
+        <SolidColorBrush x:Key="ThemeSidebarBg"       Color="#0D0D0D" PresentationOptions:Freeze="False"/>
+        <SolidColorBrush x:Key="ThemeSidebarBorder"   Color="#222222" PresentationOptions:Freeze="False"/>
+
+        <!-- DOT GRID PATTERN (tiled DrawingBrush, theme-aware via runtime rebuild) -->
+        <DrawingBrush x:Key="DotGridBrush" TileMode="Tile" Viewport="0,0,44,44" ViewportUnits="Absolute"
+                      Viewbox="0,0,44,44" ViewboxUnits="Absolute" PresentationOptions:Freeze="False">
+            <DrawingBrush.Drawing>
+                <GeometryDrawing>
+                    <GeometryDrawing.Brush>
+                        <SolidColorBrush Color="#1EFFFFFF"/>
+                    </GeometryDrawing.Brush>
+                    <GeometryDrawing.Geometry>
+                        <EllipseGeometry Center="22,22" RadiusX="1.3" RadiusY="1.3"/>
+                    </GeometryDrawing.Geometry>
+                </GeometryDrawing>
+            </DrawingBrush.Drawing>
+        </DrawingBrush>
+
+        <!-- SCROLLBAR (Minimal 8px, rounded, auto-hide feel) -->
+        <Style TargetType="{x:Type ScrollBar}">
+            <Setter Property="Stylus.IsFlicksEnabled" Value="False"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type ScrollBar}">
+                        <Grid x:Name="GridRoot" Background="Transparent">
+                            <Track x:Name="PART_Track" IsDirectionReversed="True" Focusable="False">
+                                <Track.Thumb>
+                                    <Thumb>
+                                        <Thumb.Template>
+                                            <ControlTemplate TargetType="{x:Type Thumb}">
+                                                <Border x:Name="ThumbBorder" Background="{DynamicResource ThemeScrollThumb}" CornerRadius="4" MinHeight="40" Margin="1,0"/>
+                                                <ControlTemplate.Triggers>
+                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                        <Setter TargetName="ThumbBorder" Property="Background" Value="{DynamicResource ThemeAccentLight}"/>
+                                                    </Trigger>
+                                                    <Trigger Property="IsDragging" Value="True">
+                                                        <Setter TargetName="ThumbBorder" Property="Background" Value="{DynamicResource ThemeTextPrimary}"/>
+                                                    </Trigger>
+                                                </ControlTemplate.Triggers>
+                                            </ControlTemplate>
+                                        </Thumb.Template>
+                                    </Thumb>
+                                </Track.Thumb>
+                            </Track>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="Orientation" Value="Vertical">
+                                <Setter TargetName="GridRoot" Property="Width" Value="8"/>
+                            </Trigger>
+                            <Trigger Property="Orientation" Value="Horizontal">
+                                <Setter TargetName="GridRoot" Property="Height" Value="8"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- TITLE BAR BUTTONS -->
+        <Style x:Key="TitleBarButton" TargetType="Button">
+            <Setter Property="WindowChrome.IsHitTestVisibleInChrome" Value="True"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="{DynamicResource ThemeTextMuted}"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Width" Value="46"/>
+            <Setter Property="Height" Value="32"/>
+            <Setter Property="FontFamily" Value="Segoe Fluent Icons, Segoe MDL2 Assets"/>
+            <Setter Property="FontSize" Value="10"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="bdr" Background="{TemplateBinding Background}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="bdr" Property="Background" Value="{DynamicResource ThemeSurfaceBg}"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="bdr" Property="Background" Value="{DynamicResource ThemeHoverBg}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="TitleBarCloseButton" TargetType="Button" BasedOn="{StaticResource TitleBarButton}">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="bdr" Background="Transparent">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="bdr" Property="Background" Value="#E81123"/>
+                                <Setter Property="Foreground" Value="White"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="bdr" Property="Background" Value="#B90D1C"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- ACCENT BUTTON (Gradient, Robinhood-style) -->
+        <Style x:Key="AccentButton" TargetType="Button">
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="20,9"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="bdr" CornerRadius="6" Padding="{TemplateBinding Padding}">
+                            <Border.Background>
+                                <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                                    <GradientStop Color="#0078D4" Offset="0"/>
+                                    <GradientStop Color="#005A9E" Offset="1"/>
+                                </LinearGradientBrush>
+                            </Border.Background>
+                            <Border.Effect>
+                                <DropShadowEffect Color="#0078D4" Direction="270" ShadowDepth="0" BlurRadius="10" Opacity="0.25"/>
+                            </Border.Effect>
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="bdr" Property="Background">
+                                    <Setter.Value>
+                                        <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                                            <GradientStop Color="#1A8AD4" Offset="0"/>
+                                            <GradientStop Color="#0067C0" Offset="1"/>
+                                        </LinearGradientBrush>
+                                    </Setter.Value>
+                                </Setter>
+                                <Setter TargetName="bdr" Property="Effect">
+                                    <Setter.Value>
+                                        <DropShadowEffect Color="#0078D4" Direction="270" ShadowDepth="0" BlurRadius="16" Opacity="0.40"/>
+                                    </Setter.Value>
+                                </Setter>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="bdr" Property="Background">
+                                    <Setter.Value>
+                                        <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                                            <GradientStop Color="#005A9E" Offset="0"/>
+                                            <GradientStop Color="#004578" Offset="1"/>
+                                        </LinearGradientBrush>
+                                    </Setter.Value>
+                                </Setter>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="bdr" Property="Opacity" Value="0.4"/>
+                                <Setter TargetName="bdr" Property="Effect" Value="{x:Null}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- GHOST BUTTON (Subtle border, hover glow) -->
+        <Style x:Key="GhostButton" TargetType="Button">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="{DynamicResource ThemeTextSecondary}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource ThemeBorderCard}"/>
+            <Setter Property="Padding" Value="12,7"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="bdr" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="6" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="bdr" Property="Background" Value="{DynamicResource ThemeHoverBg}"/>
+                                <Setter TargetName="bdr" Property="BorderBrush" Value="{DynamicResource ThemeAccentLight}"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="bdr" Property="Background" Value="{DynamicResource ThemePressedBg}"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="bdr" Property="Opacity" Value="0.35"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- SUBSCRIPTION COMBOBOX (Dark pill, themed dropdown) -->
+        <Style x:Key="SubComboBox" TargetType="ComboBox">
+            <Setter Property="Background" Value="{DynamicResource ThemeDeepBg}"/>
+            <Setter Property="Foreground" Value="{DynamicResource ThemeTextDim}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource ThemeBorderCard}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="10,5"/>
+            <Setter Property="Height" Value="28"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBox">
+                        <Grid>
+                            <ToggleButton x:Name="toggleBtn" ClickMode="Press" Focusable="False"
+                                          IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}">
+                                <ToggleButton.Template>
+                                    <ControlTemplate TargetType="ToggleButton">
+                                        <Border x:Name="bdr" Background="{DynamicResource ThemeDeepBg}"
+                                                BorderBrush="{DynamicResource ThemeBorderCard}" BorderThickness="1"
+                                                CornerRadius="6" Padding="10,4">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                <ContentPresenter Grid.Column="0"/>
+                                                <TextBlock Grid.Column="1" Text="&#xE70D;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                                                           FontSize="9" Foreground="{DynamicResource ThemeTextDim}"
+                                                           VerticalAlignment="Center" Margin="8,0,0,0"/>
+                                            </Grid>
+                                        </Border>
+                                        <ControlTemplate.Triggers>
+                                            <Trigger Property="IsMouseOver" Value="True">
+                                                <Setter TargetName="bdr" Property="BorderBrush" Value="{DynamicResource ThemeAccentLight}"/>
+                                                <Setter TargetName="bdr" Property="Background" Value="{DynamicResource ThemeHoverBg}"/>
+                                            </Trigger>
+                                        </ControlTemplate.Triggers>
+                                    </ControlTemplate>
+                                </ToggleButton.Template>
+                            </ToggleButton>
+                            <ContentPresenter x:Name="contentSite" IsHitTestVisible="False" Margin="12,5,24,5"
+                                              VerticalAlignment="Center" HorizontalAlignment="Left"
+                                              Content="{TemplateBinding SelectionBoxItem}"
+                                              ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"/>
+                            <Popup x:Name="PART_Popup" AllowsTransparency="True" Focusable="False"
+                                   IsOpen="{TemplateBinding IsDropDownOpen}" Placement="Bottom"
+                                   PopupAnimation="Slide">
+                                <Border x:Name="dropBorder" MinWidth="{TemplateBinding ActualWidth}" MaxHeight="260"
+                                        Background="{DynamicResource ThemeCardBg}" CornerRadius="6"
+                                        BorderBrush="{DynamicResource ThemeBorderCard}" BorderThickness="1"
+                                        Margin="0,2,0,0" Padding="4">
+                                    <Border.Effect>
+                                        <DropShadowEffect Color="Black" Direction="270" ShadowDepth="4" BlurRadius="12" Opacity="0.4"/>
+                                    </Border.Effect>
+                                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                        <StackPanel IsItemsHost="True"/>
+                                    </ScrollViewer>
+                                </Border>
+                            </Popup>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="SubComboBoxItem" TargetType="ComboBoxItem">
+            <Setter Property="Foreground" Value="{DynamicResource ThemeTextSecondary}"/>
+            <Setter Property="Padding" Value="10,6"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBoxItem">
+                        <Border x:Name="bdr" Background="Transparent" CornerRadius="4" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="bdr" Property="Background" Value="{DynamicResource ThemeHoverBg}"/>
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="bdr" Property="Background" Value="{DynamicResource ThemeAccentDim}"/>
+                                <Setter Property="Foreground" Value="{DynamicResource ThemeAccentLight}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- SIGN OUT BUTTON (Red tint) -->
+        <Style x:Key="DangerGhostButton" TargetType="Button" BasedOn="{StaticResource GhostButton}">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="bdr" Background="Transparent" BorderBrush="{DynamicResource ThemeBorderCard}"
+                                BorderThickness="1" CornerRadius="6" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="bdr" Property="Background" Value="#20D13438"/>
+                                <Setter TargetName="bdr" Property="BorderBrush" Value="{DynamicResource ThemeError}"/>
+                                <Setter Property="Foreground" Value="{DynamicResource ThemeError}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- ICON BUTTON (Round, subtle) -->
+        <Style x:Key="IconButton" TargetType="Button">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="{DynamicResource ThemeTextSecondary}"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Width" Value="32"/>
+            <Setter Property="Height" Value="32"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="bdr" Background="{TemplateBinding Background}" CornerRadius="6">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="bdr" Property="Background" Value="{DynamicResource ThemeHoverBg}"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="bdr" Property="Background" Value="{DynamicResource ThemePressedBg}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- TOGGLE SWITCH (Robinhood-style, Microsoft accent) -->
+        <Style x:Key="ToggleSwitch" TargetType="CheckBox">
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="CheckBox">
+                        <StackPanel Orientation="Horizontal">
+                            <Grid Width="40" Height="20" Margin="0,0,8,0">
+                                <Border x:Name="track" Background="{DynamicResource ThemeSurfaceBg}" CornerRadius="10"
+                                        BorderBrush="{DynamicResource ThemeBorderElevated}" BorderThickness="1.5"/>
+                                <Border x:Name="knob" Width="14" Height="14" CornerRadius="7" HorizontalAlignment="Left" Margin="3,0,0,0"
+                                        Background="{DynamicResource ThemeTextMuted}">
+                                    <Border.RenderTransform>
+                                        <TranslateTransform x:Name="KnobTranslate" X="0"/>
+                                    </Border.RenderTransform>
+                                </Border>
+                            </Grid>
+                            <ContentPresenter VerticalAlignment="Center" RecognizesAccessKey="True"/>
+                        </StackPanel>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="track" Property="Background">
+                                    <Setter.Value>
+                                        <LinearGradientBrush StartPoint="0,0.5" EndPoint="1,0.5">
+                                            <GradientStop Color="#0078D4" Offset="0"/>
+                                            <GradientStop Color="#0067C0" Offset="1"/>
+                                        </LinearGradientBrush>
+                                    </Setter.Value>
+                                </Setter>
+                                <Setter TargetName="track" Property="BorderBrush" Value="{DynamicResource ThemeAccent}"/>
+                                <Setter TargetName="knob" Property="Background" Value="White"/>
+                                <Trigger.EnterActions>
+                                    <BeginStoryboard>
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="KnobTranslate" Storyboard.TargetProperty="X" To="20" Duration="0:0:0.15">
+                                                <DoubleAnimation.EasingFunction><CubicEase EasingMode="EaseOut"/></DoubleAnimation.EasingFunction>
+                                            </DoubleAnimation>
+                                        </Storyboard>
+                                    </BeginStoryboard>
+                                </Trigger.EnterActions>
+                                <Trigger.ExitActions>
+                                    <BeginStoryboard>
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="KnobTranslate" Storyboard.TargetProperty="X" To="0" Duration="0:0:0.15">
+                                                <DoubleAnimation.EasingFunction><CubicEase EasingMode="EaseOut"/></DoubleAnimation.EasingFunction>
+                                            </DoubleAnimation>
+                                        </Storyboard>
+                                    </BeginStoryboard>
+                                </Trigger.ExitActions>
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="track" Property="BorderBrush" Value="{DynamicResource ThemeBorderHover}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- BUILD LIST ITEM (Card-style with selection bar) -->
+        <Style x:Key="BuildListItem" TargetType="ListViewItem">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="{DynamicResource ThemeTextBody}"/>
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="Margin" Value="8,0,8,6"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ListViewItem">
+                        <Border x:Name="bdr" Background="{DynamicResource ThemeCardBg}"
+                                BorderBrush="{DynamicResource ThemeBorderCard}" BorderThickness="1"
+                                CornerRadius="8" Padding="0" SnapsToDevicePixels="True">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="5"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Rectangle x:Name="selBar" Grid.Column="0" Fill="Transparent"
+                                           Width="5" RadiusX="3" RadiusY="3" HorizontalAlignment="Left"/>
+                                <Border Grid.Column="1" Padding="10,10,12,10">
+                                    <ContentPresenter/>
+                                </Border>
+                            </Grid>
+                            <Border.Effect>
+                                <DropShadowEffect x:Name="cardShadow" Color="Black" Direction="270" ShadowDepth="1" BlurRadius="4" Opacity="0.15"/>
+                            </Border.Effect>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="bdr" Property="Background" Value="{DynamicResource ThemeHoverBg}"/>
+                                <Setter TargetName="bdr" Property="BorderBrush" Value="{DynamicResource ThemeBorderHover}"/>
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="bdr" Property="Background" Value="{DynamicResource ThemeSelectedBg}"/>
+                                <Setter TargetName="bdr" Property="BorderBrush" Value="{DynamicResource ThemeAccentLight}"/>
+                                <Setter TargetName="selBar" Property="Fill" Value="{DynamicResource ThemeAccentLight}"/>
+                                <Setter TargetName="bdr" Property="Effect">
+                                    <Setter.Value>
+                                        <DropShadowEffect Color="#60CDFF" Direction="270" ShadowDepth="0" BlurRadius="12" Opacity="0.20"/>
+                                    </Setter.Value>
+                                </Setter>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <!-- MAIN LAYOUT -->
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="32"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="30"/>
+        </Grid.RowDefinitions>
+
+        <!-- Background layers (WinGet MM design language) -->
+        <!-- Layer 1: Dot grid pattern -->
+        <Border x:Name="bdrDotGrid" Grid.Row="0" Grid.RowSpan="5" Background="{StaticResource DotGridBrush}" IsHitTestVisible="False" Panel.ZIndex="-2"/>
+
+        <!-- Layer 2: Accent-to-transparent gradient glow at top -->
+        <Border x:Name="bdrGradientGlow" Grid.Row="0" Grid.RowSpan="5" IsHitTestVisible="False" Panel.ZIndex="-1" Height="360" VerticalAlignment="Top">
+            <Border.Background>
+                <LinearGradientBrush StartPoint="0.5,0" EndPoint="0.5,1">
+                    <GradientStop Color="#350078D4" Offset="0.0"/>
+                    <GradientStop Color="#200078D4" Offset="0.3"/>
+                    <GradientStop Color="#100078D4" Offset="0.6"/>
+                    <GradientStop Color="#00000000" Offset="1.0"/>
+                </LinearGradientBrush>
+            </Border.Background>
+        </Border>
+
+        <!-- Layer 3: Center radial glow -->
+        <Border Grid.Row="0" Grid.RowSpan="5" IsHitTestVisible="False" Panel.ZIndex="-1"
+                HorizontalAlignment="Center" VerticalAlignment="Top"
+                Width="900" Height="450" Margin="0,20,0,0" Opacity="0.65">
+            <Border.Background>
+                <RadialGradientBrush>
+                    <GradientStop Color="#200078D4" Offset="0"/>
+                    <GradientStop Color="#00000000" Offset="1"/>
+                </RadialGradientBrush>
+            </Border.Background>
+        </Border>
+
+        <!-- ROW 0: CUSTOM TITLE BAR -->
+        <Border Grid.Row="0" Panel.ZIndex="1" Background="{DynamicResource ThemeDeepBg}">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0" Orientation="Horizontal" Margin="12,0,0,0" VerticalAlignment="Center">
+                    <Border Background="{DynamicResource ThemeAccent}" CornerRadius="4" Width="20" Height="20" Margin="0,0,8,0">
+                        <TextBlock Text="&#xE72E;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="11"
+                                   Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <TextBlock x:Name="lblTitle" Text="AIB Log Monitor" FontSize="12" FontWeight="Bold"
+                               Foreground="{DynamicResource ThemeTextPrimary}" VerticalAlignment="Center"/>
+                    <TextBlock x:Name="lblTitleVersion" Text="v0.1.0-alpha" FontSize="9" Margin="8,0,0,0"
+                               Foreground="{DynamicResource ThemeTextMuted}" VerticalAlignment="Center"/>
+                    <Border CornerRadius="4" Padding="6,1" Margin="10,0,0,0" VerticalAlignment="Center"
+                            BorderBrush="{DynamicResource ThemeWarning}" BorderThickness="1">
+                        <TextBlock Text="EXPERIMENTAL" FontSize="9" FontWeight="Bold" Foreground="{DynamicResource ThemeWarning}"/>
+                    </Border>
+                </StackPanel>
+                <Button x:Name="btnThemeToggle" Grid.Column="2" Style="{StaticResource TitleBarButton}" Content="&#x2600;" FontSize="13" FontFamily="Segoe UI"/>
+                <Button x:Name="btnMinimize" Grid.Column="3" Style="{StaticResource TitleBarButton}" Content="&#xE921;"/>
+                <Button x:Name="btnMaximize" Grid.Column="4" Style="{StaticResource TitleBarButton}" Content="&#xE922;"/>
+                <Button x:Name="btnClose"    Grid.Column="5" Style="{StaticResource TitleBarCloseButton}" Content="&#xE8BB;"/>
+            </Grid>
+        </Border>
+
+        <!-- ROW 1: AUTH BAR (BC-style compact) -->
+        <Border Grid.Row="1" BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="0,0,0,1" Padding="16,8" Panel.ZIndex="1"
+                Background="{DynamicResource ThemeDeepBg}">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <Border Grid.Column="0" CornerRadius="12" Padding="10,4" Height="26" MinWidth="120"
+                        Background="{DynamicResource ThemeInputBg}" BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="1">
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                        <Ellipse x:Name="authDot" Width="7" Height="7" Fill="{DynamicResource ThemeError}" Margin="0,0,7,0"/>
+                        <TextBlock x:Name="lblAuthStatus" Text="Not connected" FontSize="11"
+                                   Foreground="{DynamicResource ThemeTextMuted}" VerticalAlignment="Center"
+                                   MaxWidth="220" TextTrimming="CharacterEllipsis"/>
+                    </StackPanel>
+                </Border>
+                <ComboBox x:Name="cmbSubscription" Grid.Column="1" Margin="10,0,0,0" VerticalAlignment="Center"
+                          MinWidth="180" MaxWidth="360" Visibility="Collapsed"
+                          FontSize="11" FontFamily="Segoe UI Variable Small, Segoe UI"
+                          Style="{StaticResource SubComboBox}"/>
+                <StackPanel Grid.Column="3" Orientation="Horizontal" Margin="0,0,4,0">
+                    <Button x:Name="btnLogin" Style="{StaticResource AccentButton}" Padding="16,5">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="&#xE72E;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="11"
+                                       Foreground="White" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                            <TextBlock Text="Sign In" FontSize="11" FontWeight="SemiBold" Foreground="White"/>
+                        </StackPanel>
+                    </Button>
+                </StackPanel>
+                <Button x:Name="btnLogout" Grid.Column="4" Style="{StaticResource DangerGhostButton}" Content="Sign Out" Visibility="Collapsed" Padding="12,4"/>
+            </Grid>
+        </Border>
+
+        <!-- ROW 2: BUILD STATUS TICKER (BC market-data style) -->
+        <Border Grid.Row="2" BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="0,0,0,1" Padding="14,5" Panel.ZIndex="1"
+                Background="{DynamicResource ThemeOutputBg}">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <!-- Active builds counter -->
+                <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock Text="BUILDS" FontSize="10" FontWeight="Bold" Foreground="{DynamicResource ThemeTextDim}"
+                               VerticalAlignment="Center" Margin="0,0,6,0"/>
+                    <TextBlock x:Name="lblTickerBuilds" Text="0" FontSize="10" FontWeight="Bold"
+                               Foreground="{DynamicResource ThemeTextMuted}" FontFamily="Consolas" VerticalAlignment="Center"/>
+                </StackPanel>
+                <TextBlock Grid.Column="1" Text="|" Foreground="{DynamicResource ThemeTextFaintest}" Margin="10,0" VerticalAlignment="Center" FontSize="11"/>
+                <!-- Running/failed/succeeded badges -->
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Border x:Name="badgeRunning" Background="#1500C853" CornerRadius="4" Padding="6,2" Margin="0,0,6,0" Visibility="Collapsed">
+                        <TextBlock x:Name="lblTickerRunning" Text="0 Running" FontSize="9" FontWeight="Bold"
+                                   Foreground="{DynamicResource ThemeGreenAccent}" FontFamily="Consolas"/>
+                    </Border>
+                    <Border x:Name="badgeFailed" Background="#15D13438" CornerRadius="4" Padding="6,2" Margin="0,0,6,0" Visibility="Collapsed">
+                        <TextBlock x:Name="lblTickerFailed" Text="0 Failed" FontSize="9" FontWeight="Bold"
+                                   Foreground="{DynamicResource ThemeError}" FontFamily="Consolas"/>
+                    </Border>
+                    <Border x:Name="badgeSucceeded" Background="#15FFB900" CornerRadius="4" Padding="6,2" Visibility="Collapsed">
+                        <TextBlock x:Name="lblTickerSucceeded" Text="0 Succeeded" FontSize="9" FontWeight="Bold"
+                                   Foreground="{DynamicResource ThemeWarning}" FontFamily="Consolas"/>
+                    </Border>
+                </StackPanel>
+                <TextBlock Grid.Column="3" Text="|" Foreground="{DynamicResource ThemeTextFaintest}" Margin="10,0" VerticalAlignment="Center" FontSize="11"/>
+                <!-- Subscription + Region info -->
+                <StackPanel Grid.Column="4" Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock x:Name="lblTickerSub" Text="" FontSize="9" Foreground="{DynamicResource ThemeTextDisabled}"
+                               VerticalAlignment="Center" FontFamily="Consolas" Margin="0,0,10,0"/>
+                    <TextBlock x:Name="lblTickerRegion" Text="" FontSize="9" Foreground="{DynamicResource ThemeAccentLight}"
+                               VerticalAlignment="Center" FontFamily="Consolas"/>
+                </StackPanel>
+                <!-- Connection status badge -->
+                <Border Grid.Column="5" x:Name="badgeConnection" CornerRadius="4" Padding="8,2" Margin="0,0,8,0"
+                        Background="#15D13438">
+                    <TextBlock x:Name="lblTickerConnection" Text="OFFLINE" FontSize="9" FontWeight="Bold"
+                               Foreground="{DynamicResource ThemeError}" FontFamily="Consolas"/>
+                </Border>
+            </Grid>
+        </Border>
+
+        <!-- ROW 3: MAIN CONTENT (Split: Build List + Log Viewer) -->
+        <Grid Grid.Row="3">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="48"/>
+                <ColumnDefinition x:Name="colLeftPanel" Width="280" MinWidth="0"/>
+                <ColumnDefinition x:Name="colLeftSplitter" Width="Auto"/>
+                <ColumnDefinition Width="*" MinWidth="300"/>
+                <ColumnDefinition x:Name="colRightSplitter" Width="Auto"/>
+                <ColumnDefinition x:Name="colRightPanel" Width="320" MinWidth="0"/>
+                <ColumnDefinition Width="48"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- LEFT ICON RAIL (always visible, Bagel Commander pattern) -->
+            <Border Grid.Column="0" Background="{DynamicResource ThemeSidebarBg}"
+                    BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="0,0,1,0">
+                <StackPanel Margin="0,8,0,0">
+                    <!-- Hamburger toggle -->
+                    <Button x:Name="btnHamburger" Width="36" Height="36" Margin="0,0,0,6"
+                            Background="Transparent" BorderThickness="0" Cursor="Hand"
+                            ToolTip="Toggle sidebar" HorizontalAlignment="Center">
+                        <TextBlock Text="&#xE700;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="16"
+                                   Foreground="{DynamicResource ThemeTextSecondary}" HorizontalAlignment="Center"/>
+                    </Button>
+                    <Border Height="1" Background="{DynamicResource ThemeBorderCard}" Margin="8,2,8,8"/>
+
+                    <!-- Builds nav icon -->
+                    <Grid Margin="0,0,0,2" HorizontalAlignment="Center">
+                        <Border x:Name="railBuildsIndicator" Width="3" Height="20" HorizontalAlignment="Left"
+                                Background="{DynamicResource ThemeAccent}" CornerRadius="0,2,2,0" Margin="-6,0,0,0"/>
+                        <Button x:Name="railBuilds" Width="36" Height="36"
+                                Background="Transparent" BorderThickness="0" Cursor="Hand"
+                                ToolTip="Active Builds" Tag="Builds">
+                            <TextBlock x:Name="railBuildsIcon" Text="&#xE912;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="16"
+                                       Foreground="{DynamicResource ThemeAccentLight}" HorizontalAlignment="Center"/>
+                        </Button>
+                    </Grid>
+
+                    <!-- Info/Health nav icon -->
+                    <Grid Margin="0,0,0,2" HorizontalAlignment="Center">
+                        <Border x:Name="railInfoIndicator" Width="3" Height="20" HorizontalAlignment="Left"
+                                Background="{DynamicResource ThemeAccent}" CornerRadius="0,2,2,0" Margin="-6,0,0,0"
+                                Visibility="Collapsed"/>
+                        <Button x:Name="railInfo" Width="36" Height="36"
+                                Background="Transparent" BorderThickness="0" Cursor="Hand"
+                                ToolTip="Build Health &amp; Phases" Tag="Info">
+                            <TextBlock x:Name="railInfoIcon" Text="&#xE9D9;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="16"
+                                       Foreground="{DynamicResource ThemeTextMuted}" HorizontalAlignment="Center"/>
+                        </Button>
+                    </Grid>
+
+                    <!-- Settings nav icon -->
+                    <Grid Margin="0,0,0,2" HorizontalAlignment="Center">
+                        <Border x:Name="railSettingsIndicator" Width="3" Height="20" HorizontalAlignment="Left"
+                                Background="{DynamicResource ThemeAccent}" CornerRadius="0,2,2,0" Margin="-6,0,0,0"
+                                Visibility="Collapsed"/>
+                        <Button x:Name="railSettings" Width="36" Height="36"
+                                Background="Transparent" BorderThickness="0" Cursor="Hand"
+                                ToolTip="Settings" Tag="Settings">
+                            <TextBlock x:Name="railSettingsIcon" Text="&#xE713;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="16"
+                                       Foreground="{DynamicResource ThemeTextMuted}" HorizontalAlignment="Center"/>
+                        </Button>
+                    </Grid>
+                </StackPanel>
+            </Border>
+
+            <!-- LEFT PANEL: BUILD LIST (collapsible detail panel) -->
+            <Grid x:Name="pnlLeftSidebar" Grid.Column="1" Background="{DynamicResource ThemePanelBg}">
+                <Grid.RowDefinitions>
+                    <RowDefinition x:Name="rowLeftHeader" Height="Auto"/>
+                    <RowDefinition x:Name="rowLeftBuilds" Height="*" MinHeight="120"/>
+                    <RowDefinition x:Name="rowLeftBottom" Height="2*"/>
+                </Grid.RowDefinitions>
+
+                <Border x:Name="grpLeftBuildsHeader" Grid.Row="0" Padding="14,14,14,10" Background="{DynamicResource ThemePanelBg}">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="0">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="Active Builds" FontSize="16" FontWeight="Bold"
+                                           Foreground="{DynamicResource ThemeTextPrimary}"/>
+                                <Ellipse x:Name="buildScanDot" Width="6" Height="6" Margin="8,0,0,0" VerticalAlignment="Center"
+                                         Fill="{DynamicResource ThemeAccentLight}" Opacity="0"/>
+                            </StackPanel>
+                            <TextBlock x:Name="lblBuildCount" Text="0 builds found" FontSize="11"
+                                       Foreground="{DynamicResource ThemeTextDim}" Margin="0,3,0,0"/>
+                        </StackPanel>
+                        <Button x:Name="btnRefreshBuilds" Grid.Column="1" Style="{StaticResource IconButton}"
+                                VerticalAlignment="Top" ToolTip="Refresh build list">
+                            <TextBlock Text="&#xE72C;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="15"
+                                       Foreground="{DynamicResource ThemeAccentLight}"/>
+                        </Button>
+                    </Grid>
+                </Border>
+
+                <ListView x:Name="lstBuilds" Grid.Row="1" Background="Transparent" BorderThickness="0"
+                          ItemContainerStyle="{StaticResource BuildListItem}" SelectionMode="Single"
+                          ScrollViewer.HorizontalScrollBarVisibility="Disabled" Padding="0,4">
+                    <ListView.ItemTemplate>
+                        <DataTemplate>
+                            <Grid Margin="0,2">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <Ellipse Grid.Row="0" Grid.Column="0" Width="8" Height="8" VerticalAlignment="Center" Margin="0,0,8,0"
+                                         Fill="{Binding StateColor}"/>
+                                <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding TemplateName}" FontSize="13" FontWeight="SemiBold"
+                                           Foreground="{DynamicResource ThemeTextPrimary}" TextTrimming="CharacterEllipsis"/>
+                                <Border Grid.Row="0" Grid.Column="2" CornerRadius="4" Padding="8,3" VerticalAlignment="Center"
+                                       Background="{Binding StateColor}">
+                                    <TextBlock Text="{Binding State}" FontSize="10" Foreground="White" FontWeight="Bold"/>
+                                </Border>
+                                <TextBlock Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="3" Text="{Binding ResourceGroup}" FontSize="10.5"
+                                           Foreground="{DynamicResource ThemeTextDim}" Margin="16,4,0,0" TextTrimming="CharacterEllipsis"/>
+                                <StackPanel Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="3" Orientation="Horizontal" Margin="16,5,0,0">
+                                    <Border Background="{DynamicResource ThemeDeepBg}" CornerRadius="3" Padding="6,2" Margin="0,0,6,0">
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="&#xE81D;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="9"
+                                                       Foreground="{DynamicResource ThemeTextDisabled}" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                            <TextBlock Text="{Binding Location}" FontSize="10" Foreground="{DynamicResource ThemeTextDim}"
+                                                       FontFamily="Segoe UI Variable Small, Segoe UI"/>
+                                        </StackPanel>
+                                    </Border>
+                                    <Border Background="{DynamicResource ThemeDeepBg}" CornerRadius="3" Padding="6,2">
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="&#xE916;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="9"
+                                                       Foreground="{DynamicResource ThemeTextDisabled}" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                            <TextBlock Text="{Binding Elapsed}" FontSize="10" Foreground="{DynamicResource ThemeAccentLight}"
+                                                       FontFamily="Consolas" FontWeight="SemiBold"/>
+                                        </StackPanel>
+                                    </Border>
+                                </StackPanel>
+                            </Grid>
+                        </DataTemplate>
+                    </ListView.ItemTemplate>
+                </ListView>
+
+                <StackPanel x:Name="pnlEmptyState" Grid.Row="1" VerticalAlignment="Center" HorizontalAlignment="Center" Margin="20">
+                    <Border Background="{DynamicResource ThemeAccent}" CornerRadius="16" Width="52" Height="52" HorizontalAlignment="Center" Margin="0,0,0,16">
+                        <TextBlock Text="&#xE912;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="24"
+                                   Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <TextBlock x:Name="lblEmptyTitle" Text="No active builds" FontSize="16" FontWeight="Bold"
+                               Foreground="{DynamicResource ThemeTextPrimary}" HorizontalAlignment="Center"/>
+                    <TextBlock x:Name="lblEmptySubtitle" Text="Sign in and scan to discover AIB builds" FontSize="12"
+                               Foreground="{DynamicResource ThemeTextDim}" HorizontalAlignment="Center" TextWrapping="Wrap"
+                               TextAlignment="Center" Margin="0,6,0,0" MaxWidth="260"/>
+                </StackPanel>
+
+                <Border x:Name="grpLeftBottomBorder" Grid.Row="2" Padding="0" Background="{DynamicResource ThemeSidebarBg}" BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="0,1,0,0">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="14,10">
+                    <StackPanel>
+                        <!-- ═══ INFO GROUP ═══ -->
+                        <StackPanel x:Name="grpLeftInfo">
+                        <!-- Build Health Score (#R2-1) -->
+                        <Border CornerRadius="8" Padding="10,8" Margin="0,0,0,8"
+                                Background="{DynamicResource ThemeDeepBg}"
+                                BorderBrush="{DynamicResource ThemeBorderCard}" BorderThickness="1">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock x:Name="lblHealthGrade" Text="N/A" FontSize="26" FontWeight="Bold"
+                                           Foreground="{DynamicResource ThemeTextDim}" VerticalAlignment="Center"
+                                           FontFamily="Consolas" Margin="0,0,10,0"/>
+                                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                    <TextBlock Text="Build Health" FontSize="10" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource ThemeTextSecondary}"/>
+                                    <TextBlock x:Name="lblHealthScore" Text="N/A" FontSize="9"
+                                               Foreground="{DynamicResource ThemeTextDim}" FontFamily="Consolas"/>
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+
+                        <!-- ETA & Progress (#R2-4) -->
+                        <Grid Margin="0,0,0,8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Text="Build ETA" FontSize="10" FontWeight="SemiBold"
+                                           Foreground="{DynamicResource ThemeTextDim}"/>
+                                <TextBlock x:Name="lblETARemaining" Text="No data for ETA" FontSize="9"
+                                           Foreground="{DynamicResource ThemeTextMuted}" FontFamily="Consolas"/>
+                            </StackPanel>
+                            <TextBlock x:Name="lblETAPercent" Grid.Column="1" Text="0%" FontSize="14" FontWeight="Bold"
+                                       Foreground="{DynamicResource ThemeAccentLight}" VerticalAlignment="Center"
+                                       FontFamily="Consolas"/>
+                        </Grid>
+                        <ProgressBar x:Name="prgETA" Value="0" Height="4" Margin="0,0,0,8"
+                                     Background="{DynamicResource ThemeDeepBg}"
+                                     Foreground="{DynamicResource ThemeAccent}"
+                                     BorderThickness="0"/>
+
+                        <!-- Build Streak (#R2-9) -->
+                        <TextBlock x:Name="lblStreak" Text="" FontSize="11" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource ThemeTextMuted}" Margin="0,0,0,6"
+                                   HorizontalAlignment="Center"/>
+
+                        <Border Height="1" Background="{DynamicResource ThemeBorderCard}" Margin="0,2,0,8"/>
+
+                        <!-- Phase Progress Tracker -->
+                        <TextBlock Text="Build Phases" FontSize="12" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource ThemeTextSecondary}" Margin="0,0,0,6"/>
+                        <StackPanel x:Name="pnlPhaseTracker" Margin="0,0,0,8">
+                            <TextBlock x:Name="lblPhaseEmpty" Text="Select a build to track phases" FontSize="10"
+                                       Foreground="{DynamicResource ThemeTextDim}" FontStyle="Italic"/>
+                        </StackPanel>
+
+                        <!-- Duration Flame Chart (#7) — flyout -->
+                        <Border x:Name="btnFlameChartToggle" CornerRadius="4" Padding="6,4" Margin="0,0,0,4"
+                                Background="{DynamicResource ThemeDeepBg}" Cursor="Hand">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="&#xE9D5;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="11"
+                                           Foreground="{DynamicResource ThemeAccentLight}" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                <TextBlock Grid.Column="1" Text="Phase Durations" FontSize="11" FontWeight="SemiBold"
+                                           Foreground="{DynamicResource ThemeTextDim}" VerticalAlignment="Center"/>
+                                <TextBlock x:Name="lblFlameCount" Grid.Column="2" Text="" FontSize="9"
+                                           Foreground="{DynamicResource ThemeTextDisabled}" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                <TextBlock Text="&#xE76C;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="10"
+                                           Foreground="{DynamicResource ThemeTextDisabled}" VerticalAlignment="Center" Grid.Column="3"/>
+                            </Grid>
+                        </Border>
+                        <Popup x:Name="popFlameChart" StaysOpen="False" Placement="Bottom"
+                               PlacementTarget="{Binding ElementName=btnFlameChartToggle}"
+                               AllowsTransparency="True" PopupAnimation="Fade">
+                            <Border Background="{DynamicResource ThemeSidebarBg}" BorderBrush="{DynamicResource ThemeBorder}"
+                                    BorderThickness="1" CornerRadius="8" Padding="14,10" MinWidth="320" MaxWidth="500"
+                                    MaxHeight="400">
+                                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                    <StackPanel x:Name="pnlFlameChart" MinHeight="10"/>
+                                </ScrollViewer>
+                            </Border>
+                        </Popup>
+                        </StackPanel>
+
+                        <!-- ═══ SETTINGS GROUP ═══ -->
+                        <StackPanel x:Name="grpLeftSettings">
+                        <Border Height="1" Background="{DynamicResource ThemeBorderCard}" Margin="0,2,0,8"/>
+
+                        <!-- Settings (inline, collapsed by default) -->
+                        <Border x:Name="pnlSettingsHeader" CornerRadius="4" Padding="8,6" Margin="0,0,0,4"
+                                Background="{DynamicResource ThemeDeepBg}" Cursor="Hand">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="&#xE713;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="11"
+                                           Foreground="{DynamicResource ThemeTextDim}" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                <TextBlock Grid.Column="1" Text="Settings" FontSize="11" FontWeight="SemiBold"
+                                           Foreground="{DynamicResource ThemeTextDim}" VerticalAlignment="Center"/>
+                                <TextBlock x:Name="lblSettingsChevron" Grid.Column="2" Text="&#xE76C;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                                           FontSize="10" Foreground="{DynamicResource ThemeTextDisabled}" VerticalAlignment="Center"/>
+                            </Grid>
+                        </Border>
+                        <StackPanel x:Name="pnlSettingsBody" Visibility="Collapsed" Margin="0,0,0,6">
+                            <Grid Margin="0,4,0,6">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="Auto-refresh log" FontSize="11"
+                                           Foreground="{DynamicResource ThemeTextSecondary}" VerticalAlignment="Center"/>
+                                <CheckBox x:Name="chkAutoRefresh" Grid.Column="1" IsChecked="True" VerticalAlignment="Center"
+                                          Style="{StaticResource ToggleSwitch}"/>
+                            </Grid>
+                            <Grid Margin="0,0,0,6">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="Poll interval (sec)" FontSize="11"
+                                           Foreground="{DynamicResource ThemeTextDim}" VerticalAlignment="Center"/>
+                                <Border Grid.Column="1" CornerRadius="4" Background="{DynamicResource ThemeInputBg}"
+                                        BorderBrush="{DynamicResource ThemeBorderCard}" BorderThickness="1">
+                                    <TextBox x:Name="txtPollInterval" Text="5" Width="42"
+                                             Background="Transparent" Foreground="{DynamicResource ThemeAccentLight}"
+                                             BorderThickness="0" Padding="6,4" FontSize="12" FontWeight="SemiBold"
+                                             FontFamily="Consolas" HorizontalContentAlignment="Center"/>
+                                </Border>
+                            </Grid>
+                            <Grid Margin="0,0,0,6">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="Debug Logs" FontSize="11"
+                                           Foreground="{DynamicResource ThemeTextSecondary}" VerticalAlignment="Center"/>
+                                <CheckBox x:Name="chkDebug" Grid.Column="1" IsChecked="False" VerticalAlignment="Center"
+                                          Style="{StaticResource ToggleSwitch}"/>
+                            </Grid>
+                            <Grid Margin="0,0,0,6">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="Auto-scan builds" FontSize="11"
+                                           Foreground="{DynamicResource ThemeTextSecondary}" VerticalAlignment="Center"/>
+                                <CheckBox x:Name="chkAutoScanBuilds" Grid.Column="1" IsChecked="False" VerticalAlignment="Center"
+                                          Style="{StaticResource ToggleSwitch}"/>
+                            </Grid>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="Dark mode" FontSize="11"
+                                           Foreground="{DynamicResource ThemeTextSecondary}" VerticalAlignment="Center"/>
+                                <CheckBox x:Name="chkDarkMode" Grid.Column="1" IsChecked="True" VerticalAlignment="Center"
+                                          Style="{StaticResource ToggleSwitch}"/>
+                            </Grid>
+                        </StackPanel>
+                        </StackPanel>
+                    </StackPanel>
+                    </ScrollViewer>
+                </Border>
+            </Grid>
+
+            <GridSplitter x:Name="splitterLeft" Grid.Column="2" Width="2" Background="{DynamicResource ThemeBorder}"
+                          HorizontalAlignment="Center" VerticalAlignment="Stretch"/>
+
+            <!-- CENTER PANEL: LOG VIEWER -->
+            <Grid Grid.Column="3">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="16"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+
+                <Border Grid.Row="0" Background="{DynamicResource ThemePanelBg}" BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="0,0,0,1" Padding="14,9">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="0" Orientation="Horizontal">
+                            <TextBlock Text="&#xE756;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="14"
+                                       Foreground="{DynamicResource ThemeAccentLight}" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                            <TextBlock x:Name="lblLogTitle" Text="Packer Log" FontSize="14" FontWeight="Bold"
+                                       Foreground="{DynamicResource ThemeTextPrimary}" VerticalAlignment="Center"/>
+                            <TextBlock x:Name="lblLogTemplateName" Text="" FontSize="11" Margin="10,0,0,0"
+                                       Foreground="{DynamicResource ThemeTextDim}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                        </StackPanel>
+                        <Border Grid.Column="2" CornerRadius="6" Background="{DynamicResource ThemeInputBg}"
+                                BorderBrush="{DynamicResource ThemeBorderCard}" BorderThickness="1" Padding="4,0" Margin="8,0">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#xE721;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="12"
+                                           Foreground="{DynamicResource ThemeTextDim}" VerticalAlignment="Center" Margin="6,0,4,0"/>
+                                <TextBox x:Name="txtSearch" Width="130" Background="Transparent" BorderThickness="0"
+                                         Foreground="{DynamicResource ThemeTextBody}" FontSize="12" VerticalContentAlignment="Center"
+                                         Padding="2,5"/>
+                                <TextBlock x:Name="lblSearchCount" Text="" FontSize="10" VerticalAlignment="Center"
+                                           Foreground="{DynamicResource ThemeTextDim}" Margin="2,0,4,0"
+                                           FontFamily="Consolas"/>
+                                <Button x:Name="btnSearchPrev" Style="{StaticResource IconButton}" Width="22" Height="22"
+                                        ToolTip="Previous match (Shift+F3)" Margin="0,0,1,0">
+                                    <TextBlock Text="&#xE70E;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="10"
+                                               Foreground="{DynamicResource ThemeTextMuted}"/>
+                                </Button>
+                                <Button x:Name="btnSearchNext" Style="{StaticResource IconButton}" Width="22" Height="22"
+                                        ToolTip="Next match (F3)">
+                                    <TextBlock Text="&#xE70D;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="10"
+                                               Foreground="{DynamicResource ThemeTextMuted}"/>
+                                </Button>
+                            </StackPanel>
+                        </Border>
+                        <CheckBox x:Name="chkWordWrap" Grid.Column="4" IsChecked="True" VerticalAlignment="Center" Margin="4,0"
+                                  Style="{StaticResource ToggleSwitch}" FontSize="11" Foreground="{DynamicResource ThemeTextSecondary}">
+                            <TextBlock Text="Wrap" FontSize="11" Foreground="{DynamicResource ThemeTextSecondary}"/>
+                        </CheckBox>
+                        <Button x:Name="btnClearLog" Grid.Column="5" Style="{StaticResource IconButton}" ToolTip="Clear log display">
+                            <TextBlock Text="&#xE74D;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="14"
+                                       Foreground="{DynamicResource ThemeTextSecondary}"/>
+                        </Button>
+                        <Button x:Name="btnSaveLog" Grid.Column="6" Style="{StaticResource IconButton}" ToolTip="Save log to file" Margin="2,0,0,0">
+                            <TextBlock Text="&#xE74E;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="14"
+                                       Foreground="{DynamicResource ThemeTextSecondary}"/>
+                        </Button>
+                        <Button x:Name="btnCopyLog" Grid.Column="7" Style="{StaticResource IconButton}" ToolTip="Copy all to clipboard (Ctrl+Shift+C)" Margin="2,0,0,0">
+                            <TextBlock Text="&#xE8C8;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="14"
+                                       Foreground="{DynamicResource ThemeTextSecondary}"/>
+                        </Button>
+
+                        <!-- Sound Alerts Toggle (#18) -->
+                        <CheckBox x:Name="chkSoundAlerts" Grid.Column="10" VerticalAlignment="Center" Margin="6,0,0,0"
+                                  Style="{StaticResource ToggleSwitch}" FontSize="11" Foreground="{DynamicResource ThemeTextSecondary}">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#xE767;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="11"
+                                           Foreground="{DynamicResource ThemeTextDim}" VerticalAlignment="Center" Margin="0,0,3,0"/>
+                                <TextBlock Text="Sound" FontSize="11" Foreground="{DynamicResource ThemeTextSecondary}"/>
+                            </StackPanel>
+                        </CheckBox>
+                        <!-- Follow Indicator (#10) -->
+                        <TextBlock x:Name="lblFollowIndicator" Grid.Column="11" Text="&#x25BC; Following" FontSize="10"
+                                   Foreground="{DynamicResource ThemeSuccess}" VerticalAlignment="Center" Margin="8,0,0,0"
+                                   Cursor="Hand" ToolTip="Click to toggle auto-follow"/>
+                    </Grid>
+                </Border>
+
+                <!-- Error Heatmap Timeline -->
+                <Canvas x:Name="cnvHeatmap" Grid.Row="1" Background="{DynamicResource ThemeSidebarBg}" Height="16" ToolTip="Click to jump to position" Cursor="Hand" ClipToBounds="True"/>
+
+                <!-- Log viewer + Minimap (#20) -->
+                <Grid Grid.Row="2">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="14"/>
+                    </Grid.ColumnDefinitions>
+
+                    <RichTextBox x:Name="rtbOutput" Grid.Column="0" IsReadOnly="True"
+                                 Background="{DynamicResource ThemeOutputBg}" Foreground="{DynamicResource ThemeTextBody}"
+                                 BorderThickness="0" FontFamily="Cascadia Mono, Consolas, Courier New" FontSize="12.5"
+                                 Padding="14,10" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                                 AcceptsReturn="False"
+                                 TextOptions.TextFormattingMode="Ideal">
+                        <RichTextBox.Resources>
+                            <Style TargetType="{x:Type Paragraph}">
+                                <Setter Property="Margin" Value="0,1,0,1"/>
+                            </Style>
+                        </RichTextBox.Resources>
+                        <FlowDocument PageWidth="5000">
+                            <Paragraph Foreground="{DynamicResource ThemeTextDisabled}" FontSize="12" TextAlignment="Center">
+                                <Run Text="Select a build from the sidebar to stream its Packer log"/>
+                            </Paragraph>
+                        </FlowDocument>
+                    </RichTextBox>
+
+                    <!-- Minimap scrollbar -->
+                    <Canvas x:Name="cnvMinimap" Grid.Column="1" Background="{DynamicResource ThemeSidebarBg}" ToolTip="Click to jump to position"
+                            Cursor="Hand" ClipToBounds="True"/>
+                </Grid>
+
+                <Border x:Name="pnlPrereqError" Grid.Row="0" Grid.RowSpan="3" Visibility="Collapsed" Padding="40"
+                        Background="{DynamicResource ThemeAppBg}">
+                    <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" MaxWidth="600">
+                        <TextBlock Text="&#xE783;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="44"
+                                   Foreground="{DynamicResource ThemeWarning}" HorizontalAlignment="Center" Margin="0,0,0,18"/>
+                        <TextBlock Text="Missing Prerequisites" FontSize="22" FontWeight="Bold"
+                                   Foreground="{DynamicResource ThemeTextPrimary}" HorizontalAlignment="Center" Margin="0,0,0,8"/>
+                        <TextBlock x:Name="lblPrereqMessage" TextWrapping="Wrap" TextAlignment="Center" FontSize="13"
+                                   Foreground="{DynamicResource ThemeTextSecondary}" Margin="0,0,0,22"
+                                   Text="One or more required Azure PowerShell modules are not installed."/>
+                        <Border CornerRadius="8" Padding="18,14" Margin="0,0,0,18"
+                                Background="{DynamicResource ThemeCardBg}"
+                                BorderBrush="{DynamicResource ThemeBorderCard}" BorderThickness="1">
+                            <StackPanel x:Name="pnlModuleStatus"/>
+                        </Border>
+                        <TextBlock Text="Run the following in an elevated PowerShell terminal:" FontSize="12"
+                                   Foreground="{DynamicResource ThemeTextMuted}" Margin="0,0,0,8"/>
+                        <Border Background="{DynamicResource ThemeInputBg}" CornerRadius="6" Padding="14,12"
+                                BorderBrush="{DynamicResource ThemeBorderCard}" BorderThickness="1">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBox x:Name="txtPrereqCommand" Grid.Column="0" IsReadOnly="True" Background="Transparent"
+                                         BorderThickness="0" Foreground="{DynamicResource ThemeAccentLight}"
+                                         FontFamily="Cascadia Mono, Consolas" FontSize="11.5" TextWrapping="Wrap"
+                                         VerticalScrollBarVisibility="Auto"
+                                         TextOptions.TextFormattingMode="Ideal"/>
+                                <Button x:Name="btnCopyCommand" Grid.Column="1" Style="{StaticResource IconButton}"
+                                        Margin="8,0,0,0" VerticalAlignment="Top" ToolTip="Copy to clipboard">
+                                    <TextBlock Text="&#xE8C8;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="15"
+                                               Foreground="{DynamicResource ThemeAccentLight}"/>
+                                </Button>
+                            </Grid>
+                        </Border>
+                        <Button x:Name="btnRetryPrereq" Style="{StaticResource AccentButton}" Margin="0,18,0,0" HorizontalAlignment="Center">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#xE72C;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="12"
+                                           Foreground="White" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                <TextBlock Text="Re-check Modules" FontSize="12" FontWeight="SemiBold" Foreground="White"/>
+                            </StackPanel>
+                        </Button>
+                    </StackPanel>
+                </Border>
+            </Grid>
+
+            <!-- RIGHT SPLITTER -->
+            <GridSplitter x:Name="splitterRight" Grid.Column="4" Width="2" Background="{DynamicResource ThemeBorder}"
+                          HorizontalAlignment="Center" VerticalAlignment="Stretch"/>
+
+            <!-- RIGHT PANEL: ANALYTICS -->
+            <Border x:Name="pnlRightSidebar" Grid.Column="5"
+                    BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="1,0,0,0"
+                    Background="{DynamicResource ThemePanelBg}">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- Right Panel Header -->
+                    <Border Grid.Row="0" Padding="12,10" Background="{DynamicResource ThemePanelBg}"
+                            BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="0,0,0,1">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="&#xE9F9;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="13"
+                                       Foreground="{DynamicResource ThemeAccentLight}" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                            <TextBlock Text="Analytics" FontSize="14" FontWeight="Bold"
+                                       Foreground="{DynamicResource ThemeTextPrimary}" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Right Panel Content -->
+                    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Padding="14,10">
+                    <StackPanel>
+                        <!-- ═══ STATS GROUP ═══ -->
+                        <StackPanel x:Name="grpRightStats">
+                        <!-- Log Stats Dashboard (#9) -->
+                        <TextBlock Text="Log Stats" FontSize="11" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource ThemeTextDim}" Margin="0,0,0,6"/>
+                        <StackPanel x:Name="pnlStatsDashboard" Margin="0,0,0,8">
+                            <Grid Margin="0,0,0,3">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="Errors" FontSize="10" Foreground="{DynamicResource ThemeError}"/>
+                                <TextBlock x:Name="lblStatsErrors" Grid.Column="1" Text="0" FontSize="10" FontWeight="Bold"
+                                           Foreground="{DynamicResource ThemeError}" FontFamily="Consolas"/>
+                            </Grid>
+                            <Grid Margin="0,0,0,3">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="Warnings" FontSize="10" Foreground="{DynamicResource ThemeWarning}"/>
+                                <TextBlock x:Name="lblStatsWarnings" Grid.Column="1" Text="0" FontSize="10" FontWeight="Bold"
+                                           Foreground="{DynamicResource ThemeWarning}" FontFamily="Consolas"/>
+                            </Grid>
+                            <Grid Margin="0,0,0,3">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="Success" FontSize="10" Foreground="{DynamicResource ThemeSuccess}"/>
+                                <TextBlock x:Name="lblStatsSuccess" Grid.Column="1" Text="0" FontSize="10" FontWeight="Bold"
+                                           Foreground="{DynamicResource ThemeSuccess}" FontFamily="Consolas"/>
+                            </Grid>
+                            <Grid Margin="0,0,0,3">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="Total lines" FontSize="10" Foreground="{DynamicResource ThemeTextDim}"/>
+                                <TextBlock x:Name="lblStatsLines" Grid.Column="1" Text="0" FontSize="10"
+                                           Foreground="{DynamicResource ThemeTextBody}" FontFamily="Consolas"/>
+                            </Grid>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="Throughput" FontSize="10" Foreground="{DynamicResource ThemeTextDim}"/>
+                                <TextBlock x:Name="lblStatsLps" Grid.Column="1" Text="0/s" FontSize="10"
+                                           Foreground="{DynamicResource ThemeAccentLight}" FontFamily="Consolas"/>
+                            </Grid>
+                        </StackPanel>
+
+                        <!-- Build Cost Estimator (#R2-15) -->
+                        <Border CornerRadius="6" Padding="8,6" Margin="0,0,0,8"
+                                Background="{DynamicResource ThemeDeepBg}"
+                                BorderBrush="{DynamicResource ThemeBorderCard}" BorderThickness="1">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock Text="Est. Cost" FontSize="10" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource ThemeTextDim}"/>
+                                    <TextBlock x:Name="lblCostSku" Text="Default (D4s v3)" FontSize="8.5"
+                                               Foreground="{DynamicResource ThemeTextDisabled}" FontFamily="Consolas"/>
+                                    <TextBlock x:Name="lblCostRate" Text="$0.0032/min" FontSize="8.5"
+                                               Foreground="{DynamicResource ThemeTextDisabled}" FontFamily="Consolas"/>
+                                </StackPanel>
+                                <TextBlock x:Name="lblCostEstimate" Grid.Column="1" Text="$0.00" FontSize="18" FontWeight="Bold"
+                                           Foreground="{DynamicResource ThemeAccentLight}" VerticalAlignment="Center"
+                                           FontFamily="Consolas"/>
+                            </Grid>
+                        </Border>
+
+                        </StackPanel>
+                        <!-- ═══ PROFILER GROUP ═══ -->
+                        <StackPanel x:Name="grpRightProfiler">
+
+                        <!-- Customization Script Profiler (#R2-11) -->
+                        <TextBlock Text="Script Profiler" FontSize="11" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource ThemeTextDim}" Margin="0,0,0,4"/>
+                        <StackPanel x:Name="pnlScriptProfiler" Margin="0,0,0,8" MinHeight="10"/>
+
+                        <Border Height="1" Background="{DynamicResource ThemeBorderCard}" Margin="0,2,0,8"/>
+
+                        <!-- Package Install Tracker (#R2-5) -->
+                        <TextBlock Text="Package Tracker" FontSize="11" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource ThemeTextDim}" Margin="0,0,0,4"/>
+                        <StackPanel x:Name="pnlPackageTracker" MinHeight="10"/>
+
+                        <Border Height="1" Background="{DynamicResource ThemeBorderCard}" Margin="0,4,0,8"/>
+
+                        <!-- Error Clusters (#R2-6) -->
+                        <TextBlock Text="Error Groups" FontSize="11" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource ThemeTextDim}" Margin="0,0,0,4"/>
+                        <ScrollViewer MaxHeight="200" VerticalScrollBarVisibility="Auto">
+                            <StackPanel x:Name="pnlErrorClusters" MinHeight="10"/>
+                        </ScrollViewer>
+
+                        <Border Height="1" Background="{DynamicResource ThemeBorderCard}" Margin="0,4,0,8"/>
+
+                        <!-- Known Issues (#R2-8) -->
+                        <TextBlock Text="Known Issues" FontSize="11" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource ThemeTextDim}" Margin="0,0,0,4"/>
+                        <StackPanel x:Name="pnlKnownIssues" Margin="0,0,0,8" MinHeight="4"/>
+
+                        </StackPanel>
+                        <!-- ═══ HISTORY GROUP ═══ -->
+                        <StackPanel x:Name="grpRightHistory">
+
+                        <!-- Build History (#16) -->
+                        <TextBlock Text="Recent Builds" FontSize="11" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource ThemeTextDim}" Margin="0,0,0,6"/>
+                        <ScrollViewer MaxHeight="200" VerticalScrollBarVisibility="Auto">
+                            <StackPanel x:Name="pnlBuildHistory"/>
+                        </ScrollViewer>
+
+                        <Border Height="1" Background="{DynamicResource ThemeBorderCard}" Margin="0,4,0,8"/>
+
+                        <!-- Achievements (#R2-10) -->
+                        <TextBlock Text="Achievements" FontSize="11" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource ThemeTextDim}" Margin="0,0,0,4"/>
+                        <WrapPanel x:Name="pnlAchievements" Margin="0,0,0,6"/>
+                        </StackPanel>
+                    </StackPanel>
+                    </ScrollViewer>
+                </Grid>
+            </Border>
+
+            <!-- RIGHT ICON RAIL (always visible, mirrors left rail pattern) -->
+            <Border Grid.Column="6" Background="{DynamicResource ThemeSidebarBg}"
+                    BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="1,0,0,0">
+                <StackPanel Margin="0,8,0,0">
+                    <!-- Hamburger toggle -->
+                    <Button x:Name="btnRightHamburger" Width="36" Height="36" Margin="0,0,0,6"
+                            Background="Transparent" BorderThickness="0" Cursor="Hand"
+                            ToolTip="Toggle analytics" HorizontalAlignment="Center">
+                        <TextBlock Text="&#xE700;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="16"
+                                   Foreground="{DynamicResource ThemeTextSecondary}" HorizontalAlignment="Center"/>
+                    </Button>
+                    <Border Height="1" Background="{DynamicResource ThemeBorderCard}" Margin="8,2,8,8"/>
+
+                    <!-- Stats icon -->
+                    <Grid Margin="0,0,0,2" HorizontalAlignment="Center">
+                        <Border x:Name="railRStatsIndicator" Width="3" Height="20" HorizontalAlignment="Right"
+                                Background="{DynamicResource ThemeAccent}" CornerRadius="2,0,0,2" Margin="0,0,-6,0"/>
+                        <Button x:Name="railRStats" Width="36" Height="36"
+                                Background="Transparent" BorderThickness="0" Cursor="Hand"
+                                ToolTip="Log Stats &amp; Cost" Tag="Stats">
+                            <TextBlock x:Name="railRStatsIcon" Text="&#xE9F9;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="16"
+                                       Foreground="{DynamicResource ThemeAccentLight}" HorizontalAlignment="Center"/>
+                        </Button>
+                    </Grid>
+
+                    <!-- Profiler icon -->
+                    <Grid Margin="0,0,0,2" HorizontalAlignment="Center">
+                        <Border x:Name="railRProfilerIndicator" Width="3" Height="20" HorizontalAlignment="Right"
+                                Background="{DynamicResource ThemeAccent}" CornerRadius="2,0,0,2" Margin="0,0,-6,0"
+                                Visibility="Collapsed"/>
+                        <Button x:Name="railRProfiler" Width="36" Height="36"
+                                Background="Transparent" BorderThickness="0" Cursor="Hand"
+                                ToolTip="Script Profiler &amp; Packages" Tag="Profiler">
+                            <TextBlock x:Name="railRProfilerIcon" Text="&#xE9D5;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="16"
+                                       Foreground="{DynamicResource ThemeTextMuted}" HorizontalAlignment="Center"/>
+                        </Button>
+                    </Grid>
+
+                    <!-- History icon -->
+                    <Grid Margin="0,0,0,2" HorizontalAlignment="Center">
+                        <Border x:Name="railRHistoryIndicator" Width="3" Height="20" HorizontalAlignment="Right"
+                                Background="{DynamicResource ThemeAccent}" CornerRadius="2,0,0,2" Margin="0,0,-6,0"
+                                Visibility="Collapsed"/>
+                        <Button x:Name="railRHistory" Width="36" Height="36"
+                                Background="Transparent" BorderThickness="0" Cursor="Hand"
+                                ToolTip="Build History &amp; Achievements" Tag="History">
+                            <TextBlock x:Name="railRHistoryIcon" Text="&#xE81C;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="16"
+                                       Foreground="{DynamicResource ThemeTextMuted}" HorizontalAlignment="Center"/>
+                        </Button>
+                    </Grid>
+                </StackPanel>
+            </Border>
+        </Grid>
+
+        <!-- DEBUG OVERLAY (floating, bottom-right, Bagel Commander style) -->
+        <Border x:Name="pnlDebugOverlay" Grid.Row="3" Grid.Column="2"
+                HorizontalAlignment="Right" VerticalAlignment="Bottom"
+                Width="520" MaxHeight="280"
+                Background="{DynamicResource ThemeOutputBg}" CornerRadius="8,0,0,0"
+                BorderBrush="{DynamicResource ThemeError}" BorderThickness="1" Opacity="0.95"
+                Margin="0,0,0,0" Padding="8" Visibility="Collapsed">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+                <!-- Header -->
+                <Grid Grid.Row="0" Margin="0,0,0,4">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="&#x1F41B; DEBUG CONSOLE" FontSize="10" FontWeight="Bold"
+                               Foreground="{DynamicResource ThemeError}" VerticalAlignment="Center" Margin="4,0,0,0"
+                               FontFamily="Cascadia Mono, Consolas"/>
+                    <TextBlock Grid.Column="1" x:Name="lblDebugCount" Text="" FontSize="9"
+                               Foreground="{DynamicResource ThemeTextDim}" VerticalAlignment="Center" Margin="10,0,0,0"
+                               FontFamily="Consolas"/>
+                    <Button x:Name="btnDebugClear" Grid.Column="2" Style="{StaticResource IconButton}"
+                            Width="24" Height="24" ToolTip="Clear debug log">
+                        <TextBlock Text="&#xE74D;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="11"
+                                   Foreground="{DynamicResource ThemeTextMuted}"/>
+                    </Button>
+                    <Button x:Name="btnDebugClose" Grid.Column="3" Style="{StaticResource IconButton}"
+                            Width="24" Height="24" ToolTip="Close debug panel">
+                        <TextBlock Text="&#xE8BB;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="11"
+                                   Foreground="{DynamicResource ThemeTextMuted}"/>
+                    </Button>
+                </Grid>
+                <!-- Debug log output -->
+                <ScrollViewer x:Name="debugScroller" Grid.Row="1" VerticalScrollBarVisibility="Auto"
+                              Background="Transparent">
+                    <TextBlock x:Name="txtDebugLog" TextWrapping="Wrap"
+                               FontFamily="Cascadia Mono, Consolas, Courier New" FontSize="10.5"
+                               Foreground="{DynamicResource ThemeTextSecondary}" Padding="4"
+                               TextOptions.TextFormattingMode="Ideal"/>
+                </ScrollViewer>
+            </Grid>
+        </Border>
+
+        <!-- ROW 4: STATUS BAR (BC-style dark, clean) -->
+        <Border Grid.Row="4" Background="{DynamicResource ThemeDeepBg}" BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="0,1,0,0">
+            <Grid Margin="14,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Ellipse x:Name="statusDot" Width="6" Height="6" Fill="{DynamicResource ThemeGreenAccent}" Margin="0,0,6,0"/>
+                    <TextBlock x:Name="lblStatus" Text="Ready" FontSize="10" Foreground="{DynamicResource ThemeTextMuted}"
+                               FontFamily="Segoe UI Variable Small, Segoe UI"/>
+                </StackPanel>
+                <TextBlock Grid.Column="1" Text="|" Foreground="{DynamicResource ThemeTextFaintest}" Margin="10,0" VerticalAlignment="Center" FontSize="10"/>
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Border Background="{DynamicResource ThemeInputBg}" CornerRadius="3" Padding="6,2" Margin="0,0,6,0">
+                        <TextBlock x:Name="lblLineCount" Text="Lines: 0" FontSize="9" Foreground="{DynamicResource ThemeTextDim}"
+                                   FontFamily="Consolas"/>
+                    </Border>
+                    <Border Background="{DynamicResource ThemeInputBg}" CornerRadius="3" Padding="6,2" Margin="0,0,6,0">
+                        <TextBlock x:Name="lblElapsed" Text="Elapsed: --" FontSize="9" Foreground="{DynamicResource ThemeTextDim}"
+                                   FontFamily="Consolas"/>
+                    </Border>
+                </StackPanel>
+                <TextBlock Grid.Column="3" Text="|" Foreground="{DynamicResource ThemeTextFaintest}" Margin="10,0" VerticalAlignment="Center" FontSize="10"/>
+                <TextBlock Grid.Column="4" Text="Azure Image Builder - Packer Log Parser" FontSize="9"
+                           Foreground="{DynamicResource ThemeTextDisabled}" VerticalAlignment="Center"
+                           FontFamily="Segoe UI Variable Small, Segoe UI"/>
+                <TextBlock Grid.Column="6" x:Name="lblVersion" Text="v1.0.0" FontSize="9" Foreground="{DynamicResource ThemeTextDisabled}" VerticalAlignment="Center"
+                           FontFamily="Consolas"/>
+            </Grid>
+        </Border>
+
+        <!-- Confetti Canvas Overlay -->
+        <Canvas x:Name="cnvConfetti" Grid.Row="0" Grid.RowSpan="5" Visibility="Collapsed" IsHitTestVisible="False"/>
+    </Grid>
+</Window>

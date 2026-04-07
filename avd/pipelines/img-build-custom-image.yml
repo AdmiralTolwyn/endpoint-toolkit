@@ -1,0 +1,231 @@
+trigger:
+- none
+
+# =============================================================================
+# Azure Image Builder - Using AzureImageBuilderTask v2
+# =============================================================================
+# Upgrade from AzureImageBuilderTask@1 to v2 with:
+#   - API 2024-02-01 support
+#   - Workload identity federation
+#   - VM boot optimization
+#   - Gallery storage type & versioning scheme
+#   - Error handling configuration
+#   - OS disk size override
+# =============================================================================
+
+resources:
+  repositories:
+  - repository: aib_sources
+    type: git
+    name: '<YOURREPOSITORYNAME>'
+
+pool:
+  vmImage: windows-latest
+
+# =============================================================================
+# CENTRALIZED VARIABLES
+# =============================================================================
+variables:
+  # ── Service Connections & Azure Core ───────────────────────────────────────
+  subscriptionId: '<YOURSUBSCRIPTIONID>'
+  azureSubscriptionServiceConnection: '<YOURSERVICECONNECTION>'
+  keyVaultName: '<YOURKEYVAULTNAME>'
+  resourceGroup: '<YOURRESOURCEGROUP-AIB>'
+  location: 'westeurope'
+
+  # ── Repository & Paths ────────────────────────────────────────────────────
+  aibCheckoutDir: '_<YOURREPOSITORYNAME>'
+  cleanupScriptPath: '$(System.DefaultWorkingDirectory)/valueadd/CleanupAIBstorage.ps1'
+
+  # ── Identity & Gallery ────────────────────────────────────────────────────
+  managedIdentityName: '<YOURMANAGEDIDENTITY>'
+  galleryName: '<YOURGALLERYNAME>'
+  imageDefinitionName: '<YOURIMAGEDEFINITION>'
+
+  # ── Source Image ──────────────────────────────────────────────────────────
+  baseImagePublisher: 'microsoftwindowsdesktop'
+  baseImageOffer: 'office-365'
+  baseImageSku: 'win11-25h2-avd-m365'
+
+  # ── Derived (no changes needed) ───────────────────────────────────────────
+  managedIdentity: '/subscriptions/$(subscriptionId)/resourceGroups/$(resourceGroup)/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$(managedIdentityName)'
+  baseImage: '$(baseImagePublisher):$(baseImageOffer):$(baseImageSku)'
+  galleryImageId: '/subscriptions/$(subscriptionId)/resourceGroups/$(resourceGroup)/providers/Microsoft.Compute/galleries/$(galleryName)/images/$(imageDefinitionName)'
+  targetRegions: 'westeurope,northeurope'
+  vmSize: 'Standard_D4_v5'
+  storageAccountName: '<YOURSTORAGEACCOUNT>'
+  buildTimeout: 150
+
+  # ── AIB Customizer ────────────────────────────────────────────────────────
+  aibInternalScriptBasePath: 'C:\BuildArtifacts\$(aibCheckoutDir)\customizer'
+  aibPackagePath: '$(System.DefaultWorkingDirectory)'
+
+# =============================================================================
+# PIPELINE STEPS
+# =============================================================================
+steps:
+
+# ── 1. Checkout repository ──────────────────────────────────────────────────
+- checkout: aib_sources
+  path: _<YOURREPOSITORYNAME>
+
+# ── 2. Inspect checkout contents ────────────────────────────────────────────
+- task: PowerShell@2
+  displayName: 'Inspect Checkout Contents'
+  inputs:
+    targetType: inline
+    script: |
+      Write-Host "=== Workspace contents (2 levels deep) ==="
+      Get-ChildItem -Path "$(System.DefaultWorkingDirectory)" -Recurse -Depth 2 |
+        Select-Object FullName, Mode, LastWriteTime | Format-Table -AutoSize
+
+# ── 3. Fetch secrets from Key Vault ─────────────────────────────────────────
+- task: AzureKeyVault@2
+  displayName: 'Fetch Secrets from Key Vault'
+  inputs:
+    azureSubscription: $(azureSubscriptionServiceConnection)
+    KeyVaultName: $(keyVaultName)
+    SecretsFilter: '<YOURSTORAGEACCOUNT>'
+    RunAsPreJob: true
+
+# ── 4. Build image with Azure Image Builder Task v2 ─────────────────────────
+- task: AzureImageBuilderTaskV2@2
+  displayName: 'Build Image (AIB Task v2)'
+  inputs:
+    # ── Identity ──
+    managedIdentity: $(managedIdentity)
+    ibSubscription: $(azureSubscriptionServiceConnection)
+    ibAzureResourceGroup: $(resourceGroup)
+    ibLocation: $(location)
+
+    # ── Source ──
+    imageSource: 'marketplace'
+    baseImage: $(baseImage)
+
+    # ── Customize ──
+    provisioner: 'powershell'
+    windowsUpdateProvisioner: true
+    runElevated: true
+    packagePath: $(aibPackagePath)
+    storageAccountName: $(storageAccountName)
+    inlineScript: |
+      Write-Host "*** AVD AIB CUSTOMIZER PHASE : Checking for artifacts...***"
+      Get-ChildItem -Path "C:\BuildArtifacts" -Recurse | ForEach-Object { Write-Host $_.FullName }
+
+      $ScriptBaseFolder = "$(aibInternalScriptBasePath)"
+
+      # 1. DisableAutoUpdates.ps1
+      Write-Host "*** AVD AIB CUSTOMIZER PHASE : Executing DisableAutoUpdates.ps1... ***"
+      & "$ScriptBaseFolder\DisableAutoUpdates.ps1" -Verbose
+
+      # 2. UpdateWinGet.ps1
+      Write-Host "*** AVD AIB CUSTOMIZER PHASE : Executing UpdateWinGet.ps1...***"
+      $myAppList = @(
+            "7zip.7zip",
+            "Notepad++.Notepad++",
+            "Adobe.Acrobat.Reader.64-bit",
+            "Microsoft.RemoteHelp",
+            "Google.Chrome",
+            "Mozilla.Firefox",
+            "DuongDieuPhap.ImageGlass",
+            "Microsoft.PowerToys",
+            "geeksoftwareGmbH.PDF24Creator",
+            "Microsoft.VisualStudioCode",
+            "Git.Git",
+            "WinSCP.WinSCP",
+            "PuTTY.PuTTY",
+            "Microsoft.Sysinternals.Suite"
+        )
+      Write-Host "*** AVD AIB CUSTOMIZER PHASE : Running Winget installation for $($myAppList.Count) apps...***"
+      & "$ScriptBaseFolder\UpdateWinGet.ps1" -AppIds $myAppList -Verbose
+
+      # 3. installLanguagePacks.ps1
+      Write-Host "*** AVD AIB CUSTOMIZER PHASE : Executing installLanguagePacks.ps1...***"
+      #& "$ScriptBaseFolder\installLanguagePacks.ps1" -LanguageList "German (Germany)" -Verbose
+
+      # 4. TimezoneRedirection.ps1
+      Write-Host "*** AVD AIB CUSTOMIZER PHASE : Executing TimezoneRedirection.ps1...***"
+      & "$ScriptBaseFolder\TimezoneRedirection.ps1" -Verbose
+
+      # 5. Remove-AppxPackages.ps1
+      Write-Host "*** AVD AIB CUSTOMIZER PHASE : Executing Remove-AppxPackages.ps1... ***"
+      $packagesToRemove = @(
+          "Clipchamp.Clipchamp",
+          "Microsoft.BingNews",
+          "Microsoft.BingSearch",
+          "Microsoft.BingWeather",
+          "Microsoft.GamingApp",
+          "Microsoft.GetHelp",
+          "Microsoft.MicrosoftSolitaireCollection",
+          "Microsoft.Windows.DevHome",
+          "Microsoft.WindowsSoundRecorder",
+          "Microsoft.Xbox.TCUI",
+          "Microsoft.XboxGamingOverlay",
+          "Microsoft.XboxIdentityProvider",
+          "Microsoft.XboxSpeechToTextOverlay",
+          "Microsoft.YourPhone",
+          "Microsoft.ZuneMusic",
+          "MicrosoftWindows.CrossDevice"
+      )
+      & "$ScriptBaseFolder\RemoveAppxPackages.ps1" -AppxPackages $packagesToRemove -Verbose
+
+      # 6. WindowsOptimization.ps1
+      $specificOptimizations = @(
+          "ScheduledTasks",
+          "DefaultUserSettings",
+          "Autologgers",
+          "Services",
+          "NetworkOptimizations",
+          "LGPO",
+          "DiskCleanup",
+          "Edge"
+      )
+      Write-Host "*** AVD AIB CUSTOMIZER PHASE : Executing WindowsOptimization.ps1 with specific optimizations...***"
+      & "$ScriptBaseFolder\WindowsOptimization.ps1" -Optimizations $specificOptimizations -Verbose
+
+      # 7. AdminSysPrep.ps1
+      Write-Host "*** AVD AIB CUSTOMIZER PHASE : Executing AdminSysPrep.ps1...***"
+      & "$ScriptBaseFolder\AdminSysPrep.ps1" -Verbose
+
+      # 8. ProvisionWinGet.ps1
+      Write-Host "*** AVD AIB CUSTOMIZER PHASE : Executing ProvisionWinGet.ps1...***"
+      & "$ScriptBaseFolder\UpdateWinGet.ps1" -SkipApps -SkipUserRegistration -Verbose
+
+      # 9. ResetAutoUpdateSettings.ps1
+      Write-Host "*** AVD AIB CUSTOMIZER PHASE : Executing ResetAutoUpdateSettings.ps1...***"
+      & "$ScriptBaseFolder\ResetAutoUpdateSettings.ps1" -Verbose
+
+      # 10. RemoveUserApps.ps1
+      Write-Host "*** AVD AIB CUSTOMIZER PHASE : Executing RemoveUserApps.ps1...***"
+      & "$ScriptBaseFolder\RemoveUserApps.ps1" -Verbose
+
+      Write-Host "*** AVD AIB CUSTOMIZER PHASE : All scripts executed.***"
+      Write-Host "*** AVD AIB CUSTOMIZER PHASE : Customization script finished.***"
+
+    # ── Distribute (Azure Compute Gallery) ──
+    distributeType: 'gallery'
+    galleryImageId: $(galleryImageId)
+    targetRegions: $(targetRegions)
+    distributeStorageAccountType: 'Standard_LRS'
+    distributeVersioningScheme: 'Latest'
+    excludeFromLatest: false
+
+    # ── VM Profile ──
+    vmSize: $(vmSize)
+    buildTimeoutInMinutes: $(buildTimeout)
+    optimizeVmBoot: true
+
+    # ── Error Handling ──
+    errorHandlingOnCustomizerError: 'abort'
+    errorHandlingOnValidationError: 'abort'
+
+# ── 5. Cleanup AIB storage artifacts ────────────────────────────────────────
+- task: AzurePowerShell@5
+  displayName: 'Cleanup AIB Storage Artifacts'
+  condition: always()
+  inputs:
+    azureSubscription: $(azureSubscriptionServiceConnection)
+    ScriptType: 'FilePath'
+    ScriptPath: $(cleanupScriptPath)
+    ScriptArguments: '-StorageAccountName $(storageAccountName) -StorageAccountKey $(<YOURSTORAGEACCOUNT>)'
+    azurePowerShellVersion: 'LatestVersion'

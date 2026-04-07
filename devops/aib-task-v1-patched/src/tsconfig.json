@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "lib": ["ES2022"],
+    "module": "commonjs",
+    "target": "ES2022",
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "outDir": "./",
+    "rootDir": "./",
+    "typeRoots": ["./node_modules/@types"],
+    "types": ["node"]
+  },
+  "exclude": ["node_modules"]
+}

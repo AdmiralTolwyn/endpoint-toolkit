@@ -1,0 +1,46 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Editor / IDE
+.vscode/
+*.swp
+*.swo
+*~
+.idea/
+
+# OS metadata
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# PowerShell temp / user state
+*.log
+user_prefs.json
+achievements.json
+streak.json
+debug.log
+_autosave.json
+comparison_history.json
+
+# Sensitive data
+*_baseline_*.json
+*_patched.json
+*.gpresult.html
+
+# Build artifacts
+*.zip
+*.nupkg
+*.bak
+*.bak2
+*.vsix
+
+# Node
+node_modules/
+
+# Runtime data / backups
+backups/
+saved_logs/
+reports/
+build_history.json

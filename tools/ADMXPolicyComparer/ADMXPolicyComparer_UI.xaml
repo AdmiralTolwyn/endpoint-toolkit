@@ -1,0 +1,2445 @@
+<Window
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Title="ADMX Policy Comparer"
+    Width="1440" Height="920"
+    MinWidth="1060" MinHeight="720"
+    WindowStartupLocation="CenterScreen"
+    WindowState="Maximized"
+    WindowStyle="None"
+    AllowsTransparency="True"
+    Background="Transparent"
+    FontFamily="Segoe UI Variable Display, Segoe UI, sans-serif"
+    RenderOptions.BitmapScalingMode="HighQuality"
+    TextOptions.TextFormattingMode="Display"
+    TextOptions.TextRenderingMode="ClearType"
+    UseLayoutRounding="True"
+    SnapsToDevicePixels="True">
+
+    <WindowChrome.WindowChrome>
+        <WindowChrome CaptionHeight="0" ResizeBorderThickness="6" GlassFrameThickness="0" CornerRadius="0"/>
+    </WindowChrome.WindowChrome>
+
+    <Window.Resources>
+
+        <!-- THEME BRUSHES (Dark default - swapped at runtime by PS1) -->
+        <SolidColorBrush x:Key="ThemeAppBg"            Color="#FF111113"/>
+        <SolidColorBrush x:Key="ThemePanelBg"          Color="#FF18181B"/>
+        <SolidColorBrush x:Key="ThemeCardBg"           Color="#FF1E1E1E"/>
+        <SolidColorBrush x:Key="ThemeInputBg"          Color="#FF141414"/>
+        <SolidColorBrush x:Key="ThemeDeepBg"           Color="#FF0D0D0D"/>
+        <SolidColorBrush x:Key="ThemeAccent"           Color="#FF0078D4"/>
+        <SolidColorBrush x:Key="ThemeAccentHover"      Color="#FF1A8AD4"/>
+        <SolidColorBrush x:Key="ThemeAccentLight"      Color="#FF60CDFF"/>
+        <SolidColorBrush x:Key="ThemeGreenAccent"      Color="#FF00C853"/>
+        <SolidColorBrush x:Key="ThemeTextPrimary"      Color="#FFFFFFFF"/>
+        <SolidColorBrush x:Key="ThemeTextBody"         Color="#FFE0E0E0"/>
+        <SolidColorBrush x:Key="ThemeTextSecondary"    Color="#FFA1A1AA"/>
+        <SolidColorBrush x:Key="ThemeTextMuted"        Color="#FF8B8B93"/>
+        <SolidColorBrush x:Key="ThemeTextDim"          Color="#FF7A7A84"/>
+        <SolidColorBrush x:Key="ThemeHoverBg"          Color="#FF27272B"/>
+        <SolidColorBrush x:Key="ThemeSelectedBg"       Color="#FF2A2A2A"/>
+        <SolidColorBrush x:Key="ThemePressedBg"        Color="#FF1A1A1A"/>
+        <SolidColorBrush x:Key="ThemeError"            Color="#FFFF5000"/>
+        <SolidColorBrush x:Key="ThemeWarning"          Color="#FFF59E0B"/>
+        <SolidColorBrush x:Key="ThemeSuccess"          Color="#FF00C853"/>
+        <SolidColorBrush x:Key="ThemeBorder"           Color="#19FFFFFF"/>
+        <SolidColorBrush x:Key="ThemeBorderCard"       Color="#19FFFFFF"/>
+        <SolidColorBrush x:Key="ThemeBorderElevated"   Color="#FF333333"/>
+        <SolidColorBrush x:Key="ThemeScrollTrack"      Color="#08FFFFFF"/>
+        <SolidColorBrush x:Key="ThemeScrollThumb"      Color="#40FFFFFF"/>
+        <SolidColorBrush x:Key="ThemeOutputBg"         Color="#FF0F0F11"/>
+        <SolidColorBrush x:Key="ThemeBorderSubtle"     Color="#19FFFFFF"/>
+
+        <!-- Status colors (swapped for light/dark by PS1) -->
+        <SolidColorBrush x:Key="StatusAdded"            Color="#FF00C853"/>
+        <SolidColorBrush x:Key="StatusRemoved"          Color="#FFFF5000"/>
+        <SolidColorBrush x:Key="StatusModified"         Color="#FFF59E0B"/>
+        <SolidColorBrush x:Key="StatusFileAdded"        Color="#FF00E676"/>
+        <SolidColorBrush x:Key="StatusFileRemoved"      Color="#FFFF6E40"/>
+
+        <!-- Dot-grid background brush (WinGet MM style) -->
+        <DrawingBrush x:Key="DotGridBrush" TileMode="Tile" Viewport="0,0,44,44" ViewportUnits="Absolute"
+                      Viewbox="0,0,44,44" ViewboxUnits="Absolute">
+            <DrawingBrush.Drawing>
+                <GeometryDrawing>
+                    <GeometryDrawing.Brush>
+                        <SolidColorBrush Color="#1EFFFFFF"/>
+                    </GeometryDrawing.Brush>
+                    <GeometryDrawing.Geometry>
+                        <EllipseGeometry Center="22,22" RadiusX="1.3" RadiusY="1.3"/>
+                    </GeometryDrawing.Geometry>
+                </GeometryDrawing>
+            </DrawingBrush.Drawing>
+        </DrawingBrush>
+
+        <!-- Effects -->
+        <DropShadowEffect x:Key="AccentGlow"  Color="#0078D4" BlurRadius="16" ShadowDepth="0" Opacity="0.35"/>
+        <DropShadowEffect x:Key="CardShadow"  Color="Black"   BlurRadius="8"  ShadowDepth="2" Opacity="0.2"/>
+        <DropShadowEffect x:Key="PopupShadow" Color="Black"   BlurRadius="16" ShadowDepth="4" Opacity="0.4"/>
+
+        <!-- SCROLLBAR (Minimal 10px, rounded, themed - WinGet MM style) -->
+        <Style TargetType="{x:Type ScrollBar}">
+            <Setter Property="Stylus.IsFlicksEnabled" Value="False"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Width" Value="10"/>
+            <Setter Property="MinWidth" Value="10"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type ScrollBar}">
+                        <Grid x:Name="GridRoot" Background="{DynamicResource ThemeScrollTrack}">
+                            <Track x:Name="PART_Track" IsDirectionReversed="True" Focusable="False">
+                                <Track.DecreaseRepeatButton>
+                                    <RepeatButton Command="ScrollBar.PageUpCommand" Opacity="0" Focusable="False"/>
+                                </Track.DecreaseRepeatButton>
+                                <Track.Thumb>
+                                    <Thumb>
+                                        <Thumb.Template>
+                                            <ControlTemplate TargetType="{x:Type Thumb}">
+                                                <Border x:Name="ThumbBorder" Background="{DynamicResource ThemeScrollThumb}"
+                                                        CornerRadius="4" MinHeight="40" Margin="1,0"/>
+                                                <ControlTemplate.Triggers>
+                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                        <Setter TargetName="ThumbBorder" Property="Background"
+                                                                Value="{DynamicResource ThemeAccentLight}"/>
+                                                    </Trigger>
+                                                    <Trigger Property="IsDragging" Value="True">
+                                                        <Setter TargetName="ThumbBorder" Property="Background"
+                                                                Value="{DynamicResource ThemeTextPrimary}"/>
+                                                    </Trigger>
+                                                </ControlTemplate.Triggers>
+                                            </ControlTemplate>
+                                        </Thumb.Template>
+                                    </Thumb>
+                                </Track.Thumb>
+                                <Track.IncreaseRepeatButton>
+                                    <RepeatButton Command="ScrollBar.PageDownCommand" Opacity="0" Focusable="False"/>
+                                </Track.IncreaseRepeatButton>
+                            </Track>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="Orientation" Value="Horizontal">
+                                <Setter TargetName="GridRoot" Property="Height" Value="10"/>
+                                <Setter Property="Width" Value="Auto"/>
+                                <Setter Property="MinWidth" Value="0"/>
+                                <Setter Property="Height" Value="10"/>
+                                <Setter Property="MinHeight" Value="10"/>
+                                <Setter TargetName="PART_Track" Property="IsDirectionReversed" Value="False"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- ToolTip (WinUI 3: rounded corners + shadow) -->
+        <Style TargetType="ToolTip">
+            <Setter Property="Background"  Value="{DynamicResource ThemePanelBg}"/>
+            <Setter Property="Foreground"  Value="{DynamicResource ThemeTextBody}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource ThemeBorderElevated}"/>
+            <Setter Property="Padding"     Value="10,6"/>
+            <Setter Property="FontSize"    Value="12"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToolTip">
+                        <Border Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1"
+                                CornerRadius="8" Padding="{TemplateBinding Padding}">
+                            <Border.Effect>
+                                <DropShadowEffect Color="Black" BlurRadius="12" ShadowDepth="4" Opacity="0.35"/>
+                            </Border.Effect>
+                            <ContentPresenter/>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Nav Rail Button -->
+        <Style x:Key="NavRailButton" TargetType="Button">
+            <Setter Property="Width" Value="44"/>
+            <Setter Property="Height" Value="44"/>
+            <Setter Property="Margin" Value="2,2"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="{DynamicResource ThemeTextMuted}"/>
+            <Setter Property="FontFamily" Value="Segoe MDL2 Assets"/>
+            <Setter Property="FontSize" Value="18"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Grid>
+                            <Rectangle x:Name="ActiveBar" Width="3" HorizontalAlignment="Left"
+                                       Fill="{DynamicResource ThemeAccent}" RadiusX="1.5" RadiusY="1.5"
+                                       Visibility="Collapsed" Margin="0,8"/>
+                            <Border x:Name="BtnBg" Background="Transparent" CornerRadius="8" Margin="4,0">
+                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="BtnBg" Property="Background"
+                                        Value="{DynamicResource ThemeHoverBg}"/>
+                            </Trigger>
+                            <Trigger Property="Tag" Value="Active">
+                                <Setter TargetName="ActiveBar" Property="Visibility" Value="Visible"/>
+                                <Setter Property="Foreground" Value="{DynamicResource ThemeAccentLight}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Accent Button -->
+        <Style x:Key="AccentButton" TargetType="Button">
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="Padding" Value="24,11"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="BtnBd" CornerRadius="8" Padding="{TemplateBinding Padding}"
+                                Effect="{StaticResource AccentGlow}"
+                                RenderTransformOrigin="0.5,0.5">
+                            <Border.RenderTransform>
+                                <ScaleTransform ScaleX="1" ScaleY="1"/>
+                            </Border.RenderTransform>
+                            <Border.Background>
+                                <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                                    <GradientStop Color="#FF0078D4" Offset="0.0"/>
+                                    <GradientStop Color="#FF005A9E" Offset="1.0"/>
+                                </LinearGradientBrush>
+                            </Border.Background>
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="BtnBd" Property="Background">
+                                    <Setter.Value>
+                                        <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                                            <GradientStop Color="#FF1A8AD4" Offset="0.0"/>
+                                            <GradientStop Color="#FF0078D4" Offset="1.0"/>
+                                        </LinearGradientBrush>
+                                    </Setter.Value>
+                                </Setter>
+                                <Setter TargetName="BtnBd" Property="Effect">
+                                    <Setter.Value>
+                                        <DropShadowEffect Color="#0078D4" Direction="270"
+                                                          ShadowDepth="0" BlurRadius="18" Opacity="0.4"/>
+                                    </Setter.Value>
+                                </Setter>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="BtnBd" Property="Background">
+                                    <Setter.Value>
+                                        <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                                            <GradientStop Color="#FF005A9E" Offset="0.0"/>
+                                            <GradientStop Color="#FF004578" Offset="1.0"/>
+                                        </LinearGradientBrush>
+                                    </Setter.Value>
+                                </Setter>
+                                <Setter TargetName="BtnBd" Property="RenderTransform">
+                                    <Setter.Value>
+                                        <ScaleTransform ScaleX="0.97" ScaleY="0.97"/>
+                                    </Setter.Value>
+                                </Setter>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="BtnBd" Property="Opacity" Value="0.45"/>
+                                <Setter Property="Cursor" Value="Arrow"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Ghost Button -->
+        <Style x:Key="GhostButton" TargetType="Button">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="{DynamicResource ThemeTextBody}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource ThemeBorder}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="Padding" Value="16,8"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="BtnBd" Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="6" Padding="{TemplateBinding Padding}"
+                                RenderTransformOrigin="0.5,0.5">
+                            <Border.RenderTransform>
+                                <ScaleTransform ScaleX="1" ScaleY="1"/>
+                            </Border.RenderTransform>
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="BtnBd" Property="Background"
+                                        Value="{DynamicResource ThemeHoverBg}"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="BtnBd" Property="Background"
+                                        Value="{DynamicResource ThemePressedBg}"/>
+                                <Setter TargetName="BtnBd" Property="RenderTransform">
+                                    <Setter.Value>
+                                        <ScaleTransform ScaleX="0.97" ScaleY="0.97"/>
+                                    </Setter.Value>
+                                </Setter>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="BtnBd" Property="Opacity" Value="0.45"/>
+                                <Setter Property="Cursor" Value="Arrow"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Icon Button -->
+        <Style x:Key="IconButton" TargetType="Button">
+            <Setter Property="Width" Value="32"/>
+            <Setter Property="Height" Value="32"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="{DynamicResource ThemeTextMuted}"/>
+            <Setter Property="FontFamily" Value="Segoe MDL2 Assets"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="IbBd" Background="{TemplateBinding Background}" CornerRadius="6">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="IbBd" Property="Background"
+                                        Value="{DynamicResource ThemeHoverBg}"/>
+                                <Setter Property="Foreground"
+                                        Value="{DynamicResource ThemeTextBody}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Title Bar Close Button (Win11 chrome: red hover) -->
+        <Style x:Key="TitleBarCloseButton" TargetType="Button">
+            <Setter Property="Width" Value="32"/>
+            <Setter Property="Height" Value="32"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="{DynamicResource ThemeTextMuted}"/>
+            <Setter Property="FontFamily" Value="Segoe MDL2 Assets"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="CloseBd" Background="{TemplateBinding Background}" CornerRadius="6">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="CloseBd" Property="Background" Value="#E81123"/>
+                                <Setter Property="Foreground" Value="White"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="CloseBd" Property="Background" Value="#B90D1C"/>
+                                <Setter Property="Foreground" Value="White"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Danger Ghost Button -->
+        <Style x:Key="DangerGhostButton" TargetType="Button" BasedOn="{StaticResource GhostButton}">
+            <Setter Property="Foreground" Value="{DynamicResource ThemeError}"/>
+            <Setter Property="BorderBrush" Value="#33FF5000"/>
+        </Style>
+
+        <!-- Group-by-Policy accent toggle -->
+        <Style x:Key="GroupByPolicyToggle" TargetType="ToggleButton">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="{DynamicResource ThemeTextMuted}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource ThemeBorderCard}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="14,6"/>
+            <Setter Property="Margin" Value="0,0,6,0"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToggleButton">
+                        <Border x:Name="GpBd" Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="14" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="GpBd" Property="Background"
+                                        Value="{DynamicResource ThemeAccent}"/>
+                                <Setter TargetName="GpBd" Property="BorderBrush"
+                                        Value="{DynamicResource ThemeAccent}"/>
+                                <Setter Property="Foreground" Value="White"/>
+                                <Setter TargetName="GpBd" Property="Effect">
+                                    <Setter.Value>
+                                        <DropShadowEffect Color="#0078D4" BlurRadius="16" ShadowDepth="0" Opacity="0.45"/>
+                                    </Setter.Value>
+                                </Setter>
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="GpBd" Property="Background">
+                                    <Setter.Value>
+                                        <SolidColorBrush Color="#180078D4"/>
+                                    </Setter.Value>
+                                </Setter>
+                            </Trigger>
+                            <MultiTrigger>
+                                <MultiTrigger.Conditions>
+                                    <Condition Property="IsChecked" Value="True"/>
+                                    <Condition Property="IsMouseOver" Value="True"/>
+                                </MultiTrigger.Conditions>
+                                <Setter TargetName="GpBd" Property="Background"
+                                        Value="{DynamicResource ThemeAccentHover}"/>
+                                <Setter TargetName="GpBd" Property="Effect">
+                                    <Setter.Value>
+                                        <DropShadowEffect Color="#0078D4" BlurRadius="20" ShadowDepth="0" Opacity="0.55"/>
+                                    </Setter.Value>
+                                </Setter>
+                            </MultiTrigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Filter Pill (ToggleButton) -->
+        <Style x:Key="FilterPill" TargetType="ToggleButton">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="{DynamicResource ThemeTextSecondary}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource ThemeBorder}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="14,6"/>
+            <Setter Property="Margin" Value="0,0,6,0"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToggleButton">
+                        <Border x:Name="PillBd" Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="14" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="PillBd" Property="Background"
+                                        Value="{DynamicResource ThemeAccent}"/>
+                                <Setter TargetName="PillBd" Property="BorderBrush"
+                                        Value="{DynamicResource ThemeAccent}"/>
+                                <Setter Property="Foreground" Value="White"/>
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="PillBd" Property="Background"
+                                        Value="{DynamicResource ThemeHoverBg}"/>
+                            </Trigger>
+                            <MultiTrigger>
+                                <MultiTrigger.Conditions>
+                                    <Condition Property="IsChecked" Value="True"/>
+                                    <Condition Property="IsMouseOver" Value="True"/>
+                                </MultiTrigger.Conditions>
+                                <Setter TargetName="PillBd" Property="Background"
+                                        Value="{DynamicResource ThemeAccentHover}"/>
+                                <Setter TargetName="PillBd" Property="Effect">
+                                    <Setter.Value>
+                                        <DropShadowEffect Color="#0078D4" BlurRadius="12" ShadowDepth="0" Opacity="0.35"/>
+                                    </Setter.Value>
+                                </Setter>
+                            </MultiTrigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Dark TextBox (WinUI 3: bottom accent bar on focus) -->
+        <Style x:Key="DarkTextBox" TargetType="TextBox">
+            <Setter Property="Background" Value="{DynamicResource ThemeInputBg}"/>
+            <Setter Property="Foreground" Value="{DynamicResource ThemeTextBody}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource ThemeBorder}"/>
+            <Setter Property="CaretBrush" Value="{DynamicResource ThemeTextBody}"/>
+            <Setter Property="SelectionBrush" Value="{DynamicResource ThemeAccent}"/>
+            <Setter Property="Padding" Value="10,8"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TextBox">
+                        <Grid>
+                            <Border x:Name="TbBd" Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1"
+                                    CornerRadius="6">
+                                <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}"/>
+                            </Border>
+                            <Border x:Name="FocusBar" Height="2" VerticalAlignment="Bottom"
+                                    CornerRadius="0,0,6,6" Margin="2,0,2,0"
+                                    Background="Transparent"/>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsFocused" Value="True">
+                                <Setter TargetName="TbBd" Property="BorderBrush"
+                                        Value="{DynamicResource ThemeAccent}"/>
+                                <Setter TargetName="FocusBar" Property="Background"
+                                        Value="{DynamicResource ThemeAccent}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Dark ComboBox ToggleButton -->
+        <ControlTemplate x:Key="CbToggleBtn" TargetType="ToggleButton">
+            <Border x:Name="CbRoot" Background="{DynamicResource ThemeInputBg}"
+                    BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="1" CornerRadius="6"
+                    SnapsToDevicePixels="True">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition/>
+                        <ColumnDefinition Width="28"/>
+                    </Grid.ColumnDefinitions>
+                    <Border Grid.Column="1">
+                        <Path x:Name="CbArrow" Data="M0,0 L4,4 8,0"
+                              Stroke="{DynamicResource ThemeTextMuted}" StrokeThickness="1.5"
+                              HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                </Grid>
+            </Border>
+            <ControlTemplate.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter TargetName="CbRoot" Property="BorderBrush"
+                            Value="{DynamicResource ThemeAccent}"/>
+                </Trigger>
+                <Trigger Property="IsChecked" Value="True">
+                    <Setter TargetName="CbRoot" Property="BorderBrush"
+                            Value="{DynamicResource ThemeAccent}"/>
+                </Trigger>
+            </ControlTemplate.Triggers>
+        </ControlTemplate>
+
+        <!-- Dark ComboBox -->
+        <Style x:Key="DarkComboBox" TargetType="ComboBox">
+            <Setter Property="Foreground" Value="{DynamicResource ThemeTextBody}"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="Height" Value="36"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBox">
+                        <Grid>
+                            <ToggleButton x:Name="ToggleButton"
+                                          Template="{StaticResource CbToggleBtn}"
+                                          IsChecked="{Binding IsDropDownOpen, Mode=TwoWay,
+                                                      RelativeSource={RelativeSource TemplatedParent}}"
+                                          Focusable="False" ClickMode="Press"/>
+                            <ContentPresenter x:Name="ContentSite"
+                                              Content="{TemplateBinding SelectionBoxItem}"
+                                              ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                              ContentStringFormat="{TemplateBinding SelectionBoxItemStringFormat}"
+                                              HorizontalAlignment="Left" VerticalAlignment="Center"
+                                              Margin="12,0,30,0" IsHitTestVisible="False"/>
+                            <Popup x:Name="PART_Popup" Placement="Bottom"
+                                   IsOpen="{TemplateBinding IsDropDownOpen}"
+                                   AllowsTransparency="True" PopupAnimation="Fade">
+                                <Border Background="{DynamicResource ThemePanelBg}"
+                                        BorderBrush="{DynamicResource ThemeBorderElevated}" BorderThickness="1"
+                                        CornerRadius="6" Margin="0,4,0,0" Padding="4"
+                                        MinWidth="{TemplateBinding ActualWidth}" MaxHeight="320">
+                                    <Border.Effect>
+                                        <DropShadowEffect Color="Black" BlurRadius="16" ShadowDepth="4" Opacity="0.4"/>
+                                    </Border.Effect>
+                                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                        <StackPanel IsItemsHost="True"
+                                                    KeyboardNavigation.DirectionalNavigation="Contained"/>
+                                    </ScrollViewer>
+                                </Border>
+                            </Popup>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Dark ComboBoxItem -->
+        <Style x:Key="DarkComboBoxItem" TargetType="ComboBoxItem">
+            <Setter Property="Foreground" Value="{DynamicResource ThemeTextBody}"/>
+            <Setter Property="Padding" Value="10,7"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBoxItem">
+                        <Border x:Name="CiBd" Background="Transparent"
+                                Padding="{TemplateBinding Padding}" CornerRadius="4">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <ContentPresenter Grid.Column="0" VerticalAlignment="Center"/>
+                                <TextBlock x:Name="CiCheck" Grid.Column="1" Text="&#xE73E;"
+                                           FontFamily="Segoe MDL2 Assets" FontSize="11"
+                                           Foreground="{DynamicResource ThemeAccent}"
+                                           VerticalAlignment="Center" Margin="8,0,0,0"
+                                           Visibility="Collapsed"/>
+                            </Grid>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsHighlighted" Value="True">
+                                <Setter TargetName="CiBd" Property="Background"
+                                        Value="{DynamicResource ThemeHoverBg}"/>
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="CiBd" Property="Background"
+                                        Value="{DynamicResource ThemeSelectedBg}"/>
+                                <Setter TargetName="CiCheck" Property="Visibility" Value="Visible"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Toggle Switch (CheckBox) — Animated knob slide -->
+        <Style x:Key="ToggleSwitch" TargetType="CheckBox">
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Foreground" Value="{DynamicResource ThemeTextBody}"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="CheckBox">
+                        <StackPanel Orientation="Horizontal">
+                            <Grid Width="40" Height="20">
+                                <Border x:Name="Track" Background="{DynamicResource ThemeBorderElevated}"
+                                        CornerRadius="10"/>
+                                <Canvas Width="40" Height="20" ClipToBounds="True">
+                                    <Border x:Name="Knob" Width="16" Height="16" CornerRadius="8"
+                                            Background="White" Canvas.Top="2" Canvas.Left="2">
+                                        <Border.RenderTransform>
+                                            <TranslateTransform x:Name="KnobTranslate" X="0"/>
+                                        </Border.RenderTransform>
+                                    </Border>
+                                </Canvas>
+                            </Grid>
+                            <ContentPresenter Margin="10,0,0,0" VerticalAlignment="Center"
+                                              RecognizesAccessKey="True"/>
+                        </StackPanel>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Track" Property="Background"
+                                        Value="{DynamicResource ThemeAccent}"/>
+                                <Trigger.EnterActions>
+                                    <BeginStoryboard>
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="KnobTranslate"
+                                                             Storyboard.TargetProperty="X"
+                                                             To="20" Duration="0:0:0.15">
+                                                <DoubleAnimation.EasingFunction>
+                                                    <CubicEase EasingMode="EaseOut"/>
+                                                </DoubleAnimation.EasingFunction>
+                                            </DoubleAnimation>
+                                        </Storyboard>
+                                    </BeginStoryboard>
+                                </Trigger.EnterActions>
+                                <Trigger.ExitActions>
+                                    <BeginStoryboard>
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="KnobTranslate"
+                                                             Storyboard.TargetProperty="X"
+                                                             To="0" Duration="0:0:0.15">
+                                                <DoubleAnimation.EasingFunction>
+                                                    <CubicEase EasingMode="EaseOut"/>
+                                                </DoubleAnimation.EasingFunction>
+                                            </DoubleAnimation>
+                                        </Storyboard>
+                                    </BeginStoryboard>
+                                </Trigger.ExitActions>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Dark ListBoxItem (card with selection bar) -->
+        <Style x:Key="DarkListBoxItem" TargetType="ListBoxItem">
+            <Setter Property="Foreground" Value="{DynamicResource ThemeTextBody}"/>
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="Margin" Value="2,0,2,2"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ListBoxItem">
+                        <Border x:Name="LiBd" Background="Transparent"
+                                CornerRadius="6" SnapsToDevicePixels="True">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="3"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Rectangle x:Name="SelBar" Grid.Column="0" Fill="Transparent"
+                                           Width="3" RadiusX="1.5" RadiusY="1.5" HorizontalAlignment="Left"/>
+                                <Border Grid.Column="1" Padding="10,6,10,6">
+                                    <ContentPresenter/>
+                                </Border>
+                            </Grid>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="LiBd" Property="Background"
+                                        Value="{DynamicResource ThemeHoverBg}"/>
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="LiBd" Property="Background"
+                                        Value="{DynamicResource ThemeSelectedBg}"/>
+                                <Setter TargetName="SelBar" Property="Fill"
+                                        Value="{DynamicResource ThemeAccentLight}"/>
+                                <Setter TargetName="SelBar" Property="Effect">
+                                    <Setter.Value>
+                                        <DropShadowEffect Color="#60CDFF" BlurRadius="8" ShadowDepth="0" Opacity="0.6"/>
+                                    </Setter.Value>
+                                </Setter>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Dark ListBox -->
+        <Style x:Key="DarkListBox" TargetType="ListBox">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="ItemContainerStyle" Value="{StaticResource DarkListBoxItem}"/>
+        </Style>
+
+        <!-- DataGrid -->
+        <Style x:Key="DarkDataGrid" TargetType="DataGrid">
+            <Setter Property="Background" Value="{DynamicResource ThemeCardBg}"/>
+            <Setter Property="Foreground" Value="{DynamicResource ThemeTextBody}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource ThemeBorderCard}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="RowBackground" Value="Transparent"/>
+            <Setter Property="AlternatingRowBackground" Value="{DynamicResource ThemeDeepBg}"/>
+            <Setter Property="GridLinesVisibility" Value="Horizontal"/>
+            <Setter Property="HorizontalGridLinesBrush" Value="{DynamicResource ThemeBorder}"/>
+            <Setter Property="HeadersVisibility" Value="Column"/>
+            <Setter Property="SelectionMode" Value="Single"/>
+            <Setter Property="AutoGenerateColumns" Value="False"/>
+            <Setter Property="CanUserAddRows" Value="False"/>
+            <Setter Property="CanUserDeleteRows" Value="False"/>
+            <Setter Property="IsReadOnly" Value="True"/>
+            <Setter Property="FontSize" Value="12.5"/>
+            <Setter Property="VerticalScrollBarVisibility" Value="Auto"/>
+        </Style>
+
+        <Style x:Key="DarkColumnHeader" TargetType="DataGridColumnHeader">
+            <Setter Property="Background" Value="{DynamicResource ThemePanelBg}"/>
+            <Setter Property="Foreground" Value="{DynamicResource ThemeTextSecondary}"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="FontSize" Value="11.5"/>
+            <Setter Property="Padding" Value="10,8"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource ThemeBorder}"/>
+            <Setter Property="BorderThickness" Value="0,0,0,1"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="{DynamicResource ThemeHoverBg}"/>
+                    <Setter Property="Foreground" Value="{DynamicResource ThemeAccentLight}"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="ColorCodedRow" TargetType="DataGridRow">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="{DynamicResource ThemeTextBody}"/>
+            <Setter Property="BorderThickness" Value="3,0,0,0"/>
+            <Setter Property="BorderBrush" Value="Transparent"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="{DynamicResource ThemeHoverBg}"/>
+                </Trigger>
+                <Trigger Property="IsSelected" Value="True">
+                    <Setter Property="Background" Value="{DynamicResource ThemeSelectedBg}"/>
+                </Trigger>
+                <DataTrigger Binding="{Binding ChangeType}" Value="Added">
+                    <Setter Property="Background" Value="#1A00C853"/>
+                    <Setter Property="BorderBrush" Value="#FF00C853"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding ChangeType}" Value="Removed">
+                    <Setter Property="Background" Value="#1AFF5000"/>
+                    <Setter Property="BorderBrush" Value="#FFFF5000"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding ChangeType}" Value="Modified">
+                    <Setter Property="Background" Value="#1AF59E0B"/>
+                    <Setter Property="BorderBrush" Value="#FFF59E0B"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding ChangeType}" Value="File Added">
+                    <Setter Property="Background" Value="#3300C853"/>
+                    <Setter Property="BorderBrush" Value="#FF00E676"/>
+                    <Setter Property="FontWeight" Value="SemiBold"/>
+                    <Setter Property="FontStyle" Value="Italic"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding ChangeType}" Value="File Removed">
+                    <Setter Property="Background" Value="#33FF5000"/>
+                    <Setter Property="BorderBrush" Value="#FFFF6E40"/>
+                    <Setter Property="FontWeight" Value="SemiBold"/>
+                    <Setter Property="FontStyle" Value="Italic"/>
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="DarkDataGridCell" TargetType="DataGridCell">
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="4,4"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="DataGridCell">
+                        <Border Background="Transparent" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter VerticalAlignment="Center"/>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Minimal ScrollViewer -->
+        <Style x:Key="MinimalScrollViewer" TargetType="ScrollViewer">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ScrollViewer">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <ScrollContentPresenter Grid.Column="0" CanContentScroll="{TemplateBinding CanContentScroll}"/>
+                            <ScrollBar Grid.Column="1" x:Name="PART_VerticalScrollBar"
+                                       Orientation="Vertical"
+                                       Value="{TemplateBinding VerticalOffset}"
+                                       Maximum="{TemplateBinding ScrollableHeight}"
+                                       ViewportSize="{TemplateBinding ViewportHeight}"
+                                       Visibility="{TemplateBinding ComputedVerticalScrollBarVisibility}"
+                                       Width="10" Opacity="0.5"/>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+    </Window.Resources>
+    <!-- MAIN WINDOW BORDER -->
+    <Border x:Name="WindowBorder" Background="{DynamicResource ThemeAppBg}"
+            BorderBrush="{DynamicResource ThemeBorderCard}" BorderThickness="1" CornerRadius="8">
+        <Grid>
+          <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="32"/>   <!-- R0: Title Bar -->
+                <RowDefinition Height="Auto"/> <!-- R1: Shimmer Progress -->
+                <RowDefinition Height="*"/>    <!-- R2: Main Content -->
+                <RowDefinition Height="3"/>    <!-- R3: Bottom Splitter -->
+                <RowDefinition x:Name="BottomPanelRow" Height="0"/> <!-- R4: Debug Console -->
+                <RowDefinition Height="26"/>   <!-- R5: Status Bar -->
+            </Grid.RowDefinitions>
+
+            <!-- ROW 0: TITLE BAR (Accent separator glow) -->
+            <Border x:Name="TitleBar" Grid.Row="0" Background="{DynamicResource ThemePanelBg}"
+                    BorderThickness="0,0,0,1" CornerRadius="8,8,0,0">
+                <Border.BorderBrush>
+                    <SolidColorBrush Color="#0078D4" Opacity="0.3"/>
+                </Border.BorderBrush>
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <!-- Logo + Title + Inline Version -->
+                    <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0,0,0">
+                        <Border Width="20" Height="20" CornerRadius="4" Margin="0,0,10,0">
+                            <Border.Background>
+                                <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                                    <GradientStop Color="#FF0078D4" Offset="0.0"/>
+                                    <GradientStop Color="#FF60CDFF" Offset="1.0"/>
+                                </LinearGradientBrush>
+                            </Border.Background>
+                            <TextBlock Text="&#xE7F4;" FontFamily="Segoe MDL2 Assets" FontSize="10"
+                                       Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <TextBlock x:Name="TitleText" Text="ADMX Policy Comparer" FontSize="12"
+                                   FontWeight="SemiBold" Foreground="{DynamicResource ThemeTextSecondary}"
+                                   VerticalAlignment="Center"/>
+                        <TextBlock x:Name="VersionBadge" Text="v2.0.0" FontSize="10"
+                                   Foreground="{DynamicResource ThemeTextDim}"
+                                   VerticalAlignment="Center" Margin="8,0,0,0"/>
+                        <Border CornerRadius="4" Padding="6,1" Margin="10,0,0,0" VerticalAlignment="Center"
+                                BorderBrush="{DynamicResource ThemeWarning}" BorderThickness="1">
+                            <TextBlock Text="EXPERIMENTAL" FontSize="9" FontWeight="Bold" Foreground="{DynamicResource ThemeWarning}"/>
+                        </Border>
+                    </StackPanel>
+                    <!-- Spacer -->
+                    <Border Grid.Column="1"/>
+                    <!-- Help Button -->
+                    <Button x:Name="BtnHelp" Grid.Column="2" Style="{StaticResource IconButton}"
+                            Content="?" FontFamily="Segoe UI" FontSize="13" FontWeight="Bold"
+                            ToolTip="Help &amp; Keyboard Shortcuts (F1)" VerticalAlignment="Center"/>
+                    <!-- Theme Toggle Button -->
+                    <Button x:Name="BtnThemeToggle" Grid.Column="3" Style="{StaticResource IconButton}"
+                            Content="&#xE706;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="14"
+                            ToolTip="Toggle Theme" VerticalAlignment="Center"/>
+                    <!-- Window Controls -->
+                    <Border Grid.Column="4" Width="1" Height="16" Background="{DynamicResource ThemeBorder}"
+                            VerticalAlignment="Center" Margin="4,0,4,0"/>
+                    <StackPanel Grid.Column="5" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,6,0">
+                        <Button x:Name="BtnMinimize" Style="{StaticResource IconButton}"
+                                Content="&#xE921;" ToolTip="Minimize"/>
+                        <Button x:Name="BtnMaximize" Style="{StaticResource IconButton}" ToolTip="Maximize">
+                            <TextBlock x:Name="MaximizeIcon" Text="&#xE922;"
+                                       FontFamily="Segoe MDL2 Assets" FontSize="13"/>
+                        </Button>
+                        <Button x:Name="BtnClose" Style="{StaticResource TitleBarCloseButton}"
+                                Content="&#xE8BB;" ToolTip="Close"/>
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <!-- ROW 1: SHIMMER PROGRESS BAR -->
+            <Grid x:Name="pnlGlobalProgress" Grid.Row="1" Visibility="Collapsed" ClipToBounds="True">
+                <Border Height="22" Background="{DynamicResource ThemeDeepBg}" CornerRadius="0"/>
+                <ProgressBar x:Name="prgGlobal" Height="22" Minimum="0" Maximum="100" Value="0"
+                             Background="Transparent" BorderThickness="0" Visibility="Collapsed">
+                    <ProgressBar.Foreground>
+                        <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
+                            <GradientStop Color="#0078D4" Offset="0.0"/>
+                            <GradientStop Color="#60CDFF" Offset="0.5"/>
+                            <GradientStop Color="#0078D4" Offset="1.0"/>
+                        </LinearGradientBrush>
+                    </ProgressBar.Foreground>
+                </ProgressBar>
+                <Border x:Name="brdGlobalShimmer" Height="22" CornerRadius="0">
+                    <Border.Background>
+                        <LinearGradientBrush StartPoint="0,0" EndPoint="1,0"
+                                             MappingMode="RelativeToBoundingBox" SpreadMethod="Pad">
+                            <GradientStop Color="Transparent"  Offset="0.0"/>
+                            <GradientStop Color="#0078D4"      Offset="0.15"/>
+                            <GradientStop Color="#60CDFF"      Offset="0.35"/>
+                            <GradientStop Color="#0078D4"      Offset="0.55"/>
+                            <GradientStop Color="Transparent"  Offset="0.7"/>
+                        </LinearGradientBrush>
+                    </Border.Background>
+                    <Border.RenderTransform>
+                        <TranslateTransform x:Name="shimmerTranslate" X="-400"/>
+                    </Border.RenderTransform>
+                    <Border.Triggers>
+                        <EventTrigger RoutedEvent="Border.Loaded">
+                            <BeginStoryboard>
+                                <Storyboard RepeatBehavior="Forever">
+                                    <DoubleAnimation Storyboard.TargetName="shimmerTranslate"
+                                                     Storyboard.TargetProperty="X"
+                                                     From="-500" To="1200"
+                                                     Duration="0:0:2.0" AutoReverse="False"/>
+                                </Storyboard>
+                            </BeginStoryboard>
+                        </EventTrigger>
+                    </Border.Triggers>
+                </Border>
+                <Border Height="22" BorderThickness="0,1,0,1"
+                        BorderBrush="{DynamicResource ThemeBorder}" IsHitTestVisible="False"/>
+                <TextBlock x:Name="lblGlobalProgress" Text="" FontSize="11" FontWeight="SemiBold"
+                           Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center">
+                    <TextBlock.Effect>
+                        <DropShadowEffect ShadowDepth="0" BlurRadius="4" Color="Black" Opacity="0.6"/>
+                    </TextBlock.Effect>
+                </TextBlock>
+            </Grid>
+
+            <!-- ROW 2: MAIN CONTENT -->
+            <Grid Grid.Row="2">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="48"/>
+                    <ColumnDefinition x:Name="SidebarColumn" Width="270"/>
+                    <ColumnDefinition Width="4"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <!-- ICON RAIL -->
+                <Border Grid.Column="0" Background="{DynamicResource ThemePanelBg}"
+                        BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="0,0,1,0">
+                    <DockPanel LastChildFill="False">
+                        <StackPanel DockPanel.Dock="Top" Margin="0,8,0,0">
+                            <Button x:Name="NavDashboard" Style="{StaticResource NavRailButton}"
+                                    Content="&#xE80F;" Tag="Active" ToolTip="Dashboard — Overview, stats and recent comparisons" ToolTipService.InitialShowDelay="200" ToolTipService.Placement="Right"/>
+                            <Button x:Name="NavCompare" Style="{StaticResource NavRailButton}"
+                                    Content="&#xE8AB;" ToolTip="Compare — Select versions and run comparisons (F5)" ToolTipService.InitialShowDelay="200" ToolTipService.Placement="Right"/>
+                            <Button x:Name="NavResults" Style="{StaticResource NavRailButton}"
+                                    Content="&#xE8A5;" ToolTip="Results — Browse, filter and export comparison data" ToolTipService.InitialShowDelay="200" ToolTipService.Placement="Right"/>
+                            <Button x:Name="NavSettings" Style="{StaticResource NavRailButton}"
+                                    Content="&#xE713;" ToolTip="Settings — Appearance, paths and achievements" ToolTipService.InitialShowDelay="200" ToolTipService.Placement="Right"/>
+                        </StackPanel>
+                        <StackPanel DockPanel.Dock="Bottom" Margin="0,0,0,6">
+                            <Button x:Name="NavToggleSidebar" Style="{StaticResource NavRailButton}"
+                                    Content="&#xE89F;" ToolTip="Toggle Sidebar (Ctrl+B)" ToolTipService.InitialShowDelay="200" ToolTipService.Placement="Right"/>
+                            <Button x:Name="NavToggleConsole" Style="{StaticResource NavRailButton}"
+                                    Content="&#xE756;" ToolTip="Toggle Console — Show/hide debug output (Ctrl+`)" ToolTipService.InitialShowDelay="200" ToolTipService.Placement="Right"/>
+                        </StackPanel>
+                    </DockPanel>
+                </Border>
+                <!-- LEFT SIDEBAR -->
+                <Border x:Name="LeftSidebarPanel" Grid.Column="1"
+                        Background="{DynamicResource ThemePanelBg}"
+                        BorderBrush="{DynamicResource ThemeBorder}" BorderThickness="0,0,1,0">
+                    <Grid>
+                        <!-- Sidebar: Dashboard -->
+                        <ScrollViewer x:Name="SidebarDashboard" VerticalScrollBarVisibility="Auto" Visibility="Visible">
+                            <StackPanel Margin="16,16">
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,0"><Border Width="3" Height="12" Background="{DynamicResource ThemeAccent}" CornerRadius="1" VerticalAlignment="Center" Margin="0,0,8,0"/><TextBlock Text="OVERVIEW" FontSize="10" FontWeight="Bold"
+                                           Foreground="{DynamicResource ThemeTextMuted}"/></StackPanel>
+                                <TextBlock x:Name="DashSidebarSummary" Text="No comparisons yet"
+                                           FontSize="12" Foreground="{DynamicResource ThemeTextSecondary}"
+                                           TextWrapping="Wrap" Margin="0,0,0,20"/>
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,8"><Border Width="3" Height="12" Background="{DynamicResource ThemeAccent}" CornerRadius="1" VerticalAlignment="Center" Margin="0,0,8,0"/><TextBlock Text="ACHIEVEMENTS" FontSize="10" FontWeight="Bold"
+                                           Foreground="{DynamicResource ThemeTextMuted}"/></StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                    <TextBlock x:Name="DashAchievementCount" Text="0/24"
+                                               FontSize="12" Foreground="{DynamicResource ThemeTextSecondary}"/>
+                                    <TextBlock Text=" unlocked" FontSize="12"
+                                               Foreground="{DynamicResource ThemeTextMuted}"/>
+                                </StackPanel>
+                                <WrapPanel x:Name="DashAchievementWrap" Margin="0,0,0,8"/>
+                            </StackPanel>
+                        </ScrollViewer>
+
+                        <!-- Sidebar: Compare -->
+                        <ScrollViewer x:Name="SidebarCompare" VerticalScrollBarVisibility="Auto" Visibility="Collapsed">
+                            <StackPanel Margin="16,16">
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,12"><Border Width="3" Height="12" Background="{DynamicResource ThemeAccent}" CornerRadius="1" VerticalAlignment="Center" Margin="0,0,8,0"/><TextBlock Text="CONFIGURATION" FontSize="10" FontWeight="Bold"
+                                           Foreground="{DynamicResource ThemeTextMuted}"/></StackPanel>
+                                <TextBlock Text="Base Path" FontSize="11"
+                                           Foreground="{DynamicResource ThemeTextSecondary}" Margin="0,0,0,4"/>
+                                <TextBox x:Name="BasePathText" Style="{StaticResource DarkTextBox}"
+                                         Text="C:\Program Files (x86)\Microsoft Group Policy" FontSize="11"
+                                         TextWrapping="Wrap" Margin="0,0,0,6"/>
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
+                                    <Button x:Name="BtnBrowseBasePath" Style="{StaticResource GhostButton}"
+                                            Content="Browse" Padding="10,5" FontSize="11" Margin="0,0,6,0"
+                                            ToolTip="Browse for GP templates root directory"/>
+                                    <Button x:Name="BtnScanVersions" Style="{StaticResource GhostButton}"
+                                            ToolTip="Scan the base path for available GP template versions"
+                                            Padding="10,5" FontSize="11">
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="&#xE72C;" FontFamily="Segoe MDL2 Assets" FontSize="11"
+                                                       Margin="0,0,6,0" VerticalAlignment="Center"/>
+                                            <TextBlock Text="Scan"/>
+                                        </StackPanel>
+                                    </Button>
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,8"><Border Width="3" Height="12" Background="{DynamicResource ThemeAccent}" CornerRadius="1" VerticalAlignment="Center" Margin="0,0,8,0"/><TextBlock Text="AVAILABLE VERSIONS" FontSize="10" FontWeight="Bold"
+                                           Foreground="{DynamicResource ThemeTextMuted}"/></StackPanel>
+                                <TextBlock x:Name="VersionCountText" Text="0 versions found"
+                                           FontSize="11" Foreground="{DynamicResource ThemeTextMuted}" Margin="0,0,0,6"/>
+                                <ListBox x:Name="AvailableVersionsList" Style="{StaticResource DarkListBox}"
+                                         MaxHeight="280"/>
+                            </StackPanel>
+                        </ScrollViewer>
+
+                        <!-- Sidebar: Results -->
+                        <ScrollViewer x:Name="SidebarResults" VerticalScrollBarVisibility="Auto" Visibility="Collapsed">
+                            <StackPanel Margin="16,16">
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,8"><Border Width="3" Height="12" Background="{DynamicResource ThemeAccent}" CornerRadius="1" VerticalAlignment="Center" Margin="0,0,8,0"/><TextBlock Text="FILES CHANGED" FontSize="10" FontWeight="Bold"
+                                           Foreground="{DynamicResource ThemeTextMuted}"/></StackPanel>
+                                <TextBlock x:Name="FileFilterAllBtn" Text="Show All Files"
+                                           FontSize="12" Foreground="{DynamicResource ThemeAccentLight}"
+                                           Cursor="Hand" Margin="0,0,0,8"/>
+                                <ListBox x:Name="FileFilterList" Style="{StaticResource DarkListBox}" MaxHeight="500"/>
+                                <StackPanel Orientation="Horizontal" Margin="0,20,0,8"><Border Width="3" Height="12" Background="{DynamicResource ThemeAccent}" CornerRadius="1" VerticalAlignment="Center" Margin="0,0,8,0"/><TextBlock Text="SUMMARY" FontSize="10" FontWeight="Bold"
+                                           Foreground="{DynamicResource ThemeTextMuted}"/></StackPanel>
+                                <StackPanel x:Name="ResultsSidebarSummary"/>
+                            </StackPanel>
+                        </ScrollViewer>
+
+                        <!-- Sidebar: Settings -->
+                        <ScrollViewer x:Name="SidebarSettings" VerticalScrollBarVisibility="Auto" Visibility="Collapsed">
+                            <StackPanel Margin="16,16">
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,12"><Border Width="3" Height="12" Background="{DynamicResource ThemeAccent}" CornerRadius="1" VerticalAlignment="Center" Margin="0,0,8,0"/><TextBlock Text="ABOUT" FontSize="10" FontWeight="Bold"
+                                           Foreground="{DynamicResource ThemeTextMuted}"/></StackPanel>
+                                <TextBlock Text="ADMX Policy Comparer" FontSize="13"
+                                           Foreground="{DynamicResource ThemeTextBody}" FontWeight="SemiBold"/>
+                                <TextBlock x:Name="AboutVersionText" Text="Version 1.0.0" FontSize="11"
+                                           Foreground="{DynamicResource ThemeTextSecondary}" Margin="0,2,0,8"/>
+                                <TextBlock Text="Compare Group Policy template versions with style. Find added, removed, and modified policy strings across ADML files."
+                                           FontSize="11" Foreground="{DynamicResource ThemeTextMuted}"
+                                           TextWrapping="Wrap" Margin="0,0,0,16"/>
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,8"><Border Width="3" Height="12" Background="{DynamicResource ThemeAccent}" CornerRadius="1" VerticalAlignment="Center" Margin="0,0,8,0"/><TextBlock Text="KEYBOARD SHORTCUTS" FontSize="10" FontWeight="Bold"
+                                           Foreground="{DynamicResource ThemeTextMuted}"/></StackPanel>
+                                <TextBlock FontSize="11" Foreground="{DynamicResource ThemeTextMuted}"
+                                           TextWrapping="Wrap" LineHeight="22">
+                                    <Run FontWeight="SemiBold" Foreground="{DynamicResource ThemeTextSecondary}" Text="F5"/>
+                                    <Run Text=" Run Comparison"/>
+                                    <LineBreak/>
+                                    <Run FontWeight="SemiBold" Foreground="{DynamicResource ThemeTextSecondary}" Text="Ctrl+E"/>
+                                    <Run Text=" Export HTML"/>
+                                    <LineBreak/>
+                                    <Run FontWeight="SemiBold" Foreground="{DynamicResource ThemeTextSecondary}" Text="Ctrl+F"/>
+                                    <Run Text=" Focus Search"/>
+                                    <LineBreak/>
+                                    <Run FontWeight="SemiBold" Foreground="{DynamicResource ThemeTextSecondary}" Text="1-4"/>
+                                    <Run Text=" Switch Tabs"/>
+                                    <LineBreak/>
+                                    <Run FontWeight="SemiBold" Foreground="{DynamicResource ThemeTextSecondary}" Text="Ctrl+`"/>
+                                    <Run Text=" Toggle Console"/>
+                                </TextBlock>
+                                <StackPanel Orientation="Horizontal" Margin="0,16,0,8"><Border Width="3" Height="12" Background="{DynamicResource ThemeAccent}" CornerRadius="1" VerticalAlignment="Center" Margin="0,0,8,0"/><TextBlock Text="DOWNLOAD TEMPLATES" FontSize="10" FontWeight="Bold"
+                                           Foreground="{DynamicResource ThemeTextMuted}"/></StackPanel>
+                                <StackPanel x:Name="SidebarLinkWin10_22H2" Orientation="Horizontal" Cursor="Hand" Margin="0,0,0,5">
+                                    <TextBlock Text="&#xE896;" FontFamily="Segoe MDL2 Assets" FontSize="11"
+                                               Foreground="{DynamicResource ThemeAccentLight}" Margin="0,0,6,0"
+                                               VerticalAlignment="Center"/>
+                                    <TextBlock Text="Windows 10 22H2" FontSize="11"
+                                               Foreground="{DynamicResource ThemeAccentLight}"/>
+                                </StackPanel>
+                                <StackPanel x:Name="SidebarLinkWin11_23H2" Orientation="Horizontal" Cursor="Hand" Margin="0,0,0,5">
+                                    <TextBlock Text="&#xE896;" FontFamily="Segoe MDL2 Assets" FontSize="11"
+                                               Foreground="{DynamicResource ThemeAccentLight}" Margin="0,0,6,0"
+                                               VerticalAlignment="Center"/>
+                                    <TextBlock Text="Windows 11 23H2" FontSize="11"
+                                               Foreground="{DynamicResource ThemeAccentLight}"/>
+                                </StackPanel>
+                                <StackPanel x:Name="SidebarLinkWin11_24H2" Orientation="Horizontal" Cursor="Hand" Margin="0,0,0,5">
+                                    <TextBlock Text="&#xE896;" FontFamily="Segoe MDL2 Assets" FontSize="11"
+                                               Foreground="{DynamicResource ThemeAccentLight}" Margin="0,0,6,0"
+                                               VerticalAlignment="Center"/>
+                                    <TextBlock Text="Windows 11 24H2" FontSize="11"
+                                               Foreground="{DynamicResource ThemeAccentLight}"/>
+                                </StackPanel>
+                                <StackPanel x:Name="SidebarLinkWin11_25H2" Orientation="Horizontal" Cursor="Hand" Margin="0,0,0,5">
+                                    <TextBlock Text="&#xE896;" FontFamily="Segoe MDL2 Assets" FontSize="11"
+                                               Foreground="{DynamicResource ThemeAccentLight}" Margin="0,0,6,0"
+                                               VerticalAlignment="Center"/>
+                                    <TextBlock Text="Windows 11 25H2" FontSize="11"
+                                               Foreground="{DynamicResource ThemeAccentLight}"/>
+                                </StackPanel>
+                                <StackPanel x:Name="SidebarLinkWin11_26H1" Orientation="Horizontal" Cursor="Hand" Margin="0,0,0,0">
+                                    <TextBlock Text="&#xE896;" FontFamily="Segoe MDL2 Assets" FontSize="11"
+                                               Foreground="{DynamicResource ThemeAccentLight}" Margin="0,0,6,0"
+                                               VerticalAlignment="Center"/>
+                                    <TextBlock Text="Windows 11 26H1" FontSize="11"
+                                               Foreground="{DynamicResource ThemeAccentLight}"/>
+                                </StackPanel>
+                            </StackPanel>
+                        </ScrollViewer>
+                    </Grid>
+                </Border>
+
+                <!-- GRID SPLITTER (Modern grip) -->
+                <GridSplitter Grid.Column="2" HorizontalAlignment="Stretch"
+                              Background="Transparent" Cursor="SizeWE">
+                    <GridSplitter.Template>
+                        <ControlTemplate TargetType="GridSplitter">
+                            <Border x:Name="SplitBd" Background="Transparent" Padding="0">
+                                <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                                    <Ellipse Width="3" Height="3" Fill="{DynamicResource ThemeTextDim}" Margin="0,1"/>
+                                    <Ellipse Width="3" Height="3" Fill="{DynamicResource ThemeTextDim}" Margin="0,1"/>
+                                    <Ellipse Width="3" Height="3" Fill="{DynamicResource ThemeTextDim}" Margin="0,1"/>
+                                </StackPanel>
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter TargetName="SplitBd" Property="Background"
+                                            Value="{DynamicResource ThemeHoverBg}"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </GridSplitter.Template>
+                </GridSplitter>
+
+                <!-- CENTER CONTENT -->
+                <Grid Grid.Column="3">
+                    <!-- Layer 1: Dot grid -->
+                    <Border Background="{StaticResource DotGridBrush}" IsHitTestVisible="False" Panel.ZIndex="-2"/>
+                    <!-- Layer 2: Gradient glow at top -->
+                    <Border IsHitTestVisible="False" Panel.ZIndex="-1" Height="320" VerticalAlignment="Top">
+                        <Border.Background>
+                            <LinearGradientBrush StartPoint="0.5,0" EndPoint="0.5,1">
+                                <GradientStop Color="#200078D4" Offset="0.0"/>
+                                <GradientStop Color="#100078D4" Offset="0.35"/>
+                                <GradientStop Color="#080078D4" Offset="0.6"/>
+                                <GradientStop Color="#00000000" Offset="1.0"/>
+                            </LinearGradientBrush>
+                        </Border.Background>
+                    </Border>
+                    <!-- Layer 3: Center radial glow -->
+                    <Border IsHitTestVisible="False" Panel.ZIndex="-1"
+                            HorizontalAlignment="Center" VerticalAlignment="Top"
+                            Width="800" Height="400" Margin="0,40,0,0" Opacity="0.55">
+                        <Border.Background>
+                            <RadialGradientBrush>
+                                <GradientStop Color="#200078D4" Offset="0"/>
+                                <GradientStop Color="#00000000" Offset="1"/>
+                            </RadialGradientBrush>
+                        </Border.Background>
+                    </Border>
+                    <!-- DASHBOARD PANEL -->
+                    <Grid x:Name="PanelDashboard" Visibility="Visible" Margin="24,20">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <StackPanel Grid.Row="0" Margin="0,0,0,24">
+                            <TextBlock Text="Dashboard" FontSize="24" FontWeight="Bold"
+                                       Foreground="{DynamicResource ThemeTextPrimary}"/>
+                            <TextBlock Text="Welcome back! Here's your policy comparison overview."
+                                       FontSize="13" Foreground="{DynamicResource ThemeTextSecondary}" Margin="0,4,0,0"/>
+                        </StackPanel>
+                        <UniformGrid Grid.Row="1" Columns="4" Margin="0,0,0,24">
+                            <Border x:Name="StatCard1" Background="{DynamicResource ThemeCardBg}" CornerRadius="12"
+                                    Padding="0" Margin="0,0,12,0" BorderBrush="{DynamicResource ThemeBorderCard}"
+                                    BorderThickness="1" ToolTip="Total number of comparisons you've run">
+                                <Grid>
+                                    <Border Height="3" VerticalAlignment="Top" CornerRadius="12,12,0,0"
+                                            Margin="1,0,1,0">
+                                        <Border.Background>
+                                            <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
+                                                <GradientStop Color="#0078D4" Offset="0"/>
+                                                <GradientStop Color="#60CDFF" Offset="1"/>
+                                            </LinearGradientBrush>
+                                        </Border.Background>
+                                    </Border>
+                                    <StackPanel Margin="20,16">
+                                        <TextBlock Text="&#xE8AB;" FontFamily="Segoe MDL2 Assets" FontSize="22"
+                                                   Foreground="{DynamicResource ThemeAccent}" Margin="0,0,0,10"/>
+                                        <TextBlock x:Name="StatComparisons" Text="0" FontSize="28" FontWeight="Bold"
+                                                   Foreground="{DynamicResource ThemeTextPrimary}"/>
+                                        <TextBlock Text="Comparisons" FontSize="11"
+                                                   Foreground="{DynamicResource ThemeTextSecondary}" Margin="0,2,0,0"/>
+                                    </StackPanel>
+                                </Grid>
+                            </Border>
+                            <Border x:Name="StatCard2" Background="{DynamicResource ThemeCardBg}" CornerRadius="12"
+                                    Padding="0" Margin="0,0,12,0" BorderBrush="{DynamicResource ThemeBorderCard}"
+                                    BorderThickness="1" ToolTip="Cumulative policy string changes across all comparisons">
+                                <Grid>
+                                    <Border Height="3" VerticalAlignment="Top" CornerRadius="12,12,0,0"
+                                            Margin="1,0,1,0">
+                                        <Border.Background>
+                                            <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
+                                                <GradientStop Color="#F59E0B" Offset="0"/>
+                                                <GradientStop Color="#FBBF24" Offset="1"/>
+                                            </LinearGradientBrush>
+                                        </Border.Background>
+                                    </Border>
+                                    <StackPanel Margin="20,16">
+                                        <TextBlock Text="&#xE70F;" FontFamily="Segoe MDL2 Assets" FontSize="22"
+                                                   Foreground="{DynamicResource ThemeWarning}" Margin="0,0,0,10"/>
+                                        <TextBlock x:Name="StatChanges" Text="0" FontSize="28" FontWeight="Bold"
+                                                   Foreground="{DynamicResource ThemeTextPrimary}"/>
+                                        <TextBlock Text="Total Changes" FontSize="11"
+                                                   Foreground="{DynamicResource ThemeTextSecondary}" Margin="0,2,0,0"/>
+                                    </StackPanel>
+                                </Grid>
+                            </Border>
+                            <Border x:Name="StatCard3" Background="{DynamicResource ThemeCardBg}" CornerRadius="12"
+                                    Padding="0" Margin="0,0,12,0" BorderBrush="{DynamicResource ThemeBorderCard}"
+                                    BorderThickness="1" ToolTip="Cumulative ADML files affected across all comparisons">
+                                <Grid>
+                                    <Border Height="3" VerticalAlignment="Top" CornerRadius="12,12,0,0"
+                                            Margin="1,0,1,0">
+                                        <Border.Background>
+                                            <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
+                                                <GradientStop Color="#00C853" Offset="0"/>
+                                                <GradientStop Color="#69F0AE" Offset="1"/>
+                                            </LinearGradientBrush>
+                                        </Border.Background>
+                                    </Border>
+                                    <StackPanel Margin="20,16">
+                                        <TextBlock Text="&#xE8A5;" FontFamily="Segoe MDL2 Assets" FontSize="22"
+                                                   Foreground="{DynamicResource ThemeGreenAccent}" Margin="0,0,0,10"/>
+                                        <TextBlock x:Name="StatFiles" Text="0" FontSize="28" FontWeight="Bold"
+                                                   Foreground="{DynamicResource ThemeTextPrimary}"/>
+                                        <TextBlock Text="Total Files" FontSize="11"
+                                                   Foreground="{DynamicResource ThemeTextSecondary}" Margin="0,2,0,0"/>
+                                    </StackPanel>
+                                </Grid>
+                            </Border>
+                            <Border x:Name="StatCard4" Background="{DynamicResource ThemeCardBg}" CornerRadius="12"
+                                    Padding="0" BorderBrush="{DynamicResource ThemeBorderCard}" BorderThickness="1"
+                                    ToolTip="Consecutive days you've used the tool">
+                                <Grid>
+                                    <Border Height="3" VerticalAlignment="Top" CornerRadius="12,12,0,0"
+                                            Margin="1,0,1,0">
+                                        <Border.Background>
+                                            <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
+                                                <GradientStop Color="#B388FF" Offset="0"/>
+                                                <GradientStop Color="#E1BEE7" Offset="1"/>
+                                            </LinearGradientBrush>
+                                        </Border.Background>
+                                    </Border>
+                                    <StackPanel Margin="20,16">
+                                        <TextBlock Text="&#xE945;" FontFamily="Segoe MDL2 Assets" FontSize="22"
+                                                   Foreground="#FFB388FF" Margin="0,0,0,10"/>
+                                        <TextBlock x:Name="StatStreak" Text="0" FontSize="28" FontWeight="Bold"
+                                                   Foreground="{DynamicResource ThemeTextPrimary}"/>
+                                        <TextBlock Text="Day Streak" FontSize="11"
+                                                   Foreground="{DynamicResource ThemeTextSecondary}" Margin="0,2,0,0"/>
+                                    </StackPanel>
+                                </Grid>
+                            </Border>
+                        </UniformGrid>
+                        <!-- Breakdown Chart -->
+                        <Border x:Name="pnlBreakdownChart" Grid.Row="2" CornerRadius="12" Padding="16"
+                                Background="{DynamicResource ThemeCardBg}"
+                                BorderBrush="{DynamicResource ThemeBorderCard}" BorderThickness="1"
+                                Margin="0,0,0,16" Visibility="Collapsed">
+                            <StackPanel>
+                                <TextBlock Text="Change Distribution" FontSize="14" FontWeight="SemiBold"
+                                           Foreground="{DynamicResource ThemeTextPrimary}" Margin="0,0,0,10"/>
+                                <Border CornerRadius="6" Height="28" ClipToBounds="True"
+                                        Background="{DynamicResource ThemeDeepBg}">
+                                    <Grid x:Name="pnlChartBar"/>
+                                </Border>
+                                <StackPanel x:Name="pnlChartLegend" Orientation="Horizontal" Margin="0,8,0,0"/>
+                            </StackPanel>
+                        </Border>
+                        <Border Grid.Row="3" Background="{DynamicResource ThemeCardBg}" CornerRadius="12"
+                                Padding="20,16" BorderBrush="{DynamicResource ThemeBorderCard}" BorderThickness="1">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="*"/>
+                                </Grid.RowDefinitions>
+                                <TextBlock Text="Recent Comparisons" FontSize="15" FontWeight="SemiBold"
+                                           Foreground="{DynamicResource ThemeTextPrimary}" Margin="0,0,0,12"/>
+                                <ListBox x:Name="RecentComparisonsList" Grid.Row="1"
+                                         Style="{StaticResource DarkListBox}" Background="Transparent"/>
+                                <StackPanel x:Name="NoRecentText" Grid.Row="1"
+                                            VerticalAlignment="Center" HorizontalAlignment="Center"
+                                            MaxWidth="420">
+                                    <TextBlock Text="&#xEA37;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                                               FontSize="36" Foreground="{DynamicResource ThemeTextDim}"
+                                               HorizontalAlignment="Center" Margin="0,0,0,12">
+                                        <TextBlock.RenderTransform>
+                                            <TranslateTransform x:Name="EmptyIconFloat" Y="0"/>
+                                        </TextBlock.RenderTransform>
+                                        <TextBlock.Triggers>
+                                            <EventTrigger RoutedEvent="TextBlock.Loaded">
+                                                <BeginStoryboard>
+                                                    <Storyboard RepeatBehavior="Forever">
+                                                        <DoubleAnimation Storyboard.TargetName="EmptyIconFloat"
+                                                                         Storyboard.TargetProperty="Y"
+                                                                         From="-3" To="3" Duration="0:0:2.5"
+                                                                         AutoReverse="True">
+                                                            <DoubleAnimation.EasingFunction>
+                                                                <SineEase EasingMode="EaseInOut"/>
+                                                            </DoubleAnimation.EasingFunction>
+                                                        </DoubleAnimation>
+                                                    </Storyboard>
+                                                </BeginStoryboard>
+                                            </EventTrigger>
+                                        </TextBlock.Triggers>
+                                    </TextBlock>
+                                    <TextBlock Text="Getting Started" FontSize="16" FontWeight="Bold"
+                                               Foreground="{DynamicResource ThemeTextPrimary}"
+                                               HorizontalAlignment="Center" Margin="0,0,0,4"/>
+                                    <TextBlock Text="Follow these steps to compare Group Policy templates"
+                                               FontSize="12" Foreground="{DynamicResource ThemeTextMuted}"
+                                               HorizontalAlignment="Center" Margin="0,0,0,20"/>
+                                    <!-- Step 1 -->
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,14">
+                                        <Border Width="28" Height="28" CornerRadius="14"
+                                                Background="{DynamicResource ThemeAccent}" Margin="0,0,12,0">
+                                            <TextBlock Text="1" FontSize="13" FontWeight="Bold"
+                                                       Foreground="White" HorizontalAlignment="Center"
+                                                       VerticalAlignment="Center"/>
+                                        </Border>
+                                        <StackPanel VerticalAlignment="Center">
+                                            <TextBlock Text="Set Base Path" FontSize="13" FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource ThemeTextPrimary}"/>
+                                            <TextBlock Text="Configure the GP templates root folder in Settings or the sidebar"
+                                                       FontSize="11" Foreground="{DynamicResource ThemeTextMuted}" TextWrapping="Wrap"/>
+                                        </StackPanel>
+                                    </StackPanel>
+                                    <!-- Step 2 -->
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,14">
+                                        <Border Width="28" Height="28" CornerRadius="14"
+                                                Background="{DynamicResource ThemeAccent}" Margin="0,0,12,0">
+                                            <TextBlock Text="2" FontSize="13" FontWeight="Bold"
+                                                       Foreground="White" HorizontalAlignment="Center"
+                                                       VerticalAlignment="Center"/>
+                                        </Border>
+                                        <StackPanel VerticalAlignment="Center">
+                                            <TextBlock Text="Select Versions" FontSize="13" FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource ThemeTextPrimary}"/>
+                                            <TextBlock Text="Pick an older and newer GP template version to compare"
+                                                       FontSize="11" Foreground="{DynamicResource ThemeTextMuted}" TextWrapping="Wrap"/>
+                                        </StackPanel>
+                                    </StackPanel>
+                                    <!-- Step 3 -->
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,14">
+                                        <Border Width="28" Height="28" CornerRadius="14"
+                                                Background="{DynamicResource ThemeAccent}" Margin="0,0,12,0">
+                                            <TextBlock Text="3" FontSize="13" FontWeight="Bold"
+                                                       Foreground="White" HorizontalAlignment="Center"
+                                                       VerticalAlignment="Center"/>
+                                        </Border>
+                                        <StackPanel VerticalAlignment="Center">
+                                            <TextBlock Text="Run Comparison" FontSize="13" FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource ThemeTextPrimary}"/>
+                                            <TextBlock Text="Click Run Comparison or press F5 to analyze ADML changes"
+                                                       FontSize="11" Foreground="{DynamicResource ThemeTextMuted}" TextWrapping="Wrap"/>
+                                        </StackPanel>
+                                    </StackPanel>
+                                    <!-- Step 4 -->
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
+                                        <Border Width="28" Height="28" CornerRadius="14"
+                                                Background="{DynamicResource ThemeAccent}" Margin="0,0,12,0">
+                                            <TextBlock Text="4" FontSize="13" FontWeight="Bold"
+                                                       Foreground="White" HorizontalAlignment="Center"
+                                                       VerticalAlignment="Center"/>
+                                        </Border>
+                                        <StackPanel VerticalAlignment="Center">
+                                            <TextBlock Text="Review &amp; Export" FontSize="13" FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource ThemeTextPrimary}"/>
+                                            <TextBlock Text="Browse results, filter by change type, and export as HTML or CSV"
+                                                       FontSize="11" Foreground="{DynamicResource ThemeTextMuted}" TextWrapping="Wrap"/>
+                                        </StackPanel>
+                                    </StackPanel>
+                                    <!-- Get Started button -->
+                                    <Button x:Name="BtnGetStarted" Style="{StaticResource AccentButton}"
+                                            HorizontalAlignment="Center" Margin="0,4,0,0" Padding="20,8"
+                                            ToolTip="Navigate to the Compare tab">
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="Get Started" FontSize="13"/>
+                                            <TextBlock Text="  &#xE72A;" FontFamily="Segoe MDL2 Assets" FontSize="12"
+                                                       VerticalAlignment="Center"/>
+                                        </StackPanel>
+                                    </Button>
+                                    <!-- Download ADMX Templates -->
+                                    <Border Margin="0,24,0,0" Padding="16,12" CornerRadius="8"
+                                            Background="{DynamicResource ThemeDeepBg}"
+                                            BorderBrush="{DynamicResource ThemeBorderCard}" BorderThickness="1">
+                                        <StackPanel>
+                                            <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                                                <TextBlock Text="&#xE896;" FontFamily="Segoe MDL2 Assets" FontSize="13"
+                                                           Foreground="{DynamicResource ThemeAccent}" VerticalAlignment="Center"
+                                                           Margin="0,0,8,0"/>
+                                                <TextBlock Text="Download ADMX Templates" FontSize="12" FontWeight="SemiBold"
+                                                           Foreground="{DynamicResource ThemeTextPrimary}"/>
+                                            </StackPanel>
+                                            <StackPanel x:Name="LinkWin10_22H2" Orientation="Horizontal" Cursor="Hand" Margin="0,0,0,6"
+                                                       ToolTip="Download Administrative Templates for Windows 10 (22H2)">
+                                                <TextBlock Text="&#xE896;" FontFamily="Segoe MDL2 Assets" FontSize="11"
+                                                           Foreground="{DynamicResource ThemeAccentLight}" Margin="0,0,6,0"
+                                                           VerticalAlignment="Center"/>
+                                                <TextBlock Text="Windows 10 22H2" FontSize="11"
+                                                           Foreground="{DynamicResource ThemeAccentLight}"/>
+                                            </StackPanel>
+                                            <StackPanel x:Name="LinkWin11_23H2" Orientation="Horizontal" Cursor="Hand" Margin="0,0,0,6"
+                                                       ToolTip="Download Administrative Templates for Windows 11 (23H2)">
+                                                <TextBlock Text="&#xE896;" FontFamily="Segoe MDL2 Assets" FontSize="11"
+                                                           Foreground="{DynamicResource ThemeAccentLight}" Margin="0,0,6,0"
+                                                           VerticalAlignment="Center"/>
+                                                <TextBlock Text="Windows 11 23H2" FontSize="11"
+                                                           Foreground="{DynamicResource ThemeAccentLight}"/>
+                                            </StackPanel>
+                                            <StackPanel x:Name="LinkWin11_24H2" Orientation="Horizontal" Cursor="Hand" Margin="0,0,0,6"
+                                                       ToolTip="Download Administrative Templates for Windows 11 (24H2)">
+                                                <TextBlock Text="&#xE896;" FontFamily="Segoe MDL2 Assets" FontSize="11"
+                                                           Foreground="{DynamicResource ThemeAccentLight}" Margin="0,0,6,0"
+                                                           VerticalAlignment="Center"/>
+                                                <TextBlock Text="Windows 11 24H2" FontSize="11"
+                                                           Foreground="{DynamicResource ThemeAccentLight}"/>
+                                            </StackPanel>
+                                            <StackPanel x:Name="LinkWin11_25H2" Orientation="Horizontal" Cursor="Hand" Margin="0,0,0,6"
+                                                       ToolTip="Download Administrative Templates for Windows 11 (25H2)">
+                                                <TextBlock Text="&#xE896;" FontFamily="Segoe MDL2 Assets" FontSize="11"
+                                                           Foreground="{DynamicResource ThemeAccentLight}" Margin="0,0,6,0"
+                                                           VerticalAlignment="Center"/>
+                                                <TextBlock Text="Windows 11 25H2" FontSize="11"
+                                                           Foreground="{DynamicResource ThemeAccentLight}"/>
+                                            </StackPanel>
+                                            <StackPanel x:Name="LinkWin11_26H1" Orientation="Horizontal" Cursor="Hand" Margin="0,0,0,0"
+                                                       ToolTip="Download Administrative Templates for Windows 11 (26H1)">
+                                                <TextBlock Text="&#xE896;" FontFamily="Segoe MDL2 Assets" FontSize="11"
+                                                           Foreground="{DynamicResource ThemeAccentLight}" Margin="0,0,6,0"
+                                                           VerticalAlignment="Center"/>
+                                                <TextBlock Text="Windows 11 26H1" FontSize="11"
+                                                           Foreground="{DynamicResource ThemeAccentLight}"/>
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </Border>
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+                        <StackPanel Grid.Row="4" Orientation="Horizontal" Margin="0,16,0,0">
+                            <Button x:Name="BtnQuickCompare" Style="{StaticResource AccentButton}" Margin="0,0,10,0"
+                                    ToolTip="Switch to Compare tab to start a new comparison (F5)">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="&#xE768;" FontFamily="Segoe MDL2 Assets" FontSize="14"
+                                               Margin="0,0,8,0" VerticalAlignment="Center"/>
+                                    <TextBlock Text="New Comparison"/>
+                                </StackPanel>
+                            </Button>
+                            <ComboBox x:Name="ExportHistoryCombo" Style="{StaticResource DarkComboBox}"
+                                      ItemContainerStyle="{StaticResource DarkComboBoxItem}"
+                                      Width="260" Margin="0,0,6,0" VerticalAlignment="Center"
+                                      ToolTip="Select a comparison to export"/>
+                            <Button x:Name="BtnQuickExport" Style="{StaticResource GhostButton}"
+                                    Margin="0,0,10,0"
+                                    ToolTip="Export the selected comparison as an HTML report (Ctrl+E)">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="&#xE78C;" FontFamily="Segoe MDL2 Assets" FontSize="12"
+                                               Margin="0,0,6,0" VerticalAlignment="Center"/>
+                                    <TextBlock Text="Export Report"/>
+                                </StackPanel>
+                            </Button>
+                            <Button x:Name="BtnQuickSettings" Style="{StaticResource GhostButton}" Content="Settings"
+                                    ToolTip="Open application settings"/>
+                        </StackPanel>
+                    </Grid>
+                    <!-- COMPARE PANEL -->
+                    <Grid x:Name="PanelCompare" Visibility="Collapsed" Margin="24,20">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <StackPanel Grid.Row="0" Margin="0,0,0,24">
+                            <TextBlock Text="Compare Versions" FontSize="24" FontWeight="Bold"
+                                       Foreground="{DynamicResource ThemeTextPrimary}"/>
+                            <TextBlock Text="Select two Group Policy template versions to compare ADML string changes."
+                                       FontSize="13" Foreground="{DynamicResource ThemeTextSecondary}" Margin="0,4,0,0"/>
+                        </StackPanel>
+                        <Border Grid.Row="1" Background="{DynamicResource ThemeCardBg}" CornerRadius="12"
+                                Padding="24,20" BorderBrush="{DynamicResource ThemeBorderCard}" BorderThickness="1"
+                                Margin="0,0,0,16">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="40"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0">
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,8"><Border Width="3" Height="12" Background="{DynamicResource ThemeAccent}" CornerRadius="1" VerticalAlignment="Center" Margin="0,0,8,0"/><TextBlock Text="OLDER VERSION (Source)" FontSize="10" FontWeight="Bold"
+                                               Foreground="{DynamicResource ThemeTextMuted}"/></StackPanel>
+                                    <ComboBox x:Name="OlderVersionCombo" Style="{StaticResource DarkComboBox}"
+                                              ItemContainerStyle="{StaticResource DarkComboBoxItem}"
+                                              ToolTip="Select the older (baseline) GP template version"/>
+                                </StackPanel>
+                                <TextBlock x:Name="CompareArrow" Grid.Column="1" Text="&#xE72A;" FontFamily="Segoe MDL2 Assets"
+                                           FontSize="18" Foreground="{DynamicResource ThemeTextMuted}"
+                                           HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,6">
+                                    <TextBlock.RenderTransform>
+                                        <TranslateTransform x:Name="ArrowBounce" X="0"/>
+                                    </TextBlock.RenderTransform>
+                                    <TextBlock.Triggers>
+                                        <EventTrigger RoutedEvent="TextBlock.Loaded">
+                                            <BeginStoryboard>
+                                                <Storyboard RepeatBehavior="Forever">
+                                                    <DoubleAnimation Storyboard.TargetName="ArrowBounce"
+                                                                     Storyboard.TargetProperty="X"
+                                                                     From="-3" To="3" Duration="0:0:1.5"
+                                                                     AutoReverse="True">
+                                                        <DoubleAnimation.EasingFunction>
+                                                            <SineEase EasingMode="EaseInOut"/>
+                                                        </DoubleAnimation.EasingFunction>
+                                                    </DoubleAnimation>
+                                                </Storyboard>
+                                            </BeginStoryboard>
+                                        </EventTrigger>
+                                    </TextBlock.Triggers>
+                                </TextBlock>
+                                <StackPanel Grid.Column="2">
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,8"><Border Width="3" Height="12" Background="{DynamicResource ThemeAccent}" CornerRadius="1" VerticalAlignment="Center" Margin="0,0,8,0"/><TextBlock Text="NEWER VERSION (Reference)" FontSize="10" FontWeight="Bold"
+                                               Foreground="{DynamicResource ThemeTextMuted}"/></StackPanel>
+                                    <ComboBox x:Name="NewerVersionCombo" Style="{StaticResource DarkComboBox}"
+                                              ItemContainerStyle="{StaticResource DarkComboBoxItem}"
+                                              ToolTip="Select the newer (reference) GP template version"/>
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+                        <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,0,0,16">
+                            <Button x:Name="BtnRunComparison" Style="{StaticResource AccentButton}"
+                                    ToolTip="Parse and compare ADML files between selected versions (F5)">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="&#xE768;" FontFamily="Segoe MDL2 Assets" FontSize="16"
+                                               Margin="0,0,10,0" VerticalAlignment="Center"/>
+                                    <TextBlock Text="Run Comparison" FontSize="14"/>
+                                </StackPanel>
+                            </Button>
+                            <TextBlock x:Name="ComparisonStatusText" Text="" FontSize="12"
+                                       Foreground="{DynamicResource ThemeTextSecondary}"
+                                       VerticalAlignment="Center" Margin="16,0,0,0"/>
+                        </StackPanel>
+                        <Grid Grid.Row="3" Margin="0,0,0,12">
+                            <Border Background="{DynamicResource ThemeDeepBg}" CornerRadius="4" Height="6">
+                                <Border x:Name="ComparisonProgressBar" Background="{DynamicResource ThemeAccent}"
+                                        CornerRadius="4" HorizontalAlignment="Left" Width="0"/>
+                            </Border>
+                        </Grid>
+                        <Border Grid.Row="4" Background="{DynamicResource ThemeCardBg}" CornerRadius="12"
+                                Padding="4" BorderBrush="{DynamicResource ThemeBorderCard}" BorderThickness="1">
+                            <RichTextBox x:Name="ComparisonLogText" IsReadOnly="True"
+                                         Background="Transparent" BorderThickness="0"
+                                         FontSize="13" Foreground="{DynamicResource ThemeTextBody}"
+                                         FontFamily="Cascadia Code, Consolas, Courier New"
+                                         VerticalScrollBarVisibility="Auto"
+                                         Padding="16,12"
+                                         IsDocumentEnabled="True">
+                                <FlowDocument>
+                                    <Paragraph>
+                                        <Run Text="Ready. Select two versions above and click Run Comparison."/>
+                                    </Paragraph>
+                                </FlowDocument>
+                            </RichTextBox>
+                        </Border>
+                    </Grid>
+
+                    <!-- RESULTS PANEL -->
+                    <Grid x:Name="PanelResults" Visibility="Collapsed" Margin="24,20">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="2*"/>
+                            <RowDefinition Height="3"/>
+                            <RowDefinition Height="200"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <StackPanel Grid.Row="0" Margin="0,0,0,16">
+                            <TextBlock Text="Results" FontSize="24" FontWeight="Bold"
+                                       Foreground="{DynamicResource ThemeTextPrimary}"/>
+                            <TextBlock x:Name="ResultsSubtitle" Text="No comparison data loaded."
+                                       FontSize="13" Foreground="{DynamicResource ThemeTextSecondary}" Margin="0,4,0,0"/>
+                        </StackPanel>
+                        <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,12">
+                            <ToggleButton x:Name="FilterAll" Style="{StaticResource FilterPill}"
+                                          Content="All" IsChecked="True" ToolTip="Show all change types"/>
+                            <ToggleButton x:Name="FilterAdded" Style="{StaticResource FilterPill}"
+                                          ToolTip="Show only newly added policy strings">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="&#xE710;" FontFamily="Segoe MDL2 Assets" FontSize="9"
+                                               Foreground="#00C853" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                                    <TextBlock Text="Added"/>
+                                </StackPanel>
+                            </ToggleButton>
+                            <ToggleButton x:Name="FilterRemoved" Style="{StaticResource FilterPill}"
+                                          ToolTip="Show only removed policy strings">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="&#xE738;" FontFamily="Segoe MDL2 Assets" FontSize="9"
+                                               Foreground="#FF5000" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                                    <TextBlock Text="Removed"/>
+                                </StackPanel>
+                            </ToggleButton>
+                            <ToggleButton x:Name="FilterModified" Style="{StaticResource FilterPill}"
+                                          ToolTip="Show only modified policy strings">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="&#xE70F;" FontFamily="Segoe MDL2 Assets" FontSize="9"
+                                               Foreground="#F59E0B" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                                    <TextBlock Text="Modified"/>
+                                </StackPanel>
+                            </ToggleButton>
+                            <ToggleButton x:Name="FilterFileAdded" Style="{StaticResource FilterPill}"
+                                          ToolTip="Show only entirely new ADML files">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="&#xE8E5;" FontFamily="Segoe MDL2 Assets" FontSize="9"
+                                               Foreground="#00E676" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                                    <TextBlock Text="File Added"/>
+                                </StackPanel>
+                            </ToggleButton>
+                            <ToggleButton x:Name="FilterFileRemoved" Style="{StaticResource FilterPill}"
+                                          ToolTip="Show only removed ADML files">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="&#xE74D;" FontFamily="Segoe MDL2 Assets" FontSize="9"
+                                               Foreground="#FF6E40" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                                    <TextBlock Text="File Removed"/>
+                                </StackPanel>
+                            </ToggleButton>
+                        </StackPanel>
+                        <Grid Grid.Row="2" Margin="0,0,0,12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid Grid.Column="0">
+                                <TextBox x:Name="SearchBox" Style="{StaticResource DarkTextBox}"
+                                         FontSize="12" Padding="32,8,10,8"/>
+                                <TextBlock x:Name="SearchIcon" Text="&#xE721;" FontFamily="Segoe MDL2 Assets" FontSize="13"
+                                           Foreground="{DynamicResource ThemeTextDim}" IsHitTestVisible="False"
+                                           VerticalAlignment="Center" Margin="10,0,0,0"/>
+                                <TextBlock x:Name="SearchPlaceholder" Text="Search policies, file names, string IDs..."
+                                           FontSize="12" Foreground="{DynamicResource ThemeTextDim}"
+                                           IsHitTestVisible="False" VerticalAlignment="Center" Margin="32,0,0,0"/>
+                                <Button x:Name="BtnSearchClear" HorizontalAlignment="Right" VerticalAlignment="Center"
+                                        Margin="0,0,6,0" Visibility="Collapsed" Cursor="Hand"
+                                        Width="24" Height="24" Style="{StaticResource IconButton}"
+                                        Content="&#xE711;" FontSize="10" ToolTip="Clear search"/>
+                            </Grid>
+                            <ToggleButton x:Name="BtnGroupByPolicy" Grid.Column="1" Style="{StaticResource GroupByPolicyToggle}"
+                                          ToolTip="Group results by policy" Margin="8,0,0,0"
+                                          VerticalAlignment="Center">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="&#xF168;" FontFamily="Segoe MDL2 Assets" FontSize="10"
+                                               VerticalAlignment="Center" Margin="0,0,5,0"/>
+                                    <TextBlock Text="Group by Policy"/>
+                                </StackPanel>
+                            </ToggleButton>
+                        </Grid>
+                        <Border Grid.Row="3" CornerRadius="12" BorderBrush="{DynamicResource ThemeBorderCard}"
+                                BorderThickness="1" ClipToBounds="True" Background="{DynamicResource ThemeCardBg}">
+                        <DataGrid x:Name="ResultsDataGrid"
+                                  Style="{StaticResource DarkDataGrid}"
+                                  ColumnHeaderStyle="{StaticResource DarkColumnHeader}"
+                                  RowStyle="{StaticResource ColorCodedRow}"
+                                  CellStyle="{StaticResource DarkDataGridCell}"
+                                  CanUserSortColumns="True"
+                                  BorderThickness="0">
+                            <DataGrid.GroupStyle>
+                                <GroupStyle>
+                                    <GroupStyle.ContainerStyle>
+                                        <Style TargetType="{x:Type GroupItem}">
+                                            <Setter Property="Template">
+                                                <Setter.Value>
+                                                    <ControlTemplate TargetType="{x:Type GroupItem}">
+                                                        <Expander IsExpanded="True" Background="Transparent" BorderThickness="0">
+                                                            <Expander.Header>
+                                                                <StackPanel Orientation="Horizontal" Margin="0,4,0,2">
+                                                                    <TextBlock Text="&#xE7C3;" FontFamily="Segoe MDL2 Assets"
+                                                                               FontSize="11" Foreground="{DynamicResource ThemeAccentLight}"
+                                                                               VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                                                    <TextBlock Text="{Binding Name}" FontSize="12" FontWeight="SemiBold"
+                                                                               Foreground="{DynamicResource ThemeTextPrimary}"
+                                                                               VerticalAlignment="Center"/>
+                                                                    <Border CornerRadius="8" Padding="6,1" Margin="10,0,0,0"
+                                                                            Background="{DynamicResource ThemeDeepBg}" VerticalAlignment="Center">
+                                                                        <TextBlock Text="{Binding ItemCount, StringFormat='{}{0} items'}"
+                                                                                   FontSize="10" Foreground="{DynamicResource ThemeTextDim}"/>
+                                                                    </Border>
+                                                                </StackPanel>
+                                                            </Expander.Header>
+                                                            <ItemsPresenter/>
+                                                        </Expander>
+                                                    </ControlTemplate>
+                                                </Setter.Value>
+                                            </Setter>
+                                        </Style>
+                                    </GroupStyle.ContainerStyle>
+                                </GroupStyle>
+                            </DataGrid.GroupStyle>
+                            <DataGrid.Columns>
+                                <DataGridTemplateColumn Header="Status" Width="120" SortMemberPath="ChangeType">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <Border x:Name="StatusBadge" CornerRadius="4" Padding="5,2" Margin="2,1" HorizontalAlignment="Left">
+                                                <StackPanel Orientation="Horizontal">
+                                                    <TextBlock x:Name="StatusIcon" FontFamily="Segoe MDL2 Assets" FontSize="10"
+                                                               VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                                    <TextBlock x:Name="StatusText" Text="{Binding ChangeType}" FontSize="11"
+                                                               FontWeight="SemiBold" VerticalAlignment="Center"/>
+                                                </StackPanel>
+                                            </Border>
+                                            <DataTemplate.Triggers>
+                                                <DataTrigger Binding="{Binding ChangeType}" Value="Added">
+                                                    <Setter TargetName="StatusBadge" Property="Background" Value="#2600C853"/>
+                                                    <Setter TargetName="StatusIcon" Property="Text" Value="&#xE710;"/>
+                                                    <Setter TargetName="StatusIcon" Property="Foreground" Value="{DynamicResource StatusAdded}"/>
+                                                    <Setter TargetName="StatusText" Property="Foreground" Value="{DynamicResource StatusAdded}"/>
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding ChangeType}" Value="Removed">
+                                                    <Setter TargetName="StatusBadge" Property="Background" Value="#26FF5000"/>
+                                                    <Setter TargetName="StatusIcon" Property="Text" Value="&#xE738;"/>
+                                                    <Setter TargetName="StatusIcon" Property="Foreground" Value="{DynamicResource StatusRemoved}"/>
+                                                    <Setter TargetName="StatusText" Property="Foreground" Value="{DynamicResource StatusRemoved}"/>
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding ChangeType}" Value="Modified">
+                                                    <Setter TargetName="StatusBadge" Property="Background" Value="#26F59E0B"/>
+                                                    <Setter TargetName="StatusIcon" Property="Text" Value="&#xE70F;"/>
+                                                    <Setter TargetName="StatusIcon" Property="Foreground" Value="{DynamicResource StatusModified}"/>
+                                                    <Setter TargetName="StatusText" Property="Foreground" Value="{DynamicResource StatusModified}"/>
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding ChangeType}" Value="File Added">
+                                                    <Setter TargetName="StatusBadge" Property="Background" Value="#3300C853"/>
+                                                    <Setter TargetName="StatusBadge" Property="BorderBrush" Value="#4000E676"/>
+                                                    <Setter TargetName="StatusBadge" Property="BorderThickness" Value="1"/>
+                                                    <Setter TargetName="StatusIcon" Property="Text" Value="&#xE8E5;"/>
+                                                    <Setter TargetName="StatusIcon" Property="Foreground" Value="{DynamicResource StatusFileAdded}"/>
+                                                    <Setter TargetName="StatusText" Property="Foreground" Value="{DynamicResource StatusFileAdded}"/>
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding ChangeType}" Value="File Removed">
+                                                    <Setter TargetName="StatusBadge" Property="Background" Value="#33FF5000"/>
+                                                    <Setter TargetName="StatusBadge" Property="BorderBrush" Value="#40FF6E40"/>
+                                                    <Setter TargetName="StatusBadge" Property="BorderThickness" Value="1"/>
+                                                    <Setter TargetName="StatusIcon" Property="Text" Value="&#xE74D;"/>
+                                                    <Setter TargetName="StatusIcon" Property="Foreground" Value="{DynamicResource StatusFileRemoved}"/>
+                                                    <Setter TargetName="StatusText" Property="Foreground" Value="{DynamicResource StatusFileRemoved}"/>
+                                                </DataTrigger>
+                                            </DataTemplate.Triggers>
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+                                <DataGridTextColumn Header="Category" Binding="{Binding Category}" Width="130"
+                                                    SortMemberPath="Category">
+                                    <DataGridTextColumn.ElementStyle>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Foreground" Value="{DynamicResource ThemeTextSecondary}"/>
+                                            <Setter Property="FontSize" Value="11"/>
+                                            <Setter Property="Padding" Value="4,2"/>
+                                            <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+                                        </Style>
+                                    </DataGridTextColumn.ElementStyle>
+                                </DataGridTextColumn>
+                                <DataGridTextColumn Header="File" Binding="{Binding FileName}" Width="160">
+                                    <DataGridTextColumn.ElementStyle>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Foreground" Value="{DynamicResource ThemeAccentLight}"/>
+                                            <Setter Property="Padding" Value="4,2"/>
+                                            <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+                                        </Style>
+                                    </DataGridTextColumn.ElementStyle>
+                                </DataGridTextColumn>
+                                <DataGridTextColumn Header="String ID" Binding="{Binding StringId}" Width="200">
+                                    <DataGridTextColumn.ElementStyle>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Foreground" Value="{DynamicResource ThemeTextBody}"/>
+                                            <Setter Property="FontFamily" Value="Cascadia Code, Consolas, Courier New"/>
+                                            <Setter Property="FontSize" Value="12"/>
+                                            <Setter Property="Padding" Value="4,2"/>
+                                            <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+                                        </Style>
+                                    </DataGridTextColumn.ElementStyle>
+                                </DataGridTextColumn>
+                                <DataGridTextColumn Header="Old Value" Binding="{Binding OldValue}" Width="*">
+                                    <DataGridTextColumn.ElementStyle>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Foreground" Value="{DynamicResource ThemeTextSecondary}"/>
+                                            <Setter Property="FontFamily" Value="Cascadia Code, Consolas, Courier New"/>
+                                            <Setter Property="FontSize" Value="11.5"/>
+                                            <Setter Property="TextWrapping" Value="Wrap"/>
+                                            <Setter Property="Padding" Value="4,2"/>
+                                            <Setter Property="MaxHeight" Value="80"/>
+                                        </Style>
+                                    </DataGridTextColumn.ElementStyle>
+                                </DataGridTextColumn>
+                                <DataGridTextColumn Header="New Value" Binding="{Binding NewValue}" Width="*">
+                                    <DataGridTextColumn.ElementStyle>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Foreground" Value="{DynamicResource ThemeTextBody}"/>
+                                            <Setter Property="FontFamily" Value="Cascadia Code, Consolas, Courier New"/>
+                                            <Setter Property="FontSize" Value="11.5"/>
+                                            <Setter Property="TextWrapping" Value="Wrap"/>
+                                            <Setter Property="Padding" Value="4,2"/>
+                                            <Setter Property="MaxHeight" Value="80"/>
+                                        </Style>
+                                    </DataGridTextColumn.ElementStyle>
+                                </DataGridTextColumn>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                        </Border>
+
+                        <!-- Detail Pane Splitter -->
+                        <GridSplitter Grid.Row="4" Height="3" HorizontalAlignment="Stretch"
+                                      Background="{DynamicResource ThemeBorderSubtle}" Cursor="SizeNS"/>
+
+                        <!-- Detail/Preview Pane -->
+                        <Border x:Name="pnlDetailPane" Grid.Row="5" CornerRadius="10"
+                                Background="{DynamicResource ThemeCardBg}"
+                                BorderBrush="{DynamicResource ThemeBorderCard}" BorderThickness="1"
+                                Margin="0,4,0,0">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="*"/>
+                                </Grid.RowDefinitions>
+                                <!-- Detail header -->
+                                <Border Grid.Row="0" Background="{DynamicResource ThemeDeepBg}"
+                                        CornerRadius="10,10,0,0" Padding="14,8">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0" Orientation="Horizontal">
+                                            <TextBlock x:Name="lblDetailIcon" Text="&#xE946;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                                                       FontSize="14" Foreground="{DynamicResource ThemeAccentLight}"
+                                                       VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                            <TextBlock x:Name="lblDetailTitle" Text="Select a row to preview details"
+                                                       FontSize="13" FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource ThemeTextPrimary}" VerticalAlignment="Center"/>
+                                            <TextBlock x:Name="lblDetailFile" Text="" FontSize="11"
+                                                       Foreground="{DynamicResource ThemeTextMuted}"
+                                                       VerticalAlignment="Center" Margin="12,0,0,0"/>
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="1" Orientation="Horizontal">
+                                            <Button x:Name="btnCopyOldValue" Style="{StaticResource IconButton}"
+                                                    FontSize="11" Height="26" Padding="8,0"
+                                                    ToolTip="Copy old value to clipboard" Margin="0,0,4,0">
+                                                <StackPanel Orientation="Horizontal">
+                                                    <TextBlock Text="&#xE8C8;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                                                               FontSize="11" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                                                    <TextBlock Text="Old" FontSize="10.5" VerticalAlignment="Center"/>
+                                                </StackPanel>
+                                            </Button>
+                                            <Button x:Name="btnCopyNewValue" Style="{StaticResource IconButton}"
+                                                    FontSize="11" Height="26" Padding="8,0"
+                                                    ToolTip="Copy new value to clipboard" Margin="0,0,4,0">
+                                                <StackPanel Orientation="Horizontal">
+                                                    <TextBlock Text="&#xE8C8;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                                                               FontSize="11" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                                                    <TextBlock Text="New" FontSize="10.5" VerticalAlignment="Center"/>
+                                                </StackPanel>
+                                            </Button>
+                                            <Button x:Name="btnCopyStringId" Style="{StaticResource IconButton}"
+                                                    FontSize="11" Height="26" Padding="8,0"
+                                                    ToolTip="Copy string ID to clipboard">
+                                                <StackPanel Orientation="Horizontal">
+                                                    <TextBlock Text="&#xE8C8;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                                                               FontSize="11" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                                                    <TextBlock Text="ID" FontSize="10.5" VerticalAlignment="Center"/>
+                                                </StackPanel>
+                                            </Button>
+                                        </StackPanel>
+                                    </Grid>
+                                </Border>
+                                <!-- Registry info bar (hidden when no registry data) -->
+                                <Border x:Name="pnlRegistryBar" Grid.Row="1"
+                                        Background="{DynamicResource ThemeInputBg}"
+                                        BorderBrush="{DynamicResource ThemeBorderSubtle}" BorderThickness="0,1,0,1"
+                                        Padding="14,6" Visibility="Collapsed">
+                                    <StackPanel>
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="&#xE8B7;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                                                       FontSize="12" Foreground="{DynamicResource ThemeAccentLight}"
+                                                       VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                            <TextBlock x:Name="lblRegistryPath" Text=""
+                                                       FontFamily="Cascadia Code, Consolas, Courier New" FontSize="11.5"
+                                                       Foreground="{DynamicResource ThemeTextPrimary}" VerticalAlignment="Center"/>
+                                            <TextBlock x:Name="lblRegistryValue" Text=""
+                                                       FontSize="11.5" Foreground="{DynamicResource ThemeTextMuted}"
+                                                       VerticalAlignment="Center" Margin="6,0,0,0"/>
+                                            <Border x:Name="badgeRegistryScope" CornerRadius="4"
+                                                    Padding="6,1" Margin="10,0,0,0" VerticalAlignment="Center"
+                                                    Background="{DynamicResource ThemeDeepBg}" Visibility="Collapsed">
+                                                <TextBlock x:Name="lblRegistryScope" Text="" FontSize="10" FontWeight="SemiBold"
+                                                           Foreground="{DynamicResource ThemeAccentLight}"/>
+                                            </Border>
+                                        </StackPanel>
+                                        <TextBlock x:Name="lblRegistryDetails" Text=""
+                                                   FontSize="10.5" Foreground="{DynamicResource ThemeTextMuted}"
+                                                   TextWrapping="Wrap" Margin="20,3,0,0" Visibility="Collapsed"/>
+                                    </StackPanel>
+                                </Border>
+                                <!-- Detail body: side-by-side diff -->
+                                <Grid Grid.Row="2" Margin="0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="1"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <!-- Old value pane -->
+                                    <Grid Grid.Column="0">
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="*"/>
+                                        </Grid.RowDefinitions>
+                                        <Border Grid.Row="0" Padding="12,6" Background="{DynamicResource ThemeInputBg}">
+                                            <TextBlock Text="OLD VALUE" FontSize="10" FontWeight="Bold"
+                                                       Foreground="{DynamicResource StatusRemoved}" Opacity="0.7"/>
+                                        </Border>
+                                        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Padding="12,8">
+                                            <RichTextBox x:Name="rtbDetailOld" IsReadOnly="True" BorderThickness="0"
+                                                         Background="Transparent"
+                                                         FontFamily="Cascadia Code, Consolas, Courier New" FontSize="12">
+                                                <FlowDocument x:Name="docDetailOld" PagePadding="0">
+                                                    <Paragraph x:Name="paraDetailOld"/>
+                                                </FlowDocument>
+                                            </RichTextBox>
+                                        </ScrollViewer>
+                                    </Grid>
+                                    <!-- Divider -->
+                                    <Border Grid.Column="1" Background="{DynamicResource ThemeBorderSubtle}"/>
+                                    <!-- New value pane -->
+                                    <Grid Grid.Column="2">
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="*"/>
+                                        </Grid.RowDefinitions>
+                                        <Border Grid.Row="0" Padding="12,6" Background="{DynamicResource ThemeInputBg}">
+                                            <TextBlock Text="NEW VALUE" FontSize="10" FontWeight="Bold"
+                                                       Foreground="{DynamicResource StatusAdded}" Opacity="0.7"/>
+                                        </Border>
+                                        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Padding="12,8">
+                                            <RichTextBox x:Name="rtbDetailNew" IsReadOnly="True" BorderThickness="0"
+                                                         Background="Transparent"
+                                                         FontFamily="Cascadia Code, Consolas, Courier New" FontSize="12">
+                                                <FlowDocument x:Name="docDetailNew" PagePadding="0">
+                                                    <Paragraph x:Name="paraDetailNew"/>
+                                                </FlowDocument>
+                                            </RichTextBox>
+                                        </ScrollViewer>
+                                    </Grid>
+                                </Grid>
+                            </Grid>
+                        </Border>
+                        <!-- Results Empty State Guide -->
+                        <Border x:Name="ResultsEmptyGuide" Grid.Row="3" CornerRadius="12"
+                                Background="{DynamicResource ThemeCardBg}"
+                                BorderBrush="{DynamicResource ThemeBorderCard}" BorderThickness="1"
+                                Visibility="Visible">
+                            <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center"
+                                        MaxWidth="400" Margin="0,40">
+                                <TextBlock Text="&#xE8A5;" FontFamily="Segoe MDL2 Assets" FontSize="36"
+                                           Foreground="{DynamicResource ThemeTextDim}"
+                                           HorizontalAlignment="Center" Margin="0,0,0,12"/>
+                                <TextBlock Text="No Results Yet" FontSize="16" FontWeight="Bold"
+                                           Foreground="{DynamicResource ThemeTextPrimary}"
+                                           HorizontalAlignment="Center" Margin="0,0,0,4"/>
+                                <TextBlock Text="Run a comparison or select one from the dashboard to view results here."
+                                           FontSize="12" Foreground="{DynamicResource ThemeTextMuted}"
+                                           HorizontalAlignment="Center" TextAlignment="Center"
+                                           TextWrapping="Wrap" Margin="0,0,0,20"/>
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                                    <Border Width="24" Height="24" CornerRadius="12"
+                                            Background="{DynamicResource ThemeAccent}" Margin="0,0,10,0">
+                                        <TextBlock Text="1" FontSize="11" FontWeight="Bold"
+                                                   Foreground="White" HorizontalAlignment="Center"
+                                                   VerticalAlignment="Center"/>
+                                    </Border>
+                                    <TextBlock Text="Go to Compare tab and select two versions"
+                                               FontSize="12" Foreground="{DynamicResource ThemeTextSecondary}"
+                                               VerticalAlignment="Center"/>
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                                    <Border Width="24" Height="24" CornerRadius="12"
+                                            Background="{DynamicResource ThemeAccent}" Margin="0,0,10,0">
+                                        <TextBlock Text="2" FontSize="11" FontWeight="Bold"
+                                                   Foreground="White" HorizontalAlignment="Center"
+                                                   VerticalAlignment="Center"/>
+                                    </Border>
+                                    <TextBlock Text="Click Run Comparison to analyze differences"
+                                               FontSize="12" Foreground="{DynamicResource ThemeTextSecondary}"
+                                               VerticalAlignment="Center"/>
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                                    <Border Width="24" Height="24" CornerRadius="12"
+                                            Background="{DynamicResource ThemeAccent}" Margin="0,0,10,0">
+                                        <TextBlock Text="3" FontSize="11" FontWeight="Bold"
+                                                   Foreground="White" HorizontalAlignment="Center"
+                                                   VerticalAlignment="Center"/>
+                                    </Border>
+                                    <TextBlock Text="Use filters and search to explore the changes"
+                                               FontSize="12" Foreground="{DynamicResource ThemeTextSecondary}"
+                                               VerticalAlignment="Center"/>
+                                </StackPanel>
+                                <Button x:Name="BtnResultsGoCompare" Style="{StaticResource AccentButton}"
+                                        HorizontalAlignment="Center" Margin="0,10,0,0" Padding="20,8"
+                                        ToolTip="Navigate to the Compare tab">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="Go to Compare" FontSize="13"/>
+                                        <TextBlock Text="  &#xE72A;" FontFamily="Segoe MDL2 Assets" FontSize="12"
+                                                   VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </Button>
+                            </StackPanel>
+                        </Border>
+                        <Grid Grid.Row="6" Margin="0,12,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock x:Name="ResultsCountText" Text="0 results" FontSize="12"
+                                       Foreground="{DynamicResource ThemeTextSecondary}" VerticalAlignment="Center"/>
+                            <StackPanel Grid.Column="1" Orientation="Horizontal">
+                                <Button x:Name="BtnExportHtml" Style="{StaticResource GhostButton}"
+                                        Margin="0,0,8,0" Padding="14,7"
+                                        ToolTip="Export results as an interactive HTML report (Ctrl+E)">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="&#xE78C;" FontFamily="Segoe MDL2 Assets" FontSize="12"
+                                                   Margin="0,0,6,0" VerticalAlignment="Center"/>
+                                        <TextBlock Text="Export HTML"/>
+                                    </StackPanel>
+                                </Button>
+                                <Button x:Name="BtnExportCsv" Style="{StaticResource GhostButton}" Padding="14,7"
+                                        ToolTip="Export results as a CSV spreadsheet">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="&#xE78C;" FontFamily="Segoe MDL2 Assets" FontSize="12"
+                                                   Margin="0,0,6,0" VerticalAlignment="Center"/>
+                                        <TextBlock Text="Export CSV"/>
+                                    </StackPanel>
+                                </Button>
+                            </StackPanel>
+                        </Grid>
+                    </Grid>
+                    <!-- SETTINGS PANEL -->
+                    <Grid x:Name="PanelSettings" Visibility="Collapsed" Margin="24,20">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                                      Style="{StaticResource MinimalScrollViewer}">
+                            <StackPanel MaxWidth="680">
+                                <TextBlock Text="Settings" FontSize="24" FontWeight="Bold"
+                                           Foreground="{DynamicResource ThemeTextPrimary}" Margin="0,0,0,24"/>
+
+                                <!-- Appearance -->
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,10"><Border Width="3" Height="12" Background="{DynamicResource ThemeAccent}" CornerRadius="1" VerticalAlignment="Center" Margin="0,0,8,0"/><TextBlock Text="APPEARANCE" FontSize="10" FontWeight="Bold"
+                                           Foreground="{DynamicResource ThemeTextMuted}"/></StackPanel>
+                                <Border Background="{DynamicResource ThemeCardBg}" CornerRadius="12"
+                                        Padding="20,16" BorderBrush="{DynamicResource ThemeBorderCard}"
+                                        BorderThickness="1" Margin="0,0,0,6">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel>
+                                            <TextBlock Text="Dark Theme" FontSize="14" Foreground="{DynamicResource ThemeTextPrimary}"/>
+                                            <TextBlock Text="Toggle between dark and light color schemes"
+                                                       FontSize="12" Foreground="{DynamicResource ThemeTextSecondary}" Margin="0,2,0,0"/>
+                                        </StackPanel>
+                                        <CheckBox x:Name="ThemeToggle" Grid.Column="1" IsChecked="True"
+                                                  VerticalAlignment="Center" Style="{StaticResource ToggleSwitch}"/>
+                                    </Grid>
+                                </Border>
+                                <Border Background="{DynamicResource ThemeCardBg}" CornerRadius="12"
+                                        Padding="20,16" BorderBrush="{DynamicResource ThemeBorderCard}"
+                                        BorderThickness="1" Margin="0,0,0,16">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel>
+                                            <TextBlock Text="Animations" FontSize="14" Foreground="{DynamicResource ThemeTextPrimary}"/>
+                                            <TextBlock Text="Enable confetti, toasts, and transition animations"
+                                                       FontSize="12" Foreground="{DynamicResource ThemeTextSecondary}" Margin="0,2,0,0"/>
+                                        </StackPanel>
+                                        <CheckBox x:Name="AnimationsToggle" Grid.Column="1" IsChecked="True"
+                                                  VerticalAlignment="Center" Style="{StaticResource ToggleSwitch}"/>
+                                    </Grid>
+                                </Border>
+                                <Border Background="{DynamicResource ThemeCardBg}" CornerRadius="12"
+                                        Padding="20,16" BorderBrush="{DynamicResource ThemeBorderCard}"
+                                        BorderThickness="1" Margin="0,0,0,16">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel>
+                                            <TextBlock Text="Debug Overlay" FontSize="14" Foreground="{DynamicResource ThemeTextPrimary}"/>
+                                            <TextBlock Text="Show verbose DEBUG-level messages in the console"
+                                                       FontSize="12" Foreground="{DynamicResource ThemeTextSecondary}" Margin="0,2,0,0"/>
+                                        </StackPanel>
+                                        <CheckBox x:Name="DebugOverlayToggle" Grid.Column="1" IsChecked="False"
+                                                  VerticalAlignment="Center" Style="{StaticResource ToggleSwitch}"/>
+                                    </Grid>
+                                </Border>
+
+                                <!-- Paths -->
+                                <StackPanel Orientation="Horizontal" Margin="0,8,0,10"><Border Width="3" Height="12" Background="{DynamicResource ThemeAccent}" CornerRadius="1" VerticalAlignment="Center" Margin="0,0,8,0"/><TextBlock Text="PATHS" FontSize="10" FontWeight="Bold"
+                                           Foreground="{DynamicResource ThemeTextMuted}"/></StackPanel>
+                                <Border Background="{DynamicResource ThemeCardBg}" CornerRadius="12"
+                                        Padding="20,16" BorderBrush="{DynamicResource ThemeBorderCard}"
+                                        BorderThickness="1" Margin="0,0,0,6">
+                                    <StackPanel>
+                                        <TextBlock Text="Group Policy Base Path" FontSize="14"
+                                                   Foreground="{DynamicResource ThemeTextPrimary}" Margin="0,0,0,4"/>
+                                        <TextBlock Text="Root directory containing versioned GP template folders"
+                                                   FontSize="12" Foreground="{DynamicResource ThemeTextSecondary}" Margin="0,0,0,8"/>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBox x:Name="BasePathSetting" Style="{StaticResource DarkTextBox}"
+                                                     FontSize="12" FontFamily="Cascadia Code, Consolas, Courier New"
+                                                     Padding="10,7"/>
+                                            <Button x:Name="BtnBrowseBasePathSetting" Grid.Column="1" Style="{StaticResource GhostButton}"
+                                                    Content="Browse..." Margin="8,0,0,0" Padding="14,7"/>
+                                        </Grid>
+                                    </StackPanel>
+                                </Border>
+                                <Border Background="{DynamicResource ThemeCardBg}" CornerRadius="12"
+                                        Padding="20,16" BorderBrush="{DynamicResource ThemeBorderCard}"
+                                        BorderThickness="1" Margin="0,0,0,16">
+                                    <StackPanel>
+                                        <TextBlock Text="Default Export Path" FontSize="14"
+                                                   Foreground="{DynamicResource ThemeTextPrimary}" Margin="0,0,0,4"/>
+                                        <TextBlock Text="Where HTML and CSV reports will be saved"
+                                                   FontSize="12" Foreground="{DynamicResource ThemeTextSecondary}" Margin="0,0,0,8"/>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBox x:Name="ExportPathSetting" Style="{StaticResource DarkTextBox}"
+                                                     FontSize="12" FontFamily="Cascadia Code, Consolas, Courier New"
+                                                     Padding="10,7"/>
+                                            <Button x:Name="BtnBrowseExportPath" Grid.Column="1" Style="{StaticResource GhostButton}"
+                                                    Content="Browse..." Margin="8,0,0,0" Padding="14,7"/>
+                                        </Grid>
+                                    </StackPanel>
+                                </Border>
+
+                                <!-- Achievements -->
+                                <StackPanel Orientation="Horizontal" Margin="0,8,0,10"><Border Width="3" Height="12" Background="{DynamicResource ThemeAccent}" CornerRadius="1" VerticalAlignment="Center" Margin="0,0,8,0"/><TextBlock Text="ACHIEVEMENTS" FontSize="10" FontWeight="Bold"
+                                           Foreground="{DynamicResource ThemeTextMuted}"/></StackPanel>
+                                <Border Background="{DynamicResource ThemeCardBg}" CornerRadius="12"
+                                        Padding="20,16" BorderBrush="{DynamicResource ThemeBorderCard}"
+                                        BorderThickness="1" Margin="0,0,0,16">
+                                    <StackPanel>
+                                        <Grid Margin="0,0,0,12">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="Unlocked Achievements" FontSize="14"
+                                                       Foreground="{DynamicResource ThemeTextPrimary}"/>
+                                            <TextBlock x:Name="AchievementSummaryText" Text="0 / 24"
+                                                       FontSize="14" Foreground="{DynamicResource ThemeAccentLight}"
+                                                       Grid.Column="1"/>
+                                        </Grid>
+                                        <Border Background="{DynamicResource ThemeDeepBg}" CornerRadius="4"
+                                                Height="6" Margin="0,0,0,16">
+                                            <Border x:Name="AchievementProgressBar" Background="{DynamicResource ThemeAccent}"
+                                                    CornerRadius="4" HorizontalAlignment="Left" Width="0"/>
+                                        </Border>
+                                        <WrapPanel x:Name="AchievementsPanel" Margin="0,0,0,4"/>
+                                    </StackPanel>
+                                </Border>
+
+                                <!-- Danger Zone -->
+                                <StackPanel Orientation="Horizontal" Margin="0,8,0,10"><Border Width="3" Height="12" Background="#FF5000" CornerRadius="1" VerticalAlignment="Center" Margin="0,0,8,0"/><TextBlock Text="DANGER ZONE" FontSize="10" FontWeight="Bold"
+                                           Foreground="#FF5000"/></StackPanel>
+                                <Border Background="{DynamicResource ThemeCardBg}" CornerRadius="12"
+                                        Padding="20,16" BorderBrush="#40FF5000" BorderThickness="1" Margin="0,0,0,32">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel>
+                                            <TextBlock Text="Reset All Data" FontSize="14" Foreground="{DynamicResource ThemeTextPrimary}"/>
+                                            <TextBlock Text="Clear achievements, settings and comparison history"
+                                                       FontSize="12" Foreground="{DynamicResource ThemeTextSecondary}" Margin="0,2,0,0"/>
+                                        </StackPanel>
+                                        <Button x:Name="BtnResetAll" Grid.Column="1" VerticalAlignment="Center"
+                                                Content="Reset" FontSize="12" Padding="16,7"
+                                                ToolTip="Permanently delete all history, results and preferences"
+                                                Foreground="#FF5000" Background="Transparent"
+                                                BorderBrush="#60FF5000" BorderThickness="1" Cursor="Hand">
+                                            <Button.Template>
+                                                <ControlTemplate TargetType="Button">
+                                                    <Border x:Name="ResetBd" Background="{TemplateBinding Background}"
+                                                            CornerRadius="6" BorderBrush="{TemplateBinding BorderBrush}"
+                                                            BorderThickness="{TemplateBinding BorderThickness}"
+                                                            Padding="{TemplateBinding Padding}">
+                                                        <ContentPresenter HorizontalAlignment="Center"/>
+                                                    </Border>
+                                                    <ControlTemplate.Triggers>
+                                                        <Trigger Property="IsMouseOver" Value="True">
+                                                            <Setter TargetName="ResetBd" Property="Background" Value="#33FF5000"/>
+                                                        </Trigger>
+                                                        <Trigger Property="IsPressed" Value="True">
+                                                            <Setter TargetName="ResetBd" Property="Background" Value="#55FF5000"/>
+                                                        </Trigger>
+                                                    </ControlTemplate.Triggers>
+                                                </ControlTemplate>
+                                            </Button.Template>
+                                        </Button>
+                                    </Grid>
+                                </Border>
+                            </StackPanel>
+                        </ScrollViewer>
+                    </Grid>
+                </Grid>
+                <!-- End Center Content Area -->
+            </Grid>
+            <!-- End Main Content Row -->
+            <!-- ROW 3: Bottom Splitter -->
+            <GridSplitter x:Name="BottomSplitter" Grid.Row="3" Height="3"
+                          HorizontalAlignment="Stretch" VerticalAlignment="Center"
+                          Background="{DynamicResource ThemeBorderSubtle}" ResizeDirection="Rows"
+                          Visibility="Collapsed"/>
+
+            <!-- ROW 4: Bottom Debug Console -->
+            <Border x:Name="pnlBottomPanel" Grid.Row="4" Background="{DynamicResource ThemeDeepBg}"
+                    BorderBrush="{DynamicResource ThemeBorderSubtle}" BorderThickness="0,1,0,0">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="32"/>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="26"/>
+                    </Grid.RowDefinitions>
+                    <!-- Console Header -->
+                    <Border Grid.Row="0" Background="{DynamicResource ThemeCardBg}"
+                            BorderBrush="{DynamicResource ThemeBorderSubtle}" BorderThickness="0,0,0,1">
+                        <Grid Margin="12,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                <TextBlock Text="&#xE756;" FontFamily="Segoe MDL2 Assets" FontSize="12"
+                                           Foreground="{DynamicResource ThemeAccent}" Margin="0,0,8,0"
+                                           VerticalAlignment="Center"/>
+                                <TextBlock Text="Debug Console" FontSize="11" FontWeight="SemiBold"
+                                           Foreground="{DynamicResource ThemeTextSecondary}" VerticalAlignment="Center"/>
+                                <TextBlock x:Name="ConsoleLineCount" Text="0 lines" FontSize="10"
+                                           Foreground="{DynamicResource ThemeTextDim}" Margin="12,0,0,0"
+                                           VerticalAlignment="Center"/>
+                            </StackPanel>
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                <Button x:Name="btnToggleBottomSize" Style="{StaticResource GhostButton}"
+                                        Content="&#xE740;" FontFamily="Segoe MDL2 Assets" FontSize="10"
+                                        Padding="6,3" Margin="0,0,4,0" ToolTip="Toggle panel size"/>
+                                <Button x:Name="btnClearLog" Style="{StaticResource GhostButton}"
+                                        Content="&#xE74D;" FontFamily="Segoe MDL2 Assets" FontSize="10"
+                                        Padding="6,3" Margin="0,0,4,0" ToolTip="Clear console"/>
+                                <Button x:Name="btnHideBottom" Style="{StaticResource GhostButton}"
+                                        Content="&#xE70D;" FontFamily="Segoe MDL2 Assets" FontSize="10"
+                                        Padding="6,3" ToolTip="Hide console"/>
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+                    <!-- Console Body -->
+                    <Grid Grid.Row="1">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="32"/>
+                        </Grid.ColumnDefinitions>
+                        <ScrollViewer x:Name="logScroller" VerticalScrollBarVisibility="Auto"
+                                      HorizontalScrollBarVisibility="Disabled"
+                                      Style="{StaticResource MinimalScrollViewer}">
+                            <RichTextBox x:Name="rtbActivityLog" Background="Transparent"
+                                         BorderThickness="0" IsReadOnly="True"
+                                         FontFamily="Cascadia Code, Consolas, Courier New"
+                                         FontSize="11.5" Padding="12,6"
+                                         Foreground="{DynamicResource ThemeTextBody}">
+                                <FlowDocument x:Name="docActivityLog" PagePadding="0">
+                                    <Paragraph x:Name="paraLog" Margin="0" LineHeight="18"/>
+                                </FlowDocument>
+                            </RichTextBox>
+                        </ScrollViewer>
+                        <!-- Minimap -->
+                        <Border Grid.Column="1" Background="{DynamicResource ThemeCardBg}"
+                                BorderBrush="{DynamicResource ThemeBorderSubtle}" BorderThickness="1,0,0,0">
+                            <Canvas x:Name="cnvMinimap" ClipToBounds="True"/>
+                        </Border>
+                    </Grid>
+                    <!-- Heatmap bar -->
+                    <Border Grid.Row="2" Background="{DynamicResource ThemeCardBg}"
+                            BorderBrush="{DynamicResource ThemeBorderSubtle}" BorderThickness="0,1,0,0">
+                        <Grid Margin="12,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="Activity" FontSize="9" FontWeight="SemiBold"
+                                       Foreground="{DynamicResource ThemeTextDim}" VerticalAlignment="Center"
+                                       Margin="0,0,8,0"/>
+                            <Canvas x:Name="cnvHeatmap" Grid.Column="1" Height="10" ClipToBounds="True"/>
+                        </Grid>
+                    </Border>
+                </Grid>
+            </Border>
+
+            <!-- ROW 5: Status Bar -->
+            <Border Grid.Row="5" Background="{DynamicResource ThemeCardBg}"
+                    BorderBrush="{DynamicResource ThemeBorderSubtle}" BorderThickness="0,1,0,0">
+                <Grid Margin="14,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                        <Ellipse x:Name="statusDot" Width="7" Height="7" Fill="#00C853" Margin="0,0,8,0"/>
+                        <TextBlock x:Name="StatusText" Text="Ready" FontSize="11"
+                                   Foreground="{DynamicResource ThemeTextSecondary}"/>
+                        <TextBlock Text="|" FontSize="10" Foreground="{DynamicResource ThemeTextDim}" Margin="10,0"/>
+                        <TextBlock x:Name="StatusResults" Text="0 results" FontSize="10"
+                                   Foreground="{DynamicResource ThemeTextDim}" VerticalAlignment="Center"/>
+                        <TextBlock Text="|" FontSize="10" Foreground="{DynamicResource ThemeTextDim}" Margin="10,0"/>
+                        <TextBlock x:Name="StatusStreak" Text="" FontSize="10"
+                                   Foreground="{DynamicResource ThemeAccentLight}" VerticalAlignment="Center"
+                                   FontFamily="Segoe MDL2 Assets, Segoe UI"/>
+                    </StackPanel>
+                    <TextBlock x:Name="StatusRight" Grid.Column="2" Text="ADMX Policy Comparer v2.0"
+                               FontSize="10" Foreground="{DynamicResource ThemeTextDim}"
+                               VerticalAlignment="Center" FontFamily="Cascadia Code, Consolas, Segoe UI"/>
+                </Grid>
+            </Border>
+        </Grid>
+        <!-- End Root 6-Row Grid -->
+
+        <!-- TOAST OVERLAY -->
+        <Border x:Name="ToastBorder" VerticalAlignment="Top" HorizontalAlignment="Right"
+                Margin="0,50,20,0" Visibility="Collapsed" IsHitTestVisible="False">
+            <Border.RenderTransform>
+                <TranslateTransform X="350"/>
+            </Border.RenderTransform>
+            <Border Background="{DynamicResource ThemeCardBg}" CornerRadius="12"
+                    Padding="0" MinWidth="280" MaxWidth="420"
+                    BorderBrush="{DynamicResource ThemeBorderElevated}" BorderThickness="1"
+                    Effect="{StaticResource CardShadow}" ClipToBounds="True">
+                <Grid>
+                    <Border x:Name="ToastAccentBar" Width="4" HorizontalAlignment="Left"
+                            Background="{DynamicResource ThemeAccent}" CornerRadius="0"/>
+                    <Grid Margin="18,14">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock x:Name="ToastIcon" Text="&#xE946;" FontFamily="Segoe MDL2 Assets"
+                                   FontSize="18" Foreground="{DynamicResource ThemeAccent}"
+                                   VerticalAlignment="Top" Margin="0,0,12,0"/>
+                        <StackPanel Grid.Column="1">
+                            <TextBlock x:Name="ToastTitle" Text="" FontSize="13" FontWeight="SemiBold"
+                                       Foreground="{DynamicResource ThemeTextPrimary}"/>
+                            <TextBlock x:Name="ToastMessage" Text="" FontSize="12"
+                                       Foreground="{DynamicResource ThemeTextSecondary}" Margin="0,3,0,0"
+                                       TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </Grid>
+                </Grid>
+            </Border>
+        </Border>
+
+        <!-- CONFETTI CANVAS -->
+        <Canvas x:Name="ConfettiCanvas" IsHitTestVisible="False"/>
+    </Grid>
+</Border>
+</Window>

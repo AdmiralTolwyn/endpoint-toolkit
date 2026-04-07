@@ -1,0 +1,24 @@
+{
+  "name": "src",
+  "version": "5.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "build": "tsc",
+    "test": "echo 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "azure-pipelines-task-lib": "^5.2.4",
+    "azure-pipelines-tasks-azure-arm-rest": "^3.248.1",
+    "@azure/storage-blob": "^12.17.0",
+    "archiver": "5.3.1"
+  },
+  "devDependencies": {
+    "@types/mocha": "^5.2.6",
+    "@types/node": "^20.11.0",
+    "@types/archiver": "^6.0.2",
+    "typescript": "^5.3.3"
+  }
+}

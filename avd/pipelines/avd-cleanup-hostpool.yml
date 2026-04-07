@@ -1,0 +1,71 @@
+name: $(Date:yyyyMMdd)$(Rev:.r)-AVD-Cleanup-Task
+
+trigger: none
+
+pool:
+  vmImage: 'windows-latest'
+
+variables:
+  serviceConnection: '<YOURSERVICECONNECTION>'
+  
+  # AVD Target
+  hostPoolName: '<YOURHOSTPOOLNAME>' # Update for Legacy if needed
+  hostPoolRg: '<YOURRESOURCEGROUP-CORE>'
+  computeRg: '<YOURRESOURCEGROUP-COMPUTE>'      # Where the VMs are
+  
+  # Image Source (To define what is "New")
+  galleryRg: '<YOURRESOURCEGROUP-AIB>'
+  galleryName: '<YOURGALLERYNAME>'
+  imageDef: '<YOURIMAGEDEFINITION>'
+
+  # Key Vault (for telemetry secrets)
+  keyVaultName: '<YOURKEYVAULTNAME>'
+
+  # Telemetry (optional — set to 'true' to send events to Log Analytics)
+  enableTelemetry: 'false'
+
+steps:
+- task: AzurePowerShell@5
+  displayName: "Run Decommissioning Logic"
+  inputs:
+    azureSubscription: $(serviceConnection)
+    ScriptType: 'FilePath'
+    ScriptPath: '$(System.DefaultWorkingDirectory)/scripts/Remove-AvdHosts.ps1'
+    ScriptArguments: >
+      -HostPoolName "$(hostPoolName)"
+      -HostPoolRg "$(hostPoolRg)"
+      -ComputeRg "$(computeRg)"
+      -GalleryRg "$(galleryRg)"
+      -GalleryName "$(galleryName)"
+      -ImageDef "$(imageDef)"
+    azurePowerShellVersion: 'LatestVersion'
+
+# OPTIONAL: Deployment Telemetry
+- task: AzureKeyVault@2
+  displayName: "Fetch Telemetry Secrets"
+  condition: and(succeeded(), eq(variables['enableTelemetry'], 'true'))
+  continueOnError: true
+  inputs:
+    azureSubscription: $(serviceConnection)
+    KeyVaultName: $(keyVaultName)
+    SecretsFilter: 'log-analytics-workspace-id,log-analytics-shared-key'
+
+- task: AzurePowerShell@5
+  displayName: "Telemetry → Cleanup"
+  condition: and(succeeded(), eq(variables['enableTelemetry'], 'true'))
+  continueOnError: true
+  inputs:
+    azureSubscription: $(serviceConnection)
+    ScriptType: 'FilePath'
+    ScriptPath: '$(System.DefaultWorkingDirectory)/scripts/Write-DeploymentTelemetry.ps1'
+    ScriptArguments: >
+      -WorkspaceId "$(log-analytics-workspace-id)"
+      -SharedKey "$(log-analytics-shared-key)"
+      -EventData @{
+        HostPoolName  = '$(hostPoolName)';
+        Stage         = 'Cleanup';
+        Action        = 'Decommission';
+        Status        = 'Success';
+        PipelineRunId = '$(Build.BuildId)'
+      }
+    azurePowerShellVersion: 'LatestVersion'

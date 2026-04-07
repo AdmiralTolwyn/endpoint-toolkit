@@ -1,0 +1,562 @@
+{
+    "id": "b1d5cc59-35c5-4aab-9a1e-2cc5dfa0bb25",
+    "name": "AzureImageBuilderTaskV2",
+    "friendlyName": "Azure VM Image Builder Task v2",
+    "description": "Build images using Azure Image Builder resource provider (API 2024-02-01). Supports workload identity federation, VM boot optimization, validation, and all modern AIB features.",
+    "helpMarkDown": "For documentation: https://learn.microsoft.com/en-us/azure/virtual-machines/image-builder-overview",
+    "category": "Deploy",
+    "visibility": [
+        "Build",
+        "Release"
+    ],
+    "author": "Microsoft Corporation (community update)",
+    "version": {
+        "Major": 2,
+        "Minor": 2,
+        "Patch": 4
+    },
+    "instanceNameFormat": "Azure VM Image Builder Task",
+    "minimumAgentVersion": "2.144.0",
+    "execution": {
+        "Node20_1": {
+            "target": "index.js"
+        }
+    },
+    "groups": [
+        {
+            "name": "ImageBuilderInput",
+            "displayName": "Where you want to run this template",
+            "isExpanded": true
+        },
+        {
+            "name": "Identity",
+            "displayName": "Managed Identity (Required)",
+            "isExpanded": true
+        },
+        {
+            "name": "VnetConfig",
+            "displayName": "VNet Configuration (Optional)",
+            "isExpanded": false
+        },
+        {
+            "name": "Source",
+            "displayName": "Source",
+            "isExpanded": true
+        },
+        {
+            "name": "Customize",
+            "displayName": "Customize",
+            "isExpanded": true
+        },
+        {
+            "name": "Validate",
+            "displayName": "Validation (Optional)",
+            "isExpanded": false
+        },
+        {
+            "name": "Distribute",
+            "displayName": "Distribute",
+            "isExpanded": true
+        },
+        {
+            "name": "OptionalSettings",
+            "displayName": "Optional Settings",
+            "isExpanded": false
+        }
+    ],
+    "inputs": [
+        {
+            "name": "managedIdentity",
+            "type": "string",
+            "label": "Template Identity Resource Id",
+            "required": true,
+            "helpMarkDown": "User-assigned managed identity resource ID for the image template resource. See https://learn.microsoft.com/en-us/azure/virtual-machines/image-builder-overview#permissions",
+            "groupName": "Identity"
+        },
+        {
+            "name": "buildVmIdentities",
+            "type": "multiLine",
+            "label": "Build VM User-Assigned Identities (optional)",
+            "required": false,
+            "helpMarkDown": "One resource ID per line. These identities are assigned to the build VM so customizer scripts can authenticate to Azure services (e.g. Key Vault). The template identity must have 'Managed Identity Operator' on each.",
+            "groupName": "Identity"
+        },
+        {
+            "name": "vnetSubnetId",
+            "type": "string",
+            "label": "Build VM Subnet Id",
+            "required": false,
+            "helpMarkDown": "Resource ID of a pre-existing subnet for the build VM and validation VM.",
+            "groupName": "VnetConfig"
+        },
+        {
+            "name": "containerInstanceSubnetId",
+            "type": "string",
+            "label": "Container Instance Subnet Id (Isolated Builds)",
+            "required": false,
+            "helpMarkDown": "Resource ID of a subnet for Azure Container Instance (ACI) in isolated builds. Must be on the same VNet as the build VM subnet, delegated to ACI. New in API 2024-02-01.",
+            "visibleRule": "vnetSubnetId != \"\"",
+            "groupName": "VnetConfig"
+        },
+        {
+            "name": "proxyVmSize",
+            "type": "string",
+            "label": "Proxy VM Size (optional)",
+            "required": false,
+            "helpMarkDown": "Size of the proxy VM used to pass traffic to the build VM. Not used when containerInstanceSubnetId is specified. Default: Standard_A1_v2.",
+            "visibleRule": "vnetSubnetId != \"\"",
+            "groupName": "VnetConfig"
+        },
+        {
+            "name": "imageSource",
+            "type": "pickList",
+            "label": "Image type",
+            "required": false,
+            "helpMarkDown": "Select image source: Managed Image, Azure Compute Gallery, or Marketplace",
+            "options": {
+                "managedimage": "Managed Image",
+                "gallery": "Azure Compute Gallery",
+                "marketplace": "Marketplace"
+            },
+            "defaultValue": "marketplace",
+            "groupName": "Source"
+        },
+        {
+            "name": "customImageResourceId",
+            "type": "string",
+            "label": "Image resource id for Managed Image",
+            "required": false,
+            "helpMarkDown": "Resource ID for Managed Image source.",
+            "visibleRule": "imageSource = managedimage",
+            "groupName": "Source"
+        },
+        {
+            "name": "ImageVersionId",
+            "type": "string",
+            "label": "Image version id",
+            "required": false,
+            "helpMarkDown": "Image version resource ID for Azure Compute Gallery source. Use '/versions/latest' to always pick the newest version.",
+            "visibleRule": "imageSource = gallery",
+            "groupName": "Source"
+        },
+        {
+            "name": "baseImage",
+            "type": "pickList",
+            "label": "Base image",
+            "required": false,
+            "helpMarkDown": "Choose from curated gallery of OS images (latest version used)",
+            "properties": {
+                "EditableOptions": "True"
+            },
+            "options": {
+                "MicrosoftWindowsServer:WindowsServer:2022-datacenter-g2": "Windows Server 2022 Datacenter (Gen2)",
+                "MicrosoftWindowsServer:WindowsServer:2025-datacenter-g2": "Windows Server 2025 Datacenter (Gen2)",
+                "MicrosoftWindowsDesktop:windows-11:win11-24h2-ent": "Windows 11 24H2 Enterprise",
+                "MicrosoftWindowsDesktop:windows-11:win11-24h2-avd": "Windows 11 24H2 AVD",
+                "MicrosoftWindowsDesktop:windows-11:win11-25h2-ent": "Windows 11 25H2 Enterprise",
+                "MicrosoftWindowsDesktop:windows-11:win11-25h2-avd": "Windows 11 25H2 AVD",
+                "MicrosoftWindowsDesktop:office-365:win11-24h2-avd-m365": "Windows 11 24H2 AVD + M365",
+                "MicrosoftWindowsDesktop:office-365:win11-25h2-avd-m365": "Windows 11 25H2 AVD + M365",
+                "Canonical:ubuntu-24_04-lts:server": "Ubuntu 24.04 LTS",
+                "Canonical:ubuntu-22_04-lts:server": "Ubuntu 22.04 LTS"
+            },
+            "defaultValue": "MicrosoftWindowsDesktop:windows-11:win11-25h2-ent",
+            "visibleRule": "imageSource = marketplace",
+            "groupName": "Source"
+        },
+        {
+            "name": "baseImagePubOfferSku",
+            "type": "string",
+            "label": "Custom Publisher:Offer:Sku (if not in list)",
+            "required": false,
+            "helpMarkDown": "Format: 'Publisher:Offer:Sku', e.g. 'MicrosoftWindowsDesktop:office-365:win11-25h2-avd-m365'",
+            "defaultValue": "Publisher:Offer:Sku",
+            "visibleRule": "imageSource = marketplace",
+            "groupName": "Source"
+        },
+        {
+            "name": "baseImageVersion",
+            "type": "string",
+            "label": "Base Image Version (optional)",
+            "required": false,
+            "helpMarkDown": "Platform image version. Default: latest.",
+            "defaultValue": "latest",
+            "visibleRule": "imageSource = marketplace",
+            "groupName": "Source"
+        },
+        {
+            "name": "platformImagePurchasePlan",
+            "type": "string",
+            "label": "Platform Image Purchase Plan (optional)",
+            "required": false,
+            "helpMarkDown": "Format: 'PlanName:PlanProduct:PlanPublisher' for marketplace images that require purchase plan acceptance.",
+            "defaultValue": "PlanName:PlanProduct:PlanPublisher",
+            "visibleRule": "imageSource = marketplace",
+            "groupName": "Source"
+        },
+        {
+            "name": "provisioner",
+            "type": "picklist",
+            "label": "Provisioner",
+            "required": false,
+            "helpMarkDown": "Shell for Linux, PowerShell for Windows",
+            "options": {
+                "shell": "Shell",
+                "powershell": "PowerShell"
+            },
+            "defaultValue": "powershell",
+            "groupName": "Customize"
+        },
+        {
+            "name": "windowsUpdateProvisioner",
+            "type": "boolean",
+            "label": "Run Windows Update as last customization",
+            "defaultValue": "false",
+            "required": false,
+            "visibleRule": "provisioner = powershell",
+            "groupName": "Customize",
+            "helpMarkDown": "Appends Windows Update customizer (with 5-min pre-wait) as the final step"
+        },
+        {
+            "name": "runElevated",
+            "type": "boolean",
+            "label": "Run Elevated",
+            "defaultValue": "true",
+            "required": false,
+            "visibleRule": "provisioner = powershell",
+            "groupName": "Customize",
+            "helpMarkDown": "Run the PowerShell script with elevated privileges"
+        },
+        {
+            "name": "runAsSystem",
+            "type": "boolean",
+            "label": "Run As Local System User",
+            "defaultValue": "false",
+            "required": false,
+            "visibleRule": "runElevated = true",
+            "groupName": "Customize",
+            "helpMarkDown": "Run with elevated privileges using the Local System user"
+        },
+        {
+            "name": "packagePath",
+            "type": "filePath",
+            "label": "Build path",
+            "required": false,
+            "helpMarkDown": "Path to build artifacts. Uploaded to blob storage and extracted to C:\\BuildArtifacts (Windows) or /tmp (Linux) inside the AIB VM.",
+            "groupName": "Customize"
+        },
+        {
+            "name": "inlineScript",
+            "type": "multiLine",
+            "label": "Inline customization script",
+            "required": false,
+            "defaultValue": "# Artifacts available at:\n# Windows: C:\\BuildArtifacts\\<folder>\n# Linux: /tmp/<folder>",
+            "groupName": "Customize",
+            "helpMarkDown": "Inline script for image customization. Build artifacts are at C:\\BuildArtifacts (Windows) or /tmp (Linux).",
+            "properties": {
+                "editorExtension": "ms.vss-services-azure.azure-servicebus-message-grid"
+            }
+        },
+        {
+            "name": "storageAccountName",
+            "type": "pickList",
+            "label": "Storage account",
+            "required": false,
+            "helpMarkDown": "Storage account for staging build artifacts. Must exist in the same subscription.",
+            "groupName": "Customize"
+        },
+        {
+            "name": "enableValidation",
+            "type": "boolean",
+            "label": "Enable image validation",
+            "defaultValue": "false",
+            "required": false,
+            "groupName": "Validate",
+            "helpMarkDown": "Run validation customizers after the image is built but before distribution."
+        },
+        {
+            "name": "sourceValidationOnly",
+            "type": "boolean",
+            "label": "Source validation only",
+            "defaultValue": "false",
+            "required": false,
+            "visibleRule": "enableValidation = true",
+            "groupName": "Validate",
+            "helpMarkDown": "Validate the source image directly without building a customized image first."
+        },
+        {
+            "name": "continueDistributeOnFailure",
+            "type": "boolean",
+            "label": "Continue distribute on validation failure",
+            "defaultValue": "false",
+            "required": false,
+            "visibleRule": "enableValidation = true",
+            "groupName": "Validate",
+            "helpMarkDown": "If true, distribute the image even if validation fails. The overall build will still report failure."
+        },
+        {
+            "name": "validationInlineScript",
+            "type": "multiLine",
+            "label": "Validation inline script",
+            "required": false,
+            "visibleRule": "enableValidation = true",
+            "groupName": "Validate",
+            "helpMarkDown": "Inline script to validate the built image. Uses the same provisioner (Shell/PowerShell) as the customize phase.",
+            "properties": {
+                "editorExtension": "ms.vss-services-azure.azure-servicebus-message-grid"
+            }
+        },
+        {
+            "name": "distributeType",
+            "type": "pickList",
+            "label": "Distribute type",
+            "required": false,
+            "helpMarkDown": "Output type: Azure Compute Gallery, Managed Image, or VHD",
+            "options": {
+                "managedimage": "ManagedImage",
+                "gallery": "Azure Compute Gallery",
+                "vhd": "VHD"
+            },
+            "defaultValue": "gallery",
+            "groupName": "Distribute"
+        },
+        {
+            "name": "imageIdForDistribute",
+            "type": "string",
+            "label": "Image id for managed image",
+            "required": false,
+            "helpMarkDown": "Resource ID for the output Managed Image",
+            "visibleRule": "distributeType = managedimage",
+            "groupName": "Distribute"
+        },
+        {
+            "name": "galleryImageId",
+            "type": "string",
+            "label": "Image id for Azure Compute Gallery Image",
+            "required": false,
+            "helpMarkDown": "Image definition resource ID (without /versions). Use automatic versioning or append /versions/<n.n.n> for explicit version.",
+            "visibleRule": "distributeType = gallery",
+            "groupName": "Distribute"
+        },
+        {
+            "name": "managedImageLocation",
+            "type": "string",
+            "label": "Location for managed image",
+            "required": false,
+            "helpMarkDown": "Location for managed image output. Example: westeurope",
+            "visibleRule": "distributeType = managedimage",
+            "groupName": "Distribute"
+        },
+        {
+            "name": "targetRegions",
+            "type": "string",
+            "label": "Target regions (comma-separated)",
+            "required": false,
+            "helpMarkDown": "Target regions for Azure Compute Gallery replication. Example: westeurope,northeurope. Maps to the 'targetRegions' API property.",
+            "visibleRule": "distributeType = gallery",
+            "groupName": "Distribute"
+        },
+        {
+            "name": "replicationRegions",
+            "type": "string",
+            "label": "Replication regions (deprecated, use Target regions)",
+            "required": false,
+            "helpMarkDown": "Deprecated — kept for backward compatibility. Prefer 'Target regions' above.",
+            "visibleRule": "distributeType = gallery",
+            "groupName": "Distribute"
+        },
+        {
+            "name": "distributeStorageAccountType",
+            "type": "pickList",
+            "label": "Storage account type for gallery image version",
+            "required": false,
+            "helpMarkDown": "Storage type for the image version in each target region.",
+            "options": {
+                "": "(Default)",
+                "Standard_LRS": "Standard LRS",
+                "Standard_ZRS": "Standard ZRS",
+                "Premium_LRS": "Premium LRS"
+            },
+            "defaultValue": "",
+            "visibleRule": "distributeType = gallery",
+            "groupName": "Distribute"
+        },
+        {
+            "name": "excludeFromLatest",
+            "type": "boolean",
+            "label": "Exclude from latest",
+            "defaultValue": "false",
+            "required": false,
+            "visibleRule": "distributeType = gallery",
+            "groupName": "Distribute",
+            "helpMarkDown": "Exclude this image version from being used as the 'latest' version in the gallery image definition."
+        },
+        {
+            "name": "distributeVersioningScheme",
+            "type": "pickList",
+            "label": "Versioning scheme",
+            "required": false,
+            "helpMarkDown": "Latest: monotonically increasing version numbers. Source: version based on source image version.",
+            "options": {
+                "": "(Default / Auto)",
+                "Latest": "Latest",
+                "Source": "Source"
+            },
+            "defaultValue": "",
+            "visibleRule": "distributeType = gallery",
+            "groupName": "Distribute"
+        },
+        {
+            "name": "distributeVersioningMajor",
+            "type": "string",
+            "label": "Versioning major version",
+            "required": false,
+            "helpMarkDown": "When versioning scheme is 'Latest', specify the major version number under which to generate the next version.",
+            "visibleRule": "distributeVersioningScheme = Latest",
+            "groupName": "Distribute"
+        },
+        {
+            "name": "vhdUri",
+            "type": "string",
+            "label": "VHD output URI (optional)",
+            "required": false,
+            "helpMarkDown": "Azure Storage URI for the distributed VHD blob. Omit to use the default storage account in the staging resource group.",
+            "visibleRule": "distributeType = vhd",
+            "groupName": "Distribute"
+        },
+        {
+            "name": "ibSubscription",
+            "type": "connectedService:AzureRM",
+            "label": "Azure Subscription",
+            "required": true,
+            "helpMarkDown": "Azure Resource Manager subscription. Supports workload identity federation (recommended) and service principal with secret.",
+            "groupName": "ImageBuilderInput",
+            "properties": {
+                "EndpointFilterRule": "ScopeLevel != AzureMLWorkspace"
+            }
+        },
+        {
+            "name": "ibAzureResourceGroup",
+            "type": "pickList",
+            "label": "Resource group",
+            "helpMarkDown": "Resource group for the image template.",
+            "required": true,
+            "groupName": "ImageBuilderInput"
+        },
+        {
+            "name": "ibLocation",
+            "type": "pickList",
+            "label": "Location",
+            "required": true,
+            "helpMarkDown": "Location for the image template",
+            "properties": {
+                "EditableOptions": "True"
+            },
+            "groupName": "ImageBuilderInput"
+        },
+        {
+            "name": "buildTimeoutInMinutes",
+            "type": "string",
+            "label": "Build timeout (minutes)",
+            "required": false,
+            "helpMarkDown": "Maximum build time. 0 = platform default (4 hours). Min: 6, Max: 960.",
+            "defaultValue": "120",
+            "groupName": "OptionalSettings"
+        },
+        {
+            "name": "vmSize",
+            "type": "string",
+            "label": "VM size",
+            "required": false,
+            "helpMarkDown": "VM size for the build VM. Gen1 default: Standard_D1_v2, Gen2 default: Standard_D2ds_v4.",
+            "defaultValue": "Standard_D2ds_v4",
+            "groupName": "OptionalSettings"
+        },
+        {
+            "name": "osDiskSizeGB",
+            "type": "string",
+            "label": "OS Disk Size (GB)",
+            "required": false,
+            "helpMarkDown": "Override the OS disk size. 0 or empty = use source image size. Can only increase, not decrease.",
+            "defaultValue": "",
+            "groupName": "OptionalSettings"
+        },
+        {
+            "name": "optimizeVmBoot",
+            "type": "boolean",
+            "label": "Enable VM boot optimization",
+            "defaultValue": "false",
+            "required": false,
+            "groupName": "OptionalSettings",
+            "helpMarkDown": "Enable VM boot optimization to improve image creation time. Sets optimize.vmBoot.state = Enabled."
+        },
+        {
+            "name": "autoRun",
+            "type": "boolean",
+            "label": "Auto-run on template creation",
+            "defaultValue": "false",
+            "required": false,
+            "groupName": "OptionalSettings",
+            "helpMarkDown": "Automatically start the image build when the template is created. The task still monitors completion regardless."
+        },
+        {
+            "name": "stagingResourceGroup",
+            "type": "string",
+            "label": "Staging resource group (optional)",
+            "required": false,
+            "helpMarkDown": "Resource ID of a pre-existing resource group for AIB staging resources. Must be empty, in the same region, with Contributor/Owner RBAC for the template identity. Leave empty for auto-created staging group.",
+            "groupName": "OptionalSettings"
+        },
+        {
+            "name": "managedResourceTags",
+            "type": "multiLine",
+            "label": "Managed resource tags (JSON)",
+            "required": false,
+            "helpMarkDown": "JSON object of key-value tags to apply to the staging resource group resources. Example: {\"env\": \"dev\", \"project\": \"avd\"}",
+            "groupName": "OptionalSettings"
+        },
+        {
+            "name": "errorHandlingOnCustomizerError",
+            "type": "pickList",
+            "label": "On customizer error",
+            "required": false,
+            "helpMarkDown": "cleanup: remove staging resources on failure (default). abort: leave resources for debugging.",
+            "options": {
+                "cleanup": "Cleanup",
+                "abort": "Abort (keep resources for debugging)"
+            },
+            "defaultValue": "cleanup",
+            "groupName": "OptionalSettings"
+        },
+        {
+            "name": "errorHandlingOnValidationError",
+            "type": "pickList",
+            "label": "On validation error",
+            "required": false,
+            "helpMarkDown": "cleanup: remove staging resources on failure (default). abort: leave resources for debugging.",
+            "options": {
+                "cleanup": "Cleanup",
+                "abort": "Abort (keep resources for debugging)"
+            },
+            "defaultValue": "cleanup",
+            "groupName": "OptionalSettings"
+        }
+    ],
+    "dataSourceBindings": [
+        {
+            "target": "ibAzureResourceGroup",
+            "endpointId": "$(ibSubscription)",
+            "dataSourceName": "AzureResourceGroups"
+        },
+        {
+            "target": "ibLocation",
+            "endpointId": "$(ibSubscription)",
+            "dataSourceName": "AzureLocations"
+        },
+        {
+            "target": "storageAccountName",
+            "endpointId": "$(ibSubscription)",
+            "dataSourceName": "AzureStorageAccountRM"
+        }
+    ]
+}

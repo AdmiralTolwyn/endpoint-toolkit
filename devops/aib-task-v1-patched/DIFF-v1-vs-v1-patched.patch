@@ -1,0 +1,1936 @@
+diff --git "a/devOps-task-for-azure-image-builder-source\\src\\AIBServiceClient.ts" "b/devOps-task-for-azure-image-builder-v1-patched\\src\\AIBServiceClient.ts"
+index f7b69c0..5c8a0b9 100644
+--- "a/devOps-task-for-azure-image-builder-source\\src\\AIBServiceClient.ts"
++++ "b/devOps-task-for-azure-image-builder-v1-patched\\src\\AIBServiceClient.ts"
+@@ -1,6 +1,7 @@
+ "use strict";
+-import { ServiceClient } from 'azure-pipelines-tasks-azure-arm-rest-v2/AzureServiceClient';
+-import webClient = require("azure-pipelines-tasks-azure-arm-rest-v2/webClient");
++// v1-patched: import path changed from azure-arm-rest-v2 to azure-arm-rest (v3)
++import { ServiceClient } from 'azure-pipelines-tasks-azure-arm-rest/AzureServiceClient';
++import webClient = require("azure-pipelines-tasks-azure-arm-rest/webClient");
+ 
+ 
+ // AIBServiceClient extends ServiceClient from azure-arm-rest, with some modifications
+@@ -30,4 +31,4 @@ export default class AIBServiceClient extends ServiceClient {
+             return operationResponse;
+         }
+     }
+-}
+\ No newline at end of file
++}
+diff --git "a/devOps-task-for-azure-image-builder-source\\src\\AzureImageBuilderClient.ts" "b/devOps-task-for-azure-image-builder-v1-patched\\src\\AzureImageBuilderClient.ts"
+index 0467a26..187fa74 100644
+--- "a/devOps-task-for-azure-image-builder-source\\src\\AzureImageBuilderClient.ts"
++++ "b/devOps-task-for-azure-image-builder-v1-patched\\src\\AzureImageBuilderClient.ts"
+@@ -1,10 +1,18 @@
+-import { ToError } from 'azure-pipelines-tasks-azure-arm-rest-v2/AzureServiceClientBase';
+-import webClient = require("azure-pipelines-tasks-azure-arm-rest-v2/webClient");
+-import msRestAzure = require('azure-pipelines-tasks-azure-arm-rest-v2/azure-arm-common');
++// v1-patched: import path changed from azure-arm-rest-v2 to azure-arm-rest (v3)
++import { ToError } from 'azure-pipelines-tasks-azure-arm-rest/AzureServiceClientBase';
++import webClient = require("azure-pipelines-tasks-azure-arm-rest/webClient");
++import msRestAzure = require('azure-pipelines-tasks-azure-arm-rest/azure-arm-common');
+ import TaskParameters from './TaskParameters';
+ import AIBServiceClient from './AIBServiceClient';
++import { AIB_API_VERSION } from './constants';
++import Utils from './Utils';
+ 
+-var apiVersion = "2020-02-14";
++// v1-patched: lastRunStatus interface for progress polling
++interface LastRunStatus {
++    runState: string;
++    runSubState: string;
++    message: string;
++}
+ 
+ export default class ImageBuilderClient {
+ 
+@@ -23,7 +31,7 @@ export default class ImageBuilderClient {
+     {
+         var httpRequest = new webClient.WebRequest();
+         httpRequest.method = 'GET';
+-        httpRequest.uri = this._client.getRequestUri(`/subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/Microsoft.VirtualMachineImages/imagetemplates/{imageTemplateName}`,{'{subscriptionId}': this._subscriptionId,'{resourceGroupName}': this._taskParameters.ibResourceGroup,'{imageTemplateName}': templateName }, [], apiVersion);
++        httpRequest.uri = this._client.getRequestUri(`/subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/Microsoft.VirtualMachineImages/imagetemplates/{imageTemplateName}`,{'{subscriptionId}': this._subscriptionId,'{resourceGroupName}': this._taskParameters.ibResourceGroup,'{imageTemplateName}': templateName }, [], AIB_API_VERSION);
+         var resourceId: string = "";
+         try {
+             var response = await this._client.beginRequest(httpRequest);
+@@ -45,7 +53,7 @@ export default class ImageBuilderClient {
+         var httpRequest = new webClient.WebRequest();
+         httpRequest.method = 'PUT';
+         httpRequest.body = template;
+-        httpRequest.uri = this._client.getRequestUri(`/subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/Microsoft.VirtualMachineImages/imagetemplates/{imageTemplateName}`,{'{subscriptionId}': this._subscriptionId,'{resourceGroupName}': this._taskParameters.ibResourceGroup,'{imageTemplateName}': templateName}, [], apiVersion);
++        httpRequest.uri = this._client.getRequestUri(`/subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/Microsoft.VirtualMachineImages/imagetemplates/{imageTemplateName}`,{'{subscriptionId}': this._subscriptionId,'{resourceGroupName}': this._taskParameters.ibResourceGroup,'{imageTemplateName}': templateName}, [], AIB_API_VERSION);
+ 
+         try {
+             var response = await this._client.beginRequest(httpRequest);
+@@ -65,25 +73,26 @@ export default class ImageBuilderClient {
+         }
+     }
+ 
+-    /**
+-     * postTemplate
+-     */
+-    public async runTemplate(templateName :string) {
++    // v1-patched: runTemplate with progress polling (replaces blind getLongRunningOperationResult)
++    public async runTemplate(templateName :string, buildStart?: number) {
+         try {
+             console.log("starting run template...");
+             var httpRequest = new webClient.WebRequest();
+             httpRequest.method = 'POST';
+-            httpRequest.uri = this._client.getRequestUri(`/subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/Microsoft.VirtualMachineImages/imagetemplates/{imageTemplateName}/run`,{'{subscriptionId}': this._subscriptionId,'{resourceGroupName}': this._taskParameters.ibResourceGroup,'{imageTemplateName}': templateName}, [], apiVersion);
++            httpRequest.uri = this._client.getRequestUri(`/subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/Microsoft.VirtualMachineImages/imagetemplates/{imageTemplateName}/run`,{'{subscriptionId}': this._subscriptionId,'{resourceGroupName}': this._taskParameters.ibResourceGroup,'{imageTemplateName}': templateName}, [], AIB_API_VERSION);
+ 
+             var response = await this._client.beginRequest(httpRequest);
+             if(response.statusCode == 202) {
+-                response = await this._client.getLongRunningOperationResult(response);
++                // v1-patched: use custom progress polling instead of getLongRunningOperationResult
++                var asyncUrl = response.headers["azure-asyncoperation"] || response.headers["location"];
++                if(!asyncUrl)
++                    throw new Error("No async operation URL returned from POST /run");
++                await this._pollBuildWithProgress(asyncUrl, templateName, buildStart || Date.now());
+             }
+-            if(response.statusCode != 200 || response.body.status == "Failed") {
++            else if(response.statusCode != 200 || (response.body && response.body.status == "Failed")) {
+                 throw ToError(response);
+             }
+-
+-            if(response.statusCode == 200 && response.body && response.body.status == "Succeeded") {
++            else if(response.statusCode == 200 && response.body && response.body.status == "Succeeded") {
+                 console.log("run template: ", response.body.status);
+             }
+         }
+@@ -92,12 +101,141 @@ export default class ImageBuilderClient {
+         }
+     }
+ 
++    // v1-patched: custom polling loop with phase transitions, elapsed time, and heartbeats
++    private async _pollBuildWithProgress(asyncUrl: string, templateName: string, buildStart: number): Promise<void>
++    {
++        var POLL_INTERVAL_SECS = 30;
++        var STATUS_CHECK_INTERVAL = 2; // check template status every Nth poll
++
++        var lastPhase = "";
++        var pollCount = 0;
++        var phaseTimestamps: { phase: string; time: number }[] = [];
++
++        var formatElapsed = (fromMs: number): string => {
++            var totalSec = Math.floor((Date.now() - fromMs) / 1000);
++            var h = Math.floor(totalSec / 3600);
++            var m = Math.floor((totalSec % 3600) / 60);
++            var s = totalSec % 60;
++            if(h > 0) return `${h}h ${m}m ${s}s`;
++            if(m > 0) return `${m}m ${s}s`;
++            return `${s}s`;
++        };
++
++        var printPhaseChange = (newPhase: string) => {
++            if(newPhase && newPhase !== lastPhase) {
++                var arrow = lastPhase ? ` ΓåÆ ${newPhase}` : newPhase;
++                var prefix = lastPhase ? "  Γùå" : "  Γû╢";
++                console.log(`${prefix} Phase: ${arrow}  [${formatElapsed(buildStart)}]`);
++                phaseTimestamps.push({ phase: newPhase, time: Date.now() });
++                lastPhase = newPhase;
++            }
++        };
++
++        // Initial phase
++        printPhaseChange("Queued");
++
++        while(true) {
++            await Utils.sleep(POLL_INTERVAL_SECS * 1000);
++            pollCount++;
++
++            // Check async operation status
++            var opRequest = new webClient.WebRequest();
++            opRequest.method = "GET";
++            opRequest.uri = asyncUrl;
++
++            var opResponse: webClient.WebResponse;
++            try {
++                opResponse = await this._client.beginRequest(opRequest);
++            } catch(error) {
++                var errStr = String(error);
++                if(errStr.indexOf('Request timeout') != -1) {
++                    console.log(`  ΓÅ│ Poll timeout ΓÇö retrying...  [${formatElapsed(buildStart)}]`);
++                    continue;
++                }
++                throw error;
++            }
++
++            var opStatus = opResponse.body && opResponse.body.status;
++
++            // Check template status periodically for richer phase info
++            if(pollCount % STATUS_CHECK_INTERVAL === 0) {
++                try {
++                    var status = await this._getLastRunStatus(templateName);
++                    if(status) {
++                        printPhaseChange(status.runSubState || status.runState);
++                        if(status.message && status.message !== lastPhase) {
++                            var msg = status.message;
++                            if(msg.length > 0 && msg.length < 500 && msg.indexOf("InProgress") === -1)
++                                console.log(`  Γä╣ ${msg}`);
++                        }
++                    }
++                } catch(e) {
++                    // Template status check is best-effort; don't fail the build
++                }
++            }
++
++            // Async operation final states
++            if(opStatus === "Succeeded") {
++                printPhaseChange("Completed");
++                console.log(`  Γ£ö Build succeeded  [${formatElapsed(buildStart)}]`);
++
++                // Print phase timeline
++                if(phaseTimestamps.length > 1) {
++                    console.log("");
++                    console.log("  Phase Timeline:");
++                    for(var i = 0; i < phaseTimestamps.length; i++) {
++                        var duration = i < phaseTimestamps.length - 1
++                            ? Math.floor((phaseTimestamps[i + 1].time - phaseTimestamps[i].time) / 1000)
++                            : 0;
++                        var durationStr = duration > 0
++                            ? ` (${Math.floor(duration / 60)}m ${duration % 60}s)`
++                            : "";
++                        console.log(`    ${i + 1}. ${phaseTimestamps[i].phase}${durationStr}`);
++                    }
++                    console.log("");
++                }
++                return;
++            }
++
++            if(opStatus === "Failed" || opStatus === "Canceled") {
++                // Fetch final template status for error details
++                try {
++                    var status = await this._getLastRunStatus(templateName);
++                    if(status && status.message)
++                        console.log(`  Γ£ÿ Build ${opStatus.toLowerCase()}: ${status.message}`);
++                } catch(e) {
++                    // ignore
++                }
++                throw new Error(`Image build ${opStatus.toLowerCase()}. Check Azure portal for details.`);
++            }
++
++            // Still in progress ΓÇö print heartbeat every 2 minutes
++            if(pollCount % 4 === 0) {
++                var phase = lastPhase || "Running";
++                console.log(`  Γƒ│ ${phase} ...  [${formatElapsed(buildStart)}]`);
++            }
++        }
++    }
++
++    // v1-patched: fetch template's lastRunStatus for phase info
++    private async _getLastRunStatus(templateName: string): Promise<LastRunStatus | null>
++    {
++        var httpRequest = new webClient.WebRequest();
++        httpRequest.method = 'GET';
++        httpRequest.uri = this._client.getRequestUri(`/subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/Microsoft.VirtualMachineImages/imagetemplates/{imageTemplateName}`,{'{subscriptionId}': this._subscriptionId,'{resourceGroupName}': this._taskParameters.ibResourceGroup,'{imageTemplateName}': templateName }, [], AIB_API_VERSION);
++
++        var response = await this._client.beginRequest(httpRequest);
++        if(response.statusCode === 200 && response.body && response.body.properties && response.body.properties.lastRunStatus)
++            return response.body.properties.lastRunStatus as LastRunStatus;
++        return null;
++    }
++
+     public async deleteTemplate(templateName :string) {
+         try {
+             console.log(`deleting template ${templateName}...`);
+             var httpRequest = new webClient.WebRequest();
+             httpRequest.method = 'DELETE';
+-            httpRequest.uri = this._client.getRequestUri(`/subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/Microsoft.VirtualMachineImages/imagetemplates/{imageTemplateName}`,{'{subscriptionId}': this._subscriptionId,'{resourceGroupName}': this._taskParameters.ibResourceGroup,'{imageTemplateName}': templateName}, [], apiVersion);
++            httpRequest.uri = this._client.getRequestUri(`/subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/Microsoft.VirtualMachineImages/imagetemplates/{imageTemplateName}`,{'{subscriptionId}': this._subscriptionId,'{resourceGroupName}': this._taskParameters.ibResourceGroup,'{imageTemplateName}': templateName}, [], AIB_API_VERSION);
+ 
+             var response = await this._client.beginRequest(httpRequest);
+             if(response.statusCode == 202) {
+@@ -112,7 +250,7 @@ export default class ImageBuilderClient {
+             }
+         }
+         catch(error) {
+-            throw Error(`post template call failed for template ${templateName} with error: ${this._client.getFormattedError(error)}`)
++            throw Error(`delete template call failed for template ${templateName} with error: ${this._client.getFormattedError(error)}`)
+         }
+     }
+ 
+@@ -122,7 +260,7 @@ export default class ImageBuilderClient {
+         console.log("getting runOutput for ", runOutput);
+         var httpRequest = new webClient.WebRequest();
+         httpRequest.method = 'GET';
+-        httpRequest.uri = this._client.getRequestUri(`/subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/Microsoft.VirtualMachineImages/imagetemplates/{imageTemplateName}/runOutputs/{runOutput}`,{'{subscriptionId}': this._subscriptionId,'{resourceGroupName}': this._taskParameters.ibResourceGroup,'{imageTemplateName}': templateName, '{runOutput}': runOutput }, [], apiVersion);
++        httpRequest.uri = this._client.getRequestUri(`/subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/Microsoft.VirtualMachineImages/imagetemplates/{imageTemplateName}/runOutputs/{runOutput}`,{'{subscriptionId}': this._subscriptionId,'{resourceGroupName}': this._taskParameters.ibResourceGroup,'{imageTemplateName}': templateName, '{runOutput}': runOutput }, [], AIB_API_VERSION);
+         var output: string = "";
+         try {
+             var response = await this._client.beginRequest(httpRequest);
+diff --git "a/devOps-task-for-azure-image-builder-source\\src\\BuildTemplate.ts" "b/devOps-task-for-azure-image-builder-v1-patched\\src\\BuildTemplate.ts"
+index 2336b1e..018a5ba 100644
+--- "a/devOps-task-for-azure-image-builder-source\\src\\BuildTemplate.ts"
++++ "b/devOps-task-for-azure-image-builder-v1-patched\\src\\BuildTemplate.ts"
+@@ -1,49 +1,14 @@
+ "use strict";
+-import { ToError } from 'azure-pipelines-tasks-azure-arm-rest-v2/AzureServiceClientBase';
+-import msRestAzure = require("azure-pipelines-tasks-azure-arm-rest-v2/azure-arm-common");
+-import webClient = require("azure-pipelines-tasks-azure-arm-rest-v2/webClient");
+ import TaskParameters from "./TaskParameters";
+ import Utils from "./Utils";
+-import AIBServiceClient from './AIBServiceClient';
+-
+-var defaultTemplate = `
+-{
+-    "location": "",
+-    "identity": {
+-        "type": "UserAssigned",
+-          "userAssignedIdentities": {
+-            "IDENTITY": {}
+-          }
+-    },
+-    "properties": {
+-      "source": SOURCE,
+-      "customize": [CUSTOMIZE],
+-      "distribute": [DISTRIBUTE],
+-      "vmProfile": {
+-          "vmSize": "VM_SIZE"
+-       },
+-       "buildTimeoutInMinutes": 0
+-    }
+-}
+-`
+ 
++// v1-patched: programmatic object construction replaces string-template approach
++// to support nested objects (validate, optimize, errorHandling, targetRegions, etc.)
+ var templateSource = new Map([
+-    ["managedimage", `{"type": "ManagedImage", "imageId": "IMAGE_ID"}`],
+-    ["sig", `{"type": "SharedImageVersion", "imageVersionId": "IMAGE_ID"}`],
+-    ["marketplace", `{"type": "PlatformImage", "publisher": "PUBLISHER_NAME", "offer": "OFFER_NAME","sku": "SKU_NAME", "version": "VERSION"}`]
+-])
+-
+-var templateCustomizer = new Map([
+-    ["shell", `{"type": "File", "name": "vststask_file_copy", "sourceUri": "", "destination": ""},{"type": "Shell", "name": "vststask_inline", "inline":[]}`],
+-    ["powershell", `{"type": "PowerShell", "name": "vststask_inline", "inline":[]}`],
+-    ["windowsUpdate", `{"type": "PowerShell", "name": "5minWait_is_needed_before_windowsUpdate", "inline":["Start-Sleep -Seconds 300"]},{"type": "WindowsUpdate", "searchCriteria": "IsInstalled=0", "filters": ["exclude:$_.Title -like '*Preview*'", "include:$true"]}`]
+-])
+-
+-var templateDistribute = new Map([
+-    ["managedimage", `{"type": "ManagedImage", "imageId": "IMAGE_ID", "location": "", "runOutputName": "ManagedImage_distribute"}`],
+-    ["sig", `{"type": "SharedImage", "galleryImageId": "IMAGE_ID", "replicationRegions": [], "runOutputName": "SharedImage_distribute"}`],
+-    ["vhd", `{"type": "VHD", "runOutputName": "VHD_distribute"}`]
+-])
++    ["managedimage", { type: "ManagedImage", imageId: "" }],
++    ["gallery", { type: "SharedImageVersion", imageVersionId: "" }],
++    ["marketplace", { type: "PlatformImage", publisher: "", offer: "", sku: "", version: "latest" }]
++]);
+ 
+ export default class BuildTemplate
+ {
+@@ -54,102 +19,251 @@ export default class BuildTemplate
+         this._taskParameters = taskParameters;
+     }
+ 
+-    public async getTemplate(blobUrl: string) : Promise<any>
++    public getTemplate(blobUrl: string) : any
+     {
+-        var template = defaultTemplate
+-        template = template.replace("IDENTITY", this._taskParameters.identity);
+-        template = template.replace("VM_SIZE", this._taskParameters.vmSize);
+-        template = template.replace("SOURCE", <string>templateSource.get(this._taskParameters.imageSource));
+-        template = template.replace("DISTRIBUTE", <string>templateDistribute.get(this._taskParameters.distributeType));
+-
+-        var customizers = templateCustomizer.get(this._taskParameters.provisioner);
+-        // add windows update
+-        if(Utils.IsEqual(this._taskParameters.provisioner, "powershell") && this._taskParameters.windowsUpdateProvisioner)
+-            customizers = customizers + "," + templateCustomizer.get("windowsUpdate");
+-        template = template.replace("CUSTOMIZE", <string>customizers);
++        var template: any = {
++            location: this._taskParameters.ibLocation,
++            identity: {
++                type: "UserAssigned",
++                userAssignedIdentities: {
++                    [this._taskParameters.identity]: {}
++                }
++            },
++            properties: {
++                source: this._buildSource(),
++                customize: this._buildCustomizers(blobUrl),
++                distribute: [this._buildDistribute()],
++                vmProfile: this._buildVmProfile(),
++                buildTimeoutInMinutes: this._taskParameters.buildTimeoutInMinutes,
++                errorHandling: {
++                    onCustomizerError: this._taskParameters.errorHandlingOnCustomizerError,
++                    onValidationError: this._taskParameters.errorHandlingOnValidationError
++                }
++            }
++        };
++
++        // optimize ΓÇö vmBoot
++        if(this._taskParameters.optimizeVmBoot) {
++            template.properties.optimize = { vmBoot: { state: "Enabled" } };
++        }
++
++        // validate
++        if(this._taskParameters.enableValidation) {
++            template.properties.validate = this._buildValidate();
++        }
++
++        // autoRun
++        if(this._taskParameters.autoRun) {
++            template.properties.autoRun = { state: "Enabled" };
++        }
+ 
+-        var templateJson = JSON.parse(template);
+-        templateJson.location = this._taskParameters.ibLocation;
++        // stagingResourceGroup
++        if(this._taskParameters.stagingResourceGroup) {
++            template.properties.stagingResourceGroup = this._taskParameters.stagingResourceGroup;
++        }
++
++        // managedResourceTags
++        if(Object.keys(this._taskParameters.managedResourceTags).length > 0) {
++            template.properties.managedResourceTags = this._taskParameters.managedResourceTags;
++        }
+ 
+-        // adding build timeout in minutes
+-        templateJson.properties.buildTimeoutInMinutes = this._taskParameters.buildTimeoutInMinutes;
++        return template;
++    }
+ 
+-        if(Utils.IsEqual(templateJson.properties.source.type, "PlatformImage"))
++    private _buildSource(): any {
++        var source: any = { ...templateSource.get(this._taskParameters.imageSource) };
++
++        if(Utils.IsEqual(source.type, "PlatformImage"))
+         {
+-            templateJson.properties.source.publisher = this._taskParameters.imagePublisher;
+-            templateJson.properties.source.offer = this._taskParameters.imageOffer;
+-            templateJson.properties.source.sku = this._taskParameters.imageSku;
+-            templateJson.properties.source.version = this._taskParameters.baseImageVersion
++            source.publisher = this._taskParameters.imagePublisher;
++            source.offer = this._taskParameters.imageOffer;
++            source.sku = this._taskParameters.imageSku;
++            source.version = this._taskParameters.baseImageVersion || "latest";
+ 
+             if(this._taskParameters.planName && this._taskParameters.planProduct && this._taskParameters.planPublisher)
+             {
+-                templateJson.properties.source.planInfo = { planName: this._taskParameters.planName,
+-                                                            planProduct: this._taskParameters.planProduct,
+-                                                            planPublisher: this._taskParameters.planPublisher }
++                source.planInfo = {
++                    planName: this._taskParameters.planName,
++                    planProduct: this._taskParameters.planProduct,
++                    planPublisher: this._taskParameters.planPublisher
++                };
+             }
+         }
+-        else if(Utils.IsEqual(templateJson.properties.source.type, "ManagedImage"))
+-            templateJson.properties.source.imageId = this._taskParameters.sourceResourceId;
++        else if(Utils.IsEqual(source.type, "ManagedImage"))
++            source.imageId = this._taskParameters.sourceResourceId;
+         else 
+-            templateJson.properties.source.imageVersionId = this._taskParameters.imageVersionId;
+-        console.log("Source for image: ", templateJson.properties.source);
++            source.imageVersionId = this._taskParameters.imageVersionId;
++
++        console.log("Source for image: ", JSON.stringify(source, null, 2));
++        return source;
++    }
++
++    private _buildCustomizers(blobUrl: string): any[] {
++        var customizers: any[] = [];
+ 
+-        // customize
+         if(Utils.IsEqual(this._taskParameters.provisioner, "shell"))
+         {
+-            var inline: string = "#\n";
+-            
+             var packageName = `/tmp/${this._taskParameters.buildFolder}`;
+-            templateJson.properties.customize[0].sourceUri = blobUrl;
+-            templateJson.properties.customize[0].destination = `${packageName}.tar.gz`;
+-            inline += `mkdir -p ${packageName}\n`
+-            inline += `sudo tar -xzvf ${templateJson.properties.customize[0].destination} -C ${packageName}\n`
++            customizers.push({
++                type: "File",
++                name: "vststask_file_copy",
++                sourceUri: blobUrl,
++                destination: `${packageName}.tar.gz`
++            });
++            var inline: string = "#\n";
++            inline += `mkdir -p ${packageName}\n`;
++            inline += `sudo tar -xzvf ${packageName}.tar.gz -C ${packageName}\n`;
+             if(this._taskParameters.inlineScript)
+                 inline += `${this._taskParameters.inlineScript}\n`;
+-            templateJson.properties.customize[1].inline = inline.split("\n");
++            customizers.push({
++                type: "Shell",
++                name: "vststask_inline",
++                inline: inline.split("\n")
++            });
+         }
+-        else if(Utils.IsEqual(this._taskParameters.provisioner, "powershell")){
+-            if(this._taskParameters.runElevated)
+-            {
+-                templateJson.properties.customize[0].runElevated = this._taskParameters.runElevated;
+-                if(this._taskParameters.runAsSystem)
+-                {
+-                    templateJson.properties.customize[0].runAsSystem = this._taskParameters.runAsSystem;
+-                }
+-            }
+-
++        else if(Utils.IsEqual(this._taskParameters.provisioner, "powershell"))
++        {
+             var packageName = "c:\\buildartifacts\\" + this._taskParameters.buildFolder;
+-            // create buildartifacts folder
+-            var inline = `New-item -Path c:\\buildartifacts -itemtype directory\n`
+-            // download zip
+-            // enforce tls12 if parameter SslProtocol is supported in Invoke-WebRequest
+-            var downloadZipCmd = `Invoke-WebRequest -Uri '${blobUrl}' -OutFile ${packageName}.zip -UseBasicParsing`
+-            inline += `if (Get-Help Invoke-WebRequest | Select-String -Pattern SslProtocol) {${downloadZipCmd} -SslProtocol tls12} else {${downloadZipCmd}}\n`
+-            // unzip
+-            inline += `Expand-Archive -Path ${packageName}.zip -DestinationPath ${packageName}\n`
++            var inline = `New-Item -Path c:\\buildartifacts -ItemType Directory -Force\n`;
++            inline += `$ProgressPreference = 'SilentlyContinue'\n`;
++            inline += `Invoke-WebRequest -Uri '${blobUrl}' -OutFile '${packageName}.zip' -UseBasicParsing\n`;
++            inline += `Expand-Archive -Path '${packageName}.zip' -DestinationPath '${packageName}' -Force\n`;
++            inline += `Remove-Item '${packageName}.zip' -Force\n`;
+             if(this._taskParameters.inlineScript)
+                 inline += `${this._taskParameters.inlineScript}\n`;
+-            templateJson.properties.customize[0].inline = inline.split("\n");
++
++            var psCustomizer: any = {
++                type: "PowerShell",
++                name: "vststask_inline",
++                inline: inline.split("\n")
++            };
++            if(this._taskParameters.runElevated) {
++                psCustomizer.runElevated = true;
++                if(this._taskParameters.runAsSystem)
++                    psCustomizer.runAsSystem = true;
++            }
++            customizers.push(psCustomizer);
++        }
++
++        // Windows Update customizer (optional, PowerShell only)
++        if(Utils.IsEqual(this._taskParameters.provisioner, "powershell") && this._taskParameters.windowsUpdateProvisioner)
++        {
++            customizers.push({
++                type: "PowerShell",
++                name: "PreWindowsUpdateWait",
++                runElevated: true,
++                inline: ["Start-Sleep -Seconds 300"]
++            });
++            customizers.push({
++                type: "WindowsUpdate",
++                searchCriteria: "IsInstalled=0",
++                filters: [
++                    "exclude:$_.Title -like '*Preview*'",
++                    "include:$true"
++                ]
++            });
++        }
++
++        return customizers;
++    }
++
++    private _buildValidate(): any {
++        var validate: any = {
++            continueDistributeOnFailure: this._taskParameters.continueDistributeOnFailure,
++            sourceValidationOnly: this._taskParameters.sourceValidationOnly,
++            inVMValidations: [] as any[]
++        };
++
++        if(this._taskParameters.validationInlineScript)
++        {
++            var validatorType = Utils.IsEqual(this._taskParameters.provisioner, "shell") ? "Shell" : "PowerShell";
++            var validator: any = {
++                type: validatorType,
++                name: "vststask_validation",
++                inline: this._taskParameters.validationInlineScript.split("\n")
++            };
++            if(validatorType === "PowerShell" && this._taskParameters.runElevated)
++                validator.runElevated = true;
++            validate.inVMValidations.push(validator);
+         }
+ 
+-        if(Utils.IsEqual(templateJson.properties.distribute[0].type, "ManagedImage"))
++        return validate;
++    }
++
++    private _buildDistribute(): any {
++        var tp = this._taskParameters;
++        var distribute: any;
++
++        if(Utils.IsEqual(tp.distributeType, "managedimage"))
+         {
+-            templateJson.properties.distribute[0].imageId = this._taskParameters.imageIdForDistribute;
+-            templateJson.properties.distribute[0].location = this._taskParameters.managedImageLocation;
++            distribute = {
++                type: "ManagedImage",
++                imageId: tp.imageIdForDistribute,
++                location: tp.managedImageLocation,
++                runOutputName: "ManagedImage_distribute"
++            };
+         }
++        else if(Utils.IsEqual(tp.distributeType, "gallery") || Utils.IsEqual(tp.distributeType, "sig"))
++        {
++            // targetRegions replaces deprecated replicationRegions
++            var regionInput = tp.targetRegions || tp.replicationRegions || "";
++            var regions = regionInput.split(",").map(r => r.trim()).filter(r => r.length > 0);
++            var targetRegions = regions.map(name => {
++                var region: any = { name };
++                if(tp.distributeStorageAccountType)
++                    region.storageAccountType = tp.distributeStorageAccountType;
++                return region;
++            });
++
++            distribute = {
++                type: "SharedImage",
++                galleryImageId: tp.galleryImageId,
++                targetRegions: targetRegions,
++                excludeFromLatest: tp.excludeFromLatest,
++                runOutputName: "SharedImage_distribute"
++            };
+ 
+-        if(Utils.IsEqual(templateJson.properties.distribute[0].type, "SharedImage"))
++            // Versioning
++            if(tp.distributeVersioningScheme) {
++                distribute.versioning = { scheme: tp.distributeVersioningScheme };
++                if(Utils.IsEqual(tp.distributeVersioningScheme, "Latest") && tp.distributeVersioningMajor)
++                    distribute.versioning.major = Number(tp.distributeVersioningMajor);
++            }
++        }
++        else
+         {
+-            templateJson.properties.distribute[0].galleryImageId = this._taskParameters.galleryImageId;
+-            var regions = this._taskParameters.replicationRegions.split(",");
+-            templateJson.properties.distribute[0].replicationRegions = regions;
++            // VHD
++            distribute = {
++                type: "VHD",
++                runOutputName: "VHD_distribute"
++            };
++            if(tp.vhdUri)
++                distribute.uri = tp.vhdUri;
+         }
+ 
+-        //vnet
++        return distribute;
++    }
++
++    private _buildVmProfile(): any {
++        var vmProfile: any = {
++            vmSize: this._taskParameters.vmSize
++        };
++
++        if(this._taskParameters.osDiskSizeGB > 0)
++            vmProfile.osDiskSizeGB = this._taskParameters.osDiskSizeGB;
++
+         if(this._taskParameters.vnetSubnetId)
+         {
+-            templateJson.properties.vmProfile.vnetConfig = { subnetId: this._taskParameters.vnetSubnetId };
++            vmProfile.vnetConfig = { subnetId: this._taskParameters.vnetSubnetId };
++            if(this._taskParameters.containerInstanceSubnetId)
++                vmProfile.vnetConfig.containerInstanceSubnetId = this._taskParameters.containerInstanceSubnetId;
++            if(this._taskParameters.proxyVmSize && !this._taskParameters.containerInstanceSubnetId)
++                vmProfile.vnetConfig.proxyVmSize = this._taskParameters.proxyVmSize;
+         }
+-        return templateJson;
++
++        if(this._taskParameters.buildVmIdentities.length > 0)
++            vmProfile.userAssignedIdentities = this._taskParameters.buildVmIdentities;
++
++        return vmProfile;
+     }
+ }
+diff --git "a/devOps-task-for-azure-image-builder-source\\src\\ImageBuilder.ts" "b/devOps-task-for-azure-image-builder-v1-patched\\src\\ImageBuilder.ts"
+index afac589..ad1e60d 100644
+--- "a/devOps-task-for-azure-image-builder-source\\src\\ImageBuilder.ts"
++++ "b/devOps-task-for-azure-image-builder-v1-patched\\src\\ImageBuilder.ts"
+@@ -1,14 +1,15 @@
+-import Q = require('q');
+ import path = require("path");
+ 
+ import tl = require("azure-pipelines-task-lib/task");
+-import armStorage = require('azure-pipelines-tasks-azure-arm-rest-v2/azure-arm-storage');
+-import msRestAzure = require("azure-pipelines-tasks-azure-arm-rest-v2/azure-arm-common");
+-import { AzureRMEndpoint } from 'azure-pipelines-tasks-azure-arm-rest-v2/azure-arm-endpoint';
+-import azureModel = require('azure-pipelines-tasks-azure-arm-rest-v2/azureModels');
++// v1-patched: import path changed from azure-arm-rest-v2 to azure-arm-rest (v3)
++import armStorage = require('azure-pipelines-tasks-azure-arm-rest/azure-arm-storage');
++import msRestAzure = require("azure-pipelines-tasks-azure-arm-rest/azure-arm-common");
++import { AzureRMEndpoint } from 'azure-pipelines-tasks-azure-arm-rest/azure-arm-endpoint';
++import azureModel = require('azure-pipelines-tasks-azure-arm-rest/azureModels');
+ import util = require('util');
+ import fs = require('fs');
+-var azureStorage = require('azure-storage');
++// v1-patched: @azure/storage-blob replaces deprecated azure-storage SDK
++import { BlobServiceClient, StorageSharedKeyCredential, generateBlobSASQueryParameters, BlobSASPermissions, SASProtocol } from "@azure/storage-blob";
+ var archiver = require('archiver');
+ import Utils from "./Utils";
+ 
+@@ -16,17 +17,22 @@ import TaskParameters from "./TaskParameters";
+ import BuildTemplate from "./BuildTemplate";
+ import ImageBuilderClient from "./AzureImageBuilderClient"
+ 
++var containerName = 'imagebuilder-vststask';
++
+ export default class ImageBuilder {
+ 
+     private _taskParameters: TaskParameters;
+     private _aibClient: ImageBuilderClient;
+     private _buildTemplate: BuildTemplate;
+-    private _blobService: any;
++    // v1-patched: @azure/storage-blob types replace azure-storage's blobService
++    private _blobServiceClient: BlobServiceClient;
++    private _storageCredential: StorageSharedKeyCredential;
+ 
+     constructor()
+     {
+         try{
+             this._taskParameters = new TaskParameters();
++            this._taskParameters.printSummary();
+             this._buildTemplate = new BuildTemplate(this._taskParameters);
+         }
+         catch (error) {
+@@ -35,19 +41,30 @@ export default class ImageBuilder {
+     }
+ 
+     public async execute(): Promise<void> {
++        // v1-patched: elapsed time tracking
++        var buildStart = Date.now();
++        var elapsed = () => {
++            var s = Math.floor((Date.now() - buildStart) / 1000);
++            var m = Math.floor(s / 60);
++            var sec = s % 60;
++            return m > 0 ? `${m}m ${sec}s` : `${sec}s`;
++        };
++
+         try{
+             var creds = await this._getARMCredentials(this._taskParameters.ibSubscriptionId);
+             const subscriptionId: string = tl.getEndpointDataParameter(this._taskParameters.ibSubscriptionId, "subscriptionId", false);
+             this._aibClient = new ImageBuilderClient(creds, subscriptionId, this._taskParameters);
+-            this._blobService = await this.getBlobService();
+-            const containerName: string = 'imagebuilder-vststask';
++            await this._initBlobService();
++
+             var blobName: string = this._taskParameters.buildFolder + "/" + this._getBlobsPrefixPath() + this._taskParameters.buildFolder + `_${Date.now()}`;
+             if (Utils.IsEqual(this._taskParameters.provisioner, "powershell"))
+                 blobName = blobName + '.zip';
+             else
+                 blobName = blobName + '.tar.gz';
+-            var blobUrl = await this.uploadPackage(containerName, blobName);
+-            var templateJson = await this._buildTemplate.getTemplate(blobUrl);
++            var blobUrl = await this._uploadPackage(containerName, blobName);
++            console.log(`[${elapsed()}] Upload complete.`);
++
++            var templateJson = this._buildTemplate.getTemplate(blobUrl);
+             var templateName = this.getTemplateName();
+             console.log("template name: ", templateName);
+             var runOutputName = templateJson.properties.distribute[0].runOutputName;
+@@ -55,7 +72,9 @@ export default class ImageBuilder {
+         
+             var templateStr = JSON.stringify(templateJson);
+             await this._aibClient.putImageTemplate(templateStr, templateName);
+-            await this._aibClient.runTemplate(templateName);
++            console.log(`[${elapsed()}] Template deployed.`);
++
++            await this._aibClient.runTemplate(templateName, buildStart);
+             var out = await this._aibClient.getRunOutput(templateName, runOutputName);
+             
+             tl.setVariable('templateName', templateName);
+@@ -81,6 +100,7 @@ export default class ImageBuilder {
+                 console.log("$(templateName) = ", tl.getVariable('templateName'));
+                 console.log("$(templateId) = ", tl.getVariable('templateId'));
+             }
++            console.log("Total elapsed: %s", elapsed());
+             console.log("==============================================================================")
+ 
+             this.cleanup(isVhdDistribute, templateName, containerName, blobName);
+@@ -91,15 +111,17 @@ export default class ImageBuilder {
+         }
+     }
+ 
+-    private async getBlobService(): Promise<any>
++    // v1-patched: @azure/storage-blob initialization
++    private async _initBlobService(): Promise<void>
+     {
+-        const storageDetails: StorageAccountInfo = await this._getStorageAccountDetails();
+-        return azureStorage.createBlobService(storageDetails.name, storageDetails.primaryAccessKey);
++        var storageDetails: StorageAccountInfo = await this._getStorageAccountDetails();
++        this._storageCredential = new StorageSharedKeyCredential(storageDetails.name, storageDetails.primaryAccessKey);
++        this._blobServiceClient = new BlobServiceClient(storageDetails.primaryBlobUrl, this._storageCredential);
+     }
+ 
+-    private async uploadPackage(containerName: string, blobName: string) : Promise<string> {
+-        var defer = Q.defer<string>();
+-        var archivedWebPackage: any;
++    // v1-patched: modern blob SDK upload + HTTPS-only SAS with timeout-based expiry
++    private async _uploadPackage(containerName: string, blobName: string) : Promise<string> {
++        var archivedWebPackage: string;
+ 
+         try {
+             // use zip for Windows and tar for Linux
+@@ -111,78 +133,82 @@ export default class ImageBuilder {
+                                                                  this._generateTemporaryFile(tl.getVariable('AGENT.TEMPDIRECTORY'), `.tar.gz`));
+         }
+         catch(error) {
+-            defer.reject(console.log(`unable to create archive build: ${error}`));
++            throw Error(`unable to create archive build: ${error}`);
+         }
+         console.log(`created archive ${archivedWebPackage}`);
+ 
+-        this._blobService.createContainerIfNotExists(containerName, (error: any) => {
+-            if (error){
+-                defer.reject(console.log(`unable to create container ${containerName} in storage account: ${error}`));
+-            }
++        // Ensure container exists
++        var containerClient = this._blobServiceClient.getContainerClient(containerName);
++        await containerClient.createIfNotExists();
+ 
+-            //upoading package
+-            this._blobService.createBlockBlobFromLocalFile(containerName, blobName, archivedWebPackage, (error: any, result: any) => {
+-                if (error) {
+-                    defer.reject(console.log(`unable to create blob ${blobName} in container ${containerName} in storage account: ${error}`));
+-                }
+-                //generating SAS URL
+-                var startDate = new Date();
+-                var expiryDate = new Date(startDate);
+-                expiryDate.setFullYear(startDate.getUTCFullYear() + 1);
+-                startDate.setMinutes(startDate.getMinutes()-5);
+-            
+-                var sharedAccessPolicy = {
+-                    AccessPolicy: {
+-                        Permissions: azureStorage.BlobUtilities.SharedAccessPermissions.READ,
+-                        Start: startDate,
+-                        Expiry: expiryDate
+-                    }
+-                };
++        // Upload blob
++        console.log(`uploading to ${containerName}/${blobName}...`);
++        var blockBlobClient = containerClient.getBlockBlobClient(blobName);
++        await blockBlobClient.uploadFile(archivedWebPackage);
+ 
+-                var token = this._blobService.generateSharedAccessSignature(containerName, blobName, sharedAccessPolicy);
+-                var blobUrl = this._blobService.getUrl(containerName, blobName, token);
+-                defer.resolve(blobUrl);
+-            });
+-        });
++        // SAS expiry = build timeout + 1h buffer (minimum 4h, cap 25h)
++        // buildTimeoutInMinutes=0 means "wait indefinitely"; AIB default is 240 min
++        var timeoutMin = this._taskParameters.buildTimeoutInMinutes || 240;
++        var sasHours = Math.max(4, Math.min(25, Math.ceil(timeoutMin / 60) + 1));
++
++        var startsOn = new Date();
++        startsOn.setMinutes(startsOn.getMinutes() - 5);
++        var expiresOn = new Date();
++        expiresOn.setHours(expiresOn.getHours() + sasHours);
+ 
+-        return defer.promise;
++        var sasToken = generateBlobSASQueryParameters(
++            {
++                containerName,
++                blobName,
++                permissions: BlobSASPermissions.parse("r"),
++                startsOn,
++                expiresOn,
++                protocol: SASProtocol.Https
++            },
++            this._storageCredential
++        ).toString();
++
++        return `${blockBlobClient.url}?${sasToken}`;
+     }
+ 
+-    private async createArchive(folderPath: string, targetPath: string) {
+-        var defer = Q.defer();
+-        console.log('Archiving ' + folderPath + ' to ' + targetPath);
+-        var output = fs.createWriteStream(targetPath);
++    private async createArchive(folderPath: string, targetPath: string) : Promise<string> {
++        return new Promise<string>((resolve, reject) => {
++            console.log('Archiving ' + folderPath + ' to ' + targetPath);
++            var output = fs.createWriteStream(targetPath);
++
++            var archive: any;
++            if(targetPath.endsWith(".zip")){
++                archive = archiver('zip');
++            } else {
++                archive = archiver('tar', {
++                    gzip: true,
++                    gzipOptions: {
++                        level: 1
++                    }
++                });
++            }
+ 
+-        var archive: any;
+-        if(targetPath.endsWith(".zip")){
+-            archive = archiver('zip');
+-        } else {
+-            archive = archiver('tar', {
+-                gzip: true,
+-                gzipOptions: {
+-                    level: 1
+-                }
++            output.on('close', function () {
++                console.log(archive.pointer() + ' total bytes');
++                tl.debug('Successfully created archive ' + targetPath);
++                resolve(targetPath);
+             });
+-        }
+ 
+-        output.on('close', function () {
+-            console.log(archive.pointer() + ' total bytes');
+-            tl.debug('Successfully created archive ' + targetPath);
+-            defer.resolve(targetPath);
+-        });
++            output.on('error', function(error) {
++                reject(error);
++            });
+ 
+-        output.on('error', function(error) {
+-            defer.reject(error);
+-        });
++            archive.on('error', function(error) {
++                reject(error);
++            });
+ 
+-        archive.glob("**", {
+-            cwd: folderPath,
+-            dot: true
++            archive.glob("**", {
++                cwd: folderPath,
++                dot: true
++            });
++            archive.pipe(output);
++            archive.finalize();
+         });
+-        archive.pipe(output);
+-        archive.finalize();
+-
+-        return defer.promise;
+     }
+ 
+     private _generateTemporaryFile(folderPath: string, extension: string) {
+@@ -246,12 +272,12 @@ export default class ImageBuilder {
+         try{
+             if(!isVhdDistribute)
+             {
+-                Promise.all([this._aibClient.deleteTemplate(templateName), this.deleteBlob(containerName, blobName)]);
++                await Promise.all([this._aibClient.deleteTemplate(templateName), this._deleteBlob(containerName, blobName)]);
+             }
+             else
+             {
+                 console.log(`template ${templateName} has vhd distribute so skipping delete template.`);
+-                this.deleteBlob(containerName, blobName);
++                await this._deleteBlob(containerName, blobName);
+             }
+         }
+         catch(error)
+@@ -260,15 +286,17 @@ export default class ImageBuilder {
+         }
+     }
+ 
+-    private async deleteBlob(containerName: string, blobName: string)
++    // v1-patched: @azure/storage-blob delete
++    private async _deleteBlob(containerName: string, blobName: string)
+     {
+-        console.log(`deleting storage blob ${containerName}\\${blobName}`);
+-        this._blobService.deleteBlob(containerName, blobName, (error: any) => {
+-            if (error){
+-                console.log(`unable to delete container ${containerName} blob ${blobName} in storage account: ${error}`);
+-            }
+-            console.log(`blob ${containerName}\\${blobName} is deleted`)
+-        });
++        console.log(`deleting storage blob ${containerName}/${blobName}`);
++        try {
++            var containerClient = this._blobServiceClient.getContainerClient(containerName);
++            await containerClient.getBlockBlobClient(blobName).delete();
++            console.log(`blob ${containerName}/${blobName} is deleted`);
++        } catch(error) {
++            console.log(`unable to delete blob ${containerName}/${blobName}: ${error}`);
++        }
+     }
+ }
+ 
+@@ -277,4 +305,4 @@ interface StorageAccountInfo {
+     resourceGroupName: string;
+     primaryAccessKey: string;
+     primaryBlobUrl: string;
+-}
+\ No newline at end of file
++}
+diff --git "a/devOps-task-for-azure-image-builder-source\\src\\TaskParameters.ts" "b/devOps-task-for-azure-image-builder-v1-patched\\src\\TaskParameters.ts"
+index 2e2cbf7..55eadb6 100644
+--- "a/devOps-task-for-azure-image-builder-source\\src\\TaskParameters.ts"
++++ "b/devOps-task-for-azure-image-builder-v1-patched\\src\\TaskParameters.ts"
+@@ -38,17 +38,41 @@ export default class TaskParameters
+     public storageAccountName: string;
+     public buildTimeoutInMinutes: number;
+     public vmSize: string;
++    public osDiskSizeGB: number;
+     public identity: string;
++    public buildVmIdentities: string[];
+     public vnetSubnetId: string;
++    public containerInstanceSubnetId: string;
++    public proxyVmSize: string;
+     public runElevated: boolean;
+     public runAsSystem: boolean;
+ 
++    // validate (v1-patched)
++    public enableValidation: boolean;
++    public sourceValidationOnly: boolean;
++    public continueDistributeOnFailure: boolean;
++    public validationInlineScript: string;
++
+     //distribute
+     public distributeType: string ;
+     public imageIdForDistribute: string;
+     public replicationRegions: string ;
++    public targetRegions: string;
+     public managedImageLocation: string;
+     public galleryImageId: string;
++    public distributeStorageAccountType: string;
++    public excludeFromLatest: boolean;
++    public distributeVersioningScheme: string;
++    public distributeVersioningMajor: string;
++    public vhdUri: string;
++
++    // optional / advanced (v1-patched)
++    public optimizeVmBoot: boolean;
++    public autoRun: boolean;
++    public stagingResourceGroup: string;
++    public managedResourceTags: Record<string, string>;
++    public errorHandlingOnCustomizerError: string;
++    public errorHandlingOnValidationError: string;
+ 
+     constructor()
+     {
+@@ -103,7 +127,13 @@ export default class TaskParameters
+         this.windowsUpdateProvisioner = tl.getBoolInput(constants.WindowsUpdateProvisioner, false)
+         this.runElevated = tl.getBoolInput(constants.RunElevated, false)
+         this.runAsSystem = tl.getBoolInput(constants.RunAsSystem, false)
+-       
++
++        // validate (v1-patched)
++        this.enableValidation = tl.getBoolInput(constants.EnableValidation, false);
++        this.sourceValidationOnly = tl.getBoolInput(constants.SourceValidationOnly, false);
++        this.continueDistributeOnFailure = tl.getBoolInput(constants.ContinueDistributeOnFailure, false);
++        this.validationInlineScript = tl.getInput(constants.ValidationInlineScript, false) || "";
++
+         this.distributeType = tl.getInput(constants.DistributeType, true);
+         if(!this.distributeType)
+             throw Error("distribute type is required")
+@@ -111,7 +141,13 @@ export default class TaskParameters
+         this.imageIdForDistribute = tl.getInput(constants.ImageIdForDistribute, false);
+         this.galleryImageId = tl.getInput(constants.GalleryImageId, false);
+         this.replicationRegions = tl.getInput(constants.ReplicationRegions, false);
++        this.targetRegions = tl.getInput(constants.TargetRegions, false) || "";
+         this.managedImageLocation = tl.getInput(constants.ManagedImageLocation, false);
++        this.distributeStorageAccountType = tl.getInput(constants.DistributeStorageAccountType, false) || "";
++        this.excludeFromLatest = tl.getBoolInput(constants.ExcludeFromLatest, false);
++        this.distributeVersioningScheme = tl.getInput(constants.DistributeVersioningScheme, false) || "";
++        this.distributeVersioningMajor = tl.getInput(constants.DistributeVersioningMajor, false) || "";
++        this.vhdUri = tl.getInput(constants.VhdUri, false) || "";
+ 
+         // build timeout in minutes
+         this.buildTimeoutInMinutes = Number(tl.getInput(constants.BuildTimeoutInMinutes, false))
+@@ -122,16 +158,140 @@ export default class TaskParameters
+ 
+         // vm size
+         this.vmSize = tl.getInput(constants.VMSize, false)
+-        
++
++        // os disk size (v1-patched)
++        var osDisk = tl.getInput(constants.OsDiskSizeGB, false) || "0";
++        this.osDiskSizeGB = Number(osDisk);
++        if(isNaN(this.osDiskSizeGB) || this.osDiskSizeGB < 0)
++            throw Error("osDiskSizeGB must be a non-negative integer")
++
+         // identity
+         this.identity = tl.getInput(constants.ManagedIdentity, true)
++        var buildVmIdInput = tl.getInput(constants.BuildVmIdentities, false) || "";
++        this.buildVmIdentities = buildVmIdInput.split("\n").map(s => s.trim()).filter(s => s.length > 0);
+ 
+         // Vnet 
+         this.vnetSubnetId = tl.getInput(constants.VnetSubnetId, false)
++        this.containerInstanceSubnetId = tl.getInput(constants.ContainerInstanceSubnetId, false) || "";
++        this.proxyVmSize = tl.getInput(constants.ProxyVmSize, false) || "";
++
++        // Advanced / optional settings (v1-patched)
++        this.optimizeVmBoot = tl.getBoolInput(constants.OptimizeVmBoot, false);
++        this.autoRun = tl.getBoolInput(constants.AutoRun, false);
++        this.stagingResourceGroup = tl.getInput(constants.StagingResourceGroup, false) || "";
++        this.errorHandlingOnCustomizerError = tl.getInput(constants.ErrorHandlingOnCustomizerError, false) || "cleanup";
++        this.errorHandlingOnValidationError = tl.getInput(constants.ErrorHandlingOnValidationError, false) || "cleanup";
++
++        var tagsInput = tl.getInput(constants.ManagedResourceTags, false) || "";
++        if(tagsInput) {
++            try { this.managedResourceTags = JSON.parse(tagsInput); }
++            catch { throw Error("managedResourceTags must be valid JSON, e.g. {\"key\": \"value\"}"); }
++        } else {
++            this.managedResourceTags = {};
++        }
+ 
+         console.log("end reading parameters")
+     }
+ 
++    // ΓöÇΓöÇ v1-patched: configuration summary ΓöÇΓöÇ
++    public printSummary(): void
++    {
++        var line = "ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ";
++        console.log("");
++        console.log(line);
++        console.log("  CONFIGURATION SUMMARY");
++        console.log(line);
++
++        console.log("  Resource Group:        %s", this.ibResourceGroup);
++        console.log("  Location:              %s", this.ibLocation);
++        console.log("  Storage Account:       %s", this.storageAccountName);
++
++        var idParts = this.identity.split("/");
++        var shortId = idParts[idParts.length - 1] || this.identity;
++        console.log("  Managed Identity:      %s", shortId);
++
++        console.log(line);
++        console.log("  SOURCE");
++        console.log("  Type:                  %s", this.imageSource);
++        if(this.imageSource === "marketplace") {
++            console.log("  Publisher:             %s", this.imagePublisher);
++            console.log("  Offer:                 %s", this.imageOffer);
++            console.log("  SKU:                   %s", this.imageSku);
++            console.log("  Version:               %s", this.baseImageVersion || "latest");
++            if(this.planName)
++                console.log("  Purchase Plan:         %s / %s / %s", this.planName, this.planProduct, this.planPublisher);
++        } else if(this.imageSource === "managedimage") {
++            console.log("  Image ID:              %s", this.sourceResourceId);
++        } else {
++            console.log("  Image Version ID:      %s", this.imageVersionId);
++        }
++
++        console.log(line);
++        console.log("  VM PROFILE");
++        console.log("  Size:                  %s", this.vmSize);
++        if(this.osDiskSizeGB > 0) console.log("  OS Disk:               %d GB", this.osDiskSizeGB);
++        if(this.vnetSubnetId) {
++            console.log("  VNet Subnet:           %s", this.vnetSubnetId.split("/").pop());
++            if(this.containerInstanceSubnetId) console.log("  Container Subnet:      %s", this.containerInstanceSubnetId.split("/").pop());
++            if(this.proxyVmSize) console.log("  Proxy VM Size:         %s", this.proxyVmSize);
++        }
++        if(this.buildVmIdentities.length > 0) console.log("  Build VM Identities:   %d configured", this.buildVmIdentities.length);
++
++        console.log(line);
++        console.log("  CUSTOMIZATION");
++        console.log("  Provisioner:           %s", this.provisioner);
++        console.log("  Build Path:            %s", this.buildPath);
++        if(this.runElevated) console.log("  Run Elevated:          yes" + (this.runAsSystem ? " (as SYSTEM)" : ""));
++        if(this.windowsUpdateProvisioner) console.log("  Windows Update:        enabled");
++        if(this.inlineScript) {
++            var scriptLines = this.inlineScript.split("\n").filter(l => l.trim().length > 0).length;
++            console.log("  Inline Script:         %d line(s)", scriptLines);
++        }
++
++        console.log(line);
++        console.log("  DISTRIBUTION");
++        console.log("  Type:                  %s", this.distributeType);
++        if(Utils.IsEqual(this.distributeType, "gallery") || Utils.IsEqual(this.distributeType, "sig")) {
++            console.log("  Gallery Image ID:      %s", this.galleryImageId);
++            var regionStr = this.targetRegions || this.replicationRegions;
++            if(regionStr) console.log("  Target Regions:        %s", regionStr);
++            if(this.distributeStorageAccountType) console.log("  Storage Account Type:  %s", this.distributeStorageAccountType);
++            console.log("  Exclude from Latest:   %s", this.excludeFromLatest ? "yes" : "no");
++            if(this.distributeVersioningScheme) console.log("  Versioning:            %s%s", this.distributeVersioningScheme, this.distributeVersioningMajor ? ` (major: ${this.distributeVersioningMajor})` : "");
++        } else if(Utils.IsEqual(this.distributeType, "managedimage")) {
++            console.log("  Image ID:              %s", this.imageIdForDistribute);
++            console.log("  Location:              %s", this.managedImageLocation);
++        } else if(this.vhdUri) {
++            console.log("  VHD URI:               %s", this.vhdUri);
++        }
++
++        if(this.enableValidation) {
++            console.log(line);
++            console.log("  VALIDATION");
++            console.log("  Source Only:            %s", this.sourceValidationOnly ? "yes" : "no");
++            console.log("  Continue on Failure:   %s", this.continueDistributeOnFailure ? "yes" : "no");
++            if(this.validationInlineScript) console.log("  Validation Script:     %d line(s)", this.validationInlineScript.split("\n").filter(l => l.trim()).length);
++        }
++
++        var advancedLines: string[] = [];
++        if(this.buildTimeoutInMinutes > 0) advancedLines.push(`Timeout: ${this.buildTimeoutInMinutes} min`);
++        if(this.optimizeVmBoot) advancedLines.push("VM Boot Optimization: enabled");
++        if(this.autoRun) advancedLines.push("Auto Run: enabled");
++        if(this.stagingResourceGroup) advancedLines.push(`Staging RG: ${this.stagingResourceGroup}`);
++        if(this.errorHandlingOnCustomizerError !== "cleanup") advancedLines.push(`On Customizer Error: ${this.errorHandlingOnCustomizerError}`);
++        if(this.errorHandlingOnValidationError !== "cleanup") advancedLines.push(`On Validation Error: ${this.errorHandlingOnValidationError}`);
++        if(Object.keys(this.managedResourceTags).length > 0) advancedLines.push(`Resource Tags: ${Object.keys(this.managedResourceTags).length} tag(s)`);
++
++        if(advancedLines.length > 0) {
++            console.log(line);
++            console.log("  ADVANCED");
++            advancedLines.forEach(l => console.log("  %s", l));
++        }
++
++        console.log(line);
++        console.log("");
++    }
++
+     private _extractImageDetails(img: string) {
+         this.imagePublisher = "";
+         this.imageOffer = "";
+@@ -163,4 +323,4 @@ export default class TaskParameters
+         }
+         return result;
+     }
+-}
+\ No newline at end of file
++}
+diff --git "a/devOps-task-for-azure-image-builder-source\\src\\Utils.ts" "b/devOps-task-for-azure-image-builder-v1-patched\\src\\Utils.ts"
+index afb37fc..25746a2 100644
+--- "a/devOps-task-for-azure-image-builder-source\\src\\Utils.ts"
++++ "b/devOps-task-for-azure-image-builder-v1-patched\\src\\Utils.ts"
+@@ -6,4 +6,10 @@ export default class Utils
+     {
+         return a.toLowerCase() == b.toLowerCase()
+     }
+-}
+\ No newline at end of file
++
++    // v1-patched: needed for progress polling delay
++    public static sleep(ms: number): Promise<void>
++    {
++        return new Promise(resolve => setTimeout(resolve, ms));
++    }
++}
+diff --git "a/devOps-task-for-azure-image-builder-source\\src\\constants.ts" "b/devOps-task-for-azure-image-builder-v1-patched\\src\\constants.ts"
+index f0d1619..120408f 100644
+--- "a/devOps-task-for-azure-image-builder-source\\src\\constants.ts"
++++ "b/devOps-task-for-azure-image-builder-v1-patched\\src\\constants.ts"
+@@ -28,3 +28,31 @@ export var DistributeType = "distributeType";
+ export var ImageIdForDistribute = "imageIdForDistribute";
+ export var ReplicationRegions = "replicationRegions";
+ export var ManagedImageLocation = "managedImageLocation";
++
++// ΓöÇΓöÇ v1-patched additions (API 2024-02-01) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
++
++export var AIB_API_VERSION = "2024-02-01";
++
++export var BuildVmIdentities = "buildVmIdentities";
++export var ContainerInstanceSubnetId = "containerInstanceSubnetId";
++export var ProxyVmSize = "proxyVmSize";
++export var OsDiskSizeGB = "osDiskSizeGB";
++
++export var EnableValidation = "enableValidation";
++export var SourceValidationOnly = "sourceValidationOnly";
++export var ContinueDistributeOnFailure = "continueDistributeOnFailure";
++export var ValidationInlineScript = "validationInlineScript";
++
++export var TargetRegions = "targetRegions";
++export var DistributeStorageAccountType = "distributeStorageAccountType";
++export var ExcludeFromLatest = "excludeFromLatest";
++export var DistributeVersioningScheme = "distributeVersioningScheme";
++export var DistributeVersioningMajor = "distributeVersioningMajor";
++export var VhdUri = "vhdUri";
++
++export var OptimizeVmBoot = "optimizeVmBoot";
++export var AutoRun = "autoRun";
++export var StagingResourceGroup = "stagingResourceGroup";
++export var ManagedResourceTags = "managedResourceTags";
++export var ErrorHandlingOnCustomizerError = "errorHandlingOnCustomizerError";
++export var ErrorHandlingOnValidationError = "errorHandlingOnValidationError";
+diff --git "a/devOps-task-for-azure-image-builder-source\\src\\task.json" "b/devOps-task-for-azure-image-builder-v1-patched\\src\\task.json"
+index 0c3a57b..33e9203 100644
+--- "a/devOps-task-for-azure-image-builder-source\\src\\task.json"
++++ "b/devOps-task-for-azure-image-builder-v1-patched\\src\\task.json"
+@@ -1,21 +1,27 @@
+ {
+-    "id": "a4685136-7cb5-430c-9df5-032660332fe9",
+-    "name": "AzureImageBuilderTask",
+-    "friendlyName": "Azure VM Image Builder Test(Preview)",
+-    "description": "Build images using Azure Image Builder resource provider.",
+-    "helpMarkDown": "For documentation, and end to end example, please visit: http://aka.ms/azvmimagebuilderdevops",
++    "id": "b1d5cc59-35c5-4aab-9a1e-2cc5dfa0bb25",
++    "name": "AzureImageBuilderTaskV2",
++    "friendlyName": "Azure VM Image Builder Task v2",
++    "description": "Build images using Azure Image Builder resource provider (API 2024-02-01). Supports workload identity federation, VM boot optimization, validation, and all modern AIB features.",
++    "helpMarkDown": "For documentation: https://learn.microsoft.com/en-us/azure/virtual-machines/image-builder-overview",
+     "category": "Deploy",
+     "visibility": [
+         "Build",
+         "Release"
+     ],
+-    "author": "Microsoft Corporation",
++    "author": "Microsoft Corporation (community update)",
+     "version": {
+-        "Major": 1,
+-        "Minor": 0,
+-        "Patch": 45
++        "Major": 2,
++        "Minor": 2,
++        "Patch": 1
+     },
+     "instanceNameFormat": "Azure VM Image Builder Task",
++    "minimumAgentVersion": "2.144.0",
++    "execution": {
++        "Node20_1": {
++            "target": "index.js"
++        }
++    },
+     "groups": [
+         {
+             "name": "ImageBuilderInput",
+@@ -30,7 +36,7 @@
+         {
+             "name": "VnetConfig",
+             "displayName": "VNet Configuration (Optional)",
+-            "isExpanded": true
++            "isExpanded": false
+         },
+         {
+             "name": "Source",
+@@ -42,6 +48,11 @@
+             "displayName": "Customize",
+             "isExpanded": true
+         },
++        {
++            "name": "Validate",
++            "displayName": "Validation (Optional)",
++            "isExpanded": false
++        },
+         {
+             "name": "Distribute",
+             "displayName": "Distribute",
+@@ -50,24 +61,50 @@
+         {
+             "name": "OptionalSettings",
+             "displayName": "Optional Settings",
+-            "isExpanded": true
++            "isExpanded": false
+         }
+     ],
+     "inputs": [
+         {
+             "name": "managedIdentity",
+             "type": "string",
+-            "label": "Identity Resource Id",
++            "label": "Template Identity Resource Id",
+             "required": true,
+-            "helpMarkDown": "Create an identity, and add the resourceID, review https://aka.ms/azvmimagebuilder#permissions for more information.\n\nExample: /subscriptions/<subscriptionid>/resourcegroups/<resource-group-name>/providers/Microsoft.ManagedIdentity/userAssignedIdentities/<idenitity-name>",
++            "helpMarkDown": "User-assigned managed identity resource ID for the image template resource. See https://learn.microsoft.com/en-us/azure/virtual-machines/image-builder-overview#permissions",
++            "groupName": "Identity"
++        },
++        {
++            "name": "buildVmIdentities",
++            "type": "multiLine",
++            "label": "Build VM User-Assigned Identities (optional)",
++            "required": false,
++            "helpMarkDown": "One resource ID per line. These identities are assigned to the build VM so customizer scripts can authenticate to Azure services (e.g. Key Vault). The template identity must have 'Managed Identity Operator' on each.",
+             "groupName": "Identity"
+         },
+         {
+             "name": "vnetSubnetId",
+             "type": "string",
+-            "label": "Subnet Id",
++            "label": "Build VM Subnet Id",
++            "required": false,
++            "helpMarkDown": "Resource ID of a pre-existing subnet for the build VM and validation VM.",
++            "groupName": "VnetConfig"
++        },
++        {
++            "name": "containerInstanceSubnetId",
++            "type": "string",
++            "label": "Container Instance Subnet Id (Isolated Builds)",
++            "required": false,
++            "helpMarkDown": "Resource ID of a subnet for Azure Container Instance (ACI) in isolated builds. Must be on the same VNet as the build VM subnet, delegated to ACI. New in API 2024-02-01.",
++            "visibleRule": "vnetSubnetId != \"\"",
++            "groupName": "VnetConfig"
++        },
++        {
++            "name": "proxyVmSize",
++            "type": "string",
++            "label": "Proxy VM Size (optional)",
+             "required": false,
+-            "helpMarkDown": "Resource id of a pre-existing subnet. Optional configuration of the virtual network to use to deploy the build virtual machine in. Omit if no specific virtual network needs to be used. Review https://docs.microsoft.com/en-us/azure/virtual-machines/linux/image-builder-networking for more information.",
++            "helpMarkDown": "Size of the proxy VM used to pass traffic to the build VM. Not used when containerInstanceSubnetId is specified. Default: Standard_A1_v2.",
++            "visibleRule": "vnetSubnetId != \"\"",
+             "groupName": "VnetConfig"
+         },
+         {
+@@ -75,13 +112,13 @@
+             "type": "pickList",
+             "label": "Image type",
+             "required": false,
+-            "helpMarkDown": "Select image source for Azure Image Builder.\nSupported source: Managed Image, Shared Image Gallery and Marketplace",
++            "helpMarkDown": "Select image source: Managed Image, Azure Compute Gallery, or Marketplace",
+             "options": {
+                 "managedimage": "Managed Image",
+-                "sig": "Shared Image Gallery",
++                "gallery": "Azure Compute Gallery",
+                 "marketplace": "Marketplace"
+             },
+-            "defaultValue": "managedimage",
++            "defaultValue": "marketplace",
+             "groupName": "Source"
+         },
+         {
+@@ -89,7 +126,7 @@
+             "type": "string",
+             "label": "Image resource id for Managed Image",
+             "required": false,
+-            "helpMarkDown": "ResourceId string for Managed Image. Managed image and template locations must be same.\n\nExample, /subscriptions/subscription_id/resourceGroups/rg_name/providers/Microsoft.Compute/images/image_name",
++            "helpMarkDown": "Resource ID for Managed Image source.",
+             "visibleRule": "imageSource = managedimage",
+             "groupName": "Source"
+         },
+@@ -98,8 +135,8 @@
+             "type": "string",
+             "label": "Image version id",
+             "required": false,
+-            "helpMarkDown": "Image verison id for Shared Image Gallery source image. Shared image location and template location must be same.\n\nExample, /subscriptions/subscription_id/resourceGroups/rg_name/providers/Microsoft.Compute/galleries/gallery_name/images/image_definition_name/versions/version_name",
+-            "visibleRule": "imageSource = sig",
++            "helpMarkDown": "Image version resource ID for Azure Compute Gallery source. Use '/versions/latest' to always pick the newest version.",
++            "visibleRule": "imageSource = gallery",
+             "groupName": "Source"
+         },
+         {
+@@ -107,35 +144,32 @@
+             "type": "pickList",
+             "label": "Base image",
+             "required": false,
+-            "helpMarkDown": "You can choose from a curated gallery of OS images. Latest version will be used for these platform images",
++            "helpMarkDown": "Choose from curated gallery of OS images (latest version used)",
+             "properties": {
+                 "EditableOptions": "True"
+             },
+             "options": {
+-                "MicrosoftWindowsServer:WindowsServer:2016-Datacenter": "Windows 2016-Datacenter",
+-                "MicrosoftWindowsServer:WindowsServer:2019-Datacenter": "Windows 2019-Datacenter",
+-                "MicrosoftWindowsDesktop:Windows-10:rs5-enterprise": "Windows RS5-Enterprise",
+-                "MicrosoftWindowsDesktop:Windows-10:rs5-evd": "Windows RS5-Evd",
+-                "MicrosoftWindowsDesktop:Windows-10:rs5-pro": "Windows RS5-Pro",
+-                "MicrosoftWindowsDesktop:Windows-10:19h1-pro": "Windows 19h1-Pro",
+-                "MicrosoftWindowsDesktop:Windows-10:19h1-evd": "Windows 19h1-Evd",
+-                "Canonical:UbuntuServer:18.04-LTS": "Ubuntu 18.04-LTS",
+-                "Canonical:UbuntuServer:16.04-LTS": "Ubuntu 16.04-LTS",
+-                "RedHat:RHEL:7.6": "RHEL 7.6",
+-                "OpenLogic:CentOS:7.6": "CentOS 7.6",
+-                "credativ:Debian:9": "Debian 9",
+-                "SUSE:SLES:15": "SLES 15 SP1"
++                "MicrosoftWindowsServer:WindowsServer:2022-datacenter-g2": "Windows Server 2022 Datacenter (Gen2)",
++                "MicrosoftWindowsServer:WindowsServer:2025-datacenter-g2": "Windows Server 2025 Datacenter (Gen2)",
++                "MicrosoftWindowsDesktop:windows-11:win11-24h2-ent": "Windows 11 24H2 Enterprise",
++                "MicrosoftWindowsDesktop:windows-11:win11-24h2-avd": "Windows 11 24H2 AVD",
++                "MicrosoftWindowsDesktop:windows-11:win11-25h2-ent": "Windows 11 25H2 Enterprise",
++                "MicrosoftWindowsDesktop:windows-11:win11-25h2-avd": "Windows 11 25H2 AVD",
++                "MicrosoftWindowsDesktop:office-365:win11-24h2-avd-m365": "Windows 11 24H2 AVD + M365",
++                "MicrosoftWindowsDesktop:office-365:win11-25h2-avd-m365": "Windows 11 25H2 AVD + M365",
++                "Canonical:ubuntu-24_04-lts:server": "Ubuntu 24.04 LTS",
++                "Canonical:ubuntu-22_04-lts:server": "Ubuntu 22.04 LTS"
+             },
+-            "defaultValue": "Canonical:UbuntuServer:18.04-LTS",
++            "defaultValue": "MicrosoftWindowsDesktop:windows-11:win11-25h2-ent",
+             "visibleRule": "imageSource = marketplace",
+             "groupName": "Source"
+         },
+         {
+             "name": "baseImagePubOfferSku",
+             "type": "string",
+-            "label": "If base image is not in the list (Optional)",
++            "label": "Custom Publisher:Offer:Sku (if not in list)",
+             "required": false,
+-            "helpMarkDown": "If platform image is not in list, you can enter it, in this format: 'Publisher:Offer:Sku', e.g. 'OpenLogic:CentOS:7.5'",
++            "helpMarkDown": "Format: 'Publisher:Offer:Sku', e.g. 'MicrosoftWindowsDesktop:office-365:win11-25h2-avd-m365'",
+             "defaultValue": "Publisher:Offer:Sku",
+             "visibleRule": "imageSource = marketplace",
+             "groupName": "Source"
+@@ -145,7 +179,7 @@
+             "type": "string",
+             "label": "Base Image Version (optional)",
+             "required": false,
+-            "helpMarkDown": "PIR image version. This is optional. Default value: latest.",
++            "helpMarkDown": "Platform image version. Default: latest.",
+             "defaultValue": "latest",
+             "visibleRule": "imageSource = marketplace",
+             "groupName": "Source"
+@@ -155,7 +189,7 @@
+             "type": "string",
+             "label": "Platform Image Purchase Plan (optional)",
+             "required": false,
+-            "helpMarkDown": "Optional purchase plan configuration for platform image. You can enter in this format: 'PlanName:PlanProduct:PlanPublisher'",
++            "helpMarkDown": "Format: 'PlanName:PlanProduct:PlanPublisher' for marketplace images that require purchase plan acceptance.",
+             "defaultValue": "PlanName:PlanProduct:PlanPublisher",
+             "visibleRule": "imageSource = marketplace",
+             "groupName": "Source"
+@@ -165,12 +199,12 @@
+             "type": "picklist",
+             "label": "Provisioner",
+             "required": false,
+-            "helpMarkDown": "Select provisioner. Shell is for Linux and Powershell is for windows",
++            "helpMarkDown": "Shell for Linux, PowerShell for Windows",
+             "options": {
+                 "shell": "Shell",
+                 "powershell": "PowerShell"
+             },
+-            "defaultValue": "shell",
++            "defaultValue": "powershell",
+             "groupName": "Customize"
+         },
+         {
+@@ -179,19 +213,19 @@
+             "label": "Run Windows Update as last customization",
+             "defaultValue": "false",
+             "required": false,
+-            "visibleRule": "provisioner = PowerShell",
++            "visibleRule": "provisioner = powershell",
+             "groupName": "Customize",
+-            "helpMarkDown": "If this is selected, Windows update will install important and recommended updates, see documentation for further details"
++            "helpMarkDown": "Appends Windows Update customizer (with 5-min pre-wait) as the final step"
+         },
+         {
+             "name": "runElevated",
+             "type": "boolean",
+             "label": "Run Elevated",
+-            "defaultValue": "false",
++            "defaultValue": "true",
+             "required": false,
+-            "visibleRule": "provisioner = PowerShell",
++            "visibleRule": "provisioner = powershell",
+             "groupName": "Customize",
+-            "helpMarkDown": "Optional. If this is selected, the powerShell script will be run with elevated privileges."
++            "helpMarkDown": "Run the PowerShell script with elevated privileges"
+         },
+         {
+             "name": "runAsSystem",
+@@ -201,14 +235,14 @@
+             "required": false,
+             "visibleRule": "runElevated = true",
+             "groupName": "Customize",
+-            "helpMarkDown": "Optional. If this is selected, commands will run with elevated privileges using the Local System user. It can only be true when the 'Run Elevated' field above is set to true."
++            "helpMarkDown": "Run with elevated privileges using the Local System user"
+         },
+         {
+             "name": "packagePath",
+             "type": "filePath",
+             "label": "Build path",
+             "required": false,
+-            "helpMarkDown": "Select build artifact path using file selection widget. This path is where build artifacts reside and must be a directory for this task. It is relative to $(System.DefaultWorkingDirectory)",
++            "helpMarkDown": "Path to build artifacts. Uploaded to blob storage and extracted to C:\\BuildArtifacts (Windows) or /tmp (Linux) inside the AIB VM.",
+             "groupName": "Customize"
+         },
+         {
+@@ -216,9 +250,9 @@
+             "type": "multiLine",
+             "label": "Inline customization script",
+             "required": false,
+-            "defaultValue": "# add commands to move build files from temporary to persistent location for linux\n# this can be an array of commands",
++            "defaultValue": "# Artifacts available at:\n# Windows: C:\\BuildArtifacts\\<folder>\n# Linux: /tmp/<folder>",
+             "groupName": "Customize",
+-            "helpMarkDown": "Inline script to move build files from temporary to persistent location and to add other customizations to the image.\n\nArtifact directory on: \n Linux is /tmp/build_path_name - you need copy it to persistent location\n Windows is c:\\buildartifacts",
++            "helpMarkDown": "Inline script for image customization. Build artifacts are at C:\\BuildArtifacts (Windows) or /tmp (Linux).",
+             "properties": {
+                 "editorExtension": "ms.vss-services-azure.azure-servicebus-message-grid"
+             }
+@@ -228,21 +262,62 @@
+             "type": "pickList",
+             "label": "Storage account",
+             "required": false,
+-            "helpMarkDown": "Image builder will upload and download your build artifatcs from here and will set the appropriate permission. Storage account must exist",
++            "helpMarkDown": "Storage account for staging build artifacts. Must exist in the same subscription.",
+             "groupName": "Customize"
+         },
++        {
++            "name": "enableValidation",
++            "type": "boolean",
++            "label": "Enable image validation",
++            "defaultValue": "false",
++            "required": false,
++            "groupName": "Validate",
++            "helpMarkDown": "Run validation customizers after the image is built but before distribution."
++        },
++        {
++            "name": "sourceValidationOnly",
++            "type": "boolean",
++            "label": "Source validation only",
++            "defaultValue": "false",
++            "required": false,
++            "visibleRule": "enableValidation = true",
++            "groupName": "Validate",
++            "helpMarkDown": "Validate the source image directly without building a customized image first."
++        },
++        {
++            "name": "continueDistributeOnFailure",
++            "type": "boolean",
++            "label": "Continue distribute on validation failure",
++            "defaultValue": "false",
++            "required": false,
++            "visibleRule": "enableValidation = true",
++            "groupName": "Validate",
++            "helpMarkDown": "If true, distribute the image even if validation fails. The overall build will still report failure."
++        },
++        {
++            "name": "validationInlineScript",
++            "type": "multiLine",
++            "label": "Validation inline script",
++            "required": false,
++            "visibleRule": "enableValidation = true",
++            "groupName": "Validate",
++            "helpMarkDown": "Inline script to validate the built image. Uses the same provisioner (Shell/PowerShell) as the customize phase.",
++            "properties": {
++                "editorExtension": "ms.vss-services-azure.azure-servicebus-message-grid"
++            }
++        },
+         {
+             "name": "distributeType",
+             "type": "pickList",
+             "label": "Distribute type",
+             "required": false,
+-            "helpMarkDown": "Select distribute for Image Builder.\nSupported distributes: Managed Image, Shared Image Gallery(gallery must exist before using it here) and VHD",
++            "helpMarkDown": "Output type: Azure Compute Gallery, Managed Image, or VHD",
+             "options": {
+                 "managedimage": "ManagedImage",
+-                "sig": "Shared Image Gallery",
++                "gallery": "Azure Compute Gallery",
+                 "vhd": "VHD"
+             },
+-            "defaultValue": "managedimage",
++            "defaultValue": "gallery",
+             "groupName": "Distribute"
+         },
+         {
+@@ -250,17 +325,17 @@
+             "type": "string",
+             "label": "Image id for managed image",
+             "required": false,
+-            "helpMarkDown": "Image URI to store Managed Image, in this format: /subscriptions/<subscriptionID>/resourceGroups/<rgName>/providers/Microsoft.Compute/images/<imageName>",
+-            "visibleRule": " distributeType = managedimage",
++            "helpMarkDown": "Resource ID for the output Managed Image",
++            "visibleRule": "distributeType = managedimage",
+             "groupName": "Distribute"
+         },
+         {
+             "name": "galleryImageId",
+             "type": "string",
+-            "label": "Image id for Shared Gallery Image",
++            "label": "Image id for Azure Compute Gallery Image",
+             "required": false,
+-            "helpMarkDown": "Image Uri to store Managed Image.",
+-            "visibleRule": "distributeType = sig",
++            "helpMarkDown": "Image definition resource ID (without /versions). Use automatic versioning or append /versions/<n.n.n> for explicit version.",
++            "visibleRule": "distributeType = gallery",
+             "groupName": "Distribute"
+         },
+         {
+@@ -268,17 +343,85 @@
+             "type": "string",
+             "label": "Location for managed image",
+             "required": false,
+-            "helpMarkDown": "Location for managed image.\n\nExample: westus",
++            "helpMarkDown": "Location for managed image output. Example: westeurope",
+             "visibleRule": "distributeType = managedimage",
+             "groupName": "Distribute"
+         },
++        {
++            "name": "targetRegions",
++            "type": "string",
++            "label": "Target regions (comma-separated)",
++            "required": false,
++            "helpMarkDown": "Target regions for Azure Compute Gallery replication. Example: westeurope,northeurope. Maps to the 'targetRegions' API property.",
++            "visibleRule": "distributeType = gallery",
++            "groupName": "Distribute"
++        },
+         {
+             "name": "replicationRegions",
+             "type": "string",
+-            "label": "Regions separated by comma",
++            "label": "Replication regions (deprecated, use Target regions)",
+             "required": false,
+-            "helpMarkDown": "Regions for Shared Gallery Images. It can be any Shared Image Gallery supported regions. Regions needs to be separated by comma.\n\nExample: westus, westus2, eastus",
+-            "visibleRule": "distributeType = sig",
++            "helpMarkDown": "Deprecated ΓÇö kept for backward compatibility. Prefer 'Target regions' above.",
++            "visibleRule": "distributeType = gallery",
++            "groupName": "Distribute"
++        },
++        {
++            "name": "distributeStorageAccountType",
++            "type": "pickList",
++            "label": "Storage account type for gallery image version",
++            "required": false,
++            "helpMarkDown": "Storage type for the image version in each target region.",
++            "options": {
++                "": "(Default)",
++                "Standard_LRS": "Standard LRS",
++                "Standard_ZRS": "Standard ZRS",
++                "Premium_LRS": "Premium LRS"
++            },
++            "defaultValue": "",
++            "visibleRule": "distributeType = gallery",
++            "groupName": "Distribute"
++        },
++        {
++            "name": "excludeFromLatest",
++            "type": "boolean",
++            "label": "Exclude from latest",
++            "defaultValue": "false",
++            "required": false,
++            "visibleRule": "distributeType = gallery",
++            "groupName": "Distribute",
++            "helpMarkDown": "Exclude this image version from being used as the 'latest' version in the gallery image definition."
++        },
++        {
++            "name": "distributeVersioningScheme",
++            "type": "pickList",
++            "label": "Versioning scheme",
++            "required": false,
++            "helpMarkDown": "Latest: monotonically increasing version numbers. Source: version based on source image version.",
++            "options": {
++                "": "(Default / Auto)",
++                "Latest": "Latest",
++                "Source": "Source"
++            },
++            "defaultValue": "",
++            "visibleRule": "distributeType = gallery",
++            "groupName": "Distribute"
++        },
++        {
++            "name": "distributeVersioningMajor",
++            "type": "string",
++            "label": "Versioning major version",
++            "required": false,
++            "helpMarkDown": "When versioning scheme is 'Latest', specify the major version number under which to generate the next version.",
++            "visibleRule": "distributeVersioningScheme = Latest",
++            "groupName": "Distribute"
++        },
++        {
++            "name": "vhdUri",
++            "type": "string",
++            "label": "VHD output URI (optional)",
++            "required": false,
++            "helpMarkDown": "Azure Storage URI for the distributed VHD blob. Omit to use the default storage account in the staging resource group.",
++            "visibleRule": "distributeType = vhd",
+             "groupName": "Distribute"
+         },
+         {
+@@ -286,14 +429,17 @@
+             "type": "connectedService:AzureRM",
+             "label": "Azure Subscription",
+             "required": true,
+-            "helpMarkDown": "Select Azure Resource Manager subscription where image template will saved and run. This subscription should be enabled for image builder  before running this task",
+-            "groupName": "ImageBuilderInput"
++            "helpMarkDown": "Azure Resource Manager subscription. Supports workload identity federation (recommended) and service principal with secret.",
++            "groupName": "ImageBuilderInput",
++            "properties": {
++                "EndpointFilterRule": "ScopeLevel != AzureMLWorkspace"
++            }
+         },
+         {
+             "name": "ibAzureResourceGroup",
+             "type": "pickList",
+             "label": "Resource group",
+-            "helpMarkDown": "Azure Resource group to store Image Builder template.",
++            "helpMarkDown": "Resource group for the image template.",
+             "required": true,
+             "groupName": "ImageBuilderInput"
+         },
+@@ -302,60 +448,115 @@
+             "type": "pickList",
+             "label": "Location",
+             "required": true,
+-            "options": {
+-                "westus": "westus",
+-                "westus2": "westus2",
+-                "westus3": "westus3",
+-                "westcentralus": "westcentralus",
+-                "eastus": "eastus",
+-                "eastus2": "eastus2",
+-                "southcentralus": "southcentralus",
+-                "northeurope": "northeurope",
+-                "westeurope": "westeurope",
+-                "ukwest": "ukwest",
+-                "uksouth": "uksouth",
+-                "southeastasia": "southeastasia",
+-                "australiaeast": "australiaeast",
+-                "australiasoutheast": "australiasoutheast"
++            "helpMarkDown": "Location for the image template",
++            "properties": {
++                "EditableOptions": "True"
+             },
+-            "defaultValue": "westus",
+-            "helpMarkDown": "This location is used to create resources needed to create image",
+             "groupName": "ImageBuilderInput"
+         },
++        {
++            "name": "buildTimeoutInMinutes",
++            "type": "string",
++            "label": "Build timeout (minutes)",
++            "required": false,
++            "helpMarkDown": "Maximum build time. 0 = platform default (4 hours). Min: 6, Max: 960.",
++            "defaultValue": "120",
++            "groupName": "OptionalSettings"
++        },
+         {
+             "name": "vmSize",
+             "type": "string",
+-            "label": "VM Size",
++            "label": "VM size",
+             "required": false,
+-            "helpMarkDown": "Optional. Size of the build VM that runs in your subscription, default is Standard_D1_V2. Use this option, if you want more compute, for faster builds, or to build custom images for hardware dependent VM sizes, such as GPU VMs",
+-            "defaultValue": "Standard_D1_v2",
++            "helpMarkDown": "VM size for the build VM. Gen1 default: Standard_D1_v2, Gen2 default: Standard_D2ds_v4.",
++            "defaultValue": "Standard_D2ds_v4",
+             "groupName": "OptionalSettings"
+         },
+         {
+-            "name": "buildTimeoutInMinutes",
++            "name": "osDiskSizeGB",
++            "type": "string",
++            "label": "OS Disk Size (GB)",
++            "required": false,
++            "helpMarkDown": "Override the OS disk size. 0 or empty = use source image size. Can only increase, not decrease.",
++            "defaultValue": "",
++            "groupName": "OptionalSettings"
++        },
++        {
++            "name": "optimizeVmBoot",
++            "type": "boolean",
++            "label": "Enable VM boot optimization",
++            "defaultValue": "false",
++            "required": false,
++            "groupName": "OptionalSettings",
++            "helpMarkDown": "Enable VM boot optimization to improve image creation time. Sets optimize.vmBoot.state = Enabled."
++        },
++        {
++            "name": "autoRun",
++            "type": "boolean",
++            "label": "Auto-run on template creation",
++            "defaultValue": "false",
++            "required": false,
++            "groupName": "OptionalSettings",
++            "helpMarkDown": "Automatically start the image build when the template is created. The task still monitors completion regardless."
++        },
++        {
++            "name": "stagingResourceGroup",
+             "type": "string",
+-            "label": "Build Timeout in Minutes",
++            "label": "Staging resource group (optional)",
++            "required": false,
++            "helpMarkDown": "Resource ID of a pre-existing resource group for AIB staging resources. Must be empty, in the same region, with Contributor/Owner RBAC for the template identity. Leave empty for auto-created staging group.",
++            "groupName": "OptionalSettings"
++        },
++        {
++            "name": "managedResourceTags",
++            "type": "multiLine",
++            "label": "Managed resource tags (JSON)",
++            "required": false,
++            "helpMarkDown": "JSON object of key-value tags to apply to the staging resource group resources. Example: {\"env\": \"dev\", \"project\": \"avd\"}",
++            "groupName": "OptionalSettings"
++        },
++        {
++            "name": "errorHandlingOnCustomizerError",
++            "type": "pickList",
++            "label": "On customizer error",
+             "required": false,
+-            "helpMarkDown": "Maximum duration to wait while building the image template. Omit or specify 0 to use the default (240 minutes/4 hours)",
+-            "defaultValue": "0",
++            "helpMarkDown": "cleanup: remove staging resources on failure (default). abort: leave resources for debugging.",
++            "options": {
++                "cleanup": "Cleanup",
++                "abort": "Abort (keep resources for debugging)"
++            },
++            "defaultValue": "cleanup",
++            "groupName": "OptionalSettings"
++        },
++        {
++            "name": "errorHandlingOnValidationError",
++            "type": "pickList",
++            "label": "On validation error",
++            "required": false,
++            "helpMarkDown": "cleanup: remove staging resources on failure (default). abort: leave resources for debugging.",
++            "options": {
++                "cleanup": "Cleanup",
++                "abort": "Abort (keep resources for debugging)"
++            },
++            "defaultValue": "cleanup",
+             "groupName": "OptionalSettings"
+         }
+     ],
+     "dataSourceBindings": [
+         {
+-            "target": "storageAccountName",
++            "target": "ibAzureResourceGroup",
+             "endpointId": "$(ibSubscription)",
+-            "dataSourceName": "AzureStorageAccountRM"
++            "dataSourceName": "AzureResourceGroups"
+         },
+         {
+-            "target": "ibAzureResourceGroup",
++            "target": "ibLocation",
+             "endpointId": "$(ibSubscription)",
+-            "dataSourceName": "AzureResourceGroups"
+-        }
+-    ],
+-    "execution": {
+-        "Node10": {
+-            "target": "./index.js"
++            "dataSourceName": "AzureLocations"
++        },
++        {
++            "target": "storageAccountName",
++            "endpointId": "$(ibSubscription)",
++            "dataSourceName": "AzureStorageAccountRM"
+         }
+-    }
++    ]
+ }
+diff --git "a/devOps-task-for-azure-image-builder-source\\src\\package.json" "b/devOps-task-for-azure-image-builder-v1-patched\\src\\package.json"
+index 4d3efeb..45ac5a7 100644
+--- "a/devOps-task-for-azure-image-builder-source\\src\\package.json"
++++ "b/devOps-task-for-azure-image-builder-v1-patched\\src\\package.json"
+@@ -4,19 +4,21 @@
+   "description": "",
+   "main": "index.js",
+   "scripts": {
++    "build": "tsc",
+     "test": "echo 1"
+   },
+   "author": "",
+   "license": "ISC",
+   "dependencies": {
+-    "@types/mocha": "^5.2.6",
+-    "@types/node": "10.17.0",
+-    "@types/archiver": "5.3.1",
+-    "@types/q": "^1.5.1",
+-    "azure-pipelines-task-lib": "^3.2.0",
+-    "azure-pipelines-tasks-azure-arm-rest-v2": "^2.208.0",
+-    "azure-storage": "^2.10.7",
+-    "typescript": "4.5.4",
++    "azure-pipelines-task-lib": "^5.2.4",
++    "azure-pipelines-tasks-azure-arm-rest": "^3.248.1",
++    "@azure/storage-blob": "^12.17.0",
+     "archiver": "5.3.1"
++  },
++  "devDependencies": {
++    "@types/mocha": "^5.2.6",
++    "@types/node": "^20.11.0",
++    "@types/archiver": "^6.0.2",
++    "typescript": "^5.3.3"
+   }
+ }
+diff --git "a/devOps-task-for-azure-image-builder-source\\src\\tsconfig.json" "b/devOps-task-for-azure-image-builder-v1-patched\\src\\tsconfig.json"
+index 09ee250..586c8d5 100644
+--- "a/devOps-task-for-azure-image-builder-source\\src\\tsconfig.json"
++++ "b/devOps-task-for-azure-image-builder-v1-patched\\src\\tsconfig.json"
+@@ -1,7 +1,15 @@
+ {
+   "compilerOptions": {
+-    "lib": ["es2018"],
++    "lib": ["ES2022"],
+     "module": "commonjs",
+-    "target": "es2018"
+-  }
+-}
+\ No newline at end of file
++    "target": "ES2022",
++    "esModuleInterop": true,
++    "skipLibCheck": true,
++    "forceConsistentCasingInFileNames": true,
++    "outDir": "./",
++    "rootDir": "./",
++    "typeRoots": ["./node_modules/@types"],
++    "types": ["node"]
++  },
++  "exclude": ["node_modules"]
++}

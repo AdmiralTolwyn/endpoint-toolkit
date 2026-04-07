@@ -1,0 +1,53 @@
+{
+    "manifestVersion": 1,
+    "id": "devOps-task-for-azure-image-builder-v2",
+    "version": "2.2.4",
+    "name": "Azure VM Image Builder DevOps Task v2",
+    "description": "DevOps task for Azure Image Builder (API 2024-02-01). Node 20, federated auth, VM boot optimization, validation, targetRegions, versioning, and all modern AIB features.",
+    "publisher": "vacuumbreather",
+    "public": true,
+    "galleryFlags": [
+        "Preview"
+    ],
+    "targets": [
+        {
+            "id": "Microsoft.VisualStudio.Services"
+        }
+    ],
+    "icons": {
+        "default": "images/extension-icon.png"
+    },
+    "content": {
+        "details": {
+            "path": "overview.md"
+        }
+    },
+    "categories": [
+        "Azure Pipelines"
+    ],
+    "tags": [
+        "Azure",
+        "Image Builder",
+        "AIB",
+        "AVD",
+        "Virtual Desktop",
+        "Packer"
+    ],
+    "contributions": [
+        {
+            "id": "custom-build-release-task",
+            "type": "ms.vss-distributed-task.task",
+            "targets": [
+                "ms.vss-distributed-task.tasks"
+            ],
+            "properties": {
+                "name": "src"
+            }
+        }
+    ],
+    "files": [
+        {
+            "path": "src"
+        }
+    ]
+}

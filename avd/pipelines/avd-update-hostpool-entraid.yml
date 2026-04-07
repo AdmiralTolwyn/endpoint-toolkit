@@ -1,0 +1,481 @@
+name: $(Date:yyyyMMdd)$(Rev:.r)-AVD-SessionHost-Update
+
+trigger: none # Run manually
+
+pool:
+  vmImage: 'windows-latest'
+
+# -----------------------------------------------------------------------------
+# CENTRALIZED CONFIGURATION
+# -----------------------------------------------------------------------------
+variables:
+  # Service Connections & IDs
+  - name: serviceConnection
+    value: '<YOURSERVICECONNECTION>'
+  - name: subscriptionId
+    value: '<YOURSUBSCRIPTIONID>'
+  
+  # AVD Resource Details
+  - name: resourceGroup
+    value: '<YOURRESOURCEGROUP-CORE>' # Main RG (Host Pool location)
+  - name: hostPoolName
+    value: '<YOURHOSTPOOLNAME>'
+  - name: keyVaultName
+    value: '<YOURKEYVAULTNAME>'
+  
+  # VM Specifications (Now Parametrized)
+  - name: vmSize
+    value: 'Standard_B2as_v2'
+  - name: osDiskType
+    value: 'StandardSSD_LRS'
+  - name: osDiskSizeGB
+    value: 128
+  - name: vmLocalAdminUser
+    value: 'avdadmin'
+
+  # Image Source Details
+  - name: galleryRg
+    value: '<YOURRESOURCEGROUP-AIB>'
+  - name: galleryName
+    value: '<YOURGALLERYNAME>'
+  - name: imageDef
+    value: '<YOURIMAGEDEFINITION>'
+
+  # Infrastructure Targets (shared across stages)
+  - name: computeRg
+    value: '<YOURRESOURCEGROUP-COMPUTE>'
+  - name: hostPoolRg
+    value: '<YOURRESOURCEGROUP-CORE>'
+  - name: networkRg
+    value: '<YOURRESOURCEGROUP-CORE>'
+  - name: vnetName
+    value: '<YOURVNETNAME>'
+  - name: subnetName
+    value: 'default'
+  
+  # Advanced VM Options
+  - name: availabilityZones
+    value: '[]'
+  - name: acceleratedNetworking
+    value: 'true'
+  - name: enableIntune
+    value: 'false'
+
+  # Telemetry (optional — set to 'true' to send events to Log Analytics)
+  - name: enableTelemetry
+    value: 'false'
+
+stages:
+  # ---------------------------------------------------------------------------
+  # STAGE 1: PLAN & PREPARE
+  # Calculates which VMs to replace, identifies versions, generates lists.
+  # ---------------------------------------------------------------------------
+  - stage: Preparation
+    displayName: "Plan Update"
+    jobs:
+      - job: CalculateContext
+        displayName: "Calculate Parameters"
+        steps:
+          - task: AzureKeyVault@2
+            displayName: "Fetch Secrets"
+            inputs:
+              azureSubscription: $(serviceConnection)
+              KeyVaultName: $(keyVaultName)
+              SecretsFilter: 'avd-local-admin-password'
+              RunAsPreJob: false
+
+          - task: AzurePowerShell@5
+            name: GetDetails
+            displayName: "Execute Get-AvdDetails.ps1"
+            inputs:
+              azureSubscription: $(serviceConnection)
+              ScriptType: 'FilePath'
+              ScriptPath: '$(System.DefaultWorkingDirectory)/scripts/Get-AvdDetails.ps1'
+              ScriptArguments: >
+                -HostPoolName "$(hostPoolName)"
+                -ResourceGroupName "$(resourceGroup)"
+                -GalleryResourceGroupName "$(galleryRg)"
+                -GalleryName "$(galleryName)"
+                -ImageDefinitionName "$(imageDef)"
+                -ComputeResourceGroupName "$(computeRg)"
+              azurePowerShellVersion: 'LatestVersion'
+
+  # ---------------------------------------------------------------------------
+  # STAGE 2: VALIDATE PLAN
+  # Human-readable summary of what will happen.
+  # ---------------------------------------------------------------------------
+  - stage: Validate
+    displayName: "Validate Plan"
+    dependsOn: Preparation
+    variables:
+      targetVer: $[ stageDependencies.Preparation.CalculateContext.outputs['GetDetails.TargetImageVersion'] ]
+      canaryList: $[ stageDependencies.Preparation.CalculateContext.outputs['GetDetails.CanaryList'] ]
+      blastList: $[ stageDependencies.Preparation.CalculateContext.outputs['GetDetails.BlastList'] ]
+      outdatedList: $[ stageDependencies.Preparation.CalculateContext.outputs['GetDetails.OutdatedHostsList'] ]
+      hpToken: $[ stageDependencies.Preparation.CalculateContext.outputs['GetDetails.HostPoolToken'] ]
+    jobs:
+      - job: AuditPlan
+        displayName: "Audit Deployment Plan"
+        steps:
+          - script: |
+              echo "=========================================="
+              echo "       DEPLOYMENT PLAN SUMMARY"
+              echo "=========================================="
+              echo "TARGET IMAGE: $(imageDef)"
+              echo "VERSION:      $(targetVer)"
+              echo "VM SPECS:     $(vmSize) | $(osDiskSizeGB)GB $(osDiskType)"
+              echo "------------------------------------------"
+              echo "1. CANARY VM:    $(canaryList)"
+              echo "2. BLAST VMS:    $(blastList)"
+              echo "------------------------------------------"
+              echo "MAINTENANCE (DRAIN CANDIDATES):"
+              echo "$(outdatedList)"
+              echo "=========================================="
+            displayName: "Log Deployment Plan"
+          
+          - task: PowerShell@2
+            displayName: "Assert Valid Plan"
+            inputs:
+              targetType: 'inline'
+              script: |
+                if ("$(targetVer)" -eq "") { Write-Error "Failed to determine Target Image Version"; exit 1 }
+                if ("$(hpToken)".Length -eq 0) { Write-Error "Failed to retrieve Host Pool Token"; exit 1 }
+                Write-Host "Plan is valid."
+
+  # ---------------------------------------------------------------------------
+  # STAGE 3: MAINTENANCE (DRAIN OLD)
+  # Sets old VMs to Drain Mode so users start moving off.
+  # ---------------------------------------------------------------------------
+  - stage: DrainOld
+    displayName: "Drain Outdated"
+    dependsOn: [Preparation, Validate]
+    variables:
+      outdatedList: $[ stageDependencies.Preparation.CalculateContext.outputs['GetDetails.OutdatedHostsList'] ]
+      targetVer: $[ stageDependencies.Preparation.CalculateContext.outputs['GetDetails.TargetImageVersion'] ]
+    jobs:
+      - job: SetDrainMode
+        displayName: "Set Maintenance Mode"
+        steps:
+          - task: AzurePowerShell@5
+            displayName: "Execute Set-AvdDrainMode.ps1"
+            inputs:
+              azureSubscription: $(serviceConnection)
+              ScriptType: 'FilePath'
+              ScriptPath: '$(System.DefaultWorkingDirectory)/scripts/Set-AvdDrainMode.ps1'
+              ScriptArguments: >
+                -HostPoolName "$(hostPoolName)"
+                -ResourceGroupName "$(hostPoolRg)"
+              azurePowerShellVersion: 'LatestVersion'
+            env:
+              HOST_LIST_JSON: $(outdatedList)
+
+          # OPTIONAL: Deployment Telemetry
+          - task: AzureKeyVault@2
+            displayName: "Fetch Telemetry Secrets"
+            condition: and(succeeded(), eq(variables['enableTelemetry'], 'true'))
+            continueOnError: true
+            inputs:
+              azureSubscription: $(serviceConnection)
+              KeyVaultName: $(keyVaultName)
+              SecretsFilter: 'log-analytics-workspace-id,log-analytics-shared-key'
+
+          - task: AzurePowerShell@5
+            displayName: "Telemetry → Drain Outdated"
+            condition: and(succeeded(), eq(variables['enableTelemetry'], 'true'))
+            continueOnError: true
+            inputs:
+              azureSubscription: $(serviceConnection)
+              ScriptType: 'FilePath'
+              ScriptPath: '$(System.DefaultWorkingDirectory)/scripts/Write-DeploymentTelemetry.ps1'
+              ScriptArguments: >
+                -WorkspaceId "$(log-analytics-workspace-id)"
+                -SharedKey "$(log-analytics-shared-key)"
+                -EventData @{
+                  HostPoolName  = '$(hostPoolName)';
+                  Stage         = 'Maintenance';
+                  Action        = 'Drain';
+                  ImageVersion  = '$(targetVer)';
+                  Status        = 'Success';
+                  PipelineRunId = '$(Build.BuildId)'
+                }
+              azurePowerShellVersion: 'LatestVersion'
+
+  # ---------------------------------------------------------------------------
+  # STAGE 4: DEPLOY CANARY (PRODUCTION)
+  # Deploys the first VM and immediately drains it for validation.
+  # ---------------------------------------------------------------------------
+  - stage: DeployCanary
+    displayName: "Deploy Canary (Production)"
+    dependsOn: [Preparation, Validate]
+    variables:
+      canaryList: $[ stageDependencies.Preparation.CalculateContext.outputs['GetDetails.CanaryList'] ]
+      targetImageId: $[ stageDependencies.Preparation.CalculateContext.outputs['GetDetails.TargetImageId'] ]
+      hpToken: $[ stageDependencies.Preparation.CalculateContext.outputs['GetDetails.HostPoolToken'] ]
+      targetImageVersion: $[ stageDependencies.Preparation.CalculateContext.outputs['GetDetails.TargetImageVersion'] ]
+
+    jobs:
+      - job: DeployCanaryJob
+        displayName: "Deploy Canary VM"
+        steps:
+          - task: AzureKeyVault@2
+            displayName: "Fetch Admin Secrets"
+            inputs:
+              azureSubscription: $(serviceConnection)
+              KeyVaultName: $(keyVaultName)
+              SecretsFilter: 'avd-local-admin-password,log-analytics-workspace-id,log-analytics-shared-key'
+              RunAsPreJob: false
+
+          - task: AzureCLI@2
+            displayName: "Construct Network Context"
+            inputs:
+              azureSubscription: $(serviceConnection)
+              scriptType: 'pscore'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                $SubnetId = "/subscriptions/$(subscriptionId)/resourceGroups/$(networkRg)/providers/Microsoft.Network/virtualNetworks/$(vnetName)/subnets/$(subnetName)"
+                Write-Host "##vso[task.setvariable variable=constructedSubnetId]$SubnetId"
+
+          - task: AzureCLI@2
+            displayName: "Execute Bicep Deployment"
+            timeoutInMinutes: 60
+            inputs:
+              azureSubscription: $(serviceConnection)
+              scriptType: 'pscore'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                Write-Host "Starting Canary Deployment..." -ForegroundColor Cyan
+                
+                # 1. FIX JSON ARRAY
+                $rawList = '$(canaryList)'
+                if ($rawList -notmatch '"') { $jsonString = $rawList -replace '([a-zA-Z0-9-]+)', '"$1"' } else { $jsonString = $rawList }
+                $vmArray = @($jsonString | ConvertFrom-Json)
+
+                # Parse availability zones
+                $zonesRaw = '$(availabilityZones)'
+                $zonesArr = @()
+                if ($zonesRaw -ne '[]' -and -not [string]::IsNullOrWhiteSpace($zonesRaw)) {
+                    $zonesArr = @($zonesRaw | ConvertFrom-Json)
+                }
+
+                # 2. GENERATE PARAMS
+                $params = @{
+                    "\$schema" = "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#"
+                    "contentVersion" = "1.0.0.0"
+                    "parameters" = @{
+                        "vmList" = @{ "value" = $vmArray } 
+                        "imageResourceId" = @{ "value" = "$(targetImageId)" }
+                        "hostPoolName" = @{ "value" = "$(hostPoolName)" }
+                        "hostPoolRg" = @{ "value" = "$(hostPoolRg)" }
+                        "hostPoolToken" = @{ "value" = "$(hpToken)" }
+                        "localAdminUser" = @{ "value" = "$(vmLocalAdminUser)" }
+                        "localAdminPassword" = @{ "value" = "$(avd-local-admin-password)" }
+                        "subnetId" = @{ "value" = "$(constructedSubnetId)" }
+                        "imageName" = @{ "value" = "$(imageDef)" }
+                        "imageVersion" = @{ "value" = "$(targetImageVersion)" }
+                        # Specs
+                        "vmSize" = @{ "value" = "$(vmSize)" }
+                        "osDiskType" = @{ "value" = "$(osDiskType)" }
+                        "osDiskSizeGB" = @{ "value" = $(osDiskSizeGB) }
+                        # Advanced Options
+                        "availabilityZones" = @{ "value" = $zonesArr }
+                        "acceleratedNetworking" = @{ "value" = ('$(acceleratedNetworking)' -eq 'true') }
+                        "enableIntune" = @{ "value" = ('$(enableIntune)' -eq 'true') }
+                    }
+                }
+                $params | ConvertTo-Json -Depth 10 | Out-File "canary.json" -Encoding UTF8
+                
+                # 3. DEPLOY
+                az deployment group create `
+                  --resource-group "$(computeRg)" `
+                  --name "canary-$(Build.BuildId)" `
+                  --template-file "$(System.DefaultWorkingDirectory)/bicep/main-entraid.bicep" `
+                  --parameters "@canary.json" `
+                  --verbose
+
+          # NEW: DRAIN MODE IMMEDIATELY
+          - task: AzurePowerShell@5
+            displayName: "Lock Down Canary (Drain)"
+            inputs:
+              azureSubscription: $(serviceConnection)
+              ScriptType: 'FilePath'
+              ScriptPath: '$(System.DefaultWorkingDirectory)/scripts/Set-AvdDrainMode.ps1'
+              ScriptArguments: >
+                -HostPoolName "$(hostPoolName)"
+                -ResourceGroupName "$(hostPoolRg)"
+              azurePowerShellVersion: 'LatestVersion'
+            env:
+              HOST_LIST_JSON: $(canaryList)
+
+          # OPTIONAL: Deployment Telemetry
+          - task: AzurePowerShell@5
+            displayName: "Telemetry → Canary Deploy"
+            condition: and(succeeded(), eq(variables['enableTelemetry'], 'true'))
+            continueOnError: true
+            inputs:
+              azureSubscription: $(serviceConnection)
+              ScriptType: 'FilePath'
+              ScriptPath: '$(System.DefaultWorkingDirectory)/scripts/Write-DeploymentTelemetry.ps1'
+              ScriptArguments: >
+                -WorkspaceId "$(log-analytics-workspace-id)"
+                -SharedKey "$(log-analytics-shared-key)"
+                -EventData @{
+                  HostPoolName  = '$(hostPoolName)';
+                  Stage         = 'Canary';
+                  Action        = 'Deploy';
+                  VMCount       = 1;
+                  ImageVersion  = '$(targetImageVersion)';
+                  Status        = 'Success';
+                  PipelineRunId = '$(Build.BuildId)'
+                }
+              azurePowerShellVersion: 'LatestVersion'
+
+  # ---------------------------------------------------------------------------
+  # STAGE 5: DEPLOY BLAST (PRODUCTION)
+  # Deploys remainder of fleet. Only runs if Canary succeeds.
+  # ---------------------------------------------------------------------------
+  - stage: DeployBlast
+    displayName: "Deploy Blast (Production)"
+    dependsOn: [Preparation, DeployCanary]
+    condition: succeeded()
+    variables:
+      blastList: $[ stageDependencies.Preparation.CalculateContext.outputs['GetDetails.BlastList'] ]
+      targetImageId: $[ stageDependencies.Preparation.CalculateContext.outputs['GetDetails.TargetImageId'] ]
+      hpToken: $[ stageDependencies.Preparation.CalculateContext.outputs['GetDetails.HostPoolToken'] ]
+      targetImageVersion: $[ stageDependencies.Preparation.CalculateContext.outputs['GetDetails.TargetImageVersion'] ]
+
+    jobs:
+      - job: DeployBlastBatch
+        displayName: "Deploy Blast Batch"
+        steps:
+          # 1. Skip if empty
+          - task: PowerShell@2
+            displayName: "Check Blast Count"
+            inputs:
+              targetType: 'inline'
+              script: |
+                $List = '$(blastList)'
+                if ($List -eq "[]" -or [string]::IsNullOrWhiteSpace($List)) { 
+                    Write-Host "##vso[task.setvariable variable=skipBlast]true" 
+                    Write-Host "Blast list is empty."
+                } else {
+                    Write-Host "##vso[task.setvariable variable=skipBlast]false"
+                }
+
+          # 2. Fetch Secrets
+          - task: AzureKeyVault@2
+            displayName: "Fetch Admin Secrets"
+            condition: and(succeeded(), eq(variables['skipBlast'], 'false'))
+            inputs:
+              azureSubscription: $(serviceConnection)
+              KeyVaultName: $(keyVaultName)
+              SecretsFilter: 'avd-local-admin-password,log-analytics-workspace-id,log-analytics-shared-key'
+
+          # 3. Network Context
+          - task: AzureCLI@2
+            displayName: "Construct Network Context"
+            condition: and(succeeded(), eq(variables['skipBlast'], 'false'))
+            inputs:
+              azureSubscription: $(serviceConnection)
+              scriptType: 'pscore'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                $SubnetId = "/subscriptions/$(subscriptionId)/resourceGroups/$(networkRg)/providers/Microsoft.Network/virtualNetworks/$(vnetName)/subnets/$(subnetName)"
+                Write-Host "##vso[task.setvariable variable=constructedSubnetId]$SubnetId"
+
+          # 4. Deploy Blast
+          - task: AzureCLI@2
+            displayName: "Execute Blast Deployment"
+            condition: and(succeeded(), eq(variables['skipBlast'], 'false'))
+            timeoutInMinutes: 60
+            inputs:
+              azureSubscription: $(serviceConnection)
+              scriptType: 'pscore'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                Write-Host "Starting Blast Deployment..." -ForegroundColor Cyan
+                
+                # Fix JSON
+                $rawList = '$(blastList)'
+                if ($rawList -notmatch '"') { $jsonString = $rawList -replace '([a-zA-Z0-9-]+)', '"$1"' } else { $jsonString = $rawList }
+                $vmArray = @($jsonString | ConvertFrom-Json)
+
+                # Parse availability zones
+                $zonesRaw = '$(availabilityZones)'
+                $zonesArr = @()
+                if ($zonesRaw -ne '[]' -and -not [string]::IsNullOrWhiteSpace($zonesRaw)) {
+                    $zonesArr = @($zonesRaw | ConvertFrom-Json)
+                }
+
+                # Params
+                $params = @{
+                    "\$schema" = "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#"
+                    "contentVersion" = "1.0.0.0"
+                    "parameters" = @{
+                        "vmList" = @{ "value" = $vmArray } 
+                        "imageResourceId" = @{ "value" = "$(targetImageId)" }
+                        "hostPoolName" = @{ "value" = "$(hostPoolName)" }
+                        "hostPoolRg" = @{ "value" = "$(hostPoolRg)" }
+                        "hostPoolToken" = @{ "value" = "$(hpToken)" }
+                        "localAdminUser" = @{ "value" = "$(vmLocalAdminUser)" }
+                        "localAdminPassword" = @{ "value" = "$(avd-local-admin-password)" }
+                        "subnetId" = @{ "value" = "$(constructedSubnetId)" }
+                        "imageName" = @{ "value" = "$(imageDef)" }
+                        "imageVersion" = @{ "value" = "$(targetImageVersion)" }
+                        # Specs
+                        "vmSize" = @{ "value" = "$(vmSize)" }
+                        "osDiskType" = @{ "value" = "$(osDiskType)" }
+                        "osDiskSizeGB" = @{ "value" = $(osDiskSizeGB) }
+                        # Advanced Options
+                        "availabilityZones" = @{ "value" = $zonesArr }
+                        "acceleratedNetworking" = @{ "value" = ('$(acceleratedNetworking)' -eq 'true') }
+                        "enableIntune" = @{ "value" = ('$(enableIntune)' -eq 'true') }
+                    }
+                }
+                $params | ConvertTo-Json -Depth 10 | Out-File "blast.json" -Encoding UTF8
+
+                # Deploy
+                az deployment group create `
+                  --resource-group "$(computeRg)" `
+                  --name "blast-$(Build.BuildId)" `
+                  --template-file "$(System.DefaultWorkingDirectory)/bicep/main-entraid.bicep" `
+                  --parameters "@blast.json" `
+                  --verbose
+
+          # 5. DRAIN MODE IMMEDIATELY
+          # Use existing script to drain, passing blastList as the target list
+          - task: AzurePowerShell@5
+            displayName: "Lock Down Blast VMs (Drain)"
+            condition: and(succeeded(), eq(variables['skipBlast'], 'false'))
+            inputs:
+              azureSubscription: $(serviceConnection)
+              ScriptType: 'FilePath'
+              ScriptPath: '$(System.DefaultWorkingDirectory)/scripts/Set-AvdDrainMode.ps1'
+              ScriptArguments: >
+                -HostPoolName "$(hostPoolName)"
+                -ResourceGroupName "$(hostPoolRg)"
+              azurePowerShellVersion: 'LatestVersion'
+            env:
+              HOST_LIST_JSON: $(blastList)
+
+          # OPTIONAL: Deployment Telemetry
+          - task: AzurePowerShell@5
+            displayName: "Telemetry → Blast Deploy"
+            condition: and(succeeded(), eq(variables['enableTelemetry'], 'true'), eq(variables['skipBlast'], 'false'))
+            continueOnError: true
+            inputs:
+              azureSubscription: $(serviceConnection)
+              ScriptType: 'FilePath'
+              ScriptPath: '$(System.DefaultWorkingDirectory)/scripts/Write-DeploymentTelemetry.ps1'
+              ScriptArguments: >
+                -WorkspaceId "$(log-analytics-workspace-id)"
+                -SharedKey "$(log-analytics-shared-key)"
+                -EventData @{
+                  HostPoolName  = '$(hostPoolName)';
+                  Stage         = 'Blast';
+                  Action        = 'Deploy';
+                  VMCount       = (('$(blastList)' | ConvertFrom-Json).Count);
+                  ImageVersion  = '$(targetImageVersion)';
+                  Status        = 'Success';
+                  PipelineRunId = '$(Build.BuildId)'
+                }
+              azurePowerShellVersion: 'LatestVersion'
