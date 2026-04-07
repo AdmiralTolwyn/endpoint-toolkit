@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     AVD Discovery - Automated Azure Virtual Desktop environment assessment.
@@ -221,7 +221,7 @@ foreach ($Mod in $RequiredModules) {
                  Sort-Object Version -Descending | Select-Object -First 1
     if (-not $Installed) {
         $Missing += $Mod.Name
-        Write-Status "$($Mod.Name) >= $($Mod.MinVersion) — MISSING" -Level 'ERROR'
+        Write-Status "$($Mod.Name) >= $($Mod.MinVersion) - MISSING" -Level 'ERROR'
     } else {
         Write-Status "$($Mod.Name) v$($Installed.Version)" -Level 'SUCCESS'
     }
@@ -464,7 +464,7 @@ foreach ($SubId in $SubscriptionId) {
                 -Description 'Drive/disk redirection should be restricted to prevent data exfiltration' `
                 -Status $(if ($DriveVal -eq '') { 'Pass' } elseif ($DrivesRestricted) { 'Warning' } else { 'Warning' }) `
                 -Severity 'Medium' `
-                -Details "drivestoredirect: $(if ($null -eq $DriveVal) { '(not set — default: all drives)' } else { "'$DriveVal'" })" `
+                -Details "drivestoredirect: $(if ($null -eq $DriveVal) { '(not set - default: all drives)' } else { "'$DriveVal'" })" `
                 -Recommendation 'Set drivestoredirect:s: (empty) to block all drive redirection, or restrict to specific drives.' `
                 -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/rdp-properties#device-redirection'))
 
@@ -475,7 +475,7 @@ foreach ($SubId in $SubscriptionId) {
                 -Description 'Clipboard redirection should be restricted for sensitive environments' `
                 -Status $(if ($ClipVal -eq '0') { 'Pass' } else { 'Warning' }) `
                 -Severity 'Medium' `
-                -Details "redirectclipboard: $(if ($null -eq $ClipVal) { '(not set — default: enabled)' } else { $ClipVal })" `
+                -Details "redirectclipboard: $(if ($null -eq $ClipVal) { '(not set - default: enabled)' } else { $ClipVal })" `
                 -Recommendation 'Set redirectclipboard:i:0 to disable, or use clipboard transfer direction policies for granular control.' `
                 -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/rdp-properties#device-redirection'))
 
@@ -483,10 +483,10 @@ foreach ($SubId in $SubscriptionId) {
             $PrintVal = $ParsedRdp['redirectprinters']
             [void]$AllChecks.Add((New-CheckResult -Id "SEC-PRINT-$($HP.Name)" `
                 -Category 'Security' -Name 'RDP Printer Redirection' `
-                -Description 'Printer redirection should be evaluated — disable if not required' `
+                -Description 'Printer redirection should be evaluated - disable if not required' `
                 -Status $(if ($PrintVal -eq '0') { 'Pass' } else { 'Warning' }) `
                 -Severity 'Low' `
-                -Details "redirectprinters: $(if ($null -eq $PrintVal) { '(not set — default: enabled)' } else { $PrintVal })" `
+                -Details "redirectprinters: $(if ($null -eq $PrintVal) { '(not set - default: enabled)' } else { $PrintVal })" `
                 -Recommendation 'Set redirectprinters:i:0 if printer redirection is not needed.' `
                 -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/rdp-properties#device-redirection'))
 
@@ -497,7 +497,7 @@ foreach ($SubId in $SubscriptionId) {
                 -Description 'USB device redirection should be blocked unless explicitly required' `
                 -Status $(if ($null -eq $UsbVal -or $UsbVal -eq '') { 'Pass' } else { 'Warning' }) `
                 -Severity 'Medium' `
-                -Details "usbdevicestoredirect: $(if ($null -eq $UsbVal) { '(not set — default: none)' } else { "'$UsbVal'" })" `
+                -Details "usbdevicestoredirect: $(if ($null -eq $UsbVal) { '(not set - default: none)' } else { "'$UsbVal'" })" `
                 -Recommendation 'Remove usbdevicestoredirect or set to empty to block USB device redirection.' `
                 -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/rdp-properties#device-redirection'))
 
@@ -513,11 +513,11 @@ foreach ($SubId in $SubscriptionId) {
                     -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/rdp-properties#device-redirection'))
             }
 
-            # Camera redirection (informational — often needed for Teams)
+            # Camera redirection (informational - often needed for Teams)
             $CamVal = $ParsedRdp['camerastoredirect']
             [void]$AllChecks.Add((New-CheckResult -Id "SEC-CAM-$($HP.Name)" `
                 -Category 'Security' -Name 'RDP Camera Redirection' `
-                -Description 'Camera redirection status — required for Teams calls, evaluate for security-sensitive workloads' `
+                -Description 'Camera redirection status - required for Teams calls, evaluate for security-sensitive workloads' `
                 -Status $(if ($null -eq $CamVal -or $CamVal -eq '*') { 'Pass' } else { 'Pass' }) `
                 -Severity 'Low' `
                 -Details "camerastoredirect: $(if ($null -eq $CamVal) { '(not set)' } else { "'$CamVal'" })" `
@@ -527,9 +527,9 @@ foreach ($SubId in $SubscriptionId) {
             $AudioCapVal = $ParsedRdp['audiocapturemode']
             [void]$AllChecks.Add((New-CheckResult -Id "SEC-AUDIO-$($HP.Name)" `
                 -Category 'Security' -Name 'RDP Audio Capture (Microphone)' `
-                -Description 'Audio input capture — needed for calls, evaluate for other workloads' `
+                -Description 'Audio input capture - needed for calls, evaluate for other workloads' `
                 -Status 'Pass' -Severity 'Low' `
-                -Details "audiocapturemode: $(if ($null -eq $AudioCapVal) { '(not set — default: disabled)' } else { $AudioCapVal })" `
+                -Details "audiocapturemode: $(if ($null -eq $AudioCapVal) { '(not set - default: disabled)' } else { $AudioCapVal })" `
                 -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/rdp-properties#device-redirection'))
 
             # RDP property summary for evidence
@@ -544,7 +544,7 @@ foreach ($SubId in $SubscriptionId) {
                 -Description 'Overall RDP property security posture' `
                 -Status $(if ($RdpSecurityIssues.Count -eq 0) { 'Pass' } elseif ($RdpSecurityIssues.Count -le 2) { 'Warning' } else { 'Fail' }) `
                 -Severity 'High' `
-                -Details "Issues: $(if ($RdpSecurityIssues.Count -eq 0) { 'None — all redirections restricted' } else { $RdpSecurityIssues -join ', ' }). AllProps: $RdpProps" `
+                -Details "Issues: $(if ($RdpSecurityIssues.Count -eq 0) { 'None - all redirections restricted' } else { $RdpSecurityIssues -join ', ' }). AllProps: $RdpProps" `
                 -Recommendation 'Review and restrict all device redirections per security requirements.' `
                 -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/rdp-properties' `
                 -Evidence @{ HostPool = $HP.Name; ParsedProperties = $ParsedRdp; Issues = $RdpSecurityIssues }))
@@ -558,7 +558,7 @@ foreach ($SubId in $SubscriptionId) {
                 -Status $(if ($HasSSO) { 'Pass' } elseif ($IsEntraTarget) { 'Fail' } else { 'Warning' }) `
                 -Severity $(if ($IsEntraTarget -and -not $HasSSO) { 'High' } else { 'Medium' }) `
                 -Details "SSO: $(if ($HasSSO) { 'Enabled' } else { 'Not configured' }), EntraTarget: $(if ($IsEntraTarget) { 'Yes' } else { 'Not set' })" `
-                -Recommendation $(if ($IsEntraTarget -and -not $HasSSO) { 'SSO is strongly recommended for Entra ID joined hosts — enable enablerdsaadauth:i:1.' } else { 'Enable SSO for seamless authentication.' }) `
+                -Recommendation $(if ($IsEntraTarget -and -not $HasSSO) { 'SSO is strongly recommended for Entra ID joined hosts - enable enablerdsaadauth:i:1.' } else { 'Enable SSO for seamless authentication.' }) `
                 -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/configure-single-sign-on'))
 
             # ─── CHECK: Watermarking (from RDP properties) ───
@@ -713,7 +713,7 @@ foreach ($SubId in $SubscriptionId) {
                         -Category 'Security & IAM' -Name 'Trusted Launch' `
                         -Description 'Session hosts should use Trusted Launch' `
                         -Status 'Fail' -Severity 'High' `
-                        -Details 'No security profile detected — VM is likely using Standard security type.' `
+                        -Details 'No security profile detected - VM is likely using Standard security type.' `
                         -Recommendation 'Redeploy session hosts with Trusted Launch security type.' `
                         -Reference 'https://learn.microsoft.com/en-us/azure/virtual-machines/trusted-launch'))
                 }
@@ -746,7 +746,7 @@ foreach ($SubId in $SubscriptionId) {
                         -Evidence @{ VM = $VMName; VTpm = $VTpmOn }))
                 }
 
-                # ─── CHECK: OS Disk Encryption — ADE or host-based (SEC-021) ───
+                # ─── CHECK: OS Disk Encryption - ADE or host-based (SEC-021) ───
                 if ($VMObj) {
                     $HasADE = $false
                     $DiskEncType = 'None'
@@ -944,7 +944,7 @@ foreach ($SubId in $SubscriptionId) {
                             -Description 'Pooled session hosts should use ephemeral OS disks for faster reimage and lower cost' `
                             -Status $(if ($IsEphemeral) { 'Pass' } else { 'Warning' }) `
                             -Severity 'Medium' `
-                            -Details "EphemeralDisk: $(if ($IsEphemeral) { 'Yes' } else { 'No — uses persistent managed disk' })" `
+                            -Details "EphemeralDisk: $(if ($IsEphemeral) { 'Yes' } else { 'No - uses persistent managed disk' })" `
                             -Recommendation 'Use ephemeral OS disks for pooled host pools to eliminate storage costs and improve reimage speed.' `
                             -Reference 'https://learn.microsoft.com/en-us/azure/virtual-machines/ephemeral-os-disks'))
                     }
@@ -955,7 +955,7 @@ foreach ($SubId in $SubscriptionId) {
                         if ($IsPremium -and $HP.HostPoolType -eq 'Pooled') {
                             [void]$AllChecks.Add((New-CheckResult -Id "GOV-DISKSKU-$VMName" `
                                 -Category 'Governance & Cost' -Name 'Disk Type Cost Optimization' `
-                                -Description 'Premium SSD on pooled hosts may be unnecessary cost — Standard SSD is often sufficient' `
+                                -Description 'Premium SSD on pooled hosts may be unnecessary cost - Standard SSD is often sufficient' `
                                 -Status 'Warning' -Severity 'Low' `
                                 -Details "DiskType: $($SHObj.OSDiskType), PoolType: $($HP.HostPoolType)" `
                                 -Recommendation 'Evaluate Standard SSD for pooled hosts to reduce storage costs. Premium is typically only needed for heavy I/O workloads.' `
@@ -1011,7 +1011,7 @@ foreach ($SubId in $SubscriptionId) {
                     $IsDeallocated = $SHObj.PowerState -match 'deallocated'
                     [void]$AllChecks.Add((New-CheckResult -Id "SH-POWER-$VMName" `
                         -Category 'Session Hosts' -Name 'Power State' `
-                        -Description 'Session host power state — deallocated VMs cannot serve users and may have stale agents' `
+                        -Description 'Session host power state - deallocated VMs cannot serve users and may have stale agents' `
                         -Status $(if ($IsRunning) { 'Pass' } elseif ($IsDeallocated) { 'Warning' } else { 'Warning' }) `
                         -Severity 'Low' `
                         -Details "PowerState: $($SHObj.PowerState)" `
@@ -1138,6 +1138,10 @@ foreach ($SubId in $SubscriptionId) {
         }
 
 
+        # CHECK: Scaling plan schedule depth
+        foreach ($SP in $ScalingPlans) {
+            $Schedules = $SP.Schedule
+            $HasPeakOffPeak = $Schedules -and $Schedules.Count -ge 1
             [void]$AllChecks.Add((New-CheckResult -Id "BCDR-SPSCHED-$($SP.Name)" `
                 -Category 'BCDR' -Name 'Scaling Plan Schedule Defined' `
                 -Description 'Scaling plan should have schedules with peak and off-peak ramp configurations' `
@@ -1165,7 +1169,7 @@ foreach ($SubId in $SubscriptionId) {
     } else {
         [void]$AllChecks.Add((New-CheckResult -Id "BCDR-MULTIREGION" `
             -Category 'BCDR' -Name 'Multi-Region Host Pool' `
-            -Description 'Host pools concentrated in single region — DR risk' `
+            -Description 'Host pools concentrated in single region - DR risk' `
             -Status 'Warning' -Severity 'Medium' `
             -Details "Regions: $(if ($HPLocations) { $HPLocations -join ', ' } else { 'None' })"))
     }
@@ -1755,7 +1759,7 @@ foreach ($SubId in $SubscriptionId) {
                         $HasSMB21 = $Versions -match 'SMB2\.1'
                         [void]$AllChecks.Add((New-CheckResult -Id "PROF-SMBVER-$($SA.StorageAccountName)" `
                             -Category 'FSLogix & Profiles' -Name 'SMB Minimum Version' `
-                            -Description 'SMB 2.1 should be disabled — require SMB 3.0+' `
+                            -Description 'SMB 2.1 should be disabled - require SMB 3.0+' `
                             -Status $(if ($HasSMB21) { 'Warning' } else { 'Pass' }) `
                             -Severity 'High' `
                             -Details "Versions: $Versions" `
@@ -1766,7 +1770,7 @@ foreach ($SubId in $SubscriptionId) {
                         $HasRC4 = $KerbEnc -match 'RC4'
                         [void]$AllChecks.Add((New-CheckResult -Id "PROF-KERB-$($SA.StorageAccountName)" `
                             -Category 'FSLogix & Profiles' -Name 'Kerberos Ticket Encryption' `
-                            -Description 'RC4-HMAC should be disabled — use AES-256 only' `
+                            -Description 'RC4-HMAC should be disabled - use AES-256 only' `
                             -Status $(if ($HasRC4) { 'Warning' } else { 'Pass' }) `
                             -Severity 'Medium' `
                             -Details "KerberosEncryption: $KerbEnc" `
@@ -1777,7 +1781,7 @@ foreach ($SubId in $SubscriptionId) {
                         $HasNTLM = $AuthMethods -match 'NTLMv2'
                         [void]$AllChecks.Add((New-CheckResult -Id "PROF-AUTH-$($SA.StorageAccountName)" `
                             -Category 'FSLogix & Profiles' -Name 'Authentication Methods' `
-                            -Description 'NTLMv2 should be disabled — use Kerberos only' `
+                            -Description 'NTLMv2 should be disabled - use Kerberos only' `
                             -Status $(if ($HasNTLM) { 'Warning' } else { 'Pass' }) `
                             -Severity 'Medium' `
                             -Details "AuthMethods: $AuthMethods" `
@@ -1866,7 +1870,7 @@ try {
         -Status $(if ($OrphanedNICs.Count -eq 0) { 'Pass' } else { 'Warning' }) `
         -Severity 'Low' `
         -Details "OrphanedNICs: $($OrphanedNICs.Count)" `
-        -Recommendation 'Delete orphaned NICs — those with public IPs still incur charges.' `
+        -Recommendation 'Delete orphaned NICs - those with public IPs still incur charges.' `
         -Reference 'https://learn.microsoft.com/en-us/azure/cost-management-billing/costs/cost-mgt-best-practices' `
         -Evidence @{ Count = $OrphanedNICs.Count }))
 } catch {
@@ -2304,7 +2308,7 @@ function Get-MaturityScores {
         $WSum = 0; $WMax = 0
         foreach ($C in $Scoreable) {
             $W = 3  # default weight
-            # Try extracting weight from matching checks.json — use simple heuristic
+            # Try extracting weight from matching checks.json - use simple heuristic
             $Pts = switch ($C.Status) { 'Pass' { 100 } 'Warning' { 50 } 'Fail' { 0 } default { 0 } }
             $WSum += $Pts * $W
             $WMax += 100 * $W
@@ -2320,7 +2324,7 @@ function Get-MaturityScores {
         }
     }
 
-    # Composite maturity score — weighted average of dimensions
+    # Composite maturity score - weighted average of dimensions
     $ValidDims = @($Results.Values | Where-Object { $_.Score -ge 0 })
     $CompositeScore = if ($ValidDims.Count -gt 0) {
         [math]::Round(($ValidDims | Measure-Object -Property Score -Average).Average, 0)
@@ -2380,7 +2384,7 @@ $ScorePercent = if (($PassCount + $WarnCount + $FailCount) -gt 0) {
 $ScoreColor   = if ($ScorePercent -ge 80) { 'Green' } elseif ($ScorePercent -ge 50) { 'Yellow' } else { 'Red' }
 $FileSize     = [math]::Round((Get-Item $OutputPath).Length / 1KB, 1)
 
-# Box helper — fixed inner width of 54 chars
+# Box helper - fixed inner width of 54 chars
 $BW = 54
 function Write-BoxLine { param([string]$Text, [string]$Color = 'White', [string]$Prefix = '  ')
     $Pad = $BW - $Text.Length
@@ -2496,7 +2500,7 @@ foreach ($Dim in $MaturityResult.Dimensions.GetEnumerator()) {
         $DScoreStr = "$DScore%".PadLeft(4)
     } else {
         $DBar = "$([char]0x2591)" * 16
-        $DScoreStr = '  — '
+        $DScoreStr = '  - '
     }
     $Inner = "    $DLabel$DBar $DScoreStr"
     Write-BoxLine $Inner $DColor
