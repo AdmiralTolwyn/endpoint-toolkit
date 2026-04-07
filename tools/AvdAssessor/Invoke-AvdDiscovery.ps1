@@ -21,8 +21,8 @@
     .\Invoke-AvdDiscovery.ps1 -SubscriptionId @("sub1","sub2") -OutputPath "C:\temp\discovery.json"
 .NOTES
     Author : Anton Romanyuk
-    Version: 0.2.0
-    Date   : 2026-03-27
+    Version: 0.3.0
+    Date   : 2026-04-07
 #>
 
 [CmdletBinding()]
@@ -47,7 +47,7 @@ $env:PSModulePath = ($env:PSModulePath -split ';' |
 $ScriptRoot = $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($ScriptRoot)) { $ScriptRoot = $PWD.Path }
 
-$ScriptVersion = '0.2.0'
+$ScriptVersion = '0.3.0'
 
 # ═══════════════════════════════════════════════════════════════════════════
 # HELPERS
@@ -353,6 +353,9 @@ $Discovery = [PSCustomObject]@{
         Reservations    = @()
         Firewalls       = @()
         VPNGateways     = @()
+        Subnets         = @()
+        UDRs            = @()
+        PrivateEndpoints = @()
     }
     CheckResults   = @()
     Errors         = @()
@@ -639,44 +642,81 @@ foreach ($SubId in $SubscriptionId) {
                 $VMName = ($SH.ResourceId -split '/')[-1]
                 $VMRG   = ($SH.ResourceId -split '/')[4]
 
-                # Get VM details
-                $VMObj = $null
+                # Get VM model (size, security, storage, zones)
+                $VMModel = $null
                 try {
-                    $VMObj = Get-AzVM -ResourceGroupName $VMRG -Name $VMName -Status -ErrorAction Stop
+                    $VMModel = Get-AzVM -ResourceGroupName $VMRG -Name $VMName -ErrorAction Stop
                 } catch {
-                    Write-Status "    Could not get VM details for $VMName : $($_.Exception.Message)" -Level 'WARN'
+                    Write-Status "    Could not get VM model for $VMName : $($_.Exception.Message)" -Level 'WARN'
+                }
+
+                # Get VM instance view (power state, extensions)
+                $VMInstance = $null
+                try {
+                    $VMInstance = Get-AzVM -ResourceGroupName $VMRG -Name $VMName -Status -ErrorAction Stop
+                } catch {
+                    Write-Status "    Could not get VM status for $VMName : $($_.Exception.Message)" -Level 'WARN'
+                }
+
+                # Derive extension-based properties from instance view
+                $ExtList = @()
+                $SHJoinType = 'Unknown'
+                $HasTrustedLaunch = $false
+                $HasAMAExt = $false
+                $HasMDEExt = $false
+                if ($VMInstance -and $VMInstance.Extensions) {
+                    $ExtList = @($VMInstance.Extensions | ForEach-Object {
+                        $ExtType = if ($_.VirtualMachineExtensionType) { $_.VirtualMachineExtensionType } else { $_.Type }
+                        $ExtType
+                    } | Where-Object { $_ })
+                    $HasAADExt = 'AADLoginForWindows' -in $ExtList
+                    $HasDJExt  = 'JsonADDomainExtension' -in $ExtList
+                    $SHJoinType = if ($HasAADExt -and $HasDJExt) { 'Hybrid' } elseif ($HasAADExt) { 'Entra ID' } elseif ($HasDJExt) { 'AD DS' } else { 'Unknown' }
+                    $HasAMAExt = 'AzureMonitorWindowsAgent' -in $ExtList
+                    $HasMDEExt = @($ExtList | Where-Object { $_ -in @('MDE.Windows','MicrosoftMonitoringAgent') }).Count -gt 0
+                }
+                if ($VMModel -and $VMModel.SecurityProfile) {
+                    $HasTrustedLaunch = $VMModel.SecurityProfile.SecurityType -eq 'TrustedLaunch'
                 }
 
                 $SHObj = [PSCustomObject]@{
                     HostPoolName        = $HP.Name
                     Name                = $SH.Name
                     ResourceId          = $SH.ResourceId
+                    ResourceGroup       = $VMRG
+                    Location            = if ($VMModel) { $VMModel.Location } else { $HP.Location }
                     Status              = $SH.Status
                     AllowNewSession     = $SH.AllowNewSession
                     Sessions            = $SH.Session
                     AgentVersion        = $SH.AgentVersion
                     LastHeartBeat       = $SH.LastHeartBeat
                     OSVersion           = $SH.OSVersion
+                    OsType              = if ($VMModel) { "$($VMModel.StorageProfile.OsDisk.OsType)" } else { $null }
                     UpdateState         = $SH.UpdateState
-                    VMSize              = if ($VMObj) { $VMObj.HardwareProfile.VmSize } else { 'Unknown' }
-                    OSDiskType          = if ($VMObj) { $VMObj.StorageProfile.OsDisk.ManagedDisk.StorageAccountType } else { 'Unknown' }
-                    SecurityProfile     = if ($VMObj -and $VMObj.SecurityProfile) {
+                    VMSize              = if ($VMModel) { $VMModel.HardwareProfile.VmSize } else { $null }
+                    OSDiskType          = if ($VMModel) { $VMModel.StorageProfile.OsDisk.ManagedDisk.StorageAccountType } else { $null }
+                    SecurityProfile     = if ($VMModel -and $VMModel.SecurityProfile) {
                         [PSCustomObject]@{
-                            SecurityType = $VMObj.SecurityProfile.SecurityType
-                            SecureBoot   = $VMObj.SecurityProfile.UefiSettings.SecureBootEnabled
-                            VTpm         = $VMObj.SecurityProfile.UefiSettings.VTpmEnabled
+                            SecurityType = $VMModel.SecurityProfile.SecurityType
+                            SecureBoot   = $VMModel.SecurityProfile.UefiSettings.SecureBootEnabled
+                            VTpm         = $VMModel.SecurityProfile.UefiSettings.VTpmEnabled
                         }
                     } else { $null }
-                    PowerState          = if ($VMObj) { ($VMObj.Statuses | Where-Object Code -like 'PowerState/*').DisplayStatus } else { 'Unknown' }
+                    TrustedLaunch       = $HasTrustedLaunch
+                    PowerState          = if ($VMInstance) { ($VMInstance.Statuses | Where-Object Code -like 'PowerState/*').DisplayStatus } else { $null }
                     AcceleratedNetworking = $null
-                    AvailabilityZone    = if ($VMObj) { $VMObj.Zones } else { $null }
-                    ImageReference      = if ($VMObj) { $VMObj.StorageProfile.ImageReference } else { $null }
+                    AvailabilityZone    = if ($VMModel) { $VMModel.Zones } else { $null }
+                    ImageReference      = if ($VMModel) { $VMModel.StorageProfile.ImageReference } else { $null }
+                    JoinType            = $SHJoinType
+                    AMAInstalled        = $HasAMAExt
+                    MDEInstalled        = $HasMDEExt
+                    Extensions          = $ExtList
                 }
 
                 # Check NIC for accelerated networking
-                if ($VMObj -and $VMObj.NetworkProfile.NetworkInterfaces.Count -gt 0) {
+                if ($VMModel -and $VMModel.NetworkProfile.NetworkInterfaces.Count -gt 0) {
                     try {
-                        $NicId = $VMObj.NetworkProfile.NetworkInterfaces[0].Id
+                        $NicId = $VMModel.NetworkProfile.NetworkInterfaces[0].Id
                         $Nic = Get-AzNetworkInterface -ResourceId $NicId -ErrorAction Stop
                         $SHObj.AcceleratedNetworking = $Nic.EnableAcceleratedNetworking
                     } catch { }
@@ -694,20 +734,20 @@ foreach ($SubId in $SubscriptionId) {
                     -Evidence @{ VM = $VMName; AllowNewSession = $SH.AllowNewSession }))
 
                 # ─── CHECK: Trusted Launch ───
-                if ($VMObj -and $VMObj.SecurityProfile) {
-                    $SecureBoot = $VMObj.SecurityProfile.UefiSettings.SecureBootEnabled
-                    $VTpm       = $VMObj.SecurityProfile.UefiSettings.VTpmEnabled
-                    $TrustedLaunch = $VMObj.SecurityProfile.SecurityType -eq 'TrustedLaunch'
+                if ($VMModel -and $VMModel.SecurityProfile) {
+                    $SecureBoot = $VMModel.SecurityProfile.UefiSettings.SecureBootEnabled
+                    $VTpm       = $VMModel.SecurityProfile.UefiSettings.VTpmEnabled
+                    $TrustedLaunch = $VMModel.SecurityProfile.SecurityType -eq 'TrustedLaunch'
                     [void]$AllChecks.Add((New-CheckResult -Id "SEC-TL-$VMName" `
                         -Category 'Security & IAM' -Name 'Trusted Launch' `
                         -Description 'Session hosts should use Trusted Launch with Secure Boot and vTPM enabled' `
                         -Status $(if ($TrustedLaunch -and $SecureBoot -and $VTpm) { 'Pass' }
                                   elseif ($TrustedLaunch) { 'Warning' } else { 'Fail' }) `
                         -Severity 'High' `
-                        -Details "SecurityType: $($VMObj.SecurityProfile.SecurityType), SecureBoot: $SecureBoot, vTPM: $VTpm" `
+                        -Details "SecurityType: $($VMModel.SecurityProfile.SecurityType), SecureBoot: $SecureBoot, vTPM: $VTpm" `
                         -Recommendation 'Enable Trusted Launch with Secure Boot and vTPM for enhanced boot integrity.' `
                         -Reference 'https://learn.microsoft.com/en-us/azure/virtual-machines/trusted-launch' `
-                        -Evidence @{ VM = $VMName; SecurityType = $VMObj.SecurityProfile.SecurityType }))
+                        -Evidence @{ VM = $VMName; SecurityType = $VMModel.SecurityProfile.SecurityType }))
                 } else {
                     [void]$AllChecks.Add((New-CheckResult -Id "SEC-TL-$VMName" `
                         -Category 'Security & IAM' -Name 'Trusted Launch' `
@@ -719,8 +759,8 @@ foreach ($SubId in $SubscriptionId) {
                 }
 
                 # ─── CHECK: Secure Boot (SH-022) ───
-                if ($VMObj -and $VMObj.SecurityProfile) {
-                    $SBEnabled = $VMObj.SecurityProfile.UefiSettings.SecureBootEnabled -eq $true
+                if ($VMModel -and $VMModel.SecurityProfile) {
+                    $SBEnabled = $VMModel.SecurityProfile.UefiSettings.SecureBootEnabled -eq $true
                     [void]$AllChecks.Add((New-CheckResult -Id "SH-SECBOOT-$VMName" `
                         -Category 'Session Hosts' -Name 'Secure Boot Enabled' `
                         -Description 'Trusted Launch VMs should have Secure Boot enabled to protect against boot-level malware' `
@@ -733,8 +773,8 @@ foreach ($SubId in $SubscriptionId) {
                 }
 
                 # ─── CHECK: vTPM (SH-023) ───
-                if ($VMObj -and $VMObj.SecurityProfile) {
-                    $VTpmOn = $VMObj.SecurityProfile.UefiSettings.VTpmEnabled -eq $true
+                if ($VMModel -and $VMModel.SecurityProfile) {
+                    $VTpmOn = $VMModel.SecurityProfile.UefiSettings.VTpmEnabled -eq $true
                     [void]$AllChecks.Add((New-CheckResult -Id "SH-VTPM-$VMName" `
                         -Category 'Session Hosts' -Name 'vTPM Enabled' `
                         -Description 'Trusted Launch VMs should have vTPM enabled for measured boot and key protection' `
@@ -747,16 +787,16 @@ foreach ($SubId in $SubscriptionId) {
                 }
 
                 # ─── CHECK: OS Disk Encryption - ADE or host-based (SEC-021) ───
-                if ($VMObj) {
+                if ($VMModel) {
                     $HasADE = $false
                     $DiskEncType = 'None'
                     if ($SHObj.Extensions) {
                         $HasADE = $SHObj.Extensions | Where-Object { $_ -match 'AzureDiskEncryption' }
                     }
-                    $OsDisk = $VMObj.StorageProfile.OsDisk
+                    $OsDisk = $VMModel.StorageProfile.OsDisk
                     if ($OsDisk.ManagedDisk.SecurityProfile.DiskEncryptionSet) {
                         $DiskEncType = 'DiskEncryptionSet'
-                    } elseif ($VMObj.SecurityProfile.EncryptionAtHost) {
+                    } elseif ($VMModel.SecurityProfile.EncryptionAtHost) {
                         $DiskEncType = 'EncryptionAtHost'
                     } elseif ($HasADE) {
                         $DiskEncType = 'ADE'
@@ -786,7 +826,7 @@ foreach ($SubId in $SubscriptionId) {
                 }
 
                 # ─── CHECK: Managed disk encryption ───
-                if ($SHObj.OSDiskType -and $SHObj.OSDiskType -ne 'Unknown') {
+                if ($SHObj.OSDiskType -and $SHObj.OSDiskType) {
                     [void]$AllChecks.Add((New-CheckResult -Id "SEC-DISK-$VMName" `
                         -Category 'Security & IAM' -Name 'Managed Disk Encryption' `
                         -Description 'OS disk should use managed encryption' `
@@ -796,7 +836,7 @@ foreach ($SubId in $SubscriptionId) {
                 }
 
                 # ─── CHECK: Availability Zones ───
-                if ($VMObj) {
+                if ($VMModel) {
                     [void]$AllChecks.Add((New-CheckResult -Id "BCDR-AZ-$VMName" `
                         -Category 'BCDR' -Name 'Availability Zone Deployment' `
                         -Description 'Session hosts should be spread across availability zones for resilience' `
@@ -808,7 +848,7 @@ foreach ($SubId in $SubscriptionId) {
                 }
 
                 # ─── CHECK: OS Disk SSD ───
-                if ($SHObj.OSDiskType -and $SHObj.OSDiskType -ne 'Unknown') {
+                if ($SHObj.OSDiskType -and $SHObj.OSDiskType) {
                     $IsSSD = $SHObj.OSDiskType -match 'SSD|Premium'
                     [void]$AllChecks.Add((New-CheckResult -Id "SH-SSD-$VMName" `
                         -Category 'Session Hosts' -Name 'OS Disk SSD Type' `
@@ -880,7 +920,7 @@ foreach ($SubId in $SubscriptionId) {
                 }
 
                 # ─── CHECK: VM Sizing (B-series flagging) ───
-                if ($SHObj.VMSize -and $SHObj.VMSize -ne 'Unknown') {
+                if ($SHObj.VMSize -and $SHObj.VMSize) {
                     $IsBSeries = $SHObj.VMSize -match '^Standard_B'
                     if ($IsBSeries) {
                         [void]$AllChecks.Add((New-CheckResult -Id "SH-BSERIES-$VMName" `
@@ -894,81 +934,65 @@ foreach ($SubId in $SubscriptionId) {
                 }
 
                 # ─── CHECK: Entra Join Type (from VM extensions) ───
-                if ($VMObj) {
-                    $HasAADExt = $VMObj.Extensions | Where-Object { $_.Type -eq 'AADLoginForWindows' -or $_.VirtualMachineExtensionType -eq 'AADLoginForWindows' }
-                    $HasDJExt = $VMObj.Extensions | Where-Object { $_.Type -eq 'JsonADDomainExtension' -or $_.VirtualMachineExtensionType -eq 'JsonADDomainExtension' }
-                    $JoinType = if ($HasAADExt -and $HasDJExt) { 'Hybrid' } elseif ($HasAADExt) { 'Entra ID' } elseif ($HasDJExt) { 'AD DS' } else { 'Unknown' }
-                    [void]$AllChecks.Add((New-CheckResult -Id "IAM-JOIN-$VMName" `
-                        -Category 'Identity & Access' -Name 'Entra ID Join Type' `
-                        -Description 'Session hosts should use Entra ID or Hybrid join' `
-                        -Status $(if ($JoinType -ne 'Unknown') { 'Pass' } else { 'Warning' }) `
-                        -Severity 'High' `
-                        -Details "JoinType: $JoinType" `
-                        -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/prerequisites#identity'))
-                }
+                [void]$AllChecks.Add((New-CheckResult -Id "IAM-JOIN-$VMName" `
+                    -Category 'Identity & Access' -Name 'Entra ID Join Type' `
+                    -Description 'Session hosts should use Entra ID or Hybrid join' `
+                    -Status $(if ($SHObj.JoinType -ne 'Unknown') { 'Pass' } else { 'Warning' }) `
+                    -Severity 'High' `
+                    -Details "JoinType: $($SHObj.JoinType)" `
+                    -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/prerequisites#identity'))
 
                 # ─── CHECK: Azure Monitor Agent (AMA) ───
-                if ($VMObj) {
-                    $HasAMA = $VMObj.Extensions | Where-Object {
-                        $_.VirtualMachineExtensionType -eq 'AzureMonitorWindowsAgent' -or
-                        $_.Type -eq 'AzureMonitorWindowsAgent'
-                    }
-                    [void]$AllChecks.Add((New-CheckResult -Id "MON-AMA-$VMName" `
-                        -Category 'Monitoring' -Name 'Azure Monitor Agent Installed' `
-                        -Description 'AMA should be installed on session hosts for AVD Insights telemetry' `
-                        -Status $(if ($HasAMA) { 'Pass' } else { 'Fail' }) `
+                [void]$AllChecks.Add((New-CheckResult -Id "MON-AMA-$VMName" `
+                    -Category 'Monitoring' -Name 'Azure Monitor Agent Installed' `
+                    -Description 'AMA should be installed on session hosts for AVD Insights telemetry' `
+                    -Status $(if ($SHObj.AMAInstalled) { 'Pass' } else { 'Fail' }) `
+                    -Severity 'Medium' `
+                    -Details "AMA Extension: $(if ($SHObj.AMAInstalled) { 'Installed' } else { 'Not found' })" `
+                    -Recommendation 'Install Azure Monitor Agent for AVD Insights and performance monitoring.' `
+                    -Reference 'https://learn.microsoft.com/en-us/azure/azure-monitor/agents/agents-overview'))
+
+                # ─── CHECK: Endpoint Protection (MDE) ───
+                [void]$AllChecks.Add((New-CheckResult -Id "SEC-MDE-$VMName" `
+                    -Category 'Security' -Name 'Endpoint Protection (MDE)' `
+                    -Description 'Microsoft Defender for Endpoint should be deployed on session hosts' `
+                    -Status $(if ($SHObj.MDEInstalled) { 'Pass' } else { 'Warning' }) `
+                    -Severity 'High' `
+                    -Details "MDE Extension: $(if ($SHObj.MDEInstalled) { 'Installed' } else { 'Not found (may be deployed via Intune/GPO)' })" `
+                    -Recommendation 'Deploy Microsoft Defender for Endpoint via VM extension, Intune, or Defender for Cloud auto-provisioning.' `
+                    -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/security-recommendations'))
+
+                # ─── CHECK: Ephemeral OS Disk (Pooled VMs) ───
+                if ($HP.HostPoolType -eq 'Pooled' -and $VMModel) {
+                    $IsEphemeral = $null -ne $VMModel.StorageProfile.OsDisk.DiffDiskSettings
+                    [void]$AllChecks.Add((New-CheckResult -Id "SH-EPHEMERAL-$VMName" `
+                        -Category 'Session Hosts' -Name 'Ephemeral OS Disk' `
+                        -Description 'Pooled session hosts should use ephemeral OS disks for faster reimage and lower cost' `
+                        -Status $(if ($IsEphemeral) { 'Pass' } else { 'Warning' }) `
                         -Severity 'Medium' `
-                        -Details "AMA Extension: $(if ($HasAMA) { 'Installed' } else { 'Not found' })" `
-                        -Recommendation 'Install Azure Monitor Agent for AVD Insights and performance monitoring.' `
-                        -Reference 'https://learn.microsoft.com/en-us/azure/azure-monitor/agents/agents-overview'))
+                        -Details "EphemeralDisk: $(if ($IsEphemeral) { 'Yes' } else { 'No - uses persistent managed disk' })" `
+                        -Recommendation 'Use ephemeral OS disks for pooled host pools to eliminate storage costs and improve reimage speed.' `
+                        -Reference 'https://learn.microsoft.com/en-us/azure/virtual-machines/ephemeral-os-disks'))
+                }
 
-                    # ─── CHECK: Endpoint Protection (MDE) ───
-                    $HasMDE = $VMObj.Extensions | Where-Object {
-                        $_.VirtualMachineExtensionType -in @('MDE.Windows','MicrosoftMonitoringAgent') -or
-                        $_.Type -in @('MDE.Windows','MicrosoftMonitoringAgent')
+                # ─── CHECK: Disk Type Cost Optimization ───
+                if ($SHObj.OSDiskType) {
+                    $IsPremium = $SHObj.OSDiskType -match 'Premium'
+                    if ($IsPremium -and $HP.HostPoolType -eq 'Pooled') {
+                        [void]$AllChecks.Add((New-CheckResult -Id "GOV-DISKSKU-$VMName" `
+                            -Category 'Governance & Cost' -Name 'Disk Type Cost Optimization' `
+                            -Description 'Premium SSD on pooled hosts may be unnecessary cost - Standard SSD is often sufficient' `
+                            -Status 'Warning' -Severity 'Low' `
+                            -Details "DiskType: $($SHObj.OSDiskType), PoolType: $($HP.HostPoolType)" `
+                            -Recommendation 'Evaluate Standard SSD for pooled hosts to reduce storage costs. Premium is typically only needed for heavy I/O workloads.' `
+                            -Reference 'https://learn.microsoft.com/en-us/azure/virtual-machines/disks-types'))
                     }
-                    [void]$AllChecks.Add((New-CheckResult -Id "SEC-MDE-$VMName" `
-                        -Category 'Security' -Name 'Endpoint Protection (MDE)' `
-                        -Description 'Microsoft Defender for Endpoint should be deployed on session hosts' `
-                        -Status $(if ($HasMDE) { 'Pass' } else { 'Warning' }) `
-                        -Severity 'High' `
-                        -Details "MDE Extension: $(if ($HasMDE) { 'Installed' } else { 'Not found (may be deployed via Intune/GPO)' })" `
-                        -Recommendation 'Deploy Microsoft Defender for Endpoint via VM extension, Intune, or Defender for Cloud auto-provisioning.' `
-                        -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/security-recommendations'))
+                }
 
-                    # ─── CHECK: Ephemeral OS Disk (Pooled VMs) ───
-                    if ($HP.HostPoolType -eq 'Pooled') {
-                        $IsEphemeral = $null -ne $VMObj.StorageProfile.OsDisk.DiffDiskSettings
-                        [void]$AllChecks.Add((New-CheckResult -Id "SH-EPHEMERAL-$VMName" `
-                            -Category 'Session Hosts' -Name 'Ephemeral OS Disk' `
-                            -Description 'Pooled session hosts should use ephemeral OS disks for faster reimage and lower cost' `
-                            -Status $(if ($IsEphemeral) { 'Pass' } else { 'Warning' }) `
-                            -Severity 'Medium' `
-                            -Details "EphemeralDisk: $(if ($IsEphemeral) { 'Yes' } else { 'No - uses persistent managed disk' })" `
-                            -Recommendation 'Use ephemeral OS disks for pooled host pools to eliminate storage costs and improve reimage speed.' `
-                            -Reference 'https://learn.microsoft.com/en-us/azure/virtual-machines/ephemeral-os-disks'))
-                    }
-
-                    # ─── CHECK: Disk Type Cost Optimization ───
-                    if ($SHObj.OSDiskType -and $SHObj.OSDiskType -ne 'Unknown') {
-                        $IsPremium = $SHObj.OSDiskType -match 'Premium'
-                        if ($IsPremium -and $HP.HostPoolType -eq 'Pooled') {
-                            [void]$AllChecks.Add((New-CheckResult -Id "GOV-DISKSKU-$VMName" `
-                                -Category 'Governance & Cost' -Name 'Disk Type Cost Optimization' `
-                                -Description 'Premium SSD on pooled hosts may be unnecessary cost - Standard SSD is often sufficient' `
-                                -Status 'Warning' -Severity 'Low' `
-                                -Details "DiskType: $($SHObj.OSDiskType), PoolType: $($HP.HostPoolType)" `
-                                -Recommendation 'Evaluate Standard SSD for pooled hosts to reduce storage costs. Premium is typically only needed for heavy I/O workloads.' `
-                                -Reference 'https://learn.microsoft.com/en-us/azure/virtual-machines/disks-types'))
-                        }
-                    }
-
-                    # ─── CHECK: Guest Attestation (Trusted Launch integrity monitoring) ───
-                    $HasGuestAttest = $VMObj.Extensions | Where-Object {
-                        $_.VirtualMachineExtensionType -eq 'GuestAttestation' -or
-                        $_.Type -eq 'GuestAttestation'
-                    }
-                    if ($VMObj.SecurityProfile -and $VMObj.SecurityProfile.SecurityType -eq 'TrustedLaunch' -and -not $HasGuestAttest) {
+                # ─── CHECK: Guest Attestation (Trusted Launch integrity monitoring) ───
+                if ($SHObj.TrustedLaunch -and $SHObj.Extensions) {
+                    $HasGuestAttest = 'GuestAttestation' -in $SHObj.Extensions
+                    if (-not $HasGuestAttest) {
                         [void]$AllChecks.Add((New-CheckResult -Id "SEC-ATTEST-$VMName" `
                             -Category 'Security' -Name 'Guest Attestation Extension' `
                             -Description 'Trusted Launch VMs should have Guest Attestation extension for integrity monitoring' `
@@ -977,15 +1001,7 @@ foreach ($SubId in $SubscriptionId) {
                             -Recommendation 'Install the Guest Attestation extension to enable boot integrity monitoring via Defender for Cloud.' `
                             -Reference 'https://learn.microsoft.com/en-us/azure/virtual-machines/trusted-launch#microsoft-defender-for-cloud-integration'))
                     }
-
-                    # Collect extension inventory for evidence
-                    $ExtList = @($VMObj.Extensions | ForEach-Object {
-                        $ExtType = if ($_.VirtualMachineExtensionType) { $_.VirtualMachineExtensionType } else { $_.Type }
-                        $ExtType
-                    } | Where-Object { $_ })
-                    $SHObj | Add-Member -NotePropertyName 'Extensions' -NotePropertyValue $ExtList -Force
                 }
-
                 # ─── CHECK: Agent Version Currency ───
                 if ($SH.AgentVersion) {
                     $MinRecommendedAgent = [Version]'1.0.8431.0'
@@ -1006,7 +1022,7 @@ foreach ($SubId in $SubscriptionId) {
                 }
 
                 # ─── CHECK: Power State ───
-                if ($SHObj.PowerState -and $SHObj.PowerState -ne 'Unknown') {
+                if ($SHObj.PowerState) {
                     $IsRunning = $SHObj.PowerState -eq 'VM running'
                     $IsDeallocated = $SHObj.PowerState -match 'deallocated'
                     [void]$AllChecks.Add((New-CheckResult -Id "SH-POWER-$VMName" `
@@ -1241,6 +1257,7 @@ foreach ($SubId in $SubscriptionId) {
                         }
                     })
                     DnsServers    = $VNet.DhcpOptions.DnsServers
+                    HasPeering    = $VNet.VirtualNetworkPeerings.Count -gt 0
                     Location      = $VNet.Location
                 }
                 $Discovery.Inventory.VNets += $VNetObj
@@ -1326,6 +1343,7 @@ foreach ($SubId in $SubscriptionId) {
                 try {
                     $FallbackVNet = Get-AzResource -ResourceId $VNetId -ExpandProperties -ErrorAction Stop
                     $FbProps = $FallbackVNet.Properties
+                    if (-not ($Discovery.Inventory.VNets | Where-Object { $_.Id -eq $VNetId })) {
                     $Discovery.Inventory.VNets += [PSCustomObject]@{
                         Name          = $FallbackVNet.Name
                         Id            = $FallbackVNet.ResourceId
@@ -1349,7 +1367,9 @@ foreach ($SubId in $SubscriptionId) {
                             }
                         })
                         DnsServers    = @($FbProps.dhcpOptions.dnsServers)
+                        HasPeering    = @($FbProps.virtualNetworkPeerings).Count -gt 0
                         Location      = $FallbackVNet.Location
+                    }
                     }
                     Write-Status "    Recovered VNet info via ARM fallback for $VNetName" -Level 'WARN'
                 } catch {
@@ -1455,6 +1475,27 @@ foreach ($SubId in $SubscriptionId) {
         Write-Status "  Error discovering network: $($_.Exception.Message)" -Level 'ERROR'
         $Discovery.Errors += "Network discovery failed: $($_.Exception.Message)"
     }
+
+        # Populate top-level Subnets and UDRs arrays from VNet data
+        foreach ($VNetEntry in $Discovery.Inventory.VNets) {
+            foreach ($SubnetEntry in $VNetEntry.Subnets) {
+                $Discovery.Inventory.Subnets += [PSCustomObject]@{
+                    VNetName      = $VNetEntry.Name
+                    Name          = $SubnetEntry.Name
+                    AddressPrefix = $SubnetEntry.AddressPrefix
+                    NSG           = $SubnetEntry.NSG
+                    RouteTable    = $SubnetEntry.RouteTable
+                }
+                if ($SubnetEntry.RouteTable) {
+                    $Discovery.Inventory.UDRs += [PSCustomObject]@{
+                        VNetName  = $VNetEntry.Name
+                        Subnet    = $SubnetEntry.Name
+                        Id        = $SubnetEntry.RouteTable
+                        Name      = ($SubnetEntry.RouteTable -split '/')[-1]
+                    }
+                }
+            }
+        }
 
     # ─── HUB NETWORK RESOURCES (Firewall, VPN/ER Gateway) ────────────────
     Write-Status "Hub Network Resources" -Level 'SECTION'
