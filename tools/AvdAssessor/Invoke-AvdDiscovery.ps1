@@ -664,8 +664,14 @@ foreach ($SubId in $SubscriptionId) {
                 $HasTrustedLaunch = $false
                 $HasAMAExt = $false
                 $HasMDEExt = $false
-                if ($VMInstance -and $VMInstance.Extensions) {
-                    $ExtList = @($VMInstance.Extensions | ForEach-Object {
+                # Prefer instance-view extensions (running VMs); fall back to ARM model extensions (deallocated VMs)
+                $RawExts = if ($VMInstance -and $VMInstance.Extensions) {
+                    $VMInstance.Extensions
+                } elseif ($VMModel -and $VMModel.Extensions) {
+                    $VMModel.Extensions
+                } else { $null }
+                if ($RawExts) {
+                    $ExtList = @($RawExts | ForEach-Object {
                         $ExtType = if ($_.VirtualMachineExtensionType) { $_.VirtualMachineExtensionType } else { $_.Type }
                         $ExtType
                     } | Where-Object { $_ })
@@ -694,7 +700,11 @@ foreach ($SubId in $SubscriptionId) {
                     OsType              = if ($VMModel) { "$($VMModel.StorageProfile.OsDisk.OsType)" } else { $null }
                     UpdateState         = $SH.UpdateState
                     VMSize              = if ($VMModel) { $VMModel.HardwareProfile.VmSize } else { $null }
-                    OSDiskType          = if ($VMModel) { $VMModel.StorageProfile.OsDisk.ManagedDisk.StorageAccountType } else { $null }
+                    OSDiskType          = if ($VMModel -and $VMModel.StorageProfile.OsDisk.ManagedDisk.StorageAccountType) {
+                        $VMModel.StorageProfile.OsDisk.ManagedDisk.StorageAccountType
+                    } elseif ($VMModel -and $VMModel.StorageProfile.OsDisk.ManagedDisk.Id) {
+                        try { (Get-AzDisk -ResourceGroupName $VMRG -DiskName ($VMModel.StorageProfile.OsDisk.ManagedDisk.Id -split '/')[-1] -ErrorAction Stop).Sku.Name } catch { $null }
+                    } else { $null }
                     SecurityProfile     = if ($VMModel -and $VMModel.SecurityProfile) {
                         [PSCustomObject]@{
                             SecurityType = $VMModel.SecurityProfile.SecurityType
@@ -826,7 +836,7 @@ foreach ($SubId in $SubscriptionId) {
                 }
 
                 # ─── CHECK: Managed disk encryption ───
-                if ($SHObj.OSDiskType -and $SHObj.OSDiskType) {
+                if ($SHObj.OSDiskType) {
                     [void]$AllChecks.Add((New-CheckResult -Id "SEC-DISK-$VMName" `
                         -Category 'Security & IAM' -Name 'Managed Disk Encryption' `
                         -Description 'OS disk should use managed encryption' `
@@ -848,7 +858,7 @@ foreach ($SubId in $SubscriptionId) {
                 }
 
                 # ─── CHECK: OS Disk SSD ───
-                if ($SHObj.OSDiskType -and $SHObj.OSDiskType) {
+                if ($SHObj.OSDiskType) {
                     $IsSSD = $SHObj.OSDiskType -match 'SSD|Premium'
                     [void]$AllChecks.Add((New-CheckResult -Id "SH-SSD-$VMName" `
                         -Category 'Session Hosts' -Name 'OS Disk SSD Type' `
@@ -920,7 +930,7 @@ foreach ($SubId in $SubscriptionId) {
                 }
 
                 # ─── CHECK: VM Sizing (B-series flagging) ───
-                if ($SHObj.VMSize -and $SHObj.VMSize) {
+                if ($SHObj.VMSize) {
                     $IsBSeries = $SHObj.VMSize -match '^Standard_B'
                     if ($IsBSeries) {
                         [void]$AllChecks.Add((New-CheckResult -Id "SH-BSERIES-$VMName" `
