@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     AVD Assessor - CAF/WAF/LZA readiness assessment for Azure Virtual Desktop.
