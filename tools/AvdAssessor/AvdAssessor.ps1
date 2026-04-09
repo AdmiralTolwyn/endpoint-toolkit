@@ -4373,11 +4373,11 @@ function Get-ExecutiveSummaryEmailHtml {
         $cClr = & $sClr $Composite
         $cBg  = if ($Composite -ge 80) { '#E6F2E6' } elseif ($Composite -ge 50) { '#FDF0E6' } else { '#FBEAEA' }
         $cPct = [Math]::Max($Composite, 2)
-        [void]$h.Append("<tr style=`"background-color:#F5F5F5;`">")
-        [void]$h.Append("<td style=`"padding:10px 12px;font-weight:bold;`">Composite Score</td>")
-        [void]$h.Append("<td style=`"padding:10px 8px;text-align:right;font-weight:bold;color:$cClr;`">$Composite%</td>")
-        [void]$h.Append("<td style=`"padding:10px 12px;width:100px;`"><table cellpadding=`"0`" cellspacing=`"0`" border=`"0`" width=`"100%`" style=`"background-color:#E1DFDD;`"><tr><td style=`"height:8px;width:$cPct%;background-color:$cClr;font-size:1px;`">&nbsp;</td><td style=`"height:8px;font-size:1px;`">&nbsp;</td></tr></table></td>")
-        [void]$h.Append("<td style=`"padding:10px 12px;`"><table cellpadding=`"0`" cellspacing=`"0`" border=`"0`"><tr><td style=`"background-color:$cBg;color:$cClr;padding:2px 10px;font-size:10px;font-weight:bold;letter-spacing:0.5px;`">$($(Get-MaturityLevel $Composite).ToUpper())</td></tr></table></td>")
+        [void]$h.Append("<tr style=`"background-color:#EFF6FC;`">")
+        [void]$h.Append("<td style=`"padding:10px 12px;font-weight:bold;border-top:2px solid #0078D4;`">Composite Score</td>")
+        [void]$h.Append("<td style=`"padding:10px 8px;text-align:right;font-weight:bold;color:$cClr;border-top:2px solid #0078D4;`">$Composite%</td>")
+        [void]$h.Append("<td style=`"padding:10px 12px;width:100px;border-top:2px solid #0078D4;`"><table cellpadding=`"0`" cellspacing=`"0`" border=`"0`" width=`"100%`" style=`"background-color:#E1DFDD;`"><tr><td style=`"height:8px;width:$cPct%;background-color:$cClr;font-size:1px;`">&nbsp;</td><td style=`"height:8px;font-size:1px;`">&nbsp;</td></tr></table></td>")
+        [void]$h.Append("<td style=`"padding:10px 12px;border-top:2px solid #0078D4;`"><table cellpadding=`"0`" cellspacing=`"0`" border=`"0`"><tr><td style=`"background-color:$cBg;color:$cClr;padding:2px 10px;font-size:10px;font-weight:bold;letter-spacing:0.5px;`">$($(Get-MaturityLevel $Composite).ToUpper())</td></tr></table></td>")
         [void]$h.Append('</tr>')
     }
     [void]$h.Append('</table></td></tr>')
