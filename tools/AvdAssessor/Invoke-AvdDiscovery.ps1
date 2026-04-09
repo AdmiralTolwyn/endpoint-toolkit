@@ -734,15 +734,6 @@ foreach ($SubId in $SubscriptionId) {
 
                 $Discovery.Inventory.SessionHosts += $SHObj
 
-                # ─── CHECK: Drain mode ───
-                [void]$AllChecks.Add((New-CheckResult -Id "SH-DRAIN-$VMName" `
-                    -Category 'Session Hosts' -Name 'Drain Mode' `
-                    -Description 'Session host should allow new sessions unless under maintenance' `
-                    -Status $(if ($SH.AllowNewSession) { 'Pass' } else { 'Warning' }) `
-                    -Severity 'Low' `
-                    -Details "AllowNewSession: $($SH.AllowNewSession), Status: $($SH.Status)" `
-                    -Evidence @{ VM = $VMName; AllowNewSession = $SH.AllowNewSession }))
-
                 # ─── CHECK: Trusted Launch ───
                 if ($VMModel -and $VMModel.SecurityProfile) {
                     $SecureBoot = $VMModel.SecurityProfile.UefiSettings.SecureBootEnabled
@@ -1029,19 +1020,6 @@ foreach ($SubId in $SubscriptionId) {
                         -Details "AgentVersion: $($SH.AgentVersion), MinRecommended: $MinRecommendedAgent" `
                         -Recommendation 'AVD agent updates automatically when VM is running. Ensure VMs are powered on periodically.' `
                         -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/agent-overview'))
-                }
-
-                # ─── CHECK: Power State ───
-                if ($SHObj.PowerState) {
-                    $IsRunning = $SHObj.PowerState -eq 'VM running'
-                    $IsDeallocated = $SHObj.PowerState -match 'deallocated'
-                    [void]$AllChecks.Add((New-CheckResult -Id "SH-POWER-$VMName" `
-                        -Category 'Session Hosts' -Name 'Power State' `
-                        -Description 'Session host power state - deallocated VMs cannot serve users and may have stale agents' `
-                        -Status $(if ($IsRunning) { 'Pass' } elseif ($IsDeallocated) { 'Warning' } else { 'Warning' }) `
-                        -Severity 'Low' `
-                        -Details "PowerState: $($SHObj.PowerState)" `
-                        -Evidence @{ VM = $VMName; PowerState = $SHObj.PowerState }))
                 }
 
                 # ─── CHECK: Session Host Status ───
@@ -2333,7 +2311,7 @@ function Get-MaturityScores {
 
     $Dimensions = [ordered]@{
         Security    = @{ Prefixes = @('SEC-','IAM-');           Label = 'Security & Identity';   Icon = [char]0x26E8 }
-        Operations  = @{ Prefixes = @('OPS-','GOV-','SH-LB','SH-002','SH-DRAIN','SH-POWER','SH-STATUS','SH-IMG','SH-BSERIES','SH-SSD')
+        Operations  = @{ Prefixes = @('OPS-','GOV-','SH-LB','SH-002','SH-STATUS','SH-IMG','SH-BSERIES','SH-SSD')
                          Label = 'Operations & Cost';          Icon = [char]0x2699 }
         Networking  = @{ Prefixes = @('NET-');                  Label = 'Networking';             Icon = [char]0x2637 }
         Resiliency  = @{ Prefixes = @('BCDR-','SH-EPHEMERAL'); Label = 'Resiliency & BCDR';      Icon = [char]0x2694 }

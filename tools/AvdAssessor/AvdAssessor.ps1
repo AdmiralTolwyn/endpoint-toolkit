@@ -1341,7 +1341,6 @@ function Import-DiscoveryJson {
                 # New mappings
                 'NET-NSG-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'NET-002' }
                 'APP-CFG-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'APP-001' }
-                'SH-DRAIN-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-012' }
                 'SEC-DISK-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-013' }
                 'NET-SHORTPATH-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'NET-011' }
                 # New auto checks
@@ -1409,7 +1408,6 @@ function Import-DiscoveryJson {
                 'SEC-PRINT-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SEC-017' }
                 'SEC-USB-*'      { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SEC-016' }
                 'SH-EPHEMERAL-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-021' }
-                'SH-POWER-*'     { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-023' }
                 'SH-STATUS-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-024' }
 
             }

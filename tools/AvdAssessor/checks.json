@@ -1,4 +1,4 @@
-﻿{
+{
   "_metadata": {
     "version": "1.0",
     "description": "AVD Assessor check definitions — CAF/WAF/LZA/SEC/FSL best practices",
@@ -360,18 +360,6 @@
       "weight": 3,
       "origin": "WAF,SEC",
       "reference": "https://learn.microsoft.com/en-us/azure/virtual-desktop/customize-rdp-properties",
-      "effort": "Quick Win"
-    },
-    {
-      "id": "SH-012",
-      "category": "Session Hosts",
-      "name": "Drain Mode Status",
-      "description": "Session hosts in drain mode refuse new connections. Hosts should only be in drain mode during planned maintenance. Stale drain mode on production hosts reduces available capacity without visibility",
-      "severity": "Low",
-      "type": "Auto",
-      "weight": 2,
-      "origin": "AVD",
-      "reference": "https://learn.microsoft.com/en-us/azure/virtual-desktop/drain-mode",
       "effort": "Quick Win"
     },
     {
@@ -1015,7 +1003,7 @@
       "id": "SH-014",
       "category": "Session Hosts",
       "name": "Configuration Drift Detection",
-      "description": "A configuration drift detection method (Azure Automation State Config, Intune compliance, or custom script) should validate that pooled session hosts remain consistent with the golden image baseline",
+      "description": "For persistent/personal desktops or environments without golden image reimaging, drift detection should track unauthorized application installs, failed or missing Windows Updates, failed or missing application patches, and security baseline deviation. Use Intune compliance policies, SCCM, or Windows Update for Business reports to monitor patch levels, update failures, and configuration state over time",
       "severity": "Medium",
       "type": "Manual",
       "weight": 3,
@@ -1772,18 +1760,6 @@
       "origin": "WAF",
       "reference": "https://learn.microsoft.com/en-us/azure/virtual-machines/disks-types",
       "effort": "Some Effort"
-    },
-    {
-      "id": "SH-023",
-      "category": "Session Hosts",
-      "name": "Power State Status",
-      "description": "Deallocated session hosts cannot serve user sessions. Unless managed by a scaling plan with Start VM on Connect, deallocated hosts represent unavailable capacity that scaling plans may not recover automatically",
-      "severity": "Low",
-      "type": "Auto",
-      "weight": 2,
-      "origin": "AVD",
-      "reference": "https://learn.microsoft.com/en-us/azure/virtual-desktop/start-virtual-machine-connect",
-      "effort": "Quick Win"
     },
     {
       "id": "SH-024",
