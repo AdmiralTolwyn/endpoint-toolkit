@@ -4234,8 +4234,9 @@ function Get-ExecutiveSummaryEmailHtml {
 <tr><td style="background-color:#FAFAF9;padding:32px 40px;">
 <table cellpadding="0" cellspacing="0" border="0" width="100%"><tr>
 <td width="160" style="vertical-align:middle;">
-<table cellpadding="0" cellspacing="0" border="0" align="center"><tr><td align="center" valign="middle" style="background-color:$ringBg;width:140px;height:140px;text-align:center;vertical-align:middle;">
-<font face="Segoe UI,Helvetica,Arial,sans-serif" size="7" color="$scoreColor"><span style="font-size:72px;font-weight:normal;">$scoreVal</span></font>
+<table cellpadding="0" cellspacing="0" border="0" align="center"><tr><td align="center" valign="middle" style="background-color:$ringBg;width:140px;height:140px;text-align:center;vertical-align:middle;font-size:72px;font-family:Segoe UI,Helvetica,Arial,sans-serif;">
+<!--[if mso]><v:rect style="width:140px;height:140px;" stroked="f"><v:fill type="solid" color="$ringBg"/><v:textbox style="mso-fit-shape-to-text:false;" inset="0,0,0,0"><center><font size="7" color="$scoreColor" face="Segoe UI"><span style="font-size:72px;">$scoreVal</span></font></center></v:textbox></v:rect><![endif]-->
+<!--[if !mso]><!--><font color="$scoreColor" style="font-size:72px;font-weight:normal;line-height:140px;">$scoreVal</font><!--<![endif]-->
 </td></tr></table>
 </td>
 <td style="vertical-align:middle;padding-left:24px;">
@@ -4332,7 +4333,7 @@ function Get-ExecutiveSummaryEmailHtml {
         [void]$h.Append("<td style=`"padding:10px 12px;font-weight:600;border-left:3px solid $catClr;`">$(& $hesc $Cat)</td>")
         [void]$h.Append("<td style=`"padding:10px 8px;text-align:right;font-weight:bold;color:$catClr;`"><font color=`"$catClr`"><b>$ScoreStr</b></font></td>")
         [void]$h.Append("<td style=`"padding:10px 12px;`"><table cellpadding=`"0`" cellspacing=`"0`" border=`"0`" width=`"100%`" style=`"background-color:#E1DFDD;`"><tr><td style=`"height:8px;width:$barPct%;background-color:$catClr;font-size:1px;`">&nbsp;</td><td style=`"height:8px;font-size:1px;`">&nbsp;</td></tr></table></td>")
-        [void]$h.Append("<td style=`"padding:10px 12px;font-size:11px;color:#8A8886;white-space:nowrap;vertical-align:middle;`"><table cellpadding=`"0`" cellspacing=`"0`" border=`"0`" style=`"display:inline;`"><tr><td style=`"width:8px;height:8px;background-color:#107C10;font-size:1px;`">&nbsp;</td><td style=`"padding:0 6px 0 3px;font-size:11px;`">$CatPass</td><td style=`"width:8px;height:8px;background-color:#CA5010;font-size:1px;`">&nbsp;</td><td style=`"padding:0 6px 0 3px;font-size:11px;`">$CatWarn</td><td style=`"width:8px;height:8px;background-color:#D13438;font-size:1px;`">&nbsp;</td><td style=`"padding:0 0 0 3px;font-size:11px;`">$CatFail</td></tr></table></td>")
+        [void]$h.Append("<td style=`"padding:10px 12px;font-size:11px;color:#8A8886;white-space:nowrap;vertical-align:middle;`"><table cellpadding=`"0`" cellspacing=`"0`" border=`"0`" style=`"display:inline;`"><tr><td style=`"width:8px;height:8px;background-color:#107C10;font-size:1px;`">&nbsp;</td><td style=`"padding:0 6px 0 3px;font-size:11px;`">$CatPass</td><td style=`"width:8px;height:8px;background-color:#FFB900;font-size:1px;`">&nbsp;</td><td style=`"padding:0 6px 0 3px;font-size:11px;`">$CatWarn</td><td style=`"width:8px;height:8px;background-color:#D13438;font-size:1px;`">&nbsp;</td><td style=`"padding:0 0 0 3px;font-size:11px;`">$CatFail</td></tr></table></td>")
         [void]$h.Append('</tr>')
         $catIdx++
     }
