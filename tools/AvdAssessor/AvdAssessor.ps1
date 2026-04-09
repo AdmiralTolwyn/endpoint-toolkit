@@ -4796,11 +4796,12 @@ function Check-AssessmentAchievements {
     $NotAssessed = @($Checks | Where-Object { $_.Status -eq 'Not Assessed' -and -not $_.Excluded })
     if ($NotAssessed.Count -eq 0 -and $Checks.Count -gt 0) { Unlock-Achievement 'full_sweep' }
 
-    # Perfect category
+    # Perfect category — every non-excluded check in the category must be Pass or N/A
     $Categories = @($Checks | ForEach-Object { $_.Category } | Sort-Object -Unique)
     foreach ($Cat in $Categories) {
-        $CatChecks = @($Assessed | Where-Object { $_.Category -eq $Cat })
-        if ($CatChecks.Count -ge 3 -and @($CatChecks | Where-Object { $_.Status -ne 'Pass' }).Count -eq 0) {
+        $CatChecks = @($Checks | Where-Object { $_.Category -eq $Cat -and -not $_.Excluded })
+        $CatNonPerfect = @($CatChecks | Where-Object { $_.Status -ne 'Pass' -and $_.Status -ne 'N/A' })
+        if ($CatChecks.Count -ge 3 -and $CatNonPerfect.Count -eq 0) {
             Unlock-Achievement 'perfect_category'
             break
         }
