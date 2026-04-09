@@ -1311,6 +1311,9 @@ function Import-DiscoveryJson {
         $lblStatScalingPlans.Text = "$($Json.Inventory.ScalingPlans.Count)"
 
         # Map discovery check results to assessment checks
+        # Phase 1: collect all per-object results grouped by assessment check ID
+        $CheckBuckets = @{}  # checkId → [list of {Status, Details, ObjectName}]
+        $StatusRank = @{ 'Fail' = 0; 'Error' = 0; 'Warning' = 1; 'Pass' = 2; 'N/A' = 3; 'Not Assessed' = 4 }
         $Mapped = 0
         foreach ($DiscCheck in $Json.CheckResults) {
             # Find matching assessment check by category pattern
@@ -1345,7 +1348,6 @@ function Import-DiscoveryJson {
                 'SH-LB-*'     { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-017' }
                 'SH-SSD-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-019' }
                 'OPS-HB-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'OPS-002' }
-                'NET-NSG-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'NET-002' }
                 'NET-UDR-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'NET-013' }
                 'PROF-FW-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'PROF-024' }
                 'PROF-SD-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'PROF-025' }
@@ -1413,17 +1415,81 @@ function Import-DiscoveryJson {
             }
 
             if ($Match) {
-                # If multiple discovery checks map to same assessment check,
-                # use worst status (Fail > Warning > Pass)
-                $NewStatus = $DiscCheck.Status
-                $Current = $Match.Status
-                $StatusRank = @{ 'Fail' = 0; 'Warning' = 1; 'Pass' = 2; 'N/A' = 3; 'Not Assessed' = 4; 'Error' = 0 }
-                if ($StatusRank[$NewStatus] -lt $StatusRank[$Current] -or $Current -eq 'Not Assessed') {
-                    $Match.Status  = if ($NewStatus -eq 'Error') { 'Fail' } else { $NewStatus }
-                    $Match.Details = $DiscCheck.Details
-                    $Match.Source  = 'Auto'
+                $CheckId = $Match.Id
+                if (-not $CheckBuckets.ContainsKey($CheckId)) {
+                    $CheckBuckets[$CheckId] = [System.Collections.Generic.List[object]]::new()
                 }
+                # Extract object name from discovery ID (strip prefix up to first AVD- or use Evidence.HostPool)
+                $ObjName = if ($DiscCheck.Evidence -and $DiscCheck.Evidence.HostPool) {
+                    $DiscCheck.Evidence.HostPool
+                } elseif ($DiscCheck.Id -match '-AVD-(.+)$') {
+                    $Matches[1]
+                } elseif ($DiscCheck.Id -match '^[A-Z]+-[A-Z]+-(.+)$') {
+                    $Matches[1]
+                } else {
+                    $DiscCheck.Id
+                }
+                [void]$CheckBuckets[$CheckId].Add(@{
+                    Status   = $DiscCheck.Status
+                    Details  = $DiscCheck.Details
+                    Object   = $ObjName
+                })
                 $Mapped++
+            }
+        }
+
+        # Phase 2: aggregate per-object results into each assessment check
+        foreach ($CheckId in $CheckBuckets.Keys) {
+            $Results = $CheckBuckets[$CheckId]
+            $Match = $Global:Assessment.Checks | Where-Object Id -eq $CheckId
+            if (-not $Match) { continue }
+
+            # Determine worst status across all objects
+            $WorstRank = 4
+            foreach ($R in $Results) {
+                $Rank = if ($StatusRank.ContainsKey($R.Status)) { $StatusRank[$R.Status] } else { 4 }
+                if ($Rank -lt $WorstRank) { $WorstRank = $Rank }
+            }
+            $WorstStatus = switch ($WorstRank) { 0 { 'Fail' } 1 { 'Warning' } 2 { 'Pass' } 3 { 'N/A' } default { 'Not Assessed' } }
+            $Match.Status = $WorstStatus
+            $Match.Source  = 'Auto'
+
+            # Build aggregated details with per-object breakdown
+            $Total = $Results.Count
+            if ($Total -eq 1) {
+                # Single object: show details directly with object name
+                $R = $Results[0]
+                $Match.Details = "[$($R.Object)] $($R.Details)"
+            } else {
+                # Multiple objects: show summary + list affected
+                $FailList    = @($Results | Where-Object { $_.Status -eq 'Fail' -or $_.Status -eq 'Error' })
+                $WarnList    = @($Results | Where-Object { $_.Status -eq 'Warning' })
+                $PassList    = @($Results | Where-Object { $_.Status -eq 'Pass' })
+                $NaList      = @($Results | Where-Object { $_.Status -eq 'N/A' })
+
+                $Parts = [System.Collections.Generic.List[string]]::new()
+                if ($PassList.Count -gt 0) { [void]$Parts.Add("$([char]0x2713) $($PassList.Count) pass") }
+                if ($WarnList.Count -gt 0) { [void]$Parts.Add("$([char]0x26A0) $($WarnList.Count) warning") }
+                if ($FailList.Count -gt 0) { [void]$Parts.Add("$([char]0x2717) $($FailList.Count) fail") }
+                if ($NaList.Count -gt 0)   { [void]$Parts.Add("$($NaList.Count) N/A") }
+                $Summary = "$Total objects: $($Parts -join ', ')"
+
+                # List non-passing objects with their details
+                $IssueItems = @($Results | Where-Object { $_.Status -eq 'Fail' -or $_.Status -eq 'Error' -or $_.Status -eq 'Warning' })
+                if ($IssueItems.Count -gt 0) {
+                    $ObjLines = $IssueItems | ForEach-Object {
+                        $StatusIcon = if ($_.Status -eq 'Fail' -or $_.Status -eq 'Error') { [char]0x2717 } else { [char]0x26A0 }
+                        "$StatusIcon $($_.Object): $($_.Details)"
+                    }
+                    # Limit displayed lines to avoid overwhelming the UI
+                    if ($ObjLines.Count -gt 8) {
+                        $Remaining = $ObjLines.Count - 6
+                        $ObjLines = @($ObjLines | Select-Object -First 6) + @("  ...and $Remaining more")
+                    }
+                    $Match.Details = "$Summary`n$($ObjLines -join "`n")"
+                } else {
+                    $Match.Details = $Summary
+                }
             }
         }
 
