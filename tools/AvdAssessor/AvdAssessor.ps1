@@ -1363,7 +1363,7 @@ function Import-DiscoveryJson {
                 'SH-IMG-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-004' }
                 'SH-BSERIES-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-003' }
                 'NET-NATGW-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'NET-012' }
-                'GOV-SPACTIVE-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'GOV-010' }
+                'GOV-SPACTIVE-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'GOV-009' }
                 'BCDR-MULTIREGION' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'BCDR-008' }
                 'MON-WSDIAG-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'MON-001' }
                 'MON-AGDIAG-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'MON-001' }

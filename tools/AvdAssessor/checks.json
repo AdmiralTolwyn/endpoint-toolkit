@@ -1850,18 +1850,6 @@
       "effort": "Quick Win"
     },
     {
-      "id": "GOV-010",
-      "category": "Governance & Cost",
-      "name": "Tag Quality Score",
-      "description": "Resources should have recommended tags applied including Environment, Owner, CostCenter, Application, and DataClassification. Tag quality score reflects the percentage of resources with complete tagging compliance",
-      "severity": "Low",
-      "type": "Auto",
-      "weight": 2,
-      "origin": "CAF",
-      "reference": "https://learn.microsoft.com/en-us/azure/cloud-adoption-framework/ready/azure-best-practices/resource-tagging",
-      "effort": "Quick Win"
-    },
-    {
       "id": "SH-025",
       "category": "Session Hosts",
       "name": "Secure Boot Enabled",
