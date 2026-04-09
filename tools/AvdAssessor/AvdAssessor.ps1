@@ -4234,9 +4234,8 @@ function Get-ExecutiveSummaryEmailHtml {
 <tr><td style="background-color:#FAFAF9;padding:32px 40px;">
 <table cellpadding="0" cellspacing="0" border="0" width="100%"><tr>
 <td width="160" style="vertical-align:middle;">
-<table cellpadding="0" cellspacing="0" border="0" align="center"><tr><td align="center" valign="middle" style="background-color:$ringBg;width:140px;height:140px;text-align:center;vertical-align:middle;font-size:72px;font-weight:normal;font-family:Segoe UI,Helvetica,Arial,sans-serif;color:$scoreColor;line-height:140px;">
-<!--[if mso]><span style="font-size:72px;mso-text-raise:0;font-weight:normal;color:$scoreColor;">$scoreVal</span><![endif]-->
-<!--[if !mso]><!--><span style="font-size:72px;font-weight:normal;color:$scoreColor;">$scoreVal</span><!--<![endif]-->
+<table cellpadding="0" cellspacing="0" border="0" align="center"><tr><td align="center" valign="middle" style="background-color:$ringBg;width:140px;height:140px;text-align:center;vertical-align:middle;">
+<font face="Segoe UI,Helvetica,Arial,sans-serif" size="7" color="$scoreColor"><span style="font-size:72px;font-weight:normal;">$scoreVal</span></font>
 </td></tr></table>
 </td>
 <td style="vertical-align:middle;padding-left:24px;">
@@ -4264,8 +4263,8 @@ function Get-ExecutiveSummaryEmailHtml {
     )
     foreach ($card in $cards) {
         [void]$h.Append("<td width=`"25%`" style=`"background-color:$($card.B);padding:16px 8px;text-align:center;border-left:3px solid $($card.C);`">")
-        [void]$h.Append("<p style=`"Margin:0;font-size:30px;font-weight:bold;color:$($card.C);`">$($card.N)</p>")
-        [void]$h.Append("<p style=`"Margin:0;font-size:10px;color:$($card.C);font-weight:700;letter-spacing:1px;padding-top:2px;`">$($card.L.ToUpper())</p>")
+        [void]$h.Append("<p style=`"Margin:0;font-size:30px;font-weight:bold;color:$($card.C);`"><font color=`"$($card.C)`" size=`"6`"><b>$($card.N)</b></font></p>")
+        [void]$h.Append("<p style=`"Margin:0;font-size:10px;color:$($card.C);font-weight:700;letter-spacing:1px;padding-top:2px;`"><font color=`"$($card.C)`">$($card.L.ToUpper())</font></p>")
         [void]$h.Append('</td>')
     }
     [void]$h.Append('</tr></table></td></tr>')
@@ -4331,9 +4330,9 @@ function Get-ExecutiveSummaryEmailHtml {
 
         [void]$h.Append("<tr style=`"background-color:$bgRow;`">")
         [void]$h.Append("<td style=`"padding:10px 12px;font-weight:600;border-left:3px solid $catClr;`">$(& $hesc $Cat)</td>")
-        [void]$h.Append("<td style=`"padding:10px 8px;text-align:right;font-weight:bold;color:$catClr;`">$ScoreStr</td>")
+        [void]$h.Append("<td style=`"padding:10px 8px;text-align:right;font-weight:bold;color:$catClr;`"><font color=`"$catClr`"><b>$ScoreStr</b></font></td>")
         [void]$h.Append("<td style=`"padding:10px 12px;`"><table cellpadding=`"0`" cellspacing=`"0`" border=`"0`" width=`"100%`" style=`"background-color:#E1DFDD;`"><tr><td style=`"height:8px;width:$barPct%;background-color:$catClr;font-size:1px;`">&nbsp;</td><td style=`"height:8px;font-size:1px;`">&nbsp;</td></tr></table></td>")
-        [void]$h.Append("<td style=`"padding:10px 12px;font-size:11px;color:#8A8886;white-space:nowrap;`"><font color=`"#107C10`">&#9679;</font> $CatPass &#160;<font color=`"#CA5010`">&#9679;</font> $CatWarn &#160;<font color=`"#D13438`">&#9679;</font> $CatFail</td>")
+        [void]$h.Append("<td style=`"padding:10px 12px;font-size:11px;color:#8A8886;white-space:nowrap;vertical-align:middle;`"><table cellpadding=`"0`" cellspacing=`"0`" border=`"0`" style=`"display:inline;`"><tr><td style=`"width:8px;height:8px;background-color:#107C10;font-size:1px;`">&nbsp;</td><td style=`"padding:0 6px 0 3px;font-size:11px;`">$CatPass</td><td style=`"width:8px;height:8px;background-color:#CA5010;font-size:1px;`">&nbsp;</td><td style=`"padding:0 6px 0 3px;font-size:11px;`">$CatWarn</td><td style=`"width:8px;height:8px;background-color:#D13438;font-size:1px;`">&nbsp;</td><td style=`"padding:0 0 0 3px;font-size:11px;`">$CatFail</td></tr></table></td>")
         [void]$h.Append('</tr>')
         $catIdx++
     }
@@ -4359,11 +4358,11 @@ function Get-ExecutiveSummaryEmailHtml {
 
         [void]$h.Append("<tr style=`"background-color:$bgRow;`">")
         [void]$h.Append("<td style=`"padding:10px 12px;`">$(& $hesc $Dim.Label)</td>")
-        [void]$h.Append("<td style=`"padding:10px 8px;text-align:right;font-weight:bold;color:$dClr;width:55px;`">$DStr</td>")
+        [void]$h.Append("<td style=`"padding:10px 8px;text-align:right;font-weight:bold;color:$dClr;width:55px;`"><font color=`"$dClr`"><b>$DStr</b></font></td>")
         [void]$h.Append("<td style=`"padding:10px 12px;width:100px;`"><table cellpadding=`"0`" cellspacing=`"0`" border=`"0`" width=`"100%`" style=`"background-color:#E1DFDD;`"><tr><td style=`"height:8px;width:$barPct%;background-color:$dClr;font-size:1px;`">&nbsp;</td><td style=`"height:8px;font-size:1px;`">&nbsp;</td></tr></table></td>")
         [void]$h.Append("<td style=`"padding:10px 12px;`">")
         if ($DLevel) {
-            [void]$h.Append("<table cellpadding=`"0`" cellspacing=`"0`" border=`"0`"><tr><td style=`"background-color:$dBg;color:$dClr;padding:2px 10px;font-size:10px;font-weight:bold;letter-spacing:0.5px;`">$($DLevel.ToUpper())</td></tr></table>")
+            [void]$h.Append("<table cellpadding=`"0`" cellspacing=`"0`" border=`"0`"><tr><td style=`"background-color:$dBg;color:$dClr;padding:2px 10px;font-size:10px;font-weight:bold;letter-spacing:0.5px;`"><font color=`"$dClr`">$($DLevel.ToUpper())</font></td></tr></table>")
         }
         [void]$h.Append('</td></tr>')
         $dimIdx++
@@ -4375,9 +4374,9 @@ function Get-ExecutiveSummaryEmailHtml {
         $cPct = [Math]::Max($Composite, 2)
         [void]$h.Append("<tr style=`"background-color:#EFF6FC;`">")
         [void]$h.Append("<td style=`"padding:10px 12px;font-weight:bold;border-top:2px solid #0078D4;`">Composite Score</td>")
-        [void]$h.Append("<td style=`"padding:10px 8px;text-align:right;font-weight:bold;color:$cClr;border-top:2px solid #0078D4;`">$Composite%</td>")
+        [void]$h.Append("<td style=`"padding:10px 8px;text-align:right;font-weight:bold;color:$cClr;border-top:2px solid #0078D4;`"><font color=`"$cClr`"><b>$Composite%</b></font></td>")
         [void]$h.Append("<td style=`"padding:10px 12px;width:100px;border-top:2px solid #0078D4;`"><table cellpadding=`"0`" cellspacing=`"0`" border=`"0`" width=`"100%`" style=`"background-color:#E1DFDD;`"><tr><td style=`"height:8px;width:$cPct%;background-color:$cClr;font-size:1px;`">&nbsp;</td><td style=`"height:8px;font-size:1px;`">&nbsp;</td></tr></table></td>")
-        [void]$h.Append("<td style=`"padding:10px 12px;border-top:2px solid #0078D4;`"><table cellpadding=`"0`" cellspacing=`"0`" border=`"0`"><tr><td style=`"background-color:$cBg;color:$cClr;padding:2px 10px;font-size:10px;font-weight:bold;letter-spacing:0.5px;`">$($(Get-MaturityLevel $Composite).ToUpper())</td></tr></table></td>")
+        [void]$h.Append("<td style=`"padding:10px 12px;border-top:2px solid #0078D4;`"><table cellpadding=`"0`" cellspacing=`"0`" border=`"0`"><tr><td style=`"background-color:$cBg;color:$cClr;padding:2px 10px;font-size:10px;font-weight:bold;letter-spacing:0.5px;`"><font color=`"$cClr`">$($(Get-MaturityLevel $Composite).ToUpper())</font></td></tr></table></td>")
         [void]$h.Append('</tr>')
     }
     [void]$h.Append('</table></td></tr>')
