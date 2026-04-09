@@ -2388,11 +2388,11 @@ function Render-AssessmentChecks {
             [void]$InfoSP.Children.Add($NameTB)
             [void]$InfoSP.Children.Add($DescTB)
 
-            # Origin badges
+            # Origin badges + Auto/Manual badge
+            $TagSP = New-Object System.Windows.Controls.StackPanel
+            $TagSP.Orientation = 'Horizontal'
+            $TagSP.Margin = [System.Windows.Thickness]::new(0,3,0,0)
             if ($Check.Origin) {
-                $OriginSP = New-Object System.Windows.Controls.StackPanel
-                $OriginSP.Orientation = 'Horizontal'
-                $OriginSP.Margin = [System.Windows.Thickness]::new(0,3,0,0)
                 foreach ($Tag in ($Check.Origin -split ',')) {
                     $Badge = New-Object System.Windows.Controls.Border
                     $Badge.CornerRadius = [System.Windows.CornerRadius]::new(3)
@@ -2407,6 +2407,15 @@ function Render-AssessmentChecks {
                         'AVD' { if ($Global:IsLightMode) { '#E0E0E0' } else { '#1F1F23' } }
                         default { if ($Global:IsLightMode) { '#E0E0E0' } else { '#1F1F23' } }
                     }))
+                    $Badge.ToolTip = switch ($Tag.Trim()) {
+                        'WAF' { 'Well-Architected Framework for AVD' }
+                        'CAF' { 'Cloud Adoption Framework for AVD' }
+                        'LZA' { 'AVD Landing Zone Accelerator' }
+                        'SEC' { 'AVD Security Recommendations' }
+                        'FSL' { 'FSLogix Documentation' }
+                        'AVD' { 'Azure Virtual Desktop Documentation' }
+                        default { $Tag.Trim() }
+                    }
                     $BadgeTB = New-Object System.Windows.Controls.TextBlock
                     $BadgeTB.Text = $Tag.Trim()
                     $BadgeTB.FontSize = 11; $BadgeTB.FontWeight = [System.Windows.FontWeights]::SemiBold
@@ -2420,10 +2429,36 @@ function Render-AssessmentChecks {
                         default { if ($Global:IsLightMode) { '#555' } else { '#A1A1AA' } }
                     }))
                     $Badge.Child = $BadgeTB
-                    [void]$OriginSP.Children.Add($Badge)
+                    [void]$TagSP.Children.Add($Badge)
                 }
-                [void]$InfoSP.Children.Add($OriginSP)
             }
+            # Auto / Manual type badge
+            $TypeLabel = if ($Check.Type -eq 'Auto') { 'AUTO' } else { 'MANUAL' }
+            $TypeBadge = New-Object System.Windows.Controls.Border
+            $TypeBadge.CornerRadius = [System.Windows.CornerRadius]::new(3)
+            $TypeBadge.Padding = [System.Windows.Thickness]::new(5,1,5,1)
+            $TypeBadge.Margin = [System.Windows.Thickness]::new(0,0,4,0)
+            $TypeBadge.Background = $Global:CachedBC.ConvertFromString($(if ($Check.Type -eq 'Auto') {
+                if ($Global:IsLightMode) { '#E0F7FA' } else { '#0A2E3D' }
+            } else {
+                if ($Global:IsLightMode) { '#FFF8E1' } else { '#3D350A' }
+            }))
+            $TypeBadge.ToolTip = if ($Check.Type -eq 'Auto') {
+                'Automated check — evaluated automatically via discovery data'
+            } else {
+                'Manual check — requires manual verification and status update'
+            }
+            $TypeTB = New-Object System.Windows.Controls.TextBlock
+            $TypeTB.Text = $TypeLabel
+            $TypeTB.FontSize = 11; $TypeTB.FontWeight = [System.Windows.FontWeights]::SemiBold
+            $TypeTB.Foreground = $Global:CachedBC.ConvertFromString($(if ($Check.Type -eq 'Auto') {
+                if ($Global:IsLightMode) { '#00838F' } else { '#4DD0E1' }
+            } else {
+                if ($Global:IsLightMode) { '#F9A825' } else { '#FFD54F' }
+            }))
+            $TypeBadge.Child = $TypeTB
+            [void]$TagSP.Children.Add($TypeBadge)
+            [void]$InfoSP.Children.Add($TagSP)
 
             # Reference URL link
             if ($Check.Reference) {
