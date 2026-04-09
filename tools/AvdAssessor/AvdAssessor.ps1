@@ -4233,9 +4233,9 @@ function Get-ExecutiveSummaryEmailHtml {
     [void]$h.Append(@"
 <tr><td style="background-color:#FAFAF9;padding:32px 40px;">
 <table cellpadding="0" cellspacing="0" border="0" width="100%"><tr>
-<td width="140" style="vertical-align:middle;">
-<table cellpadding="0" cellspacing="0" border="0" align="center"><tr><td style="background-color:$ringBg;width:120px;height:120px;text-align:center;vertical-align:middle;">
-<div style="font-size:64px;font-weight:bold;color:$scoreColor;line-height:120px;">$scoreVal</div>
+<td width="160" style="vertical-align:middle;">
+<table cellpadding="0" cellspacing="0" border="0" align="center"><tr><td style="background-color:$ringBg;width:140px;height:140px;text-align:center;vertical-align:middle;">
+<div style="font-size:80px;font-weight:bold;color:$scoreColor;line-height:140px;">$scoreVal</div>
 </td></tr></table>
 </td>
 <td style="vertical-align:middle;padding-left:24px;">
