@@ -2970,7 +2970,7 @@ function Build-HtmlReport {
     $NACount   = @($Assessed | Where-Object { $_.Status -eq 'N/A' }).Count
     $WarnCount = @($Assessed | Where-Object Status -eq 'Warning').Count
     $FailCount = @($Assessed | Where-Object Status -eq 'Fail').Count
-    $ExclCount = @($Global:Assessment.Checks | Where-Object { $_.Excluded }).Count
+
     $OverallClass = if ($Overall -ge 80) { 'green' } elseif ($Overall -ge 50) { 'orange' } else { 'red' }
 
     [void]$html.Append(@"
@@ -3042,7 +3042,7 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);line-height:
 .stat-card.warn .num{color:var(--orange)} .stat-card.warn .accent-bar{background:var(--orange)}
 .stat-card.fail .num{color:var(--red)} .stat-card.fail .accent-bar{background:var(--red)}
 .stat-card.total .num{color:var(--accent)} .stat-card.total .accent-bar{background:var(--accent)}
-.stat-card.excluded .num{color:var(--text-dim)} .stat-card.excluded .accent-bar{background:var(--text-faint)}
+
 .stat-card.na .num{color:var(--text-secondary)} .stat-card.na .accent-bar{background:var(--text-secondary)}
 
 /* Progress bar */
@@ -3217,7 +3217,6 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);line-height:
   <div class="stat-card warn"><div class="accent-bar"></div><div class="num">$WarnCount</div><div class="label">Warning</div></div>
   <div class="stat-card fail"><div class="accent-bar"></div><div class="num">$FailCount</div><div class="label">Fail</div></div>
   <div class="stat-card na"><div class="accent-bar"></div><div class="num">$NACount</div><div class="label">N/A</div></div>
-  <div class="stat-card excluded"><div class="accent-bar"></div><div class="num">$ExclCount</div><div class="label">Excluded</div></div>
   <div class="stat-card total"><div class="accent-bar"></div><div class="num">$($Global:Assessment.Checks.Count)</div><div class="label">Total</div></div>
 </div>
 
