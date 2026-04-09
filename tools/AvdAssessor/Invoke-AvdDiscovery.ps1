@@ -1886,7 +1886,7 @@ try {
 # ─── ORPHANED NICs (GOV-012) ───────────────────────────────────────────
 try {
     $OrphanedNICs = @(Get-AzNetworkInterface -ErrorAction SilentlyContinue |
-        Where-Object { $_.VirtualMachine -eq $null -and $_.ResourceGroupName -in $AvdResourceGroups })
+        Where-Object { $_.VirtualMachine -eq $null -and $_.PrivateEndpoint -eq $null -and $_.ResourceGroupName -in $AvdResourceGroups })
     Write-Status "  Orphaned NICs: $($OrphanedNICs.Count)" -Level $(if ($OrphanedNICs.Count -gt 0) { 'WARN' } else { 'SUCCESS' })
     foreach ($NIC in $OrphanedNICs) {
         $Discovery.Inventory.OrphanedNICs += [PSCustomObject]@{
