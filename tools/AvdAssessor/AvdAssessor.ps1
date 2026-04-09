@@ -1054,7 +1054,7 @@ function Get-Categories {
     Calculates the weighted readiness score (0-100) for a single assessment category.
 .DESCRIPTION
     Scores all non-excluded checks in the category using weighted points: Pass=100,
-    Warning=50, Fail=0, Not Assessed=0. N/A and Excluded checks are removed from
+    Warning=50, Fail=0, Not Assessed=0. N/A scores the same as Pass. Excluded checks are removed from
     scoring entirely. Returns -1 if no checks are assessable.
 .PARAMETER Category
     The category name to score.
@@ -1065,9 +1065,9 @@ function Get-CategoryScore {
     param([string]$Category)
     # Score ALL non-excluded checks in category. "Not Assessed" counts as 0 points
     # but IS included in the denominator so partial completion shows honest scores.
-    # N/A and Excluded are removed from scoring entirely.
+    # N/A scores the same as Pass (100 points). Excluded are removed from scoring.
     $Checks = @($Global:Assessment.Checks | Where-Object {
-        $_.Category -eq $Category -and $_.Status -ne 'N/A' -and -not $_.Excluded
+        $_.Category -eq $Category -and -not $_.Excluded
     })
     if ($Checks.Count -eq 0) { return -1 }
     # If nothing has been assessed at all, return -1 (not scored)
@@ -1078,6 +1078,7 @@ function Get-CategoryScore {
         $W = [math]::Max(1, [int]$C.Weight)
         $Points = switch ($C.Status) {
             'Pass'         { 100 }
+            'N/A'          { 100 }  # N/A = not applicable, scores same as Pass
             'Warning'      { 50 }
             'Fail'         { 0 }
             'Not Assessed' { 0 }   # Unreviewed = 0 points, still counts in denominator
@@ -1101,8 +1102,9 @@ function Get-CategoryScore {
 #>
 function Get-OverallScore {
     # Score across ALL non-excluded checks. "Not Assessed" = 0 points in denominator.
+    # N/A scores the same as Pass (100 points).
     $AllChecks = @($Global:Assessment.Checks | Where-Object {
-        $_.Status -ne 'N/A' -and -not $_.Excluded
+        -not $_.Excluded
     })
     if ($AllChecks.Count -eq 0) { return -1 }
     $AnyAssessed = @($AllChecks | Where-Object { $_.Status -ne 'Not Assessed' }).Count
@@ -1112,6 +1114,7 @@ function Get-OverallScore {
         $W = [math]::Max(1, [int]$C.Weight)
         $Points = switch ($C.Status) {
             'Pass'         { 100 }
+            'N/A'          { 100 }
             'Warning'      { 50 }
             'Fail'         { 0 }
             'Not Assessed' { 0 }
@@ -1153,7 +1156,7 @@ function Get-DimensionScore {
     $Dim = $Global:MaturityDimensions[$DimensionKey]
     if (-not $Dim) { return -1 }
     $DimChecks = @($Global:Assessment.Checks | Where-Object {
-        $Id = $_.Id; -not $_.Excluded -and $_.Status -ne 'N/A' -and
+        $Id = $_.Id; -not $_.Excluded -and
         ($Dim.Prefixes | Where-Object { $Id -like "$_*" })
     })
     $Assessed = @($DimChecks | Where-Object { $_.Status -ne 'Not Assessed' })
@@ -1163,6 +1166,7 @@ function Get-DimensionScore {
         $W = [math]::Max(1, [int]$C.Weight)
         $Pts = switch ($C.Status) {
             'Pass'         { 100 }
+            'N/A'          { 100 }
             'Warning'      { 50 }
             'Fail'         { 0 }
             'Not Assessed' { 0 }
@@ -1817,8 +1821,8 @@ function Update-Dashboard {
     foreach ($Cat in $Categories) {
         $Score = Get-CategoryScore $Cat
         $CatChecks = @($Global:Assessment.Checks | Where-Object Category -eq $Cat)
-        $Assessed  = @($CatChecks | Where-Object { $_.Status -ne 'Not Assessed' -and $_.Status -ne 'N/A' -and -not $_.Excluded })
-        $Pass = @($Assessed | Where-Object Status -eq 'Pass').Count
+        $Assessed  = @($CatChecks | Where-Object { $_.Status -ne 'Not Assessed' -and -not $_.Excluded })
+        $Pass = @($Assessed | Where-Object { $_.Status -eq 'Pass' -or $_.Status -eq 'N/A' }).Count
         $Warn = @($Assessed | Where-Object Status -eq 'Warning').Count
         $Fail = @($Assessed | Where-Object Status -eq 'Fail').Count
         [void]$pnlScoreCards.Children.Add((New-ScoreCard -Title $Cat -Score $Score -Subtitle "$($CatChecks.Count) checks"))
@@ -2139,10 +2143,11 @@ function Update-Progress {
         $Cat = $Chk.Category
         if (-not $CatStats.ContainsKey($Cat)) { $CatStats[$Cat] = @{ Assessed = 0; Pass = 0; Warn = 0; Fail = 0; Total = 0 } }
         $CatStats[$Cat].Total++
-        if ($Chk.Status -ne 'Not Assessed' -and $Chk.Status -ne 'N/A') {
+        if ($Chk.Status -ne 'Not Assessed') {
             $CatStats[$Cat].Assessed++
             switch ($Chk.Status) {
                 'Pass'    { $CatStats[$Cat].Pass++ }
+                'N/A'     { $CatStats[$Cat].Pass++ }  # N/A counts as Pass
                 'Warning' { $CatStats[$Cat].Warn++ }
                 'Fail'    { $CatStats[$Cat].Fail++ }
             }
@@ -2226,8 +2231,8 @@ function Render-AssessmentChecks {
     foreach ($Cat in $Categories) {
         $CatChecks = @($Global:Assessment.Checks | Where-Object Category -eq $Cat)
         $CatScore = Get-CategoryScore $Cat
-        $CatAssessed = @($CatChecks | Where-Object { $_.Status -ne 'Not Assessed' -and $_.Status -ne 'N/A' -and -not $_.Excluded })
-        $CatPass = @($CatAssessed | Where-Object Status -eq 'Pass').Count
+        $CatAssessed = @($CatChecks | Where-Object { $_.Status -ne 'Not Assessed' -and -not $_.Excluded })
+        $CatPass = @($CatAssessed | Where-Object { $_.Status -eq 'Pass' -or $_.Status -eq 'N/A' }).Count
 
         # Checks container (collapsed by default, toggled via category card click)
         $ChecksContainer = New-Object System.Windows.Controls.StackPanel
@@ -2867,8 +2872,8 @@ function Update-ReportPreview {
     & $AddLine; & $AddLine
 
     # Totals
-    $Assessed = @($Global:Assessment.Checks | Where-Object { $_.Status -ne 'Not Assessed' -and $_.Status -ne 'N/A' -and -not $_.Excluded })
-    $Pass = @($Assessed | Where-Object Status -eq 'Pass').Count
+    $Assessed = @($Global:Assessment.Checks | Where-Object { $_.Status -ne 'Not Assessed' -and -not $_.Excluded })
+    $Pass = @($Assessed | Where-Object { $_.Status -eq 'Pass' -or $_.Status -eq 'N/A' }).Count
     $Warn = @($Assessed | Where-Object Status -eq 'Warning').Count
     $Fail = @($Assessed | Where-Object Status -eq 'Fail').Count
     $Excl = @($Global:Assessment.Checks | Where-Object { $_.Excluded }).Count
@@ -2888,8 +2893,8 @@ function Update-ReportPreview {
     foreach ($Cat in $Categories) {
         $Score = Get-CategoryScore $Cat
         $CatChecks = @($Global:Assessment.Checks | Where-Object Category -eq $Cat)
-        $CatAssessed = @($CatChecks | Where-Object { $_.Status -ne 'Not Assessed' -and $_.Status -ne 'N/A' -and -not $_.Excluded })
-        $CatPass = @($CatAssessed | Where-Object Status -eq 'Pass').Count
+        $CatAssessed = @($CatChecks | Where-Object { $_.Status -ne 'Not Assessed' -and -not $_.Excluded })
+        $CatPass = @($CatAssessed | Where-Object { $_.Status -eq 'Pass' -or $_.Status -eq 'N/A' }).Count
         $CatColor = if ($Score -ge 80) { $Green } elseif ($Score -ge 50) { $Orange } elseif ($Score -ge 0) { $Red } else { $Dim }
 
         & $AddText "  $($Cat.PadRight(25))" $Fg
@@ -2958,8 +2963,8 @@ function Build-HtmlReport {
     $enc  = { param($s) [System.Net.WebUtility]::HtmlEncode($s) }
     $Overall = Get-OverallScore
 
-    $Assessed  = @($Global:Assessment.Checks | Where-Object { $_.Status -ne 'Not Assessed' -and $_.Status -ne 'N/A' -and -not $_.Excluded })
-    $PassCount = @($Assessed | Where-Object Status -eq 'Pass').Count
+    $Assessed  = @($Global:Assessment.Checks | Where-Object { $_.Status -ne 'Not Assessed' -and -not $_.Excluded })
+    $PassCount = @($Assessed | Where-Object { $_.Status -eq 'Pass' -or $_.Status -eq 'N/A' }).Count
     $WarnCount = @($Assessed | Where-Object Status -eq 'Warning').Count
     $FailCount = @($Assessed | Where-Object Status -eq 'Fail').Count
     $ExclCount = @($Global:Assessment.Checks | Where-Object { $_.Excluded }).Count
@@ -3320,10 +3325,10 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);line-height:
         # Count pass/warn/fail in dimension
         $DimPrefixes = $Global:MaturityDimensions[$K].Prefixes
         $DChecks = @($Global:Assessment.Checks | Where-Object {
-            $Id = $_.Id; -not $_.Excluded -and $_.Status -ne 'N/A' -and
+            $Id = $_.Id; -not $_.Excluded -and
             ($DimPrefixes | Where-Object { $Id -like "$_*" })
         })
-        $DPass = @($DChecks | Where-Object Status -eq 'Pass').Count
+        $DPass = @($DChecks | Where-Object { $_.Status -eq 'Pass' -or $_.Status -eq 'N/A' }).Count
         $DWarn = @($DChecks | Where-Object Status -eq 'Warning').Count
         $DFail = @($DChecks | Where-Object Status -eq 'Fail').Count
 
@@ -3364,8 +3369,8 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);line-height:
     foreach ($Cat in $Categories) {
         $Score = Get-CategoryScore $Cat
         $CatChecks = @($Global:Assessment.Checks | Where-Object Category -eq $Cat)
-        $CatAssessed = @($CatChecks | Where-Object { $_.Status -ne 'Not Assessed' -and $_.Status -ne 'N/A' -and -not $_.Excluded })
-        $CatPass = @($CatAssessed | Where-Object Status -eq 'Pass').Count
+        $CatAssessed = @($CatChecks | Where-Object { $_.Status -ne 'Not Assessed' -and -not $_.Excluded })
+        $CatPass = @($CatAssessed | Where-Object { $_.Status -eq 'Pass' -or $_.Status -eq 'N/A' }).Count
         $ScoreColor = if ($Score -ge 80) { 'var(--green)' } elseif ($Score -ge 50) { 'var(--orange)' } else { 'var(--red)' }
         $DotColor = if ($Score -ge 80) { 'background:var(--green)' } elseif ($Score -ge 50) { 'background:var(--orange)' } elseif ($Score -ge 0) { 'background:var(--red)' } else { 'background:var(--text-faint)' }
         $BarWidth = if ($Score -ge 0) { $Score } else { 0 }
@@ -4171,11 +4176,11 @@ function Refresh-AssessmentList {
                 $ProgressText = "$Assessed/$Total"
                 if ($Assessed -gt 0) {
                     # Honest scoring matching dashboard: Not Assessed = 0 pts, included in denominator, weighted
-                    $ScoringChecks = @($Peek.Checks | Where-Object { $_.Status -ne 'N/A' })
+                    $ScoringChecks = @($Peek.Checks)
                     $WeightedSum = 0; $TotalWeight = 0
                     foreach ($SC in $ScoringChecks) {
                         $W = [math]::Max(1, [int]$SC.Weight)
-                        $Pts = switch ($SC.Status) { 'Pass' { 100 } 'Warning' { 50 } default { 0 } }
+                        $Pts = switch ($SC.Status) { 'Pass' { 100 } 'N/A' { 100 } 'Warning' { 50 } default { 0 } }
                         $WeightedSum += $Pts * $W; $TotalWeight += $W
                     }
                     if ($TotalWeight -gt 0) { $ScorePercent = [math]::Round($WeightedSum / $TotalWeight, 0) }
@@ -4361,8 +4366,8 @@ function Update-AchievementBadges {
 #>
 function Check-AssessmentAchievements {
     $Checks = $Global:Assessment.Checks
-    $Assessed = @($Checks | Where-Object { $_.Status -ne 'Not Assessed' -and $_.Status -ne 'N/A' })
-    $Passed = @($Assessed | Where-Object { $_.Status -eq 'Pass' })
+    $Assessed = @($Checks | Where-Object { $_.Status -ne 'Not Assessed' })
+    $Passed = @($Assessed | Where-Object { $_.Status -eq 'Pass' -or $_.Status -eq 'N/A' })
     $Failed = @($Assessed | Where-Object { $_.Status -eq 'Fail' })
 
     # Milestone: first assessment (any check assessed)
