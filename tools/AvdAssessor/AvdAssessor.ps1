@@ -4326,7 +4326,7 @@ function Get-ExecutiveSummaryEmailHtml {
         $ScoreStr  = if ($CatScore -ge 0) { "$CatScore%" } else { 'N/A' }
         $catClr    = & $sClr $CatScore
         $barPct    = if ($CatScore -ge 0) { [Math]::Max($CatScore, 2) } else { 0 }
-        $bgRow     = if ($catIdx % 2 -eq 0) { '#FFFFFF' } else { '#FAFAF9' }
+        $bgRow     = if ($catIdx % 2 -eq 0) { '#FFFFFF' } else { '#F3F2F1' }
 
         [void]$h.Append("<tr style=`"background-color:$bgRow;`">")
         [void]$h.Append("<td style=`"padding:10px 12px;font-weight:600;border-left:3px solid $catClr;`">$(& $hesc $Cat)</td>")
@@ -4353,7 +4353,7 @@ function Get-ExecutiveSummaryEmailHtml {
         $DLevel = if ($DScore -ge 0) { Get-MaturityLevel $DScore } else { '' }
         $dClr   = & $sClr $DScore
         $dBg    = if ($DScore -ge 80) { '#E6F2E6' } elseif ($DScore -ge 50) { '#FDF0E6' } elseif ($DScore -ge 0) { '#FBEAEA' } else { '#F3F2F1' }
-        $bgRow  = if ($dimIdx % 2 -eq 0) { '#FFFFFF' } else { '#FAFAF9' }
+        $bgRow  = if ($dimIdx % 2 -eq 0) { '#FFFFFF' } else { '#F3F2F1' }
         $barPct = if ($DScore -ge 0) { [Math]::Max($DScore, 2) } else { 0 }
 
         [void]$h.Append("<tr style=`"background-color:$bgRow;`">")
@@ -4449,7 +4449,7 @@ function Get-ExecutiveSummaryEmailHtml {
         foreach ($qw in $quickWins) {
             $qi++
             $rem = if ($qw.remediation) { $qw.remediation } elseif ($DefLookup[$qw.Id].remediation) { $DefLookup[$qw.Id].remediation } else { $null }
-            $qBg = if ($qi % 2 -eq 1) { '#FFFFFF' } else { '#FAFAF9' }
+            $qBg = if ($qi % 2 -eq 1) { '#FFFFFF' } else { '#F3F2F1' }
             [void]$h.Append("<tr style=`"background-color:$qBg;`">")
             [void]$h.Append("<td style=`"padding:12px 12px;width:32px;vertical-align:top;`"><table cellpadding=`"0`" cellspacing=`"0`" border=`"0`"><tr><td style=`"background-color:#0078D4;color:#FFFFFF;width:24px;height:24px;text-align:center;font-size:12px;font-weight:bold;line-height:24px;`">$qi</td></tr></table></td>")
             [void]$h.Append("<td style=`"padding:12px 12px 12px 4px;vertical-align:top;`">")
