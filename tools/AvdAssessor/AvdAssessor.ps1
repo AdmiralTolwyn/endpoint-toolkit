@@ -4333,12 +4333,12 @@ function Update-AchievementBadges {
         }
         $Badge.BorderThickness = [System.Windows.Thickness]::new(1)
         $Badge.ToolTip = "$($Def.Name): $($Def.Desc)$(if ($IsUnlocked) { "`nUnlocked: $($Global:Achievements[$Def.Id])" })"
-        $Lbl = New-Object System.Windows.Controls.TextBlock
-        $Lbl.Text = if ($IsUnlocked) { $Def.Icon } else { '?' }
-        $Lbl.FontSize = 16
-        $Lbl.HorizontalAlignment = 'Center'
-        $Lbl.VerticalAlignment = 'Center'
-        $Badge.Child = $Lbl
+        $BadgeText = New-Object System.Windows.Controls.TextBlock
+        $BadgeText.Text = if ($IsUnlocked) { $Def.Icon } else { '?' }
+        $BadgeText.FontSize = 16
+        $BadgeText.HorizontalAlignment = 'Center'
+        $BadgeText.VerticalAlignment = 'Center'
+        $Badge.Child = $BadgeText
         [void]$pnl.Children.Add($Badge)
     }
     if ($lbl) { $lbl.Text = "$Unlocked/$($Global:AchievementDefs.Count)" }
