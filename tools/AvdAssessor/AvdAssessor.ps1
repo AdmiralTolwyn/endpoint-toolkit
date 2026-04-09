@@ -4233,9 +4233,9 @@ function Get-ExecutiveSummaryEmailHtml {
     [void]$h.Append(@"
 <tr><td style="background-color:#FAFAF9;padding:32px 40px;">
 <table cellpadding="0" cellspacing="0" border="0" width="100%"><tr>
-<td width="120" style="vertical-align:middle;">
-<table cellpadding="0" cellspacing="0" border="0" align="center"><tr><td style="background-color:$ringBg;width:100px;height:100px;text-align:center;vertical-align:middle;">
-<div style="font-size:48px;font-weight:bold;color:$scoreColor;line-height:100px;">$scoreVal</div>
+<td width="140" style="vertical-align:middle;">
+<table cellpadding="0" cellspacing="0" border="0" align="center"><tr><td style="background-color:$ringBg;width:120px;height:120px;text-align:center;vertical-align:middle;">
+<div style="font-size:64px;font-weight:bold;color:$scoreColor;line-height:120px;">$scoreVal</div>
 </td></tr></table>
 </td>
 <td style="vertical-align:middle;padding-left:24px;">
@@ -5623,7 +5623,7 @@ $btnExportHtml.Add_Click({ Export-HtmlReport })
 $btnExportCsv.Add_Click({ Export-CsvReport })
 $btnExportJson.Add_Click({ Export-JsonAssessment })
 
-# Copy summary to clipboard (HTML + RTF + plain text)
+# Copy Outlook-ready HTML summary to clipboard
 $btnCopySummary.Add_Click({
     $Assessed = @($Global:Assessment.Checks | Where-Object { $_.Status -ne 'Not Assessed' }).Count
     if ($Assessed -eq 0) {
@@ -5631,9 +5631,8 @@ $btnCopySummary.Add_Click({
         return
     }
     try {
-        $plainText    = Get-ExecutiveSummary
-        $rtfText      = Get-ExecutiveSummaryRtf
         $htmlFragment = Get-ExecutiveSummaryEmailHtml
+        $plainText    = Get-ExecutiveSummary
 
         # Build CF_HTML clipboard format with byte-offset header
         $cfPre  = '<html><body><!--StartFragment-->'
@@ -5649,10 +5648,9 @@ $btnCopySummary.Add_Click({
 
         $dataObj = New-Object System.Windows.DataObject
         $dataObj.SetData('HTML Format', $cfHtml)
-        $dataObj.SetData([System.Windows.DataFormats]::Rtf, $rtfText)
         $dataObj.SetData([System.Windows.DataFormats]::UnicodeText, $plainText)
         [System.Windows.Clipboard]::SetDataObject($dataObj, $true)
-        Show-Toast 'Executive summary copied to clipboard (HTML + RTF)' -Type 'Success'
+        Show-Toast 'Outlook summary copied to clipboard — paste into email' -Type 'Success'
     } catch {
         Show-Toast "Copy failed: $($_.Exception.Message)" -Type 'Error'
     }

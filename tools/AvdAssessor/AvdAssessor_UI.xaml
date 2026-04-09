@@ -670,8 +670,8 @@
                                 <Button x:Name="btnExportJson" Content="Export JSON" Style="{StaticResource GhostButton}" Margin="0,4,0,0" HorizontalAlignment="Stretch"/>
 
                                 <Border Background="{DynamicResource ThemeBorder}" Height="1" Margin="0,12,0,12"/>
-                                <TextBlock Text="CLIPBOARD" FontSize="12" FontWeight="Bold" Foreground="{DynamicResource ThemeTextMuted}" Margin="0,0,0,8"/>
-                                <Button x:Name="btnCopySummary" Content="Copy Summary to Clipboard" Style="{StaticResource AccentButton}" HorizontalAlignment="Stretch" Height="34"/>
+                                <TextBlock Text="OUTLOOK" FontSize="12" FontWeight="Bold" Foreground="{DynamicResource ThemeTextMuted}" Margin="0,0,0,8"/>
+                                <Button x:Name="btnCopySummary" Content="&#xE89C;  Copy Summary for Outlook" Style="{StaticResource AccentButton}" HorizontalAlignment="Stretch" Height="34" FontFamily="Segoe MDL2 Assets, Segoe UI"/>
 
                                 <Border Background="{DynamicResource ThemeBorder}" Height="1" Margin="0,16,0,16"/>
                                 <TextBlock Text="SCORE SUMMARY" FontSize="12" FontWeight="Bold" Foreground="{DynamicResource ThemeTextMuted}" Margin="0,0,0,8"/>
