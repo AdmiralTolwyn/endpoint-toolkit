@@ -1,0 +1,7 @@
+*.bak
+ANROMAN-*_baseline_*.json
+reports/
+user_prefs.json
+assessments/
+_backups/
+_autosave.json
