@@ -669,6 +669,10 @@
                                 <Button x:Name="btnExportCsv" Content="Export CSV" Style="{StaticResource GhostButton}" Margin="0,6,0,0" HorizontalAlignment="Stretch"/>
                                 <Button x:Name="btnExportJson" Content="Export JSON" Style="{StaticResource GhostButton}" Margin="0,4,0,0" HorizontalAlignment="Stretch"/>
 
+                                <Border Background="{DynamicResource ThemeBorder}" Height="1" Margin="0,12,0,12"/>
+                                <TextBlock Text="CLIPBOARD" FontSize="12" FontWeight="Bold" Foreground="{DynamicResource ThemeTextMuted}" Margin="0,0,0,8"/>
+                                <Button x:Name="btnCopySummary" Content="Copy Summary to Clipboard" Style="{StaticResource AccentButton}" HorizontalAlignment="Stretch" Height="34"/>
+
                                 <Border Background="{DynamicResource ThemeBorder}" Height="1" Margin="0,16,0,16"/>
                                 <TextBlock Text="SCORE SUMMARY" FontSize="12" FontWeight="Bold" Foreground="{DynamicResource ThemeTextMuted}" Margin="0,0,0,8"/>
                                 <TextBlock x:Name="lblOverallScore" Text="—%" FontSize="32" FontWeight="Bold" Foreground="{DynamicResource ThemeAccent}" HorizontalAlignment="Center" Margin="0,0,0,4"/>

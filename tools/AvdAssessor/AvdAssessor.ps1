@@ -332,6 +332,7 @@ $txtFindingsSearch = $Window.FindName("txtFindingsSearch")
 $btnExportHtml     = $Window.FindName("btnExportHtml")
 $btnExportCsv      = $Window.FindName("btnExportCsv")
 $btnExportJson     = $Window.FindName("btnExportJson")
+$btnCopySummary    = $Window.FindName("btnCopySummary")
 $lblOverallScore   = $Window.FindName("lblOverallScore")
 $lblOverallLabel   = $Window.FindName("lblOverallLabel")
 
@@ -3776,6 +3777,418 @@ for (var i = 0; i < cols.length; i++) {
     return $html.ToString()
 }
 
+# ===============================================================================
+# SECTION 12b: EXECUTIVE SUMMARY (Clipboard)
+# Generates plain-text and richly formatted RTF executive summaries from the
+# current assessment data. The RTF version pastes beautifully into Outlook,
+# Word, Teams, and OneNote. Both formats are placed on the clipboard via a
+# DataObject so the receiving app picks the richest format it supports.
+# ===============================================================================
+
+function Get-ExecutiveSummary {
+    <#
+    .SYNOPSIS  Generates a plain-text executive summary from the current assessment.
+    #>
+    $Checks   = $Global:Assessment.Checks
+    $Score    = Get-OverallScore
+    $Maturity = Get-MaturityLevel $Score
+
+    $Total    = $Checks.Count
+    $Assessed = @($Checks | Where-Object { $_.Status -ne 'Not Assessed' }).Count
+    $Pass     = @($Checks | Where-Object { $_.Status -eq 'Pass' }).Count
+    $Fail     = @($Checks | Where-Object { $_.Status -eq 'Fail' }).Count
+    $Warn     = @($Checks | Where-Object { $_.Status -eq 'Warning' }).Count
+    $NA       = @($Checks | Where-Object { $_.Status -eq 'N/A' }).Count
+
+    # Build definition lookup for effort/remediation (not always on check objects)
+    $DefLookup = @{}
+    foreach ($Def in $Global:CheckDefinitions) { $DefLookup[$Def.id] = $Def }
+
+    $sb = [System.Text.StringBuilder]::new()
+    [void]$sb.AppendLine('AVD Assessor Executive Summary')
+    [void]$sb.AppendLine('==============================')
+    [void]$sb.AppendLine("Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm')")
+    [void]$sb.AppendLine('')
+
+    # ── Assessment Information ──
+    [void]$sb.AppendLine('ASSESSMENT INFORMATION')
+    [void]$sb.AppendLine('----------------------')
+    [void]$sb.AppendLine("  Customer:      $($Global:Assessment.CustomerName)")
+    [void]$sb.AppendLine("  Assessor:      $($Global:Assessment.AssessorName)")
+    [void]$sb.AppendLine("  Date:          $($Global:Assessment.Date)")
+    if ($Global:Assessment.Discovery) {
+        $D = $Global:Assessment.Discovery
+        if ($D.Subscriptions) {
+            [void]$sb.AppendLine("  Subscriptions: $($D.Subscriptions.Count)")
+            foreach ($Sub in $D.Subscriptions) {
+                [void]$sb.AppendLine("                 $($Sub.Name) ($($Sub.Id))")
+            }
+        }
+        if ($D.Inventory) {
+            [void]$sb.AppendLine("  Host Pools:    $($D.Inventory.HostPools.Count)")
+            [void]$sb.AppendLine("  Session Hosts: $($D.Inventory.SessionHosts.Count)")
+        }
+    }
+    [void]$sb.AppendLine('')
+
+    # ── Score Summary ──
+    [void]$sb.AppendLine('SCORE SUMMARY')
+    [void]$sb.AppendLine('-------------')
+    [void]$sb.AppendLine("  Overall Score:    $(if ($Score -ge 0) { "$Score/100" } else { 'N/A' })")
+    [void]$sb.AppendLine("  Maturity Level:   $Maturity")
+    [void]$sb.AppendLine("  Total Checks:     $Total ($Assessed assessed)")
+    [void]$sb.AppendLine("  Pass: $Pass  |  Fail: $Fail  |  Warning: $Warn  |  N/A: $NA")
+    [void]$sb.AppendLine('')
+
+    # ── Category Scores ──
+    [void]$sb.AppendLine('CATEGORY SCORES')
+    [void]$sb.AppendLine('---------------')
+    foreach ($Cat in (Get-Categories)) {
+        $CatScore  = Get-CategoryScore $Cat
+        $CatChecks = @($Checks | Where-Object { $_.Category -eq $Cat })
+        $CatFail   = @($CatChecks | Where-Object { $_.Status -eq 'Fail' }).Count
+        $CatPass   = @($CatChecks | Where-Object { $_.Status -eq 'Pass' }).Count
+        $ScoreStr  = if ($CatScore -ge 0) { "$CatScore%" } else { 'N/A' }
+        [void]$sb.AppendLine("  $($Cat.PadRight(32)) $($ScoreStr.PadLeft(5))   ($CatPass pass, $CatFail fail)")
+    }
+    [void]$sb.AppendLine('')
+
+    # ── Maturity Dimensions ──
+    [void]$sb.AppendLine('MATURITY DIMENSIONS')
+    [void]$sb.AppendLine('-------------------')
+    foreach ($Key in $Global:MaturityDimensions.Keys) {
+        $Dim   = $Global:MaturityDimensions[$Key]
+        $DScore = Get-DimensionScore $Key
+        $DStr   = if ($DScore -ge 0) { "$DScore%" } else { 'N/A' }
+        [void]$sb.AppendLine("  $($Dim.Label.PadRight(28)) $($DStr.PadLeft(5))")
+    }
+    $Composite = Get-CompositeMaturityScore
+    if ($Composite -ge 0) {
+        [void]$sb.AppendLine("  $('Composite'.PadRight(28)) $("$Composite%".PadLeft(5))")
+    }
+    [void]$sb.AppendLine('')
+
+    # ── Key Passes (Critical/High) ──
+    $strongChecks = @($Checks | Where-Object { $_.Status -eq 'Pass' -and $_.Severity -in @('Critical','High') })
+    if ($strongChecks.Count -gt 0) {
+        [void]$sb.AppendLine('KEY PASSES (Critical/High checks met)')
+        [void]$sb.AppendLine('--------------------------------------')
+        $grouped = $strongChecks | Group-Object Category
+        foreach ($g in ($grouped | Sort-Object Count -Descending)) {
+            $items = @($g.Group | Select-Object -First 5 | ForEach-Object { $_.Name })
+            [void]$sb.AppendLine("  $($g.Name) ($($g.Count)):")
+            foreach ($item in $items) {
+                [void]$sb.AppendLine("    + $item")
+            }
+            if ($g.Count -gt 5) { [void]$sb.AppendLine("    + ... and $($g.Count - 5) more") }
+        }
+        [void]$sb.AppendLine('')
+    }
+
+    # ── Critical & High Failures ──
+    $critFails = @($Checks | Where-Object {
+        $_.Status -eq 'Fail' -and $_.Severity -in @('Critical','High')
+    } | Sort-Object @{E={if($_.Severity -eq 'Critical'){0}else{1}}}, Id)
+    if ($critFails.Count -gt 0) {
+        [void]$sb.AppendLine("CRITICAL & HIGH FAILURES ($($critFails.Count))")
+        [void]$sb.AppendLine('---------------------------------------------')
+        foreach ($f in $critFails) {
+            [void]$sb.AppendLine("  [$($f.Severity.ToUpper().PadRight(8))] $($f.Id)  $($f.Name)")
+            if ($f.Details) {
+                $detailStr = if ($f.Details.Length -gt 80) { $f.Details.Substring(0,80) + '...' } else { $f.Details }
+                [void]$sb.AppendLine("             $detailStr")
+            }
+        }
+        [void]$sb.AppendLine('')
+    }
+
+    # ── Medium/Low Failures (count only) ──
+    $medLowFails = @($Checks | Where-Object { $_.Status -eq 'Fail' -and $_.Severity -in @('Medium','Low') })
+    if ($medLowFails.Count -gt 0) {
+        $medCount = @($medLowFails | Where-Object { $_.Severity -eq 'Medium' }).Count
+        $lowCount = @($medLowFails | Where-Object { $_.Severity -eq 'Low' }).Count
+        [void]$sb.AppendLine("OTHER FAILURES: $medCount Medium, $lowCount Low")
+        [void]$sb.AppendLine('')
+    }
+
+    # ── Quick Win Remediation Priority ──
+    $quickWins = @($Checks | Where-Object {
+        $_.Status -eq 'Fail' -and ($DefLookup[$_.Id].effort -eq 'Quick Win' -or $_.effort -eq 'Quick Win')
+    } | Sort-Object @{E={switch($_.Severity){'Critical'{0}'High'{1}'Medium'{2}default{3}}}}, Id | Select-Object -First 10)
+    if ($quickWins.Count -gt 0) {
+        [void]$sb.AppendLine("QUICK WIN REMEDIATION (top $($quickWins.Count))")
+        [void]$sb.AppendLine('----------------------------------------------')
+        $qi = 0
+        foreach ($qw in $quickWins) {
+            $qi++
+            [void]$sb.AppendLine("  $qi. [$($qw.Severity)] $($qw.Name) ($($qw.Id))")
+            $rem = if ($qw.remediation) { $qw.remediation } elseif ($DefLookup[$qw.Id].remediation) { $DefLookup[$qw.Id].remediation } else { $null }
+            if ($rem) {
+                $remText = if ($rem.Length -gt 100) { $rem.Substring(0,100) + '...' } else { $rem }
+                [void]$sb.AppendLine("     $remText")
+            }
+        }
+        [void]$sb.AppendLine('')
+    }
+
+    # ── Scoring Methodology ──
+    [void]$sb.AppendLine('SCORING METHODOLOGY')
+    [void]$sb.AppendLine('-------------------')
+    [void]$sb.AppendLine('  Score = weighted average: Critical(5x), High(4x), Medium(3x), Low(2x)')
+    [void]$sb.AppendLine('  Pass/N/A = 100pts, Warning = 50pts, Fail/Not Assessed = 0pts')
+    [void]$sb.AppendLine('  Maturity: Initial(0-34), Developing(35-54), Defined(55-74), Managed(75-89), Optimized(90+)')
+
+    return $sb.ToString()
+}
+
+function Get-ExecutiveSummaryRtf {
+    <#
+    .SYNOPSIS  Generates a richly formatted RTF executive summary; pastes into Outlook/Word/Teams.
+    #>
+    $Checks   = $Global:Assessment.Checks
+    $Score    = Get-OverallScore
+    $Maturity = Get-MaturityLevel $Score
+
+    $Total    = $Checks.Count
+    $Assessed = @($Checks | Where-Object { $_.Status -ne 'Not Assessed' }).Count
+    $Pass     = @($Checks | Where-Object { $_.Status -eq 'Pass' }).Count
+    $Fail     = @($Checks | Where-Object { $_.Status -eq 'Fail' }).Count
+    $Warn     = @($Checks | Where-Object { $_.Status -eq 'Warning' }).Count
+    $NA       = @($Checks | Where-Object { $_.Status -eq 'N/A' }).Count
+
+    $DefLookup = @{}
+    foreach ($Def in $Global:CheckDefinitions) { $DefLookup[$Def.id] = $Def }
+
+    # RTF escape helper
+    $esc = { param($t) if (-not $t) { return '' }; "$t".Replace('\','\\').Replace('{','\{').Replace('}','\}') }
+
+    # Color table (1-based): 1=accent blue, 2=green, 3=red, 4=orange, 5=gray,
+    # 6=light bg, 7=white, 8=dark blue, 9=amber, 10=dark text
+    $rtf = [System.Text.StringBuilder]::new()
+    [void]$rtf.Append('{\rtf1\ansi\deff0')
+    [void]$rtf.Append('{\fonttbl{\f0\fswiss\fcharset0 Segoe UI;}{\f1\fmodern\fcharset0 Cascadia Mono;}}')
+    [void]$rtf.Append('{\colortbl;')
+    [void]$rtf.Append('\red0\green120\blue212;')    # 1 accent blue
+    [void]$rtf.Append('\red16\green124\blue16;')     # 2 green
+    [void]$rtf.Append('\red209\green52\blue56;')     # 3 red
+    [void]$rtf.Append('\red202\green80\blue16;')     # 4 orange
+    [void]$rtf.Append('\red138\green136\blue134;')   # 5 gray
+    [void]$rtf.Append('\red243\green242\blue241;')   # 6 light bg
+    [void]$rtf.Append('\red255\green255\blue255;')   # 7 white
+    [void]$rtf.Append('\red0\green99\blue177;')      # 8 dark blue
+    [void]$rtf.Append('\red212\green140\blue0;')     # 9 amber
+    [void]$rtf.Append('\red50\green50\blue50;')      # 10 dark text
+    [void]$rtf.Append('}')
+    [void]$rtf.Append('\f0\fs20\cf10 ')
+
+    # ── Title ──
+    [void]$rtf.Append('\pard\sb0\sa120\qc{\f0\fs36\b\cf1 AVD Assessor Executive Summary}\par')
+    [void]$rtf.Append("{\f0\fs18\cf5 Generated $(Get-Date -Format 'yyyy-MM-dd HH:mm')  \u8226  Azure Virtual Desktop Assessment}\par")
+    [void]$rtf.Append('\pard\sb40\sa120{\f0\fs4\cf1\brdrb\brdrs\brdrw10\brsp40 \par}')
+
+    # ── Score Hero ──
+    [void]$rtf.Append('\pard\sb0\sa60\qc')
+    $scoreStr = if ($Score -ge 0) { "$Score/100" } else { 'N/A' }
+    $scoreClr = if ($Score -ge 75) { '\cf2' } elseif ($Score -ge 50) { '\cf4' } elseif ($Score -ge 0) { '\cf3' } else { '\cf5' }
+    [void]$rtf.Append("{{\f0\fs56\b$scoreClr $scoreStr}  }")
+    [void]$rtf.Append('{\f0\fs20\cf5 Overall Score}')
+    [void]$rtf.Append('{\f0\fs28  \u8195  }')
+    [void]$rtf.Append("{{\f0\fs28\b\cf8 $Maturity}  }")
+    [void]$rtf.Append('{\f0\fs20\cf5 Maturity}\par')
+
+    # Status counts
+    [void]$rtf.Append('\pard\sb0\sa80\qc{\f0\fs18 ')
+    [void]$rtf.Append("{\cf2\b $Pass} Pass   ")
+    [void]$rtf.Append("{\cf3\b $Fail} Fail   ")
+    [void]$rtf.Append("{\cf4\b $Warn} Warning   ")
+    [void]$rtf.Append("{\cf5 $NA N/A}")
+    [void]$rtf.Append("   \u8226  $Total total, $Assessed assessed")
+    [void]$rtf.Append('}\par')
+
+    # Section header helper
+    $SectionHeader = {
+        param($title, $icon)
+        [void]$rtf.Append("\pard\sb200\sa80\keepn{\f0\fs24\b\cf1 $icon  $(& $esc $title)}\par")
+        [void]$rtf.Append('\pard\sb0\sa60{\f0\fs2\cf5\brdrb\brdrs\brdrw5\brsp20 \par}')
+    }
+
+    # ═══════════════ ASSESSMENT INFORMATION ═══════════════
+    & $SectionHeader 'Assessment Information' '\u9889'
+    [void]$rtf.Append('\pard\sb0\sa0{\trowd\trgaph80')
+    [void]$rtf.Append('\clcbpat6\cellx2600\cellx8500')
+    $infoRows = [System.Collections.ArrayList]::new()
+    [void]$infoRows.Add(@('Customer',  $Global:Assessment.CustomerName))
+    [void]$infoRows.Add(@('Assessor',  $Global:Assessment.AssessorName))
+    [void]$infoRows.Add(@('Date',      $Global:Assessment.Date))
+    if ($Global:Assessment.Discovery) {
+        $D = $Global:Assessment.Discovery
+        if ($D.Subscriptions) {
+            $subNames = ($D.Subscriptions | ForEach-Object { $_.Name }) -join ', '
+            [void]$infoRows.Add(@('Subscriptions', "$($D.Subscriptions.Count) ($subNames)"))
+        }
+        if ($D.Inventory) {
+            [void]$infoRows.Add(@('Host Pools',    "$($D.Inventory.HostPools.Count)"))
+            [void]$infoRows.Add(@('Session Hosts', "$($D.Inventory.SessionHosts.Count)"))
+            [void]$infoRows.Add(@('App Groups',    "$($D.Inventory.AppGroups.Count)"))
+            [void]$infoRows.Add(@('Workspaces',    "$($D.Inventory.Workspaces.Count)"))
+        }
+    }
+    foreach ($row in $infoRows) {
+        [void]$rtf.Append('\trowd\trgaph80\clcbpat6\cellx2600\cellx8500')
+        [void]$rtf.Append("\pard\intbl\sb20\sa20{\f0\fs18\b\cf8  $(& $esc $row[0])}\cell")
+        [void]$rtf.Append("\pard\intbl\sb20\sa20{\f0\fs18\cf10  $(& $esc $row[1])}\cell")
+        [void]$rtf.Append('\row')
+    }
+    [void]$rtf.Append('}')
+
+    # ═══════════════ CATEGORY SCORES ═══════════════
+    & $SectionHeader 'Category Scores' '\u9733'
+    [void]$rtf.Append('\pard\sb0\sa0{\trowd\trgaph80')
+    [void]$rtf.Append('\clcbpat1\cellx4200\clcbpat1\cellx5400\clcbpat1\cellx6400\clcbpat1\cellx7400\clcbpat1\cellx8500')
+    [void]$rtf.Append('\pard\intbl\sb30\sa30{\f0\fs17\b\cf7  Category}\cell')
+    [void]$rtf.Append('\pard\intbl\sb30\sa30\qc{\f0\fs17\b\cf7 Score}\cell')
+    [void]$rtf.Append('\pard\intbl\sb30\sa30\qc{\f0\fs17\b\cf7 Pass}\cell')
+    [void]$rtf.Append('\pard\intbl\sb30\sa30\qc{\f0\fs17\b\cf7 Fail}\cell')
+    [void]$rtf.Append('\pard\intbl\sb30\sa30\qc{\f0\fs17\b\cf7 Total}\cell')
+    [void]$rtf.Append('\row')
+    $catIdx = 0
+    foreach ($Cat in (Get-Categories)) {
+        $CatScore  = Get-CategoryScore $Cat
+        $CatChecks = @($Checks | Where-Object { $_.Category -eq $Cat })
+        $CatTotal  = $CatChecks.Count
+        $CatFail   = @($CatChecks | Where-Object { $_.Status -eq 'Fail' }).Count
+        $CatPass   = @($CatChecks | Where-Object { $_.Status -eq 'Pass' }).Count
+        $ScoreStr  = if ($CatScore -ge 0) { "$CatScore%" } else { 'N/A' }
+        $scoreClr  = if ($CatScore -ge 80) { '\cf2' } elseif ($CatScore -ge 50) { '\cf4' } elseif ($CatScore -ge 0) { '\cf3' } else { '\cf5' }
+        $bgPat     = if ($catIdx % 2 -eq 0) { '\clcbpat6' } else { '' }
+        [void]$rtf.Append("\trowd\trgaph80${bgPat}\cellx4200${bgPat}\cellx5400${bgPat}\cellx6400${bgPat}\cellx7400${bgPat}\cellx8500")
+        [void]$rtf.Append("\pard\intbl\sb20\sa20{\f0\fs18\cf10  $(& $esc $Cat)}\cell")
+        [void]$rtf.Append("\pard\intbl\sb20\sa20\qc{\f0\fs18\b$scoreClr $ScoreStr}\cell")
+        [void]$rtf.Append("\pard\intbl\sb20\sa20\qc{\f0\fs18\cf2 $CatPass}\cell")
+        [void]$rtf.Append("\pard\intbl\sb20\sa20\qc{\f0\fs18\cf3 $CatFail}\cell")
+        [void]$rtf.Append("\pard\intbl\sb20\sa20\qc{\f0\fs18\cf5 $CatTotal}\cell")
+        [void]$rtf.Append('\row')
+        $catIdx++
+    }
+    [void]$rtf.Append('}')
+
+    # ═══════════════ MATURITY DIMENSIONS ═══════════════
+    & $SectionHeader 'Maturity Dimensions' '\u9881'
+    [void]$rtf.Append('\pard\sb0\sa0{\trowd\trgaph80')
+    [void]$rtf.Append('\clcbpat1\cellx5400\clcbpat1\cellx6600\clcbpat1\cellx8500')
+    [void]$rtf.Append('\pard\intbl\sb30\sa30{\f0\fs17\b\cf7  Dimension}\cell')
+    [void]$rtf.Append('\pard\intbl\sb30\sa30\qc{\f0\fs17\b\cf7 Score}\cell')
+    [void]$rtf.Append('\pard\intbl\sb30\sa30\qc{\f0\fs17\b\cf7 Level}\cell')
+    [void]$rtf.Append('\row')
+    $dimIdx = 0
+    foreach ($Key in $Global:MaturityDimensions.Keys) {
+        $Dim   = $Global:MaturityDimensions[$Key]
+        $DScore = Get-DimensionScore $Key
+        $DStr   = if ($DScore -ge 0) { "$DScore%" } else { 'N/A' }
+        $DLevel = if ($DScore -ge 0) { Get-MaturityLevel $DScore } else { '' }
+        $dClr   = if ($DScore -ge 80) { '\cf2' } elseif ($DScore -ge 50) { '\cf4' } elseif ($DScore -ge 0) { '\cf3' } else { '\cf5' }
+        $bgPat  = if ($dimIdx % 2 -eq 0) { '\clcbpat6' } else { '' }
+        [void]$rtf.Append("\trowd\trgaph80${bgPat}\cellx5400${bgPat}\cellx6600${bgPat}\cellx8500")
+        [void]$rtf.Append("\pard\intbl\sb20\sa20{\f0\fs18\cf10  $(& $esc $Dim.Label)}\cell")
+        [void]$rtf.Append("\pard\intbl\sb20\sa20\qc{\f0\fs18\b$dClr $DStr}\cell")
+        [void]$rtf.Append("\pard\intbl\sb20\sa20\qc{\f0\fs17\cf8 $DLevel}\cell")
+        [void]$rtf.Append('\row')
+        $dimIdx++
+    }
+    $Composite = Get-CompositeMaturityScore
+    if ($Composite -ge 0) {
+        $cClr = if ($Composite -ge 80) { '\cf2' } elseif ($Composite -ge 50) { '\cf4' } else { '\cf3' }
+        [void]$rtf.Append("\trowd\trgaph80\clcbpat6\cellx5400\clcbpat6\cellx6600\clcbpat6\cellx8500")
+        [void]$rtf.Append("\pard\intbl\sb20\sa20{\f0\fs18\b\cf1  Composite}\cell")
+        [void]$rtf.Append("\pard\intbl\sb20\sa20\qc{\f0\fs18\b$cClr $Composite%}\cell")
+        [void]$rtf.Append("\pard\intbl\sb20\sa20\qc{\f0\fs17\b\cf8 $(Get-MaturityLevel $Composite)}\cell")
+        [void]$rtf.Append('\row')
+    }
+    [void]$rtf.Append('}')
+
+    # ═══════════════ KEY PASSES ═══════════════
+    $strongChecks = @($Checks | Where-Object { $_.Status -eq 'Pass' -and $_.Severity -in @('Critical','High') })
+    if ($strongChecks.Count -gt 0) {
+        & $SectionHeader "Key Passes ($($strongChecks.Count) Critical/High)" '\u10004'
+        $grouped = $strongChecks | Group-Object Category | Sort-Object Count -Descending
+        foreach ($g in $grouped) {
+            [void]$rtf.Append("\pard\sb60\sa20\li200{\f0\fs18\b\cf8 $(& $esc $g.Name) ($($g.Count))}\par")
+            $items = @($g.Group | Select-Object -First 5)
+            foreach ($item in $items) {
+                [void]$rtf.Append("\pard\sb0\sa0\li400{\f0\fs17\cf2 \u10003  }{\f0\fs17\cf10 $(& $esc $item.Name)}\par")
+            }
+            if ($g.Count -gt 5) {
+                [void]$rtf.Append("\pard\sb0\sa0\li400{\f0\fs17\i\cf5 \u8230  and $($g.Count - 5) more}\par")
+            }
+        }
+    }
+
+    # ═══════════════ CRITICAL & HIGH FAILURES ═══════════════
+    $critFails = @($Checks | Where-Object {
+        $_.Status -eq 'Fail' -and $_.Severity -in @('Critical','High')
+    } | Sort-Object @{E={if($_.Severity -eq 'Critical'){0}else{1}}}, Id)
+    if ($critFails.Count -gt 0) {
+        & $SectionHeader "Critical & High Failures ($($critFails.Count))" '\u9888'
+        [void]$rtf.Append('\pard\sb0\sa0{\trowd\trgaph80')
+        [void]$rtf.Append('\clcbpat1\cellx1200\clcbpat1\cellx2200\clcbpat1\cellx5600\clcbpat1\cellx8500')
+        [void]$rtf.Append('\pard\intbl\sb30\sa30{\f0\fs17\b\cf7  Sev}\cell')
+        [void]$rtf.Append('\pard\intbl\sb30\sa30{\f0\fs17\b\cf7  ID}\cell')
+        [void]$rtf.Append('\pard\intbl\sb30\sa30{\f0\fs17\b\cf7  Check Name}\cell')
+        [void]$rtf.Append('\pard\intbl\sb30\sa30{\f0\fs17\b\cf7  Details}\cell')
+        [void]$rtf.Append('\row')
+        $fi = 0
+        foreach ($f in $critFails) {
+            $sevClr  = if ($f.Severity -eq 'Critical') { '\cf3' } else { '\cf4' }
+            $bgPat   = if ($fi % 2 -eq 0) { '\clcbpat6' } else { '' }
+            $detVal  = if ($f.Details) { $d = & $esc "$($f.Details)"; if ($d.Length -gt 60) { $d.Substring(0,60) + '...' } else { $d } } else { '\u8212' }
+            [void]$rtf.Append("\trowd\trgaph80${bgPat}\cellx1200${bgPat}\cellx2200${bgPat}\cellx5600${bgPat}\cellx8500")
+            [void]$rtf.Append("\pard\intbl\sb20\sa20{\f0\fs17\b$sevClr  $($f.Severity)}\cell")
+            [void]$rtf.Append("\pard\intbl\sb20\sa20{\f1\fs16\cf8  $($f.Id)}\cell")
+            [void]$rtf.Append("\pard\intbl\sb20\sa20{\f0\fs17\cf10  $(& $esc $f.Name)}\cell")
+            [void]$rtf.Append("\pard\intbl\sb20\sa20{\f1\fs15\cf5  $detVal}\cell")
+            [void]$rtf.Append('\row')
+            $fi++
+        }
+        [void]$rtf.Append('}')
+    }
+
+    # ═══════════════ OTHER FAILURES ═══════════════
+    $medLowFails = @($Checks | Where-Object { $_.Status -eq 'Fail' -and $_.Severity -in @('Medium','Low') })
+    if ($medLowFails.Count -gt 0) {
+        $medCount = @($medLowFails | Where-Object { $_.Severity -eq 'Medium' }).Count
+        $lowCount = @($medLowFails | Where-Object { $_.Severity -eq 'Low' }).Count
+        [void]$rtf.Append("\pard\sb120\sa60{\f0\fs18\cf5 Additional failures: {\b\cf4 $medCount} Medium, {\b\cf5 $lowCount} Low}\par")
+    }
+
+    # ═══════════════ QUICK WIN REMEDIATION ═══════════════
+    $quickWins = @($Checks | Where-Object {
+        $_.Status -eq 'Fail' -and ($DefLookup[$_.Id].effort -eq 'Quick Win' -or $_.effort -eq 'Quick Win')
+    } | Sort-Object @{E={switch($_.Severity){'Critical'{0}'High'{1}'Medium'{2}default{3}}}}, Id | Select-Object -First 10)
+    if ($quickWins.Count -gt 0) {
+        & $SectionHeader "Quick Win Remediation (top $($quickWins.Count))" '\u9889'
+        $qi = 0
+        foreach ($qw in $quickWins) {
+            $qi++
+            $sevClr = switch ($qw.Severity) { 'Critical' { '\cf3' } 'High' { '\cf4' } default { '\cf5' } }
+            [void]$rtf.Append("\pard\sb40\sa0\li200{\f0\fs18\b\cf10 ${qi}. }{\f0\fs17$sevClr [$($qw.Severity)]} {\f0\fs18\cf10 $(& $esc $qw.Name)} {\f1\fs15\cf5 ($($qw.Id))}\par")
+            $rem = if ($qw.remediation) { $qw.remediation } elseif ($DefLookup[$qw.Id].remediation) { $DefLookup[$qw.Id].remediation } else { $null }
+            if ($rem) {
+                $remText = if ($rem.Length -gt 120) { $rem.Substring(0,120) + '...' } else { $rem }
+                [void]$rtf.Append("\pard\sb0\sa20\li400{\f0\fs16\i\cf5 $(& $esc $remText)}\par")
+            }
+        }
+    }
+
+    # ═══════════════ SCORING METHODOLOGY ═══════════════
+    [void]$rtf.Append('\pard\sb200\sa60{\f0\fs2\cf5\brdrb\brdrs\brdrw5\brsp20 \par}')
+    [void]$rtf.Append('\pard\sb40\sa20{\f0\fs16\i\cf5 Scoring: Weighted average \u8212 Critical(5\u215), High(4\u215), Medium(3\u215), Low(2\u215). ')
+    [void]$rtf.Append('Pass/N\u8725A = 100pts, Warning = 50pts, Fail = 0pts. ')
+    [void]$rtf.Append('Maturity: Initial(0\u821234), Developing(35\u821254), Defined(55\u821274), Managed(75\u821289), Optimized(90+).}\par')
+
+    [void]$rtf.Append('}')
+    return $rtf.ToString()
+}
+
 <#
 .SYNOPSIS
     Exports the assessment as a standalone HTML report via SaveFileDialog.
@@ -4820,6 +5233,26 @@ $lstSavedAssessments.Add_MouseDoubleClick({
 $btnExportHtml.Add_Click({ Export-HtmlReport })
 $btnExportCsv.Add_Click({ Export-CsvReport })
 $btnExportJson.Add_Click({ Export-JsonAssessment })
+
+# Copy summary to clipboard (RTF + plain text)
+$btnCopySummary.Add_Click({
+    $Assessed = @($Global:Assessment.Checks | Where-Object { $_.Status -ne 'Not Assessed' }).Count
+    if ($Assessed -eq 0) {
+        Show-Toast 'No assessed checks — import discovery or assess checks first' -Type 'Warning'
+        return
+    }
+    try {
+        $plainText = Get-ExecutiveSummary
+        $rtfText   = Get-ExecutiveSummaryRtf
+        $dataObj   = New-Object System.Windows.DataObject
+        $dataObj.SetData([System.Windows.DataFormats]::Rtf, $rtfText)
+        $dataObj.SetData([System.Windows.DataFormats]::UnicodeText, $plainText)
+        [System.Windows.Clipboard]::SetDataObject($dataObj, $true)
+        Show-Toast 'Executive summary copied to clipboard (rich text)' -Type 'Success'
+    } catch {
+        Show-Toast "Copy failed: $($_.Exception.Message)" -Type 'Error'
+    }
+})
 
 # Filter changes trigger re-render
 $cmbFilterSeverity.Add_SelectionChanged({ Render-Findings })
