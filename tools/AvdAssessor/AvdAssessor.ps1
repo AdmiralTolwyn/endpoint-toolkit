@@ -2627,6 +2627,15 @@ function Render-AssessmentChecks {
                 if ($Target) {
                     $Target.Status = $NewStatus
                     $Target.Source = 'Manual'
+                    # Repaint the left accent bar to reflect new status
+                    $Bar = $this.Parent.Parent.Parent.Children[0]
+                    $BarColor = switch ($NewStatus) {
+                        'Pass'    { if ($Global:IsLightMode) { '#15803D' } else { '#00C853' } }
+                        'Warning' { if ($Global:IsLightMode) { '#C2410C' } else { '#F59E0B' } }
+                        'Fail'    { if ($Global:IsLightMode) { '#DC2626' } else { '#FF5000' } }
+                        default   { if ($Global:IsLightMode) { '#C0C0C4' } else { '#444448' } }
+                    }
+                    $Bar.Background = $Global:CachedBC.ConvertFromString($BarColor)
                     Update-Progress
                     AutoSave-Assessment
                 }
