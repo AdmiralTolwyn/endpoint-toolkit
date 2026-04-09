@@ -4011,7 +4011,7 @@ function Get-ExecutiveSummary {
 
 function Get-ExecutiveSummaryRtf {
     <#
-    .SYNOPSIS  Generates a richly formatted RTF executive summary with Microsoft Fluent branding.
+    .SYNOPSIS  Clean, Robinhood-inspired RTF executive summary for Outlook/Word/Teams.
     #>
     $Checks   = $Global:Assessment.Checks
     $Score    = Get-OverallScore
@@ -4027,293 +4027,142 @@ function Get-ExecutiveSummaryRtf {
     $DefLookup = @{}
     foreach ($Def in $Global:CheckDefinitions) { $DefLookup[$Def.id] = $Def }
 
-    # RTF escape helper
     $esc = { param($t) if (-not $t) { return '' }; "$t".Replace('\','\\').Replace('{','\{').Replace('}','\}') }
 
-    # Block bar helper — builds a colored bar using Unicode block characters
-    # E.g. Score=74, max 20 chars: 14 blocks filled, 6 light
-    $makeBar = {
-        param([int]$pct, [string]$fillCf, [int]$maxChars)
-        if ($pct -lt 0) { $pct = 0 }
-        $filled = [math]::Round($pct / 100 * $maxChars)
-        $empty  = $maxChars - $filled
-        $bar = ''
-        if ($filled -gt 0) { $bar += "{\f1\fs14$fillCf " + ('\u9608' * $filled) + '}' }
-        if ($empty -gt 0)  { $bar += "{\f1\fs14\cf6 " + ('\u9608' * $empty) + '}' }
-        return $bar
-    }
-
-    # Microsoft Fluent Design color palette (1-based)
     $rtf = [System.Text.StringBuilder]::new()
     [void]$rtf.Append('{\rtf1\ansi\deff0')
     [void]$rtf.Append('{\fonttbl{\f0\fswiss\fcharset0 Segoe UI;}{\f1\fmodern\fcharset0 Cascadia Mono;}}')
     [void]$rtf.Append('{\colortbl;')
-    [void]$rtf.Append('\red0\green120\blue212;')      #  1 Microsoft Blue (#0078D4)
-    [void]$rtf.Append('\red16\green124\blue16;')       #  2 Fluent Green (#107C10)
-    [void]$rtf.Append('\red209\green52\blue56;')       #  3 Fluent Red (#D13438)
-    [void]$rtf.Append('\red202\green80\blue16;')       #  4 Fluent Orange (#CA5010)
-    [void]$rtf.Append('\red138\green136\blue134;')     #  5 Neutral Secondary (#8A8886)
-    [void]$rtf.Append('\red243\green242\blue241;')     #  6 Neutral Light (#F3F2F1)
+    [void]$rtf.Append('\red0\green120\blue212;')      #  1 Microsoft Blue
+    [void]$rtf.Append('\red16\green124\blue16;')       #  2 Green
+    [void]$rtf.Append('\red209\green52\blue56;')       #  3 Red
+    [void]$rtf.Append('\red202\green80\blue16;')       #  4 Orange
+    [void]$rtf.Append('\red138\green136\blue134;')     #  5 Gray
+    [void]$rtf.Append('\red243\green242\blue241;')     #  6 Light bg
     [void]$rtf.Append('\red255\green255\blue255;')     #  7 White
-    [void]$rtf.Append('\red0\green99\blue177;')        #  8 Communication Blue (#0063B1)
-    [void]$rtf.Append('\red212\green140\blue0;')       #  9 Amber (#D48C00)
-    [void]$rtf.Append('\red50\green49\blue48;')        # 10 Neutral Primary (#323130)
-    [void]$rtf.Append('\red232\green245\blue233;')     # 11 Green Tint 40
-    [void]$rtf.Append('\red253\green232\blue232;')     # 12 Red Tint 40
-    [void]$rtf.Append('\red255\green243\blue224;')     # 13 Orange Tint 40
-    [void]$rtf.Append('\red227\green242\blue253;')     # 14 Blue Tint 40
-    [void]$rtf.Append('\red0\green47\blue108;')        # 15 Brand Navy (#002F6C)
-    [void]$rtf.Append('\red239\green246\blue252;')     # 16 Blue Tint 60 (#EFF6FC)
+    [void]$rtf.Append('\red50\green49\blue48;')        #  8 Dark text
+    [void]$rtf.Append('\red0\green47\blue108;')        #  9 Navy
     [void]$rtf.Append('}')
-    [void]$rtf.Append('\f0\fs20\cf10 ')
+    [void]$rtf.Append('\f0\fs20\cf8 ')
 
-    # ════════════════════════════════════════════════════════
-    #  HEADER BANNER — Full-width, 3 lines, thick bottom accent
-    # ════════════════════════════════════════════════════════
-    $custLabel = if ($Global:Assessment.CustomerName) { "$(& $esc $Global:Assessment.CustomerName)  \u8226  " } else { '' }
-    [void]$rtf.Append('{\trowd\trqc')
-    [void]$rtf.Append('\clcbpat1\clbrdrb\brdrs\brdrw20\brdrcf15\cellx9500')
-    [void]$rtf.Append('\pard\intbl\sb160\sa40\qc{\f0\fs16\cf7 MICROSOFT  \u9475  AZURE VIRTUAL DESKTOP}\line')
-    [void]$rtf.Append('{\f0\fs38\b\cf7 Assessment Report}\line')
-    [void]$rtf.Append("{\f0\fs18\cf7 ${custLabel}$(Get-Date -Format 'MMMM d, yyyy')}\sa160")
-    [void]$rtf.Append('\cell\row}')
+    # ── HEADER ──
+    $custName = if ($Global:Assessment.CustomerName) { & $esc $Global:Assessment.CustomerName } else { 'Assessment' }
+    [void]$rtf.Append("{\pard\sb0\sa40\ql{\f0\fs18\cf5 MICROSOFT  \u8226  AZURE VIRTUAL DESKTOP}\par")
+    [void]$rtf.Append("\pard\sb0\sa0\ql{\f0\fs40\b\cf8 $custName}\par")
+    [void]$rtf.Append("\pard\sb0\sa200\ql{\f0\fs18\cf5 $(Get-Date -Format 'MMMM d, yyyy')}\par}")
 
-    # ════════════════════════════════════════════════════════
-    #  SCORE HERO — Full-width card, score + maturity side by side
-    # ════════════════════════════════════════════════════════
+    # ── SCORE HERO ──
     $scoreStr = if ($Score -ge 0) { "$Score" } else { '\u8212' }
     $scoreClr = if ($Score -ge 75) { '\cf2' } elseif ($Score -ge 50) { '\cf4' } elseif ($Score -ge 0) { '\cf3' } else { '\cf5' }
+    [void]$rtf.Append("{\pard\sb0\sa0\ql{\f0\fs96\b$scoreClr $scoreStr}{\f0\fs32\cf5  / 100}\par")
+    [void]$rtf.Append("\pard\sb0\sa200\ql{\f0\fs22\cf5 Overall Score  \u8226  }{\f0\fs22\b\cf1 $Maturity}\par}")
 
-    [void]$rtf.Append('\pard\sb0\sa0{\trowd\trqc')
-    [void]$rtf.Append('\clcbpat16\clbrdrl\brdrs\brdrw5\brdrcf1\clbrdrr\brdrs\brdrw5\brdrcf1\clbrdrb\brdrs\brdrw5\brdrcf1\cellx4750')
-    [void]$rtf.Append('\clcbpat16\clbrdrr\brdrs\brdrw5\brdrcf1\clbrdrb\brdrs\brdrw5\brdrcf1\cellx9500')
-    [void]$rtf.Append("\pard\intbl\sb100\sa100\qc{\f0\fs80\b$scoreClr $scoreStr}{\f0\fs26\cf5  / 100}\cell")
-    [void]$rtf.Append("\pard\intbl\sb100\sa100\qc{\f0\fs14\cf5 MATURITY LEVEL}\line{\f0\fs32\b\cf1 $Maturity}\line{\f0\fs16\cf5 $Assessed of $Total checks assessed}\cell")
-    [void]$rtf.Append('\row}')
+    # ── STATUS LINE ──
+    [void]$rtf.Append("{\pard\sb0\sa200\ql{\f0\fs20 ")
+    [void]$rtf.Append("{\b\cf2 $Pass} pass   ")
+    [void]$rtf.Append("{\b\cf3 $Fail} fail   ")
+    [void]$rtf.Append("{\b\cf4 $Warn} warning   ")
+    [void]$rtf.Append("{\cf5 $NA N/A}")
+    [void]$rtf.Append("{\cf5   \u8226  $Assessed of $Total assessed}")
+    [void]$rtf.Append("}\par}")
 
-    # ════════════════════════════════════════════════════════
-    #  STATUS CARDS — Four colored metric tiles with borders
-    # ════════════════════════════════════════════════════════
-    [void]$rtf.Append('\pard\sb80\sa0{\trowd\trqc\trgaph30')
-    [void]$rtf.Append('\clcbpat11\clbrdrt\brdrs\brdrw10\brdrcf2\clbrdrb\brdrs\brdrw10\brdrcf2\clbrdrl\brdrs\brdrw10\brdrcf2\clbrdrr\brdrs\brdrw10\brdrcf2\cellx2375')
-    [void]$rtf.Append('\clcbpat12\clbrdrt\brdrs\brdrw10\brdrcf3\clbrdrb\brdrs\brdrw10\brdrcf3\clbrdrl\brdrs\brdrw10\brdrcf3\clbrdrr\brdrs\brdrw10\brdrcf3\cellx4750')
-    [void]$rtf.Append('\clcbpat13\clbrdrt\brdrs\brdrw10\brdrcf4\clbrdrb\brdrs\brdrw10\brdrcf4\clbrdrl\brdrs\brdrw10\brdrcf4\clbrdrr\brdrs\brdrw10\brdrcf4\cellx7125')
-    [void]$rtf.Append('\clcbpat14\clbrdrt\brdrs\brdrw10\brdrcf1\clbrdrb\brdrs\brdrw10\brdrcf1\clbrdrl\brdrs\brdrw10\brdrcf1\clbrdrr\brdrs\brdrw10\brdrcf1\cellx9500')
-    [void]$rtf.Append("\pard\intbl\sb50\sa50\qc{\f0\fs30\b\cf2 $Pass}\line{\f0\fs15\b\cf10 PASS}\cell")
-    [void]$rtf.Append("\pard\intbl\sb50\sa50\qc{\f0\fs30\b\cf3 $Fail}\line{\f0\fs15\b\cf10 FAIL}\cell")
-    [void]$rtf.Append("\pard\intbl\sb50\sa50\qc{\f0\fs30\b\cf4 $Warn}\line{\f0\fs15\b\cf10 WARNING}\cell")
-    [void]$rtf.Append("\pard\intbl\sb50\sa50\qc{\f0\fs30\b\cf1 $NA}\line{\f0\fs15\b\cf10 N/A}\cell")
-    [void]$rtf.Append('\row}')
+    # ── THIN DIVIDER ──
+    [void]$rtf.Append('\pard\sb0\sa200{\f0\fs4\cf5\brdrb\brdrs\brdrw5\brsp20 \par}')
 
-    # ════════════════════════════════════════════════════════
-    #  ENVIRONMENT SNAPSHOT — Infrastructure metric tiles
-    # ════════════════════════════════════════════════════════
+    # ── ENVIRONMENT (if discovery data) ──
     if ($Global:Assessment.Discovery -and $Global:Assessment.Discovery.Inventory) {
         $Inv = $Global:Assessment.Discovery.Inventory
-        [void]$rtf.Append('\pard\sb60\sa0{\trowd\trqc\trgaph30')
-        [void]$rtf.Append('\clcbpat6\clbrdrt\brdrs\brdrw5\brdrcf5\clbrdrb\brdrs\brdrw5\brdrcf5\clbrdrl\brdrs\brdrw5\brdrcf5\clbrdrr\brdrs\brdrw5\brdrcf5\cellx2375')
-        [void]$rtf.Append('\clcbpat6\clbrdrt\brdrs\brdrw5\brdrcf5\clbrdrb\brdrs\brdrw5\brdrcf5\clbrdrl\brdrs\brdrw5\brdrcf5\clbrdrr\brdrs\brdrw5\brdrcf5\cellx4750')
-        [void]$rtf.Append('\clcbpat6\clbrdrt\brdrs\brdrw5\brdrcf5\clbrdrb\brdrs\brdrw5\brdrcf5\clbrdrl\brdrs\brdrw5\brdrcf5\clbrdrr\brdrs\brdrw5\brdrcf5\cellx7125')
-        [void]$rtf.Append('\clcbpat6\clbrdrt\brdrs\brdrw5\brdrcf5\clbrdrb\brdrs\brdrw5\brdrcf5\clbrdrl\brdrs\brdrw5\brdrcf5\clbrdrr\brdrs\brdrw5\brdrcf5\cellx9500')
-        [void]$rtf.Append("\pard\intbl\sb40\sa40\qc{\f0\fs28\b\cf1 $($Inv.HostPools.Count)}\line{\f0\fs13\b\cf5 HOST POOLS}\cell")
-        [void]$rtf.Append("\pard\intbl\sb40\sa40\qc{\f0\fs28\b\cf1 $($Inv.SessionHosts.Count)}\line{\f0\fs13\b\cf5 SESSION HOSTS}\cell")
-        [void]$rtf.Append("\pard\intbl\sb40\sa40\qc{\f0\fs28\b\cf1 $($Inv.AppGroups.Count)}\line{\f0\fs13\b\cf5 APP GROUPS}\cell")
-        [void]$rtf.Append("\pard\intbl\sb40\sa40\qc{\f0\fs28\b\cf1 $($Inv.Workspaces.Count)}\line{\f0\fs13\b\cf5 WORKSPACES}\cell")
-        [void]$rtf.Append('\row}')
+        [void]$rtf.Append("{\pard\sb0\sa120\ql{\f0\fs15\b\cf5 ENVIRONMENT}\par")
+        [void]$rtf.Append("\pard\sb0\sa200\ql{\f0\fs20\cf8 ")
+        [void]$rtf.Append("{\b $($Inv.HostPools.Count)} host pools   ")
+        [void]$rtf.Append("{\b $($Inv.SessionHosts.Count)} session hosts   ")
+        [void]$rtf.Append("{\b $($Inv.AppGroups.Count)} app groups   ")
+        [void]$rtf.Append("{\b $($Inv.Workspaces.Count)} workspaces")
+        if ($Global:Assessment.Discovery.Subscriptions) {
+            $subNames = ($Global:Assessment.Discovery.Subscriptions | ForEach-Object { $_.Name }) -join ', '
+            [void]$rtf.Append("\line{\cf5 $($Global:Assessment.Discovery.Subscriptions.Count) subscription ($subNames)}")
+        }
+        [void]$rtf.Append("}\par}")
     }
 
-    # Section header — wide blue accent bar + title in a row
-    $SectionHeader = {
-        param($title)
-        [void]$rtf.Append("{\pard\sb280\sa0\trowd\trqc")
-        [void]$rtf.Append('\clcbpat1\cellx220')
-        [void]$rtf.Append('\clcbpat6\clbrdrb\brdrs\brdrw3\brdrcf6\cellx9500')
-        [void]$rtf.Append("\pard\intbl\sb0\sa0{\f0\fs4 }\cell")
-        [void]$rtf.Append("\pard\intbl\sb50\sa50\li80{\f0\fs22\b\cf1 $(& $esc $title)}\cell")
-        [void]$rtf.Append('\row}')
-    }
-
-    # ═══════════════ ASSESSMENT DETAILS ═══════════════
-    & $SectionHeader 'Assessment Details'
-    [void]$rtf.Append('\pard\sb0\sa0{')
-    $infoRows = [System.Collections.ArrayList]::new()
-    [void]$infoRows.Add(@('Customer',  $Global:Assessment.CustomerName))
-    [void]$infoRows.Add(@('Assessor',  $Global:Assessment.AssessorName))
-    [void]$infoRows.Add(@('Date',      $Global:Assessment.Date))
-    if ($Global:Assessment.Discovery -and $Global:Assessment.Discovery.Subscriptions) {
-        $D = $Global:Assessment.Discovery
-        $subNames = ($D.Subscriptions | ForEach-Object { $_.Name }) -join ', '
-        [void]$infoRows.Add(@('Subscriptions', "$($D.Subscriptions.Count) ($subNames)"))
-    }
-    $ri = 0
-    foreach ($row in $infoRows) {
-        $bgPat = if ($ri % 2 -eq 0) { '\clcbpat6' } else { '\clcbpat7' }
-        [void]$rtf.Append("\trowd\trgaph80${bgPat}\cellx2800${bgPat}\cellx9500")
-        [void]$rtf.Append("\pard\intbl\sb25\sa25\li80{\f0\fs18\b\cf1 $(& $esc $row[0])}\cell")
-        [void]$rtf.Append("\pard\intbl\sb25\sa25\li40{\f0\fs18\cf10 $(& $esc $row[1])}\cell")
-        [void]$rtf.Append('\row')
-        $ri++
-    }
-    [void]$rtf.Append('}')
-
-    # ═══════════════ CATEGORY SCORES ═══════════════
-    & $SectionHeader 'Category Scores'
-    # Header row — use Microsoft Blue (color 1) which renders correctly in Outlook
-    [void]$rtf.Append('\pard\sb0\sa0{\trowd\trgaph60')
-    [void]$rtf.Append('\clcbpat1\cellx3200\clcbpat1\cellx4200\clcbpat1\cellx6400\clcbpat1\cellx7200\clcbpat1\cellx7900\clcbpat1\cellx8600\clcbpat1\cellx9500')
-    [void]$rtf.Append('\pard\intbl\sb30\sa30\li80{\f0\fs16\b\cf7 Category}\cell')
-    [void]$rtf.Append('\pard\intbl\sb30\sa30\qc{\f0\fs16\b\cf7 Score}\cell')
-    [void]$rtf.Append('\pard\intbl\sb30\sa30\li40{\f0\fs16\b\cf7 Progress}\cell')
-    [void]$rtf.Append('\pard\intbl\sb30\sa30\qc{\f0\fs16\b\cf7 Pass}\cell')
-    [void]$rtf.Append('\pard\intbl\sb30\sa30\qc{\f0\fs16\b\cf7 Warn}\cell')
-    [void]$rtf.Append('\pard\intbl\sb30\sa30\qc{\f0\fs16\b\cf7 Fail}\cell')
-    [void]$rtf.Append('\pard\intbl\sb30\sa30\qc{\f0\fs16\b\cf7 Total}\cell')
-    [void]$rtf.Append('\row')
-    $catIdx = 0
+    # ── CATEGORY SCORES (simple list) ──
+    [void]$rtf.Append("{\pard\sb0\sa120\ql{\f0\fs15\b\cf5 CATEGORIES}\par}")
     foreach ($Cat in (Get-Categories)) {
-        $CatScore  = Get-CategoryScore $Cat
+        $CatScore = Get-CategoryScore $Cat
         $CatChecks = @($Checks | Where-Object { $_.Category -eq $Cat })
-        $CatTotal  = $CatChecks.Count
-        $CatPass   = @($CatChecks | Where-Object { $_.Status -eq 'Pass' }).Count
-        $CatWarn   = @($CatChecks | Where-Object { $_.Status -eq 'Warning' }).Count
-        $CatFail   = @($CatChecks | Where-Object { $_.Status -eq 'Fail' }).Count
-        $ScoreStr  = if ($CatScore -ge 0) { "$CatScore%" } else { 'N/A' }
-        $sClr      = if ($CatScore -ge 80) { '\cf2' } elseif ($CatScore -ge 50) { '\cf4' } elseif ($CatScore -ge 0) { '\cf3' } else { '\cf5' }
-        $barClr    = if ($CatScore -ge 80) { '\cf2' } elseif ($CatScore -ge 50) { '\cf4' } elseif ($CatScore -ge 0) { '\cf3' } else { '\cf5' }
-        $bgPat     = if ($catIdx % 2 -eq 0) { '\clcbpat6' } else { '\clcbpat7' }
-        [void]$rtf.Append("\trowd\trgaph60${bgPat}\cellx3200${bgPat}\cellx4200${bgPat}\cellx6400${bgPat}\cellx7200${bgPat}\cellx7900${bgPat}\cellx8600${bgPat}\cellx9500")
-        [void]$rtf.Append("\pard\intbl\sb20\sa20\li80{\f0\fs17\cf10 $(& $esc $Cat)}\cell")
-        [void]$rtf.Append("\pard\intbl\sb20\sa20\qc{\f0\fs17\b$sClr $ScoreStr}\cell")
-        $bar = & $makeBar $CatScore $barClr 15
-        [void]$rtf.Append("\pard\intbl\sb20\sa20\li20{$bar}\cell")
-        [void]$rtf.Append("\pard\intbl\sb20\sa20\qc{\f0\fs17\cf2 $CatPass}\cell")
-        [void]$rtf.Append("\pard\intbl\sb20\sa20\qc{\f0\fs17\cf4 $CatWarn}\cell")
-        [void]$rtf.Append("\pard\intbl\sb20\sa20\qc{\f0\fs17\cf3 $CatFail}\cell")
-        [void]$rtf.Append("\pard\intbl\sb20\sa20\qc{\f0\fs17\cf5 $CatTotal}\cell")
-        [void]$rtf.Append('\row')
-        $catIdx++
+        $CatPass  = @($CatChecks | Where-Object { $_.Status -eq 'Pass' }).Count
+        $CatFail  = @($CatChecks | Where-Object { $_.Status -eq 'Fail' }).Count
+        $CatWarn  = @($CatChecks | Where-Object { $_.Status -eq 'Warning' }).Count
+        $ScoreStr = if ($CatScore -ge 0) { "$CatScore%" } else { 'N/A' }
+        $sClr     = if ($CatScore -ge 80) { '\cf2' } elseif ($CatScore -ge 50) { '\cf4' } elseif ($CatScore -ge 0) { '\cf3' } else { '\cf5' }
+        [void]$rtf.Append("{\pard\sb0\sa20\ql{\f0\fs20\cf8 $(& $esc $Cat)  }{\f0\fs20\b$sClr $ScoreStr}")
+        [void]$rtf.Append("{\f0\fs16\cf5   $CatPass pass \u8226 $CatWarn warn \u8226 $CatFail fail}")
+        [void]$rtf.Append("\par}")
     }
-    [void]$rtf.Append('}')
 
-    # ═══════════════ MATURITY DIMENSIONS ═══════════════
-    & $SectionHeader 'Maturity Dimensions'
-    [void]$rtf.Append('\pard\sb0\sa0{\trowd\trgaph60')
-    [void]$rtf.Append('\clcbpat1\cellx3600\clcbpat1\cellx4600\clcbpat1\cellx6800\clcbpat1\cellx9500')
-    [void]$rtf.Append('\pard\intbl\sb30\sa30\li80{\f0\fs16\b\cf7 Dimension}\cell')
-    [void]$rtf.Append('\pard\intbl\sb30\sa30\qc{\f0\fs16\b\cf7 Score}\cell')
-    [void]$rtf.Append('\pard\intbl\sb30\sa30\li40{\f0\fs16\b\cf7 Progress}\cell')
-    [void]$rtf.Append('\pard\intbl\sb30\sa30\qc{\f0\fs16\b\cf7 Level}\cell')
-    [void]$rtf.Append('\row')
-    $dimIdx = 0
+    # ── THIN DIVIDER ──
+    [void]$rtf.Append('\pard\sb120\sa200{\f0\fs4\cf5\brdrb\brdrs\brdrw5\brsp20 \par}')
+
+    # ── MATURITY DIMENSIONS (simple list) ──
+    [void]$rtf.Append("{\pard\sb0\sa120\ql{\f0\fs15\b\cf5 MATURITY}\par}")
     foreach ($Key in $Global:MaturityDimensions.Keys) {
-        $Dim   = $Global:MaturityDimensions[$Key]
+        $Dim    = $Global:MaturityDimensions[$Key]
         $DScore = Get-DimensionScore $Key
         $DStr   = if ($DScore -ge 0) { "$DScore%" } else { 'N/A' }
         $DLevel = if ($DScore -ge 0) { Get-MaturityLevel $DScore } else { '' }
         $dClr   = if ($DScore -ge 80) { '\cf2' } elseif ($DScore -ge 50) { '\cf4' } elseif ($DScore -ge 0) { '\cf3' } else { '\cf5' }
-        $bgPat  = if ($dimIdx % 2 -eq 0) { '\clcbpat6' } else { '\clcbpat7' }
-        [void]$rtf.Append("\trowd\trgaph60${bgPat}\cellx3600${bgPat}\cellx4600${bgPat}\cellx6800${bgPat}\cellx9500")
-        [void]$rtf.Append("\pard\intbl\sb20\sa20\li80{\f0\fs18\cf10 $(& $esc $Dim.Label)}\cell")
-        [void]$rtf.Append("\pard\intbl\sb20\sa20\qc{\f0\fs18\b$dClr $DStr}\cell")
-        $bar = & $makeBar $DScore $dClr 15
-        [void]$rtf.Append("\pard\intbl\sb20\sa20\li20{$bar}\cell")
-        [void]$rtf.Append("\pard\intbl\sb20\sa20\qc{\f0\fs17\cf8 $DLevel}\cell")
-        [void]$rtf.Append('\row')
-        $dimIdx++
+        [void]$rtf.Append("{\pard\sb0\sa20\ql{\f0\fs20\cf8 $(& $esc $Dim.Label)  }{\f0\fs20\b$dClr $DStr}{\f0\fs16\cf5   $DLevel}\par}")
     }
     $Composite = Get-CompositeMaturityScore
     if ($Composite -ge 0) {
         $cClr = if ($Composite -ge 80) { '\cf2' } elseif ($Composite -ge 50) { '\cf4' } else { '\cf3' }
-        $cBar = & $makeBar $Composite $cClr 15
-        [void]$rtf.Append("\trowd\trgaph60\clcbpat14\cellx3600\clcbpat14\cellx4600\clcbpat14\cellx6800\clcbpat14\cellx9500")
-        [void]$rtf.Append("\pard\intbl\sb20\sa20\li80{\f0\fs18\b\cf1 Composite}\cell")
-        [void]$rtf.Append("\pard\intbl\sb20\sa20\qc{\f0\fs18\b$cClr $Composite%}\cell")
-        [void]$rtf.Append("\pard\intbl\sb20\sa20\li20{$cBar}\cell")
-        [void]$rtf.Append("\pard\intbl\sb20\sa20\qc{\f0\fs17\b\cf1 $(Get-MaturityLevel $Composite)}\cell")
-        [void]$rtf.Append('\row')
-    }
-    [void]$rtf.Append('}')
-
-    # ═══════════════ KEY PASSES ═══════════════
-    $strongChecks = @($Checks | Where-Object { $_.Status -eq 'Pass' -and $_.Severity -in @('Critical','High') })
-    if ($strongChecks.Count -gt 0) {
-        & $SectionHeader "Key Passes ($($strongChecks.Count) Critical/High)"
-        $grouped = $strongChecks | Group-Object Category | Sort-Object Count -Descending
-        foreach ($g in $grouped) {
-            [void]$rtf.Append("\pard\sb80\sa20\li200{\f0\fs18\b\cf8 $(& $esc $g.Name) ($($g.Count))}\par")
-            $items = @($g.Group | Select-Object -First 5)
-            foreach ($item in $items) {
-                [void]$rtf.Append("\pard\sb0\sa0\li400{\f0\fs17\cf2 \u9679  }{\f0\fs17\cf10 $(& $esc $item.Name)}\par")
-            }
-            if ($g.Count -gt 5) {
-                [void]$rtf.Append("\pard\sb0\sa0\li400{\f0\fs17\i\cf5 \u8230  and $($g.Count - 5) more}\par")
-            }
-        }
+        [void]$rtf.Append("{\pard\sb20\sa0\ql{\f0\fs20\b\cf8 Composite  }{\f0\fs20\b$cClr $Composite%}{\f0\fs16\cf5   $(Get-MaturityLevel $Composite)}\par}")
     }
 
-    # ═══════════════ CRITICAL & HIGH FAILURES ═══════════════
+    # ── THIN DIVIDER ──
+    [void]$rtf.Append('\pard\sb120\sa200{\f0\fs4\cf5\brdrb\brdrs\brdrw5\brsp20 \par}')
+
+    # ── TOP FAILURES (Critical & High only) ──
     $critFails = @($Checks | Where-Object {
         $_.Status -eq 'Fail' -and $_.Severity -in @('Critical','High')
     } | Sort-Object @{E={if($_.Severity -eq 'Critical'){0}else{1}}}, Id)
     if ($critFails.Count -gt 0) {
-        & $SectionHeader "Critical & High Failures ($($critFails.Count))"
-        [void]$rtf.Append('\pard\sb0\sa0{\trowd\trgaph60')
-        [void]$rtf.Append('\clcbpat1\cellx1200\clcbpat1\cellx2200\clcbpat1\cellx5600\clcbpat1\cellx9500')
-        [void]$rtf.Append('\pard\intbl\sb30\sa30\li80{\f0\fs16\b\cf7 Sev}\cell')
-        [void]$rtf.Append('\pard\intbl\sb30\sa30\li80{\f0\fs16\b\cf7 ID}\cell')
-        [void]$rtf.Append('\pard\intbl\sb30\sa30\li80{\f0\fs16\b\cf7 Check Name}\cell')
-        [void]$rtf.Append('\pard\intbl\sb30\sa30\li80{\f0\fs16\b\cf7 Details}\cell')
-        [void]$rtf.Append('\row')
-        $fi = 0
+        [void]$rtf.Append("{\pard\sb0\sa120\ql{\f0\fs15\b\cf5 TOP FINDINGS ($($critFails.Count))}\par}")
         foreach ($f in $critFails) {
-            $sevClr  = if ($f.Severity -eq 'Critical') { '\cf3' } else { '\cf4' }
-            $sevBg   = if ($f.Severity -eq 'Critical') { '\clcbpat12' } else { '\clcbpat13' }
-            $bgPat   = if ($fi % 2 -eq 0) { '\clcbpat6' } else { '\clcbpat7' }
-            $detVal  = if ($f.Details) { $d = & $esc "$($f.Details)"; if ($d.Length -gt 60) { $d.Substring(0,60) + '...' } else { $d } } else { '\u8212' }
-            [void]$rtf.Append("\trowd\trgaph60${sevBg}\cellx1200${bgPat}\cellx2200${bgPat}\cellx5600${bgPat}\cellx9500")
-            [void]$rtf.Append("\pard\intbl\sb20\sa20\qc{\f0\fs16\b$sevClr $($f.Severity)}\cell")
-            [void]$rtf.Append("\pard\intbl\sb20\sa20\li80{\f1\fs16\cf8 $($f.Id)}\cell")
-            [void]$rtf.Append("\pard\intbl\sb20\sa20\li80{\f0\fs17\cf10 $(& $esc $f.Name)}\cell")
-            [void]$rtf.Append("\pard\intbl\sb20\sa20\li80{\f1\fs15\cf5 $detVal}\cell")
-            [void]$rtf.Append('\row')
-            $fi++
+            $sevClr = if ($f.Severity -eq 'Critical') { '\cf3' } else { '\cf4' }
+            [void]$rtf.Append("{\pard\sb0\sa10\ql{\f0\fs18$sevClr \u9679 }{\f0\fs18\cf8 $(& $esc $f.Name)}{\f0\fs15\cf5   $($f.Id)}\par}")
         }
-        [void]$rtf.Append('}')
+
+        $medLowFails = @($Checks | Where-Object { $_.Status -eq 'Fail' -and $_.Severity -in @('Medium','Low') })
+        if ($medLowFails.Count -gt 0) {
+            $medCount = @($medLowFails | Where-Object { $_.Severity -eq 'Medium' }).Count
+            $lowCount = @($medLowFails | Where-Object { $_.Severity -eq 'Low' }).Count
+            [void]$rtf.Append("{\pard\sb40\sa0\ql{\f0\fs16\cf5 + $medCount medium and $lowCount low severity findings}\par}")
+        }
     }
 
-    # ═══════════════ OTHER FAILURES ═══════════════
-    $medLowFails = @($Checks | Where-Object { $_.Status -eq 'Fail' -and $_.Severity -in @('Medium','Low') })
-    if ($medLowFails.Count -gt 0) {
-        $medCount = @($medLowFails | Where-Object { $_.Severity -eq 'Medium' }).Count
-        $lowCount = @($medLowFails | Where-Object { $_.Severity -eq 'Low' }).Count
-        [void]$rtf.Append("\pard\sb120\sa60\li80{\f0\fs18\cf5 Additional failures: {\b\cf4 $medCount} Medium, {\b\cf5 $lowCount} Low}\par")
-    }
-
-    # ═══════════════ QUICK WIN REMEDIATION ═══════════════
+    # ── QUICK WINS ──
     $quickWins = @($Checks | Where-Object {
         $_.Status -eq 'Fail' -and ($DefLookup[$_.Id].effort -eq 'Quick Win' -or $_.effort -eq 'Quick Win')
-    } | Sort-Object @{E={switch($_.Severity){'Critical'{0}'High'{1}'Medium'{2}default{3}}}}, Id | Select-Object -First 10)
+    } | Sort-Object @{E={switch($_.Severity){'Critical'{0}'High'{1}'Medium'{2}default{3}}}}, Id | Select-Object -First 5)
     if ($quickWins.Count -gt 0) {
-        & $SectionHeader "Quick Win Remediation (top $($quickWins.Count))"
+        [void]$rtf.Append('\pard\sb120\sa200{\f0\fs4\cf5\brdrb\brdrs\brdrw5\brsp20 \par}')
+        [void]$rtf.Append("{\pard\sb0\sa120\ql{\f0\fs15\b\cf5 QUICK WINS}\par}")
         $qi = 0
         foreach ($qw in $quickWins) {
             $qi++
-            $sevClr = switch ($qw.Severity) { 'Critical' { '\cf3' } 'High' { '\cf4' } default { '\cf5' } }
-            [void]$rtf.Append("\pard\sb40\sa0\li200{\f0\fs18\b\cf10 ${qi}. }{\f0\fs17$sevClr [$($qw.Severity)]} {\f0\fs18\cf10 $(& $esc $qw.Name)} {\f1\fs15\cf5 ($($qw.Id))}\par")
             $rem = if ($qw.remediation) { $qw.remediation } elseif ($DefLookup[$qw.Id].remediation) { $DefLookup[$qw.Id].remediation } else { $null }
+            [void]$rtf.Append("{\pard\sb0\sa10\ql{\f0\fs18\cf8 ${qi}. $(& $esc $qw.Name)}\par}")
             if ($rem) {
                 $remText = if ($rem.Length -gt 120) { $rem.Substring(0,120) + '...' } else { $rem }
-                [void]$rtf.Append("\pard\sb0\sa20\li400{\f0\fs16\i\cf5 $(& $esc $remText)}\par")
+                [void]$rtf.Append("{\pard\sb0\sa20\li200{\f0\fs16\i\cf5 $(& $esc $remText)}\par}")
             }
         }
     }
 
-    # ═══════════════ FOOTER ═══════════════
-    [void]$rtf.Append('\pard\sb280\sa0{\f0\fs2\cf1\brdrb\brdrs\brdrw10\brsp20 \par}')
-    [void]$rtf.Append('\pard\sb40\sa20{\f0\fs15\i\cf5 Scoring: Weighted average \u8212 Critical(5\u215), High(4\u215), Medium(3\u215), Low(2\u215). ')
-    [void]$rtf.Append('Pass/N\u8725A = 100pts, Warning = 50pts, Fail = 0pts. ')
-    [void]$rtf.Append('Maturity: Initial(0\u821234), Developing(35\u821254), Defined(55\u821274), Managed(75\u821289), Optimized(90+).}\par')
-    [void]$rtf.Append("\pard\sb40\sa0\qc{\f0\fs14\cf5 Microsoft Confidential  \u8226  Generated by AVD Assessor v$Global:AppVersion}\par")
+    # ── FOOTER ──
+    [void]$rtf.Append('\pard\sb200\sa0{\f0\fs4\cf5\brdrb\brdrs\brdrw5\brsp20 \par}')
+    [void]$rtf.Append("{\pard\sb40\sa0\ql{\f0\fs14\cf5 Generated by AVD Assessor v$Global:AppVersion  \u8226  Microsoft Confidential}\par}")
 
     [void]$rtf.Append('}')
     return $rtf.ToString()
@@ -5624,5 +5473,4 @@ $Window.ShowDialog() | Out-Null
 $Timer.Stop()
 $Global:AutoSaveTimer.Stop()
 Write-DebugLog "Application closed" -Level 'INFO'
-
 
