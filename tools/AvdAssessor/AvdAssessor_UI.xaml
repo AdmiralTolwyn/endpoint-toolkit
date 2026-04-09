@@ -938,6 +938,9 @@
                                        Foreground="{DynamicResource ThemeTextSecondary}" HorizontalAlignment="Center"/>
                         </StackPanel>
                     </Border>
+
+                    <!-- Confetti overlay canvas -->
+                    <Canvas x:Name="cnvConfetti" Panel.ZIndex="150" IsHitTestVisible="False" Visibility="Collapsed"/>
                 </Grid>
             </Grid>
         </DockPanel>

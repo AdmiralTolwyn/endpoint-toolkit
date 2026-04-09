@@ -55,6 +55,8 @@ foreach ($dir in @($Global:AssessmentDir, $Global:ReportDir)) {
 $Script:LOG_MAX_LINES       = 500
 $Script:TIMER_INTERVAL_MS   = 50
 $Script:TOAST_DURATION_MS   = 4000
+$Script:CONFETTI_COUNT      = 80
+$Script:CLEANUP_DELAY_MS    = 5000
 
 # Load WPF assemblies
 Add-Type -AssemblyName PresentationFramework
@@ -387,6 +389,7 @@ $railActivityLog   = $Window.FindName("railActivityLog")
 
 # Splash
 $pnlSplash         = $Window.FindName("pnlSplash")
+$cnvConfetti       = $Window.FindName("cnvConfetti")
 $lblSplashVersion  = $Window.FindName("lblSplashVersion")
 $lblSplashStatus   = $Window.FindName("lblSplashStatus")
 $dotStep1          = $Window.FindName("dotStep1")
@@ -4168,6 +4171,220 @@ function Get-ExecutiveSummaryRtf {
     return $rtf.ToString()
 }
 
+function Get-ExecutiveSummaryEmailHtml {
+    <#
+    .SYNOPSIS  Outlook-safe HTML executive summary for clipboard paste into email/Teams.
+    #>
+    $Checks   = $Global:Assessment.Checks
+    $Score    = Get-OverallScore
+    $Maturity = Get-MaturityLevel $Score
+
+    $Total    = $Checks.Count
+    $Assessed = @($Checks | Where-Object { $_.Status -ne 'Not Assessed' }).Count
+    $Pass     = @($Checks | Where-Object { $_.Status -eq 'Pass' }).Count
+    $Fail     = @($Checks | Where-Object { $_.Status -eq 'Fail' }).Count
+    $Warn     = @($Checks | Where-Object { $_.Status -eq 'Warning' }).Count
+    $NA       = @($Checks | Where-Object { $_.Status -eq 'N/A' }).Count
+
+    $DefLookup = @{}
+    foreach ($Def in $Global:CheckDefinitions) { $DefLookup[$Def.id] = $Def }
+
+    $hesc = { param($t) if (-not $t) { return '' }; [System.Net.WebUtility]::HtmlEncode("$t") }
+    $sClr = { param($s) if ($s -ge 80) { '#107C10' } elseif ($s -ge 50) { '#CA5010' } elseif ($s -ge 0) { '#D13438' } else { '#8A8886' } }
+
+    $custName   = & $hesc $(if ($Global:Assessment.CustomerName) { $Global:Assessment.CustomerName } else { 'Assessment' })
+    $scoreColor = & $sClr $Score
+    $scoreVal   = if ($Score -ge 0) { "$Score" } else { '&mdash;' }
+
+    $h = [System.Text.StringBuilder]::new()
+
+    # ── OUTER WRAPPER ──
+    [void]$h.Append('<table cellpadding="0" cellspacing="0" border="0" width="680" style="font-family:Segoe UI,Helvetica,Arial,sans-serif;color:#323130;font-size:14px;">')
+
+    # ── BLUE HEADER BANNER ──
+    [void]$h.Append(@"
+<tr><td style="background-color:#0078D4;padding:24px 32px;">
+<table cellpadding="0" cellspacing="0" border="0" width="100%">
+<tr><td style="font-size:11px;color:#B4D6FA;font-weight:600;">M I C R O S O F T&#160;&#160;&#8226;&#160;&#160;A Z U R E&#160;&#160;V I R T U A L&#160;&#160;D E S K T O P</td></tr>
+<tr><td style="font-size:26px;font-weight:bold;color:#FFFFFF;padding-top:8px;">$custName</td></tr>
+<tr><td style="font-size:12px;color:#B4D6FA;padding-top:6px;">Assessment Report &#8226; $(Get-Date -Format 'MMMM d, yyyy')</td></tr>
+</table></td></tr>
+"@)
+
+    # ── SCORE SECTION ──
+    [void]$h.Append(@"
+<tr><td style="padding:28px 32px 0 32px;">
+<table cellpadding="0" cellspacing="0" border="0" width="100%"><tr>
+<td style="vertical-align:bottom;"><span style="font-size:56px;font-weight:bold;color:${scoreColor};">$scoreVal</span><span style="font-size:22px;color:#8A8886;"> / 100</span></td>
+<td style="vertical-align:bottom;text-align:right;"><table cellpadding="0" cellspacing="0" border="0"><tr><td style="background-color:${scoreColor};color:#FFFFFF;padding:5px 16px;font-size:12px;font-weight:bold;">$($Maturity.ToUpper())</td></tr></table></td>
+</tr></table></td></tr>
+"@)
+
+    # ── STATUS COUNTER CARDS ──
+    [void]$h.Append('<tr><td style="padding:20px 28px 4px 28px;"><table cellpadding="0" cellspacing="8" border="0" width="100%"><tr>')
+    $cards = @(
+        @{ N=$Pass; L='Pass';    C='#107C10'; B='#E6F2E6' }
+        @{ N=$Fail; L='Fail';    C='#D13438'; B='#FBEAEA' }
+        @{ N=$Warn; L='Warning'; C='#CA5010'; B='#FDF0E6' }
+        @{ N=$NA;   L='N/A';     C='#8A8886'; B='#F3F2F1' }
+    )
+    foreach ($card in $cards) {
+        [void]$h.Append("<td width=`"25%`" style=`"background-color:$($card.B);padding:14px 16px;text-align:center;`">")
+        [void]$h.Append("<div style=`"font-size:28px;font-weight:bold;color:$($card.C);`">$($card.N)</div>")
+        [void]$h.Append("<div style=`"font-size:11px;color:$($card.C);font-weight:600;`">$($card.L)</div>")
+        [void]$h.Append('</td>')
+    }
+    [void]$h.Append('</tr></table></td></tr>')
+    [void]$h.Append("<tr><td style=`"padding:0 32px 16px 32px;text-align:center;font-size:12px;color:#8A8886;`">$Assessed of $Total checks assessed</td></tr>")
+
+    # ── DIVIDER ──
+    [void]$h.Append('<tr><td style="padding:0 32px;"><table width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="border-bottom:1px solid #EDEBE9;height:1px;font-size:1px;">&nbsp;</td></tr></table></td></tr>')
+
+    # ── ENVIRONMENT ──
+    if ($Global:Assessment.Discovery -and $Global:Assessment.Discovery.Inventory) {
+        $Inv = $Global:Assessment.Discovery.Inventory
+        [void]$h.Append('<tr><td style="padding:16px 32px 8px 32px;">')
+        [void]$h.Append('<div style="font-size:11px;font-weight:bold;color:#0078D4;padding-bottom:10px;">ENVIRONMENT</div>')
+        [void]$h.Append('<table cellpadding="0" cellspacing="0" border="0" width="100%"><tr>')
+        $envItems = @(
+            @{ N=$Inv.HostPools.Count;    L='Host Pools' }
+            @{ N=$Inv.SessionHosts.Count; L='Session Hosts' }
+            @{ N=$Inv.AppGroups.Count;    L='App Groups' }
+            @{ N=$Inv.Workspaces.Count;   L='Workspaces' }
+        )
+        foreach ($ei in $envItems) {
+            [void]$h.Append("<td style=`"padding-right:24px;`"><span style=`"font-size:20px;font-weight:bold;color:#323130;`">$($ei.N)</span> <span style=`"font-size:12px;color:#8A8886;`">$($ei.L)</span></td>")
+        }
+        [void]$h.Append('</tr></table>')
+        if ($Global:Assessment.Discovery.Subscriptions) {
+            $subNames = ($Global:Assessment.Discovery.Subscriptions | ForEach-Object { & $hesc $_.Name }) -join ', '
+            [void]$h.Append("<div style=`"font-size:12px;color:#8A8886;padding-top:6px;`">$($Global:Assessment.Discovery.Subscriptions.Count) subscription(s): $subNames</div>")
+        }
+        [void]$h.Append('</td></tr>')
+        [void]$h.Append('<tr><td style="padding:8px 32px;"><table width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="border-bottom:1px solid #EDEBE9;height:1px;font-size:1px;">&nbsp;</td></tr></table></td></tr>')
+    }
+
+    # ── CATEGORIES TABLE ──
+    [void]$h.Append('<tr><td style="padding:12px 32px 16px 32px;">')
+    [void]$h.Append('<div style="font-size:11px;font-weight:bold;color:#0078D4;padding-bottom:10px;">CATEGORIES</div>')
+    [void]$h.Append('<table cellpadding="0" cellspacing="0" border="0" width="100%" style="font-size:13px;">')
+    $catIdx = 0
+    foreach ($Cat in (Get-Categories)) {
+        $CatScore  = Get-CategoryScore $Cat
+        $CatChecks = @($Checks | Where-Object { $_.Category -eq $Cat })
+        $CatPass   = @($CatChecks | Where-Object { $_.Status -eq 'Pass' }).Count
+        $CatFail   = @($CatChecks | Where-Object { $_.Status -eq 'Fail' }).Count
+        $CatWarn   = @($CatChecks | Where-Object { $_.Status -eq 'Warning' }).Count
+        $ScoreStr  = if ($CatScore -ge 0) { "$CatScore%" } else { 'N/A' }
+        $catClr    = & $sClr $CatScore
+        $barPct    = if ($CatScore -ge 0) { [Math]::Max($CatScore, 2) } else { 0 }
+        $bgRow     = if ($catIdx % 2 -eq 0) { '#FFFFFF' } else { '#FAFAF9' }
+
+        [void]$h.Append("<tr style=`"background-color:$bgRow;`">")
+        [void]$h.Append("<td style=`"padding:8px 12px;font-weight:600;`">$(& $hesc $Cat)</td>")
+        [void]$h.Append("<td style=`"padding:8px 8px;text-align:right;font-weight:bold;color:$catClr;width:50px;`">$ScoreStr</td>")
+        [void]$h.Append("<td style=`"padding:8px 12px;width:120px;`"><table cellpadding=`"0`" cellspacing=`"0`" border=`"0`" width=`"100%`" style=`"background-color:#E1E1E1;`"><tr><td style=`"height:6px;width:$barPct%;background-color:$catClr;font-size:1px;`">&nbsp;</td><td style=`"height:6px;font-size:1px;`">&nbsp;</td></tr></table></td>")
+        [void]$h.Append("<td style=`"padding:8px 12px;font-size:12px;color:#8A8886;white-space:nowrap;`">$CatPass pass &#8226; $CatWarn warn &#8226; $CatFail fail</td>")
+        [void]$h.Append('</tr>')
+        $catIdx++
+    }
+    [void]$h.Append('</table></td></tr>')
+
+    # ── DIVIDER ──
+    [void]$h.Append('<tr><td style="padding:4px 32px;"><table width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="border-bottom:1px solid #EDEBE9;height:1px;font-size:1px;">&nbsp;</td></tr></table></td></tr>')
+
+    # ── MATURITY DIMENSIONS ──
+    [void]$h.Append('<tr><td style="padding:12px 32px 16px 32px;">')
+    [void]$h.Append('<div style="font-size:11px;font-weight:bold;color:#0078D4;padding-bottom:10px;">MATURITY DIMENSIONS</div>')
+    [void]$h.Append('<table cellpadding="0" cellspacing="0" border="0" width="100%" style="font-size:13px;">')
+    $dimIdx = 0
+    foreach ($Key in $Global:MaturityDimensions.Keys) {
+        $Dim    = $Global:MaturityDimensions[$Key]
+        $DScore = Get-DimensionScore $Key
+        $DStr   = if ($DScore -ge 0) { "$DScore%" } else { 'N/A' }
+        $DLevel = if ($DScore -ge 0) { Get-MaturityLevel $DScore } else { '' }
+        $dClr   = & $sClr $DScore
+        $bgRow  = if ($dimIdx % 2 -eq 0) { '#FFFFFF' } else { '#FAFAF9' }
+
+        [void]$h.Append("<tr style=`"background-color:$bgRow;`">")
+        [void]$h.Append("<td style=`"padding:6px 12px;`">$(& $hesc $Dim.Label)</td>")
+        [void]$h.Append("<td style=`"padding:6px 8px;text-align:right;font-weight:bold;color:$dClr;width:50px;`">$DStr</td>")
+        [void]$h.Append("<td style=`"padding:6px 12px;font-size:12px;color:#8A8886;`">$DLevel</td>")
+        [void]$h.Append('</tr>')
+        $dimIdx++
+    }
+    $Composite = Get-CompositeMaturityScore
+    if ($Composite -ge 0) {
+        $cClr = & $sClr $Composite
+        [void]$h.Append("<tr style=`"border-top:2px solid #EDEBE9;`"><td style=`"padding:8px 12px;font-weight:bold;`">Composite</td>")
+        [void]$h.Append("<td style=`"padding:8px 8px;text-align:right;font-weight:bold;color:$cClr;`">$Composite%</td>")
+        [void]$h.Append("<td style=`"padding:8px 12px;font-size:12px;font-weight:bold;color:$cClr;`">$(Get-MaturityLevel $Composite)</td></tr>")
+    }
+    [void]$h.Append('</table></td></tr>')
+
+    # ── DIVIDER ──
+    [void]$h.Append('<tr><td style="padding:4px 32px;"><table width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="border-bottom:1px solid #EDEBE9;height:1px;font-size:1px;">&nbsp;</td></tr></table></td></tr>')
+
+    # ── TOP FINDINGS ──
+    $critFails = @($Checks | Where-Object {
+        $_.Status -eq 'Fail' -and $_.Severity -in @('Critical','High')
+    } | Sort-Object @{E={if($_.Severity -eq 'Critical'){0}else{1}}}, Id)
+    if ($critFails.Count -gt 0) {
+        [void]$h.Append('<tr><td style="padding:12px 32px 16px 32px;">')
+        [void]$h.Append("<div style=`"font-size:11px;font-weight:bold;color:#0078D4;padding-bottom:10px;`">TOP FINDINGS ($($critFails.Count))</div>")
+        [void]$h.Append('<table cellpadding="0" cellspacing="0" border="0" width="100%" style="font-size:13px;">')
+        foreach ($f in $critFails) {
+            $sevBg = if ($f.Severity -eq 'Critical') { '#D13438' } else { '#CA5010' }
+            [void]$h.Append('<tr>')
+            [void]$h.Append("<td style=`"padding:6px 12px 6px 0;width:70px;vertical-align:top;`"><table cellpadding=`"0`" cellspacing=`"0`" border=`"0`"><tr><td style=`"background-color:$sevBg;color:#FFFFFF;padding:2px 8px;font-size:10px;font-weight:bold;`">$($f.Severity.ToUpper())</td></tr></table></td>")
+            [void]$h.Append("<td style=`"padding:6px 4px;`">$(& $hesc $f.Name)</td>")
+            [void]$h.Append("<td style=`"padding:6px 12px;color:#8A8886;font-size:11px;text-align:right;white-space:nowrap;vertical-align:top;`">$($f.Id)</td>")
+            [void]$h.Append('</tr>')
+        }
+        [void]$h.Append('</table>')
+
+        $medLowFails = @($Checks | Where-Object { $_.Status -eq 'Fail' -and $_.Severity -in @('Medium','Low') })
+        if ($medLowFails.Count -gt 0) {
+            $medCount = @($medLowFails | Where-Object { $_.Severity -eq 'Medium' }).Count
+            $lowCount = @($medLowFails | Where-Object { $_.Severity -eq 'Low' }).Count
+            [void]$h.Append("<div style=`"padding-top:8px;font-size:12px;color:#8A8886;`">+ $medCount medium and $lowCount low severity findings</div>")
+        }
+        [void]$h.Append('</td></tr>')
+        [void]$h.Append('<tr><td style="padding:4px 32px;"><table width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="border-bottom:1px solid #EDEBE9;height:1px;font-size:1px;">&nbsp;</td></tr></table></td></tr>')
+    }
+
+    # ── QUICK WINS ──
+    $quickWins = @($Checks | Where-Object {
+        $_.Status -eq 'Fail' -and ($DefLookup[$_.Id].effort -eq 'Quick Win' -or $_.effort -eq 'Quick Win')
+    } | Sort-Object @{E={switch($_.Severity){'Critical'{0}'High'{1}'Medium'{2}default{3}}}}, Id | Select-Object -First 5)
+    if ($quickWins.Count -gt 0) {
+        [void]$h.Append('<tr><td style="padding:12px 32px 16px 32px;">')
+        [void]$h.Append('<div style="font-size:11px;font-weight:bold;color:#0078D4;padding-bottom:10px;">QUICK WINS</div>')
+        $qi = 0
+        foreach ($qw in $quickWins) {
+            $qi++
+            $rem = if ($qw.remediation) { $qw.remediation } elseif ($DefLookup[$qw.Id].remediation) { $DefLookup[$qw.Id].remediation } else { $null }
+            [void]$h.Append("<div style=`"padding-bottom:8px;`"><span style=`"font-weight:bold;color:#323130;`">$qi.</span> $(& $hesc $qw.Name)")
+            if ($rem) {
+                $remText = if ($rem.Length -gt 120) { $rem.Substring(0,120) + '...' } else { $rem }
+                [void]$h.Append("<br><span style=`"font-size:12px;color:#8A8886;`">&#8594; $(& $hesc $remText)</span>")
+            }
+            [void]$h.Append('</div>')
+        }
+        [void]$h.Append('</td></tr>')
+    }
+
+    # ── FOOTER ──
+    [void]$h.Append(@"
+<tr><td style="padding:20px 32px;border-top:1px solid #EDEBE9;">
+<div style="font-size:11px;color:#8A8886;">Generated by AVD Assessor v$Global:AppVersion &#8226; Microsoft Confidential</div>
+<div style="font-size:10px;color:#A19F9D;padding-top:4px;">Score = weighted average: Critical(5&#215;), High(4&#215;), Medium(3&#215;), Low(2&#215;). Pass/N/A = 100pts, Warning = 50pts, Fail = 0pts.</div>
+</td></tr>
+"@)
+    [void]$h.Append('</table>')
+    return $h.ToString()
+}
+
 
 <#
 .SYNOPSIS
@@ -4692,6 +4909,79 @@ $Global:AchievementDefs = @(
 
 $Global:Achievements = @{}
 
+function Start-ConfettiAnimation {
+    if ($Global:AnimationsDisabled) { return }
+    if (-not $cnvConfetti) { return }
+    if ($cnvConfetti.Visibility -eq 'Visible') { return }
+    $W = $Window.ActualWidth
+    $H = $Window.ActualHeight
+    if ($W -le 0 -or $H -le 0) { return }
+
+    $cnvConfetti.Children.Clear()
+    $cnvConfetti.Visibility = 'Visible'
+
+    $Colors = @('#FF4444','#FFD700','#00C853','#60CDFF','#0078D4','#B388FF','#FF6D00','#E040FB')
+    $Rand   = [System.Random]::new()
+
+    for ($i = 0; $i -lt $Script:CONFETTI_COUNT; $i++) {
+        $Size = $Rand.Next(4, 10)
+        $Rect = [System.Windows.Shapes.Rectangle]::new()
+        $Rect.Width  = $Size
+        $Rect.Height = $Size * ($Rand.NextDouble() * 1.5 + 0.5)
+        $Rect.Fill   = $Global:CachedBC.ConvertFromString($Colors[$Rand.Next($Colors.Count)])
+        $Rect.RadiusX = if ($Rand.Next(3) -eq 0) { $Size / 2 } else { 1 }
+        $Rect.RadiusY = $Rect.RadiusX
+        $Rect.Opacity = 0.9
+        $Rect.RenderTransform = [System.Windows.Media.RotateTransform]::new($Rand.Next(360))
+
+        $X0 = $Rand.NextDouble() * $W
+        [System.Windows.Controls.Canvas]::SetLeft($Rect, $X0)
+        [System.Windows.Controls.Canvas]::SetTop($Rect, -20)
+        [void]$cnvConfetti.Children.Add($Rect)
+
+        # Fall
+        $Fall = [System.Windows.Media.Animation.DoubleAnimation]::new()
+        $Fall.From     = $Rand.Next(-40, -10)
+        $Fall.To       = $H + 20
+        $Fall.Duration = [System.Windows.Duration]::new([TimeSpan]::FromMilliseconds($Rand.Next(2000, 4500)))
+        $Ease = [System.Windows.Media.Animation.CubicEase]::new()
+        $Ease.EasingMode = 'EaseIn'
+        $Fall.EasingFunction = $Ease
+
+        # Horizontal drift
+        $Drift = [System.Windows.Media.Animation.DoubleAnimation]::new()
+        $Drift.From     = $X0
+        $Drift.To       = $X0 + $Rand.Next(-120, 120)
+        $Drift.Duration = $Fall.Duration
+
+        # Spin
+        $Spin = [System.Windows.Media.Animation.DoubleAnimation]::new()
+        $Spin.From     = 0
+        $Spin.To       = $Rand.Next(-720, 720)
+        $Spin.Duration = $Fall.Duration
+
+        $Rect.BeginAnimation([System.Windows.Controls.Canvas]::TopProperty, $Fall)
+        $Rect.BeginAnimation([System.Windows.Controls.Canvas]::LeftProperty, $Drift)
+        $Rect.RenderTransform.BeginAnimation([System.Windows.Media.RotateTransform]::AngleProperty, $Spin)
+    }
+
+    # Auto-cleanup
+    $CleanTimer = [System.Windows.Threading.DispatcherTimer]::new()
+    $CleanTimer.Interval = [TimeSpan]::FromMilliseconds($Script:CLEANUP_DELAY_MS)
+    $CleanTimer.Tag = $cnvConfetti
+    $CleanTimer.Add_Tick({
+        try {
+            $this.Tag.Children.Clear()
+            $this.Tag.Visibility = 'Collapsed'
+            $this.Stop()
+        } catch {
+            Write-DebugLog "[ConfettiTimer] CRASH: $($_.Exception.Message)" -Level 'ERROR'
+        }
+    })
+    $CleanTimer.Start()
+    Write-DebugLog 'Confetti animation started' -Level 'DEBUG'
+}
+
 <#
 .SYNOPSIS
     Unlocks a specific achievement if not already unlocked, shows a toast, and saves preferences.
@@ -4706,6 +4996,7 @@ function Unlock-Achievement {
     $Global:Achievements[$Id] = (Get-Date).ToString('o')
     Write-DebugLog "Achievement unlocked: $($Def.Name)" -Level 'SUCCESS'
     Show-Toast "$($Def.Icon) Achievement Unlocked: $($Def.Name) — $($Def.Desc)" -Type 'Success' -DurationMs 5000
+    Start-ConfettiAnimation
     Update-AchievementBadges
     Save-UserPrefs
 }
@@ -5216,7 +5507,7 @@ $btnExportHtml.Add_Click({ Export-HtmlReport })
 $btnExportCsv.Add_Click({ Export-CsvReport })
 $btnExportJson.Add_Click({ Export-JsonAssessment })
 
-# Copy summary to clipboard (RTF + plain text)
+# Copy summary to clipboard (HTML + RTF + plain text)
 $btnCopySummary.Add_Click({
     $Assessed = @($Global:Assessment.Checks | Where-Object { $_.Status -ne 'Not Assessed' }).Count
     if ($Assessed -eq 0) {
@@ -5224,13 +5515,28 @@ $btnCopySummary.Add_Click({
         return
     }
     try {
-        $plainText = Get-ExecutiveSummary
-        $rtfText   = Get-ExecutiveSummaryRtf
-        $dataObj   = New-Object System.Windows.DataObject
+        $plainText    = Get-ExecutiveSummary
+        $rtfText      = Get-ExecutiveSummaryRtf
+        $htmlFragment = Get-ExecutiveSummaryEmailHtml
+
+        # Build CF_HTML clipboard format with byte-offset header
+        $cfPre  = '<html><body><!--StartFragment-->'
+        $cfPost = '<!--EndFragment--></body></html>'
+        $cfHdr  = "Version:0.9`r`nStartHTML:0000000000`r`nEndHTML:0000000000`r`nStartFragment:0000000000`r`nEndFragment:0000000000`r`n"
+        $enc    = [System.Text.Encoding]::UTF8
+        $hLen   = $enc.GetByteCount($cfHdr)
+        $sH     = $hLen
+        $sF     = $sH + $enc.GetByteCount($cfPre)
+        $eF     = $sF + $enc.GetByteCount($htmlFragment)
+        $eH     = $eF + $enc.GetByteCount($cfPost)
+        $cfHtml = "Version:0.9`r`nStartHTML:$($sH.ToString('D10'))`r`nEndHTML:$($eH.ToString('D10'))`r`nStartFragment:$($sF.ToString('D10'))`r`nEndFragment:$($eF.ToString('D10'))`r`n$cfPre$htmlFragment$cfPost"
+
+        $dataObj = New-Object System.Windows.DataObject
+        $dataObj.SetData('HTML Format', $cfHtml)
         $dataObj.SetData([System.Windows.DataFormats]::Rtf, $rtfText)
         $dataObj.SetData([System.Windows.DataFormats]::UnicodeText, $plainText)
         [System.Windows.Clipboard]::SetDataObject($dataObj, $true)
-        Show-Toast 'Executive summary copied to clipboard (rich text)' -Type 'Success'
+        Show-Toast 'Executive summary copied to clipboard (HTML + RTF)' -Type 'Success'
     } catch {
         Show-Toast "Copy failed: $($_.Exception.Message)" -Type 'Error'
     }
