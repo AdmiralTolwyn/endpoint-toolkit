@@ -4229,46 +4229,28 @@ function Get-ExecutiveSummaryEmailHtml {
     # ══════════════════════════════════════════════════════════════════════
     # SCORE HERO — large score with circular-ish badge + maturity level
     # ══════════════════════════════════════════════════════════════════════
-    $ringBg = if ($Score -ge 80) { '#E6F2E6' } elseif ($Score -ge 50) { '#FDF0E6' } elseif ($Score -ge 0) { '#FBEAEA' } else { '#F3F2F1' }
     [void]$h.Append(@"
-<tr><td style="background-color:#FAFAF9;padding:32px 40px;">
+<tr><td style="background-color:#FAFAF9;padding:28px 40px;">
 <table cellpadding="0" cellspacing="0" border="0" width="100%"><tr>
-<td width="160" style="vertical-align:middle;">
-<table cellpadding="0" cellspacing="0" border="0" align="center"><tr><td align="center" valign="middle" style="background-color:$ringBg;width:140px;height:140px;text-align:center;vertical-align:middle;"><p style="Margin:0;font-size:72px;mso-ansi-font-size:72.0pt;mso-bidi-font-size:72.0pt;font-weight:normal;font-family:Segoe UI,Helvetica,Arial,sans-serif;color:$scoreColor;line-height:140px;text-align:center;">$scoreVal</p></td></tr></table>
+<td style="vertical-align:middle;">
+<p style="Margin:0;font-size:11px;color:#8A8886;font-weight:600;letter-spacing:1px;">OVERALL SCORE</p>
+<p style="Margin:0;font-size:28px;font-weight:bold;color:#242424;padding-top:4px;"><font color="$scoreColor" size="6"><b>$scoreVal</b></font><span style="font-size:16px;color:#8A8886;font-weight:normal;"> / 100</span></p>
+<p style="Margin:0;padding-top:10px;"><table cellpadding="0" cellspacing="0" border="0"><tr><td style="background-color:$scoreColor;color:#FFFFFF;padding:5px 16px;font-size:11px;font-weight:bold;letter-spacing:1px;">$($Maturity.ToUpper())</td></tr></table></p>
+<p style="Margin:0;padding-top:12px;font-size:12px;color:#8A8886;">$Assessed of $Total checks assessed</p>
 </td>
-<td style="vertical-align:middle;padding-left:24px;">
-<p style="Margin:0;font-size:12px;color:#8A8886;font-weight:600;letter-spacing:1px;">OVERALL SCORE</p>
-<p style="Margin:0;font-size:22px;font-weight:bold;color:#242424;padding-top:4px;">$scoreVal<span style="font-size:16px;color:#8A8886;font-weight:normal;"> / 100</span></p>
-<p style="Margin:0;padding-top:8px;"><table cellpadding="0" cellspacing="0" border="0"><tr><td style="background-color:$scoreColor;color:#FFFFFF;padding:4px 14px;font-size:11px;font-weight:bold;letter-spacing:1px;">$($Maturity.ToUpper())</td></tr></table></p>
-</td>
-<td style="vertical-align:middle;text-align:right;width:160px;">
-<p style="Margin:0;font-size:11px;color:#8A8886;font-weight:600;">ASSESSED</p>
-<p style="Margin:0;font-size:24px;font-weight:bold;color:#242424;">$Assessed<span style="font-size:14px;color:#8A8886;font-weight:normal;"> / $Total</span></p>
+<td style="vertical-align:middle;text-align:right;width:220px;">
+<table cellpadding="0" cellspacing="4" border="0" align="right">
+<tr><td style="text-align:right;font-size:11px;color:#8A8886;padding:4px 8px;">Pass</td><td style="background-color:#107C10;color:#FFFFFF;padding:4px 14px;font-size:13px;font-weight:bold;text-align:center;width:44px;"><font color="#FFFFFF"><b>$Pass</b></font></td></tr>
+<tr><td style="text-align:right;font-size:11px;color:#8A8886;padding:4px 8px;">Fail</td><td style="background-color:#D13438;color:#FFFFFF;padding:4px 14px;font-size:13px;font-weight:bold;text-align:center;width:44px;"><font color="#FFFFFF"><b>$Fail</b></font></td></tr>
+<tr><td style="text-align:right;font-size:11px;color:#8A8886;padding:4px 8px;">Warning</td><td style="background-color:#FFB900;color:#FFFFFF;padding:4px 14px;font-size:13px;font-weight:bold;text-align:center;width:44px;"><font color="#FFFFFF"><b>$Warn</b></font></td></tr>
+<tr><td style="text-align:right;font-size:11px;color:#8A8886;padding:4px 8px;">N/A</td><td style="background-color:#8A8886;color:#FFFFFF;padding:4px 14px;font-size:13px;font-weight:bold;text-align:center;width:44px;"><font color="#FFFFFF"><b>$NA</b></font></td></tr>
+</table>
 </td>
 </tr></table>
 </td></tr>
 "@)
 
-    # ══════════════════════════════════════════════════════════════════════
-    # STATUS COUNTER CARDS — 4 rounded stat cards
-    # ══════════════════════════════════════════════════════════════════════
-    [void]$h.Append('<tr><td style="padding:24px 36px 8px 36px;"><table cellpadding="0" cellspacing="6" border="0" width="100%"><tr>')
-    $cards = @(
-        @{ N=$Pass; L='Pass';    C='#107C10'; B='#E6F2E6'; Ic='&#10003;' }
-        @{ N=$Fail; L='Fail';    C='#D13438'; B='#FBEAEA'; Ic='&#10007;' }
-        @{ N=$Warn; L='Warning'; C='#CA5010'; B='#FDF0E6'; Ic='&#9888;'  }
-        @{ N=$NA;   L='N/A';     C='#8A8886'; B='#F3F2F1'; Ic='&#8212;'  }
-    )
-    foreach ($card in $cards) {
-        [void]$h.Append("<td width=`"25%`" style=`"background-color:$($card.B);padding:16px 8px;text-align:center;border-left:3px solid $($card.C);`">")
-        [void]$h.Append("<p style=`"Margin:0;font-size:30px;font-weight:bold;color:$($card.C);`"><font color=`"$($card.C)`" size=`"6`"><b>$($card.N)</b></font></p>")
-        [void]$h.Append("<p style=`"Margin:0;font-size:10px;color:$($card.C);font-weight:700;letter-spacing:1px;padding-top:2px;`"><font color=`"$($card.C)`">$($card.L.ToUpper())</font></p>")
-        [void]$h.Append('</td>')
-    }
-    [void]$h.Append('</tr></table></td></tr>')
-
-    # ── SPACER ──
-    [void]$h.Append('<tr><td style="height:8px;font-size:1px;">&nbsp;</td></tr>')
+    # ── DIVIDER ──
     [void]$h.Append($divider)
 
     # ══════════════════════════════════════════════════════════════════════
