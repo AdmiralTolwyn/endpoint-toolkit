@@ -4234,10 +4234,7 @@ function Get-ExecutiveSummaryEmailHtml {
 <tr><td style="background-color:#FAFAF9;padding:32px 40px;">
 <table cellpadding="0" cellspacing="0" border="0" width="100%"><tr>
 <td width="160" style="vertical-align:middle;">
-<table cellpadding="0" cellspacing="0" border="0" align="center"><tr><td align="center" valign="middle" style="background-color:$ringBg;width:140px;height:140px;text-align:center;vertical-align:middle;font-size:72px;font-family:Segoe UI,Helvetica,Arial,sans-serif;">
-<!--[if mso]><v:rect style="width:140px;height:140px;" stroked="f"><v:fill type="solid" color="$ringBg"/><v:textbox style="mso-fit-shape-to-text:false;" inset="0,0,0,0"><center><font size="7" color="$scoreColor" face="Segoe UI"><span style="font-size:72px;">$scoreVal</span></font></center></v:textbox></v:rect><![endif]-->
-<!--[if !mso]><!--><font color="$scoreColor" style="font-size:72px;font-weight:normal;line-height:140px;">$scoreVal</font><!--<![endif]-->
-</td></tr></table>
+<table cellpadding="0" cellspacing="0" border="0" align="center"><tr><td align="center" valign="middle" style="background-color:$ringBg;width:140px;height:140px;text-align:center;vertical-align:middle;font-size:72px;mso-ansi-font-size:72.0pt;font-weight:normal;font-family:Segoe UI,Helvetica,Arial,sans-serif;color:$scoreColor;line-height:140px;">$scoreVal</td></tr></table>
 </td>
 <td style="vertical-align:middle;padding-left:24px;">
 <p style="Margin:0;font-size:12px;color:#8A8886;font-weight:600;letter-spacing:1px;">OVERALL SCORE</p>
