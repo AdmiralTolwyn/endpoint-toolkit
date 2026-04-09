@@ -1364,8 +1364,8 @@ function Import-DiscoveryJson {
                 'NET-NATGW-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'NET-012' }
                 'GOV-SPACTIVE-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'GOV-010' }
                 'BCDR-MULTIREGION' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'BCDR-008' }
-                'MON-WSDIAG-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'MON-006' }
-                'MON-AGDIAG-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'MON-006' }
+                'MON-WSDIAG-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'MON-001' }
+                'MON-AGDIAG-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'MON-001' }
                 'MON-DEFENDER' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'MON-011' }
                 'PROF-SMBVER-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'PROF-020' }
                 'PROF-KERB-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'PROF-022' }

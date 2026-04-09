@@ -1,4 +1,4 @@
-{
+﻿{
   "_metadata": {
     "version": "1.0",
     "description": "AVD Assessor check definitions — CAF/WAF/LZA/SEC/FSL best practices",
@@ -479,8 +479,8 @@
     {
       "id": "MON-001",
       "category": "Monitoring",
-      "name": "Diagnostic Settings Enabled",
-      "description": "Host pool diagnostic settings must forward checkpoint, error, management, connection, and host registration logs to a Log Analytics workspace for troubleshooting, alerting, and AVD Insights dashboard population",
+      "name": "Diagnostic Settings Coverage",
+      "description": "All AVD resource types (host pools, workspaces, application groups) must have diagnostic settings forwarding checkpoint, error, management, connection, and host registration logs to a Log Analytics workspace for troubleshooting, alerting, and AVD Insights dashboard population",
       "severity": "High",
       "type": "Auto",
       "weight": 4,
@@ -537,7 +537,7 @@
       "type": "Manual",
       "weight": 3,
       "origin": "WAF",
-      "reference": "https://learn.microsoft.com/en-us/azure/virtual-desktop/set-up-scaling-script",
+      "reference": "https://learn.microsoft.com/en-us/azure/azure-monitor/best-practices-alerts",
       "effort": "Some Effort"
     },
     {
@@ -1142,18 +1142,6 @@
       "origin": "AVD",
       "reference": "https://learn.microsoft.com/en-us/azure/virtual-desktop/multimedia-redirection-video-playback-calls",
       "effort": "Some Effort"
-    },
-    {
-      "id": "MON-006",
-      "category": "Monitoring",
-      "name": "Diagnostic Coverage Complete",
-      "description": "All AVD resource types (host pools, workspaces, application groups) should have diagnostic settings enabled. Missing diagnostics on any resource creates blind spots in connection troubleshooting and audit trails",
-      "severity": "High",
-      "type": "Auto",
-      "weight": 4,
-      "origin": "WAF",
-      "reference": "https://learn.microsoft.com/en-us/azure/virtual-desktop/diagnostics-log-analytics",
-      "effort": "Quick Win"
     },
     {
       "id": "MON-007",
