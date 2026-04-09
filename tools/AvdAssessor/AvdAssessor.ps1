@@ -3122,7 +3122,25 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);line-height:
 
 @media(max-width:900px){.summary{grid-template-columns:repeat(2,1fr)}.container{padding:16px}.toolbar{padding:10px 16px;flex-wrap:wrap}.maturity-header{flex-direction:column;align-items:stretch;text-align:center}.maturity-dims{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:600px){.maturity-dims{grid-template-columns:1fr}}
-@media print{.toolbar{position:static}.btn{display:none}body{background:#fff;color:#000}.stat-card,.section-header,.check-table th{background:#f5f5f5;border-color:#ddd}.stat-card .num,.section-header{color:#000}td{border-color:#ddd}.section-content{display:block!important}}
+/* Search & Filter bar */
+.filter-bar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:10px 24px;background:var(--surface);border-bottom:1px solid var(--border)}
+.filter-bar input[type=text]{flex:1;min-width:180px;padding:6px 12px;border:1px solid var(--border);border-radius:var(--radius-xs);background:var(--card);color:var(--text-bright);font-size:12px;outline:none}
+.filter-bar input[type=text]:focus{border-color:var(--accent)}
+.filter-pill{padding:4px 10px;border-radius:12px;font-size:11px;font-weight:600;cursor:pointer;border:1px solid var(--border);background:var(--surface);color:var(--text-dim);transition:all 0.15s}
+.filter-pill:hover{border-color:var(--accent);color:var(--text-bright)}
+.filter-pill.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.filter-pill.active.pill-pass{background:var(--green);border-color:var(--green)}
+.filter-pill.active.pill-fail{background:var(--red);border-color:var(--red)}
+.filter-pill.active.pill-warning{background:var(--orange);border-color:var(--orange)}
+.filter-pill.active.pill-na{background:var(--accent);border-color:var(--accent)}
+.filter-pill.active.pill-crit{background:var(--red);border-color:var(--red)}
+.filter-pill.active.pill-high{background:var(--orange);border-color:var(--orange)}
+.filter-pill.active.pill-med{background:#6b6b6b;border-color:#6b6b6b}
+.filter-pill.active.pill-low{background:var(--text-faint);border-color:var(--text-faint)}
+.filter-count{font-size:11px;color:var(--text-faint);margin-left:4px}
+.filter-sep{width:1px;height:18px;background:var(--border);margin:0 4px}
+tr.filter-hidden{display:none}
+@media print{.toolbar{position:static}.btn{display:none}.filter-bar{display:none}body{background:#fff;color:#000}.stat-card,.section-header,.check-table th{background:#f5f5f5;border-color:#ddd}.stat-card .num,.section-header{color:#000}td{border-color:#ddd}.section-content{display:block!important}}
 
 /* Maturity Section */
 .maturity-section{margin-bottom:36px}
@@ -3194,6 +3212,20 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);line-height:
   <button class="btn" onclick="var s=document.getElementsByClassName('section-content');for(var i=0;i<s.length;i++){s[i].className='section-content open'};var h=document.getElementsByClassName('section-header');for(var j=0;j<h.length;j++){h[j].className='section-header open'}">Expand</button>
   <button class="btn" onclick="var s=document.getElementsByClassName('section-content open');while(s.length>0){s[0].className='section-content'};var h=document.getElementsByClassName('section-header open');while(h.length>0){h[0].className='section-header'}">Collapse</button>
   <button class="btn" onclick="window.print()">Print</button>
+</div>
+<div class="filter-bar">
+  <input type="text" id="searchBox" placeholder="Search checks by name, ID, or details…" oninput="applyFilters()">
+  <div class="filter-sep"></div>
+  <span class="filter-pill pill-pass" onclick="togglePill(this,'status','Pass')">Pass</span>
+  <span class="filter-pill pill-fail" onclick="togglePill(this,'status','Fail')">Fail</span>
+  <span class="filter-pill pill-warning" onclick="togglePill(this,'status','Warning')">Warning</span>
+  <span class="filter-pill pill-na" onclick="togglePill(this,'status','N/A')">N/A</span>
+  <div class="filter-sep"></div>
+  <span class="filter-pill pill-crit" onclick="togglePill(this,'sev','Critical')">Critical</span>
+  <span class="filter-pill pill-high" onclick="togglePill(this,'sev','High')">High</span>
+  <span class="filter-pill pill-med" onclick="togglePill(this,'sev','Medium')">Medium</span>
+  <span class="filter-pill pill-low" onclick="togglePill(this,'sev','Low')">Low</span>
+  <span class="filter-count" id="filterCount"></span>
 </div>
 <div class="container">
 
@@ -3503,7 +3535,7 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);line-height:
                 }) -join ''
             } else { '' }
 
-            [void]$html.Append("<tr$RowClass>")
+            [void]$html.Append("<tr$RowClass data-status='$($Check.Status)' data-sev='$($Check.Severity)'>")
             [void]$html.Append("<td>$($Check.Id)</td>")
             [void]$html.Append("<td><strong>$(& $enc $Check.Name)</strong>$ExclTag<br><small style='color:var(--text-dim)'>$(& $enc $Check.Description)</small></td>")
             [void]$html.Append("<td><span class='status-badge $StatusClass'>$($Check.Status)</span></td>")
@@ -3754,7 +3786,7 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);line-height:
     # Footer
     [void]$html.Append(@"
 <div class="footer">
-  <div><span class="footer-dot"></span>Generated by AVD Assessor v$Global:AppVersion on $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') &middot; Maturity: <strong>$MatLevel</strong> ($Composite%)</div>
+  <div><span class="footer-dot"></span>Generated by AVD Assessor v$Global:AppVersion on $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') &middot; Overall: <strong>$(Get-MaturityLevel $Overall)</strong> ($Overall%)</div>
   <div>
     <a href="https://learn.microsoft.com/en-us/azure/well-architected/azure-virtual-desktop/">WAF</a> &middot;
     <a href="https://learn.microsoft.com/en-us/azure/cloud-adoption-framework/scenarios/azure-virtual-desktop/">CAF</a> &middot;
@@ -3772,6 +3804,39 @@ for (var i = 0; i < cols.length; i++) {
         var next = this.nextElementSibling;
         if (next) { next.className = next.className.indexOf('open') >= 0 ? 'section-content' : 'section-content open'; }
     };
+}
+var activeFilters = { status: [], sev: [] };
+function togglePill(el, group, val) {
+    var idx = activeFilters[group].indexOf(val);
+    if (idx >= 0) { activeFilters[group].splice(idx, 1); el.className = el.className.replace(' active', ''); }
+    else { activeFilters[group].push(val); el.className += ' active'; }
+    applyFilters();
+}
+function applyFilters() {
+    var q = (document.getElementById('searchBox').value || '').toLowerCase();
+    var rows = document.querySelectorAll('tr[data-status]');
+    var shown = 0, total = rows.length;
+    for (var i = 0; i < rows.length; i++) {
+        var r = rows[i];
+        var st = r.getAttribute('data-status');
+        var sv = r.getAttribute('data-sev');
+        var txt = r.textContent.toLowerCase();
+        var vis = true;
+        if (activeFilters.status.length > 0 && activeFilters.status.indexOf(st) < 0) vis = false;
+        if (activeFilters.sev.length > 0 && activeFilters.sev.indexOf(sv) < 0) vis = false;
+        if (q && txt.indexOf(q) < 0) vis = false;
+        if (vis) { r.className = r.className.replace(' filter-hidden', ''); shown++; }
+        else { if (r.className.indexOf('filter-hidden') < 0) r.className += ' filter-hidden'; }
+    }
+    var fc = document.getElementById('filterCount');
+    if (q || activeFilters.status.length || activeFilters.sev.length) {
+        fc.textContent = shown + ' / ' + total + ' checks';
+        var secs = document.getElementsByClassName('section-content');
+        var hdrs = document.getElementsByClassName('section-header');
+        for (var j = 0; j < secs.length; j++) {
+            if (secs[j].className.indexOf('open') < 0) { secs[j].className += ' open'; hdrs[j].className += ' open'; }
+        }
+    } else { fc.textContent = ''; }
 }
 </script>
 </body></html>
