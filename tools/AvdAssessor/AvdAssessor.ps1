@@ -1030,6 +1030,7 @@ foreach ($Def in $Global:CheckDefinitions) {
         Details        = ''
         Notes          = ''
         Source         = $Def.type           # Auto or Manual
+        Effort         = $Def.effort         # Quick Win, Some Effort, Major Effort
     })
 }
 
@@ -4480,9 +4481,10 @@ function Load-Assessment {
                     [void]$Global:Assessment.Checks.Add([PSCustomObject]@{
                         Id=$Def.id;Category=$Def.category;Name=$Def.name;Description=$Def.description
                         Severity=$Def.severity;Type=$Def.type;Weight=[int]$Def.weight;Reference=$Def.reference
-                        Origin=$Def.origin;Status='Not Assessed';Excluded=$false;Details='';Notes='';Source=$Def.type
+                        Origin=$Def.origin;Status='Not Assessed';Excluded=$false;Details='';Notes='';Source=$Def.type;Effort=$Def.effort
                     })
                 }
+                Sync-CheckDefinitions
                 $Global:ActiveFilePath = $null
                 $txtAssessmentDate.Text = $Global:Assessment.Date
                 Import-DiscoveryJson -Path $dlg.FileName
@@ -4498,7 +4500,7 @@ function Load-Assessment {
                         [void]$Global:Assessment.Checks.Add([PSCustomObject]@{
                             Id=$Def.id;Category=$Def.category;Name=$Def.name;Description=$Def.description
                             Severity=$Def.severity;Type=$Def.type;Weight=[int]$Def.weight;Reference=$Def.reference
-                            Origin=$Def.origin;Status='Not Assessed';Excluded=$false;Details='';Notes='';Source=$Def.type
+                            Origin=$Def.origin;Status='Not Assessed';Excluded=$false;Details='';Notes='';Source=$Def.type;Effort=$Def.effort
                         })
                     }
                 }
@@ -5385,7 +5387,7 @@ if ($RestorePath) {
                         [void]$Global:Assessment.Checks.Add([PSCustomObject]@{
                             Id=$Def.id; Category=$Def.category; Name=$Def.name; Description=$Def.description
                             Severity=$Def.severity; Type=$Def.type; Weight=[int]$Def.weight; Reference=$Def.reference
-                            Origin=$Def.origin; Status='Not Assessed'; Excluded=$false; Details=''; Notes=''; Source=$Def.type
+                            Origin=$Def.origin; Status='Not Assessed'; Excluded=$false; Details=''; Notes=''; Source=$Def.type; Effort=$Def.effort
                         })
                         $Added++
                     }

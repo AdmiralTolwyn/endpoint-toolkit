@@ -1638,18 +1638,6 @@
       "effort": "Quick Win"
     },
     {
-      "id": "OPS-001",
-      "category": "Operations",
-      "name": "Operations Baseline Established",
-      "description": "Azure server management services baseline (Azure Update Manager, Azure Monitor, Azure Automation, Defender for Cloud) should be established as the foundation for operational management of session hosts",
-      "severity": "Medium",
-      "type": "Manual",
-      "weight": 3,
-      "origin": "WAF",
-      "reference": "https://learn.microsoft.com/en-us/azure/cloud-adoption-framework/manage/azure-server-management/",
-      "effort": "Some Effort"
-    },
-    {
       "id": "OPS-002",
       "category": "Operations",
       "name": "VM Token Expiration Risk",
