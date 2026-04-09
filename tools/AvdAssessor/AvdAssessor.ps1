@@ -4173,7 +4173,7 @@ function Get-ExecutiveSummaryRtf {
 
 function Get-ExecutiveSummaryEmailHtml {
     <#
-    .SYNOPSIS  Outlook-safe HTML executive summary for clipboard paste into email/Teams.
+    .SYNOPSIS  Microsoft newsletter-style HTML executive summary for clipboard paste into Outlook/Teams.
     #>
     $Checks   = $Global:Assessment.Checks
     $Score    = Get-OverallScore
@@ -4195,79 +4195,127 @@ function Get-ExecutiveSummaryEmailHtml {
     $custName   = & $hesc $(if ($Global:Assessment.CustomerName) { $Global:Assessment.CustomerName } else { 'Assessment' })
     $scoreColor = & $sClr $Score
     $scoreVal   = if ($Score -ge 0) { "$Score" } else { '&mdash;' }
+    $dateStr    = Get-Date -Format 'MMMM d, yyyy'
+
+    # ── Helper: section divider ──
+    $divider = '<tr><td style="padding:0 40px;"><table width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="border-bottom:1px solid #E1DFDD;height:1px;font-size:1px;">&nbsp;</td></tr></table></td></tr>'
 
     $h = [System.Text.StringBuilder]::new()
 
-    # ── OUTER WRAPPER ──
-    [void]$h.Append('<table cellpadding="0" cellspacing="0" border="0" width="680" style="font-family:Segoe UI,Helvetica,Arial,sans-serif;color:#323130;font-size:14px;">')
+    # ── OUTER WRAPPER (centered, max-width 680) ──
+    [void]$h.Append('<table cellpadding="0" cellspacing="0" border="0" width="680" align="center" style="font-family:Segoe UI,Helvetica,Arial,sans-serif;color:#242424;font-size:14px;border:1px solid #E1DFDD;">')
 
-    # ── BLUE HEADER BANNER ──
+    # ══════════════════════════════════════════════════════════════════════
+    # HERO HEADER — dark gradient-style banner with Microsoft color bars
+    # ══════════════════════════════════════════════════════════════════════
     [void]$h.Append(@"
-<tr><td style="background-color:#0078D4;padding:24px 32px;">
+<tr><td style="padding:0;">
 <table cellpadding="0" cellspacing="0" border="0" width="100%">
-<tr><td style="font-size:11px;color:#B4D6FA;font-weight:600;">M I C R O S O F T&#160;&#160;&#8226;&#160;&#160;A Z U R E&#160;&#160;V I R T U A L&#160;&#160;D E S K T O P</td></tr>
-<tr><td style="font-size:26px;font-weight:bold;color:#FFFFFF;padding-top:8px;">$custName</td></tr>
-<tr><td style="font-size:12px;color:#B4D6FA;padding-top:6px;">Assessment Report &#8226; $(Get-Date -Format 'MMMM d, yyyy')</td></tr>
+<tr>
+<td width="25%" style="height:4px;background-color:#F25022;font-size:1px;">&nbsp;</td>
+<td width="25%" style="height:4px;background-color:#7FBA00;font-size:1px;">&nbsp;</td>
+<td width="25%" style="height:4px;background-color:#00A4EF;font-size:1px;">&nbsp;</td>
+<td width="25%" style="height:4px;background-color:#FFB900;font-size:1px;">&nbsp;</td>
+</tr></table>
+</td></tr>
+<tr><td style="background-color:#0F1B2D;padding:36px 40px 32px 40px;">
+<table cellpadding="0" cellspacing="0" border="0" width="100%">
+<tr><td style="font-size:11px;color:#6B93C0;letter-spacing:3px;font-weight:600;padding-bottom:14px;">MICROSOFT &#160;&#8226;&#160; AZURE VIRTUAL DESKTOP</td></tr>
+<tr><td style="font-size:30px;font-weight:bold;color:#FFFFFF;line-height:36px;">$custName</td></tr>
+<tr><td style="font-size:13px;color:#6B93C0;padding-top:10px;">Assessment Report &#160;&#8226;&#160; $dateStr</td></tr>
 </table></td></tr>
 "@)
 
-    # ── SCORE SECTION ──
+    # ══════════════════════════════════════════════════════════════════════
+    # SCORE HERO — large score with circular-ish badge + maturity level
+    # ══════════════════════════════════════════════════════════════════════
+    $ringBg = if ($Score -ge 80) { '#E6F2E6' } elseif ($Score -ge 50) { '#FDF0E6' } elseif ($Score -ge 0) { '#FBEAEA' } else { '#F3F2F1' }
     [void]$h.Append(@"
-<tr><td style="padding:28px 32px 0 32px;">
+<tr><td style="background-color:#FAFAF9;padding:32px 40px;">
 <table cellpadding="0" cellspacing="0" border="0" width="100%"><tr>
-<td style="vertical-align:bottom;"><span style="font-size:56px;font-weight:bold;color:${scoreColor};">$scoreVal</span><span style="font-size:22px;color:#8A8886;"> / 100</span></td>
-<td style="vertical-align:bottom;text-align:right;"><table cellpadding="0" cellspacing="0" border="0"><tr><td style="background-color:${scoreColor};color:#FFFFFF;padding:5px 16px;font-size:12px;font-weight:bold;">$($Maturity.ToUpper())</td></tr></table></td>
-</tr></table></td></tr>
+<td width="120" style="vertical-align:middle;">
+<table cellpadding="0" cellspacing="0" border="0" align="center"><tr><td style="background-color:$ringBg;width:100px;height:100px;text-align:center;vertical-align:middle;">
+<div style="font-size:48px;font-weight:bold;color:$scoreColor;line-height:100px;">$scoreVal</div>
+</td></tr></table>
+</td>
+<td style="vertical-align:middle;padding-left:24px;">
+<div style="font-size:12px;color:#8A8886;font-weight:600;letter-spacing:1px;">OVERALL SCORE</div>
+<div style="font-size:22px;font-weight:bold;color:#242424;padding-top:4px;">$scoreVal<span style="font-size:16px;color:#8A8886;font-weight:normal;"> / 100</span></div>
+<div style="padding-top:8px;"><table cellpadding="0" cellspacing="0" border="0"><tr><td style="background-color:$scoreColor;color:#FFFFFF;padding:4px 14px;font-size:11px;font-weight:bold;letter-spacing:1px;">$($Maturity.ToUpper())</td></tr></table></div>
+</td>
+<td style="vertical-align:middle;text-align:right;width:160px;">
+<div style="font-size:11px;color:#8A8886;font-weight:600;">ASSESSED</div>
+<div style="font-size:24px;font-weight:bold;color:#242424;">$Assessed<span style="font-size:14px;color:#8A8886;font-weight:normal;"> / $Total</span></div>
+</td>
+</tr></table>
+</td></tr>
 "@)
 
-    # ── STATUS COUNTER CARDS ──
-    [void]$h.Append('<tr><td style="padding:20px 28px 4px 28px;"><table cellpadding="0" cellspacing="8" border="0" width="100%"><tr>')
+    # ══════════════════════════════════════════════════════════════════════
+    # STATUS COUNTER CARDS — 4 rounded stat cards
+    # ══════════════════════════════════════════════════════════════════════
+    [void]$h.Append('<tr><td style="padding:24px 36px 8px 36px;"><table cellpadding="0" cellspacing="6" border="0" width="100%"><tr>')
     $cards = @(
-        @{ N=$Pass; L='Pass';    C='#107C10'; B='#E6F2E6' }
-        @{ N=$Fail; L='Fail';    C='#D13438'; B='#FBEAEA' }
-        @{ N=$Warn; L='Warning'; C='#CA5010'; B='#FDF0E6' }
-        @{ N=$NA;   L='N/A';     C='#8A8886'; B='#F3F2F1' }
+        @{ N=$Pass; L='Pass';    C='#107C10'; B='#E6F2E6'; Ic='&#10003;' }
+        @{ N=$Fail; L='Fail';    C='#D13438'; B='#FBEAEA'; Ic='&#10007;' }
+        @{ N=$Warn; L='Warning'; C='#CA5010'; B='#FDF0E6'; Ic='&#9888;'  }
+        @{ N=$NA;   L='N/A';     C='#8A8886'; B='#F3F2F1'; Ic='&#8212;'  }
     )
     foreach ($card in $cards) {
-        [void]$h.Append("<td width=`"25%`" style=`"background-color:$($card.B);padding:14px 16px;text-align:center;`">")
-        [void]$h.Append("<div style=`"font-size:28px;font-weight:bold;color:$($card.C);`">$($card.N)</div>")
-        [void]$h.Append("<div style=`"font-size:11px;color:$($card.C);font-weight:600;`">$($card.L)</div>")
+        [void]$h.Append("<td width=`"25%`" style=`"background-color:$($card.B);padding:16px 8px;text-align:center;border-left:3px solid $($card.C);`">")
+        [void]$h.Append("<div style=`"font-size:30px;font-weight:bold;color:$($card.C);`">$($card.N)</div>")
+        [void]$h.Append("<div style=`"font-size:10px;color:$($card.C);font-weight:700;letter-spacing:1px;padding-top:2px;`">$($card.L.ToUpper())</div>")
         [void]$h.Append('</td>')
     }
     [void]$h.Append('</tr></table></td></tr>')
-    [void]$h.Append("<tr><td style=`"padding:0 32px 16px 32px;text-align:center;font-size:12px;color:#8A8886;`">$Assessed of $Total checks assessed</td></tr>")
 
-    # ── DIVIDER ──
-    [void]$h.Append('<tr><td style="padding:0 32px;"><table width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="border-bottom:1px solid #EDEBE9;height:1px;font-size:1px;">&nbsp;</td></tr></table></td></tr>')
+    # ── SPACER ──
+    [void]$h.Append('<tr><td style="height:8px;font-size:1px;">&nbsp;</td></tr>')
+    [void]$h.Append($divider)
 
-    # ── ENVIRONMENT ──
+    # ══════════════════════════════════════════════════════════════════════
+    # ENVIRONMENT — metrics row with icons
+    # ══════════════════════════════════════════════════════════════════════
     if ($Global:Assessment.Discovery -and $Global:Assessment.Discovery.Inventory) {
         $Inv = $Global:Assessment.Discovery.Inventory
-        [void]$h.Append('<tr><td style="padding:16px 32px 8px 32px;">')
-        [void]$h.Append('<div style="font-size:11px;font-weight:bold;color:#0078D4;padding-bottom:10px;">ENVIRONMENT</div>')
+        [void]$h.Append('<tr><td style="padding:20px 40px 16px 40px;">')
+        [void]$h.Append('<div style="font-size:11px;font-weight:bold;color:#0078D4;letter-spacing:1px;padding-bottom:14px;">&#9729; &#160;ENVIRONMENT</div>')
         [void]$h.Append('<table cellpadding="0" cellspacing="0" border="0" width="100%"><tr>')
         $envItems = @(
-            @{ N=$Inv.HostPools.Count;    L='Host Pools' }
-            @{ N=$Inv.SessionHosts.Count; L='Session Hosts' }
-            @{ N=$Inv.AppGroups.Count;    L='App Groups' }
-            @{ N=$Inv.Workspaces.Count;   L='Workspaces' }
+            @{ N=$Inv.HostPools.Count;    L='Host Pools';    Ic='&#9632;' }
+            @{ N=$Inv.SessionHosts.Count; L='Session Hosts'; Ic='&#9654;' }
+            @{ N=$Inv.AppGroups.Count;    L='App Groups';    Ic='&#9830;' }
+            @{ N=$Inv.Workspaces.Count;   L='Workspaces';    Ic='&#9733;' }
         )
         foreach ($ei in $envItems) {
-            [void]$h.Append("<td style=`"padding-right:24px;`"><span style=`"font-size:20px;font-weight:bold;color:#323130;`">$($ei.N)</span> <span style=`"font-size:12px;color:#8A8886;`">$($ei.L)</span></td>")
+            [void]$h.Append("<td style=`"padding:8px 12px;text-align:center;background-color:#F5F5F5;border-right:2px solid #FFFFFF;`">")
+            [void]$h.Append("<div style=`"font-size:22px;font-weight:bold;color:#242424;`">$($ei.N)</div>")
+            [void]$h.Append("<div style=`"font-size:10px;color:#8A8886;font-weight:600;letter-spacing:0.5px;padding-top:2px;`">$($ei.L.ToUpper())</div>")
+            [void]$h.Append('</td>')
         }
         [void]$h.Append('</tr></table>')
         if ($Global:Assessment.Discovery.Subscriptions) {
             $subNames = ($Global:Assessment.Discovery.Subscriptions | ForEach-Object { & $hesc $_.Name }) -join ', '
-            [void]$h.Append("<div style=`"font-size:12px;color:#8A8886;padding-top:6px;`">$($Global:Assessment.Discovery.Subscriptions.Count) subscription(s): $subNames</div>")
+            [void]$h.Append("<div style=`"font-size:12px;color:#8A8886;padding-top:10px;`">&#128275; $($Global:Assessment.Discovery.Subscriptions.Count) subscription(s): $subNames</div>")
         }
         [void]$h.Append('</td></tr>')
-        [void]$h.Append('<tr><td style="padding:8px 32px;"><table width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="border-bottom:1px solid #EDEBE9;height:1px;font-size:1px;">&nbsp;</td></tr></table></td></tr>')
+        [void]$h.Append($divider)
     }
 
-    # ── CATEGORIES TABLE ──
-    [void]$h.Append('<tr><td style="padding:12px 32px 16px 32px;">')
-    [void]$h.Append('<div style="font-size:11px;font-weight:bold;color:#0078D4;padding-bottom:10px;">CATEGORIES</div>')
+    # ══════════════════════════════════════════════════════════════════════
+    # CATEGORIES — polished table with gradient-style progress bars
+    # ══════════════════════════════════════════════════════════════════════
+    [void]$h.Append('<tr><td style="padding:20px 40px 16px 40px;">')
+    [void]$h.Append('<div style="font-size:11px;font-weight:bold;color:#0078D4;letter-spacing:1px;padding-bottom:14px;">&#9776; &#160;CATEGORY BREAKDOWN</div>')
     [void]$h.Append('<table cellpadding="0" cellspacing="0" border="0" width="100%" style="font-size:13px;">')
+    # Table header
+    [void]$h.Append('<tr style="background-color:#F5F5F5;">')
+    [void]$h.Append('<td style="padding:8px 12px;font-size:10px;font-weight:bold;color:#8A8886;letter-spacing:1px;">CATEGORY</td>')
+    [void]$h.Append('<td style="padding:8px 8px;font-size:10px;font-weight:bold;color:#8A8886;letter-spacing:1px;text-align:right;width:55px;">SCORE</td>')
+    [void]$h.Append('<td style="padding:8px 12px;font-size:10px;font-weight:bold;color:#8A8886;letter-spacing:1px;width:130px;">PROGRESS</td>')
+    [void]$h.Append('<td style="padding:8px 12px;font-size:10px;font-weight:bold;color:#8A8886;letter-spacing:1px;">BREAKDOWN</td>')
+    [void]$h.Append('</tr>')
+
     $catIdx = 0
     foreach ($Cat in (Get-Categories)) {
         $CatScore  = Get-CategoryScore $Cat
@@ -4281,21 +4329,21 @@ function Get-ExecutiveSummaryEmailHtml {
         $bgRow     = if ($catIdx % 2 -eq 0) { '#FFFFFF' } else { '#FAFAF9' }
 
         [void]$h.Append("<tr style=`"background-color:$bgRow;`">")
-        [void]$h.Append("<td style=`"padding:8px 12px;font-weight:600;`">$(& $hesc $Cat)</td>")
-        [void]$h.Append("<td style=`"padding:8px 8px;text-align:right;font-weight:bold;color:$catClr;width:50px;`">$ScoreStr</td>")
-        [void]$h.Append("<td style=`"padding:8px 12px;width:120px;`"><table cellpadding=`"0`" cellspacing=`"0`" border=`"0`" width=`"100%`" style=`"background-color:#E1E1E1;`"><tr><td style=`"height:6px;width:$barPct%;background-color:$catClr;font-size:1px;`">&nbsp;</td><td style=`"height:6px;font-size:1px;`">&nbsp;</td></tr></table></td>")
-        [void]$h.Append("<td style=`"padding:8px 12px;font-size:12px;color:#8A8886;white-space:nowrap;`">$CatPass pass &#8226; $CatWarn warn &#8226; $CatFail fail</td>")
+        [void]$h.Append("<td style=`"padding:10px 12px;font-weight:600;border-left:3px solid $catClr;`">$(& $hesc $Cat)</td>")
+        [void]$h.Append("<td style=`"padding:10px 8px;text-align:right;font-weight:bold;color:$catClr;`">$ScoreStr</td>")
+        [void]$h.Append("<td style=`"padding:10px 12px;`"><table cellpadding=`"0`" cellspacing=`"0`" border=`"0`" width=`"100%`" style=`"background-color:#E1DFDD;`"><tr><td style=`"height:8px;width:$barPct%;background-color:$catClr;font-size:1px;`">&nbsp;</td><td style=`"height:8px;font-size:1px;`">&nbsp;</td></tr></table></td>")
+        [void]$h.Append("<td style=`"padding:10px 12px;font-size:11px;color:#8A8886;white-space:nowrap;`"><span style=`"color:#107C10;`">&#9679;</span> $CatPass &#160;<span style=`"color:#CA5010;`">&#9679;</span> $CatWarn &#160;<span style=`"color:#D13438;`">&#9679;</span> $CatFail</td>")
         [void]$h.Append('</tr>')
         $catIdx++
     }
     [void]$h.Append('</table></td></tr>')
+    [void]$h.Append($divider)
 
-    # ── DIVIDER ──
-    [void]$h.Append('<tr><td style="padding:4px 32px;"><table width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="border-bottom:1px solid #EDEBE9;height:1px;font-size:1px;">&nbsp;</td></tr></table></td></tr>')
-
-    # ── MATURITY DIMENSIONS ──
-    [void]$h.Append('<tr><td style="padding:12px 32px 16px 32px;">')
-    [void]$h.Append('<div style="font-size:11px;font-weight:bold;color:#0078D4;padding-bottom:10px;">MATURITY DIMENSIONS</div>')
+    # ══════════════════════════════════════════════════════════════════════
+    # MATURITY DIMENSIONS — clean table with level badges
+    # ══════════════════════════════════════════════════════════════════════
+    [void]$h.Append('<tr><td style="padding:20px 40px 16px 40px;">')
+    [void]$h.Append('<div style="font-size:11px;font-weight:bold;color:#0078D4;letter-spacing:1px;padding-bottom:14px;">&#9670; &#160;MATURITY DIMENSIONS</div>')
     [void]$h.Append('<table cellpadding="0" cellspacing="0" border="0" width="100%" style="font-size:13px;">')
     $dimIdx = 0
     foreach ($Key in $Global:MaturityDimensions.Keys) {
@@ -4304,41 +4352,75 @@ function Get-ExecutiveSummaryEmailHtml {
         $DStr   = if ($DScore -ge 0) { "$DScore%" } else { 'N/A' }
         $DLevel = if ($DScore -ge 0) { Get-MaturityLevel $DScore } else { '' }
         $dClr   = & $sClr $DScore
+        $dBg    = if ($DScore -ge 80) { '#E6F2E6' } elseif ($DScore -ge 50) { '#FDF0E6' } elseif ($DScore -ge 0) { '#FBEAEA' } else { '#F3F2F1' }
         $bgRow  = if ($dimIdx % 2 -eq 0) { '#FFFFFF' } else { '#FAFAF9' }
+        $barPct = if ($DScore -ge 0) { [Math]::Max($DScore, 2) } else { 0 }
 
         [void]$h.Append("<tr style=`"background-color:$bgRow;`">")
-        [void]$h.Append("<td style=`"padding:6px 12px;`">$(& $hesc $Dim.Label)</td>")
-        [void]$h.Append("<td style=`"padding:6px 8px;text-align:right;font-weight:bold;color:$dClr;width:50px;`">$DStr</td>")
-        [void]$h.Append("<td style=`"padding:6px 12px;font-size:12px;color:#8A8886;`">$DLevel</td>")
-        [void]$h.Append('</tr>')
+        [void]$h.Append("<td style=`"padding:10px 12px;`">$(& $hesc $Dim.Label)</td>")
+        [void]$h.Append("<td style=`"padding:10px 8px;text-align:right;font-weight:bold;color:$dClr;width:55px;`">$DStr</td>")
+        [void]$h.Append("<td style=`"padding:10px 12px;width:100px;`"><table cellpadding=`"0`" cellspacing=`"0`" border=`"0`" width=`"100%`" style=`"background-color:#E1DFDD;`"><tr><td style=`"height:8px;width:$barPct%;background-color:$dClr;font-size:1px;`">&nbsp;</td><td style=`"height:8px;font-size:1px;`">&nbsp;</td></tr></table></td>")
+        [void]$h.Append("<td style=`"padding:10px 12px;`">")
+        if ($DLevel) {
+            [void]$h.Append("<table cellpadding=`"0`" cellspacing=`"0`" border=`"0`"><tr><td style=`"background-color:$dBg;color:$dClr;padding:2px 10px;font-size:10px;font-weight:bold;letter-spacing:0.5px;`">$($DLevel.ToUpper())</td></tr></table>")
+        }
+        [void]$h.Append('</td></tr>')
         $dimIdx++
     }
     $Composite = Get-CompositeMaturityScore
     if ($Composite -ge 0) {
         $cClr = & $sClr $Composite
-        [void]$h.Append("<tr style=`"border-top:2px solid #EDEBE9;`"><td style=`"padding:8px 12px;font-weight:bold;`">Composite</td>")
-        [void]$h.Append("<td style=`"padding:8px 8px;text-align:right;font-weight:bold;color:$cClr;`">$Composite%</td>")
-        [void]$h.Append("<td style=`"padding:8px 12px;font-size:12px;font-weight:bold;color:$cClr;`">$(Get-MaturityLevel $Composite)</td></tr>")
+        $cBg  = if ($Composite -ge 80) { '#E6F2E6' } elseif ($Composite -ge 50) { '#FDF0E6' } else { '#FBEAEA' }
+        $cPct = [Math]::Max($Composite, 2)
+        [void]$h.Append("<tr style=`"background-color:#F5F5F5;`">")
+        [void]$h.Append("<td style=`"padding:10px 12px;font-weight:bold;`">Composite Score</td>")
+        [void]$h.Append("<td style=`"padding:10px 8px;text-align:right;font-weight:bold;color:$cClr;`">$Composite%</td>")
+        [void]$h.Append("<td style=`"padding:10px 12px;width:100px;`"><table cellpadding=`"0`" cellspacing=`"0`" border=`"0`" width=`"100%`" style=`"background-color:#E1DFDD;`"><tr><td style=`"height:8px;width:$cPct%;background-color:$cClr;font-size:1px;`">&nbsp;</td><td style=`"height:8px;font-size:1px;`">&nbsp;</td></tr></table></td>")
+        [void]$h.Append("<td style=`"padding:10px 12px;`"><table cellpadding=`"0`" cellspacing=`"0`" border=`"0`"><tr><td style=`"background-color:$cBg;color:$cClr;padding:2px 10px;font-size:10px;font-weight:bold;letter-spacing:0.5px;`">$($(Get-MaturityLevel $Composite).ToUpper())</td></tr></table></td>")
+        [void]$h.Append('</tr>')
     }
     [void]$h.Append('</table></td></tr>')
+    [void]$h.Append($divider)
 
-    # ── DIVIDER ──
-    [void]$h.Append('<tr><td style="padding:4px 32px;"><table width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="border-bottom:1px solid #EDEBE9;height:1px;font-size:1px;">&nbsp;</td></tr></table></td></tr>')
+    # ══════════════════════════════════════════════════════════════════════
+    # KEY SUCCESSES — highlight critical/high passes
+    # ══════════════════════════════════════════════════════════════════════
+    $strongChecks = @($Checks | Where-Object { $_.Status -eq 'Pass' -and $_.Severity -in @('Critical','High') })
+    if ($strongChecks.Count -gt 0) {
+        [void]$h.Append('<tr><td style="padding:20px 40px 16px 40px;">')
+        [void]$h.Append("<div style=`"font-size:11px;font-weight:bold;color:#107C10;letter-spacing:1px;padding-bottom:14px;`">&#10003; &#160;KEY SUCCESSES ($($strongChecks.Count))</div>")
+        [void]$h.Append('<table cellpadding="0" cellspacing="0" border="0" width="100%">')
+        $grouped = $strongChecks | Group-Object Category | Sort-Object Count -Descending
+        foreach ($g in $grouped) {
+            [void]$h.Append("<tr><td colspan=`"2`" style=`"padding:8px 12px 4px 12px;font-size:11px;font-weight:bold;color:#107C10;background-color:#E6F2E6;`">$($g.Name) ($($g.Count))</td></tr>")
+            $items = @($g.Group | Select-Object -First 4)
+            foreach ($item in $items) {
+                [void]$h.Append("<tr><td style=`"padding:4px 12px 4px 24px;font-size:12px;color:#242424;`">&#10003; $(& $hesc $item.Name)</td></tr>")
+            }
+            if ($g.Count -gt 4) {
+                [void]$h.Append("<tr><td style=`"padding:4px 12px 4px 24px;font-size:11px;color:#8A8886;`">... and $($g.Count - 4) more</td></tr>")
+            }
+        }
+        [void]$h.Append('</table></td></tr>')
+        [void]$h.Append($divider)
+    }
 
-    # ── TOP FINDINGS ──
+    # ══════════════════════════════════════════════════════════════════════
+    # TOP FINDINGS — severity-badged failure list
+    # ══════════════════════════════════════════════════════════════════════
     $critFails = @($Checks | Where-Object {
         $_.Status -eq 'Fail' -and $_.Severity -in @('Critical','High')
     } | Sort-Object @{E={if($_.Severity -eq 'Critical'){0}else{1}}}, Id)
     if ($critFails.Count -gt 0) {
-        [void]$h.Append('<tr><td style="padding:12px 32px 16px 32px;">')
-        [void]$h.Append("<div style=`"font-size:11px;font-weight:bold;color:#0078D4;padding-bottom:10px;`">TOP FINDINGS ($($critFails.Count))</div>")
+        [void]$h.Append('<tr><td style="padding:20px 40px 16px 40px;">')
+        [void]$h.Append("<div style=`"font-size:11px;font-weight:bold;color:#D13438;letter-spacing:1px;padding-bottom:14px;`">&#9888; &#160;TOP FINDINGS ($($critFails.Count))</div>")
         [void]$h.Append('<table cellpadding="0" cellspacing="0" border="0" width="100%" style="font-size:13px;">')
         foreach ($f in $critFails) {
-            $sevBg = if ($f.Severity -eq 'Critical') { '#D13438' } else { '#CA5010' }
+            $sevBg  = if ($f.Severity -eq 'Critical') { '#D13438' } else { '#CA5010' }
             [void]$h.Append('<tr>')
-            [void]$h.Append("<td style=`"padding:6px 12px 6px 0;width:70px;vertical-align:top;`"><table cellpadding=`"0`" cellspacing=`"0`" border=`"0`"><tr><td style=`"background-color:$sevBg;color:#FFFFFF;padding:2px 8px;font-size:10px;font-weight:bold;`">$($f.Severity.ToUpper())</td></tr></table></td>")
-            [void]$h.Append("<td style=`"padding:6px 4px;`">$(& $hesc $f.Name)</td>")
-            [void]$h.Append("<td style=`"padding:6px 12px;color:#8A8886;font-size:11px;text-align:right;white-space:nowrap;vertical-align:top;`">$($f.Id)</td>")
+            [void]$h.Append("<td style=`"padding:8px 12px 8px 0;width:75px;vertical-align:top;`"><table cellpadding=`"0`" cellspacing=`"0`" border=`"0`"><tr><td style=`"background-color:$sevBg;color:#FFFFFF;padding:3px 10px;font-size:9px;font-weight:bold;letter-spacing:0.5px;`">$($f.Severity.ToUpper())</td></tr></table></td>")
+            [void]$h.Append("<td style=`"padding:8px 4px;border-bottom:1px solid #F3F2F1;`">$(& $hesc $f.Name)</td>")
+            [void]$h.Append("<td style=`"padding:8px 0;color:#A19F9D;font-size:10px;text-align:right;white-space:nowrap;vertical-align:top;border-bottom:1px solid #F3F2F1;width:60px;`">$($f.Id)</td>")
             [void]$h.Append('</tr>')
         }
         [void]$h.Append('</table>')
@@ -4347,40 +4429,74 @@ function Get-ExecutiveSummaryEmailHtml {
         if ($medLowFails.Count -gt 0) {
             $medCount = @($medLowFails | Where-Object { $_.Severity -eq 'Medium' }).Count
             $lowCount = @($medLowFails | Where-Object { $_.Severity -eq 'Low' }).Count
-            [void]$h.Append("<div style=`"padding-top:8px;font-size:12px;color:#8A8886;`">+ $medCount medium and $lowCount low severity findings</div>")
+            [void]$h.Append("<div style=`"padding-top:10px;font-size:12px;color:#8A8886;background-color:#F5F5F5;padding:10px 12px;`">&#43; $medCount medium and $lowCount low severity findings not shown</div>")
         }
         [void]$h.Append('</td></tr>')
-        [void]$h.Append('<tr><td style="padding:4px 32px;"><table width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="border-bottom:1px solid #EDEBE9;height:1px;font-size:1px;">&nbsp;</td></tr></table></td></tr>')
+        [void]$h.Append($divider)
     }
 
-    # ── QUICK WINS ──
+    # ══════════════════════════════════════════════════════════════════════
+    # QUICK WINS — numbered remediation cards
+    # ══════════════════════════════════════════════════════════════════════
     $quickWins = @($Checks | Where-Object {
         $_.Status -eq 'Fail' -and ($DefLookup[$_.Id].effort -eq 'Quick Win' -or $_.effort -eq 'Quick Win')
     } | Sort-Object @{E={switch($_.Severity){'Critical'{0}'High'{1}'Medium'{2}default{3}}}}, Id | Select-Object -First 5)
     if ($quickWins.Count -gt 0) {
-        [void]$h.Append('<tr><td style="padding:12px 32px 16px 32px;">')
-        [void]$h.Append('<div style="font-size:11px;font-weight:bold;color:#0078D4;padding-bottom:10px;">QUICK WINS</div>')
+        [void]$h.Append('<tr><td style="padding:20px 40px 16px 40px;">')
+        [void]$h.Append('<div style="font-size:11px;font-weight:bold;color:#0078D4;letter-spacing:1px;padding-bottom:14px;">&#9889; &#160;QUICK WINS</div>')
+        [void]$h.Append('<table cellpadding="0" cellspacing="0" border="0" width="100%">')
         $qi = 0
         foreach ($qw in $quickWins) {
             $qi++
             $rem = if ($qw.remediation) { $qw.remediation } elseif ($DefLookup[$qw.Id].remediation) { $DefLookup[$qw.Id].remediation } else { $null }
-            [void]$h.Append("<div style=`"padding-bottom:8px;`"><span style=`"font-weight:bold;color:#323130;`">$qi.</span> $(& $hesc $qw.Name)")
+            $qBg = if ($qi % 2 -eq 1) { '#FFFFFF' } else { '#FAFAF9' }
+            [void]$h.Append("<tr style=`"background-color:$qBg;`">")
+            [void]$h.Append("<td style=`"padding:12px 12px;width:32px;vertical-align:top;`"><table cellpadding=`"0`" cellspacing=`"0`" border=`"0`"><tr><td style=`"background-color:#0078D4;color:#FFFFFF;width:24px;height:24px;text-align:center;font-size:12px;font-weight:bold;line-height:24px;`">$qi</td></tr></table></td>")
+            [void]$h.Append("<td style=`"padding:12px 12px 12px 4px;vertical-align:top;`">")
+            [void]$h.Append("<div style=`"font-weight:600;color:#242424;`">$(& $hesc $qw.Name)</div>")
             if ($rem) {
-                $remText = if ($rem.Length -gt 120) { $rem.Substring(0,120) + '...' } else { $rem }
-                [void]$h.Append("<br><span style=`"font-size:12px;color:#8A8886;`">&#8594; $(& $hesc $remText)</span>")
+                $remText = if ($rem.Length -gt 140) { $rem.Substring(0,140) + '...' } else { $rem }
+                [void]$h.Append("<div style=`"font-size:12px;color:#8A8886;padding-top:4px;`">&#8594; $(& $hesc $remText)</div>")
             }
-            [void]$h.Append('</div>')
+            [void]$h.Append('</td></tr>')
         }
-        [void]$h.Append('</td></tr>')
+        [void]$h.Append('</table></td></tr>')
     }
 
-    # ── FOOTER ──
+    # ══════════════════════════════════════════════════════════════════════
+    # METHODOLOGY CALLOUT — light blue info box
+    # ══════════════════════════════════════════════════════════════════════
     [void]$h.Append(@"
-<tr><td style="padding:20px 32px;border-top:1px solid #EDEBE9;">
-<div style="font-size:11px;color:#8A8886;">Generated by AVD Assessor v$Global:AppVersion &#8226; Microsoft Confidential</div>
-<div style="font-size:10px;color:#A19F9D;padding-top:4px;">Score = weighted average: Critical(5&#215;), High(4&#215;), Medium(3&#215;), Low(2&#215;). Pass/N/A = 100pts, Warning = 50pts, Fail = 0pts.</div>
+<tr><td style="padding:16px 40px;">
+<table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:#EFF6FC;border-left:3px solid #0078D4;">
+<tr><td style="padding:14px 16px;">
+<div style="font-size:10px;font-weight:bold;color:#0078D4;letter-spacing:1px;padding-bottom:6px;">SCORING METHODOLOGY</div>
+<div style="font-size:11px;color:#424242;line-height:18px;">Weighted average: Critical (5&#215;), High (4&#215;), Medium (3&#215;), Low (2&#215;). Scores: Pass/N/A = 100pts, Warning = 50pts, Fail = 0pts. Maturity: Initial (0&#8211;34), Developing (35&#8211;54), Defined (55&#8211;74), Managed (75&#8211;89), Optimized (90+).</div>
+</td></tr></table>
 </td></tr>
 "@)
+
+    # ══════════════════════════════════════════════════════════════════════
+    # FOOTER — brand bar + version
+    # ══════════════════════════════════════════════════════════════════════
+    [void]$h.Append(@"
+<tr><td style="background-color:#F5F5F5;padding:20px 40px;">
+<table cellpadding="0" cellspacing="0" border="0" width="100%"><tr>
+<td style="font-size:11px;color:#A19F9D;">Generated by AVD Assessor v$Global:AppVersion</td>
+<td style="text-align:right;font-size:11px;color:#A19F9D;">$dateStr</td>
+</tr></table>
+</td></tr>
+<tr><td style="padding:0;">
+<table cellpadding="0" cellspacing="0" border="0" width="100%">
+<tr>
+<td width="25%" style="height:4px;background-color:#F25022;font-size:1px;">&nbsp;</td>
+<td width="25%" style="height:4px;background-color:#7FBA00;font-size:1px;">&nbsp;</td>
+<td width="25%" style="height:4px;background-color:#00A4EF;font-size:1px;">&nbsp;</td>
+<td width="25%" style="height:4px;background-color:#FFB900;font-size:1px;">&nbsp;</td>
+</tr></table>
+</td></tr>
+"@)
+
     [void]$h.Append('</table>')
     return $h.ToString()
 }
