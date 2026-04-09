@@ -1690,7 +1690,10 @@ foreach ($SubId in $SubscriptionId) {
         # Look for storage accounts that might be used for FSLogix (heuristic: has 'profiles' or 'fslogix' in name or file shares)
         foreach ($SA in $StorageAccounts) {
             $IsFSLogix = $SA.StorageAccountName -match 'fslogix|profile|avd'
-            $HasPrivateEndpoint = $SA.PrivateEndpointConnections -and $SA.PrivateEndpointConnections.Count -gt 0
+            # Get-AzStorageAccount doesn't reliably populate PrivateEndpointConnections — use ARM API
+            $SAResource = Get-AzResource -ResourceId $SA.Id -ErrorAction SilentlyContinue
+            $HasPrivateEndpoint = $SAResource -and $SAResource.Properties.privateEndpointConnections -and
+                @($SAResource.Properties.privateEndpointConnections).Count -gt 0
 
             $SAObj = [PSCustomObject]@{
                 Name              = $SA.StorageAccountName
