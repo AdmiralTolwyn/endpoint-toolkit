@@ -4234,8 +4234,9 @@ function Get-ExecutiveSummaryEmailHtml {
 <tr><td style="background-color:#FAFAF9;padding:32px 40px;">
 <table cellpadding="0" cellspacing="0" border="0" width="100%"><tr>
 <td width="160" style="vertical-align:middle;">
-<table cellpadding="0" cellspacing="0" border="0" align="center"><tr><td style="background-color:$ringBg;width:140px;height:140px;text-align:center;vertical-align:middle;">
-<div style="font-size:80px;font-weight:bold;color:$scoreColor;line-height:140px;">$scoreVal</div>
+<table cellpadding="0" cellspacing="0" border="0" align="center"><tr><td align="center" valign="middle" style="background-color:$ringBg;width:140px;height:140px;text-align:center;vertical-align:middle;font-size:72px;font-weight:normal;font-family:Segoe UI,Helvetica,Arial,sans-serif;color:$scoreColor;line-height:140px;">
+<!--[if mso]><span style="font-size:72px;mso-text-raise:0;font-weight:normal;color:$scoreColor;">$scoreVal</span><![endif]-->
+<!--[if !mso]><!--><span style="font-size:72px;font-weight:normal;color:$scoreColor;">$scoreVal</span><!--<![endif]-->
 </td></tr></table>
 </td>
 <td style="vertical-align:middle;padding-left:24px;">
