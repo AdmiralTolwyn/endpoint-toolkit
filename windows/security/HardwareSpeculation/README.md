@@ -54,3 +54,41 @@ The script outputs Ivanti-compatible detection fields:
 - Windows 10/11 or Windows Server 2016+
 - PowerShell 5.1+
 - Administrator privileges (for `ntdll` system information query)
+
+## Remediation
+
+### SSB (ADV180012) - Registry Mitigation
+
+SSB requires enabling Speculative Store Bypass Disable (SSBD) via registry. A reboot is required after applying.
+
+```cmd
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" /v FeatureSettingsOverride /t REG_DWORD /d 8 /f
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" /v FeatureSettingsOverrideMask /t REG_DWORD /d 3 /f
+```
+
+#### FeatureSettingsOverride Bitmask
+
+| Bit | Hex | When SET (1) | When CLEAR (0) |
+|-----|-----|--------------|----------------|
+| 0 | `0x1` | **Disable** Spectre V2 (CVE-2017-5715) | Enable Spectre V2 |
+| 1 | `0x2` | **Disable** Meltdown (CVE-2017-5754) | Enable Meltdown |
+| 3 | `0x8` | **Enable** SSBD / SSB (CVE-2018-3639) | Disable SSB mitigation |
+
+> **Note:** Bits 0-1 use inverted logic (set = disable). Bit 3 uses normal logic (set = enable). `FeatureSettingsOverrideMask = 3` tells the OS to respect the override bits.
+
+**Common values for `FeatureSettingsOverride`:**
+
+| Value | Hex | Effect |
+|-------|-----|--------|
+| `0` | `0x0` | Spectre V2 + Meltdown enabled, SSB disabled |
+| `8` | `0x8` | All mitigations enabled (Spectre V2 + Meltdown + SSB) |
+| `3` | `0x3` | All mitigations disabled |
+
+### MDS (ADV190013) - No Registry Toggle
+
+MDS mitigation is automatically enabled after applying both:
+
+1. Latest cumulative Windows security update
+2. CPU microcode update (via BIOS/firmware update or Windows Update)
+
+A reboot is required after applying updates.

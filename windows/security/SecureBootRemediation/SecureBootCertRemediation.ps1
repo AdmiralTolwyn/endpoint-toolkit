@@ -7,8 +7,10 @@
     1. DETECTION: 
        - Queries all Secure Boot Playbook registry keys (AvailableUpdates, AvailableUpdatesPolicy,
          HighConfidenceOptOut, MicrosoftUpdateManagedOptIn, Servicing keys).
-       - Full event sweep: good (1034,1036,1037,1042-1045,1799,1800,1801,1808)
-         and bad (1032,1033,1795-1798,1802,1803) from System TPM-WMI log.
+       - Full event sweep: good (1034,1036,1037,1042-1045,1799,1800,1808)
+         and warning/bad (1032,1033,1795-1798,1801,1802,1803) from System TPM-WMI log.
+       - NOTE: Event 1801 is a status/assessment event that fires when the update
+         has NOT yet completed or when issues are detected - classified as warning.
        - Event 1799 dual-log check (System + TPM-WMI/Operational).
        - Reports confidence, BucketId, error codes, and structured debug output.
     
@@ -24,9 +26,11 @@
 
 .NOTES
     Author:  Anton Romanyuk
-    Version: 2.0
-    Date:    2026-03-12
+    Version: 2.1
+    Date:    2026-04-15
     Context: Secure Boot UEFI CA 2023 Deployment
+    Changes: v2.1 - Reclassify 1801 as warning (not good); compliance = 1808 + Updated (PG rec);
+             Server 2019 WindowsUEFICA2023Capable=0 bug caveat
 #>
 
 [CmdletBinding()]
@@ -139,8 +143,8 @@ function Get-SecureBootStatus {
     # -------------------------------------------------------------------------
     # C. Event Log - Full Sweep (System log, TPM-WMI)
     # -------------------------------------------------------------------------
-    $GoodEventIDs = @(1034, 1036, 1037, 1042, 1043, 1044, 1045, 1799, 1800, 1801, 1808)
-    $BadEventIDs  = @(1032, 1033, 1795, 1796, 1797, 1798, 1802, 1803)
+    $GoodEventIDs = @(1034, 1036, 1037, 1042, 1043, 1044, 1045, 1799, 1800, 1808)
+    $BadEventIDs  = @(1032, 1033, 1795, 1796, 1797, 1798, 1801, 1802, 1803)
     $AllKnownIDs  = $GoodEventIDs + $BadEventIDs
 
     # --- C1. Event 1801 - Confidence, BucketId, UpdateType, DeviceAttributes ---
@@ -313,8 +317,8 @@ function Get-SecureBootStatus {
     Write-DebugField 'UEFICA2023Error' "$($servicingData.Error)" $clr 'Target: 0'
 
     $capVal = if ($null -ne $servicingData.Capable) { "$($servicingData.Capable)" } else { 'N/A' }
-    $clr = if ($null -eq $servicingData.Capable) { 'DarkGray' } elseif ($servicingData.Capable -ge 1) { 'Green' } else { 'Red' }
-    Write-DebugField 'WindowsUEFICA2023Capable' $capVal $clr '0=not capable, 1+=capable'
+    $clr = if ($null -eq $servicingData.Capable) { 'DarkGray' } elseif ($servicingData.Capable -ge 1) { 'Green' } else { 'Yellow' }
+    Write-DebugField 'WindowsUEFICA2023Capable' $capVal $clr '0=not capable, 1+=capable (UNRELIABLE on Server 2019)'
 
     $clr = if ($null -eq $avUpdatesValue) { 'DarkGray' } elseif ($avUpdatesValue -eq 0) { 'Yellow' } else { 'Cyan' }
     Write-DebugField 'AvailableUpdates' $avUpdatesHex $clr 'Bitmask of pending updates'
@@ -390,17 +394,18 @@ function Get-SecureBootStatus {
     # -------------------------------------------------------------------------
     # E. Detection Summary (Ivanti-format reason)
     # -------------------------------------------------------------------------
-    $isCompliant = ($servicingData.Status -eq 'Updated' -and $servicingData.Error -eq 0)
+    # PG recommendation: compliance = Event 1808 present AND UEFICA2023Status=Updated
+    $isCompliant = ($updateSuccess -and $servicingData.Status -eq 'Updated')
 
-    $expectedStr = "Status: Updated | Error: 0"
-    $foundStr    = "Status: $($servicingData.Status) | Error: $($servicingData.Error) | Confidence: $confidenceLevel | Capable: $capVal | AvUpdates: $avUpdatesHex | BootloaderSwapped: $bootloaderSwapped"
+    $expectedStr = "Status: Updated | Event1808: True"
+    $foundStr    = "Status: $($servicingData.Status) | Event1808: $updateSuccess | Error: $($servicingData.Error) | Confidence: $confidenceLevel | Capable: $capVal | AvUpdates: $avUpdatesHex | BootloaderSwapped: $bootloaderSwapped"
 
     Write-Host ""
     Write-ColorLog -Message "--- DETECTION SUMMARY ---" -Level "Info"
 
     if ($isCompliant) {
         Write-ColorLog -Message "Detected  : false (Compliant)" -Level "Success"
-        Write-ColorLog -Message "Reason    : Secure Boot Update successful." -Level "Success"
+        Write-ColorLog -Message "Reason    : Secure Boot Update successful (Event 1808 + Status=Updated)." -Level "Success"
     } else {
         Write-ColorLog -Message "Detected  : true (Non-Compliant)" -Level "Warning"
         if ($knownIssueId) {
@@ -417,7 +422,7 @@ function Get-SecureBootStatus {
             if ($evt1796ErrorCode) { $errDetail += " | Log Error: 0x$evt1796ErrorCode" }
             Write-ColorLog -Message "Reason    : Update Failed. $errDetail" -Level "Error"
         } elseif ($null -ne $servicingData.Capable -and $servicingData.Capable -eq 0) {
-            Write-ColorLog -Message "Reason    : Device not capable (WindowsUEFICA2023Capable=0)" -Level "Error"
+            Write-ColorLog -Message "Reason    : Device not capable (WindowsUEFICA2023Capable=0). NOTE: This value is unreliable on Server 2019." -Level "Error"
         } else {
             Write-ColorLog -Message "Reason    : Status is '$($servicingData.Status)' (Waiting for 'Updated')" -Level "Warning"
         }

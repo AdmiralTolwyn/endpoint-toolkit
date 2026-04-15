@@ -17,8 +17,9 @@ Reference: [KB5016061 - Secure Boot DB and DBX variable update events](https://s
 ### 1. Detection
 - Queries all Secure Boot Playbook registry keys (`AvailableUpdates`, `AvailableUpdatesPolicy`, `HighConfidenceOptOut`, `MicrosoftUpdateManagedOptIn`, Servicing keys)
 - Full event sweep from `System` log (`Microsoft-Windows-TPM-WMI` provider):
-  - **Good events**: 1034, 1036, 1037, 1042–1045, 1799, 1800, 1801, 1808
-  - **Bad events**: 1032, 1033, 1795–1798, 1802, 1803
+  - **Good events**: 1034, 1036, 1037, 1042-1045, 1799, 1800, 1808
+  - **Warning/Bad events**: 1032, 1033, 1795-1798, 1801, 1802, 1803
+  - **Note**: Event 1801 is a status/assessment event that fires when the update has NOT yet completed or when issues are detected - it is not a success indicator
 - Event 1799 dual-log check (System + TPM-WMI/Operational)
 - Reports confidence level, BucketId, error codes, and structured debug output
 
@@ -84,14 +85,16 @@ These events include telemetry fields specific to the device: `DeviceAttributes`
 | Event ID | Type | Meaning | Script Usage |
 |----------|------|---------|--------------|
 | 1795 | Error | Firmware rejected the Secure Boot update | Extracts error code for diagnostics |
-| 1801 | Info | Device assessment report (confidence, bucket, attributes) | Extracts `BucketConfidenceLevel`, `BucketId`, `UpdateType`, `DeviceAttributes`, status summary |
+| 1801 | Warning | Device assessment report - fires when update has NOT completed or issues detected | Extracts `BucketConfidenceLevel`, `BucketId`, `UpdateType`, `DeviceAttributes`, status summary; classified as warning (not a success indicator) |
 | 1802 | Warning | Update skipped due to known firmware issue | Extracts `SkipReason` (e.g., `KI_xxxx`); blocks remediation |
 | 1803 | Error | Missing KEK - OEM must supply PK-signed KEK update | Sets `MissingKEK` flag; blocks remediation |
 | 1808 | Success | Secure Boot certificate update completed successfully | Sets `Success` flag; overrides status summary |
 
 ### BucketConfidenceLevel Values (Event 1801)
 
-The `BucketConfidenceLevel` field in Event 1801 indicates how confidently the device can accept the update:
+The `BucketConfidenceLevel` field in Event 1801 indicates how confidently the device can accept the update.
+
+For a list of known High Confidence bucket hashes, see [microsoft/secureboot_objects - HighConfidenceBuckets](https://github.com/microsoft/secureboot_objects/tree/main/HighConfidenceBuckets).
 
 | Confidence Level | Description |
 |------------------|-------------|
@@ -107,6 +110,18 @@ The `BucketConfidenceLevel` field in Event 1801 indicates how confidently the de
 - `HKLM\SYSTEM\CurrentControlSet\Control\SecureBoot\Servicing\UEFICA2023Status`
 - `HKLM\SYSTEM\CurrentControlSet\Control\SecureBoot\Servicing\UEFICA2023Error`
 - `HKLM\SYSTEM\CurrentControlSet\Control\SecureBoot\Servicing\WindowsUEFICA2023Capable`
+
+> **Known Issue:** `WindowsUEFICA2023Capable` is incorrectly reported as `0` on **Windows Server 2019** regardless of actual capability. Do not rely on this value alone for Server 2019 compliance decisions.
+
+## Compliance Logic
+
+Per PG recommendation, the script determines compliance using:
+
+```
+Compliant = (Event 1808 present) AND (UEFICA2023Status = "Updated")
+```
+
+Event 1808 confirms the Secure Boot certificate update completed successfully. This event is now also reliably generated on **Windows Server 2025**.
 
 ## Output
 
