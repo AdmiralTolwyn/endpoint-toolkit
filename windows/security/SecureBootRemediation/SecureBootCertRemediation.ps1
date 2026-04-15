@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Unified Secure Boot CA 2023 Analysis, Detection, and Remediation script.
 
@@ -137,13 +137,13 @@ function Get-SecureBootStatus {
     }
 
     # -------------------------------------------------------------------------
-    # C. Event Log — Full Sweep (System log, TPM-WMI)
+    # C. Event Log - Full Sweep (System log, TPM-WMI)
     # -------------------------------------------------------------------------
     $GoodEventIDs = @(1034, 1036, 1037, 1042, 1043, 1044, 1045, 1799, 1800, 1801, 1808)
     $BadEventIDs  = @(1032, 1033, 1795, 1796, 1797, 1798, 1802, 1803)
     $AllKnownIDs  = $GoodEventIDs + $BadEventIDs
 
-    # --- C1. Event 1801 — Confidence, BucketId, UpdateType, DeviceAttributes ---
+    # --- C1. Event 1801 - Confidence, BucketId, UpdateType, DeviceAttributes ---
     $confidenceLevel    = "N/A"
     $bucketId           = "N/A"
     $updateType         = "N/A"
@@ -210,7 +210,7 @@ function Get-SecureBootStatus {
             if ($latestGoodEvt) { $latestGoodId = $latestGoodEvt.Id }
             if ($latestBadEvt)  { $latestBadId  = $latestBadEvt.Id; $blockingIssue = $true }
 
-            # Event 1799 — bootloader swapped (System log)
+            # Event 1799 - bootloader swapped (System log)
             $bootloaderSwapped = (@($AllEvents | Where-Object { $_.Id -eq 1799 }).Count -gt 0)
 
             # SkipReason from latest event with BucketId
@@ -221,7 +221,7 @@ function Get-SecureBootStatus {
             # Only parse error detail if update is NOT complete
             $updateComplete = ($latestOverall.Id -eq 1808) -or ($servicingData.Status -eq 'Updated')
             if (-not $updateComplete) {
-                # 1795 — Firmware error
+                # 1795 - Firmware error
                 $e1795 = @($AllEvents | Where-Object { $_.Id -eq 1795 })
                 if ($e1795.Count -gt 0) {
                     $latest1795 = $e1795 | Sort-Object TimeCreated -Descending | Select-Object -First 1
@@ -229,7 +229,7 @@ function Get-SecureBootStatus {
                         $evt1795ErrorCode = $matches[1]
                     }
                 }
-                # 1796 — Error code logged
+                # 1796 - Error code logged
                 $e1796 = @($AllEvents | Where-Object { $_.Id -eq 1796 })
                 if ($e1796.Count -gt 0) {
                     $latest1796 = $e1796 | Sort-Object TimeCreated -Descending | Select-Object -First 1
@@ -237,9 +237,9 @@ function Get-SecureBootStatus {
                         $evt1796ErrorCode = $matches[1]
                     }
                 }
-                # 1800 — Reboot needed (good event, not an error)
+                # 1800 - Reboot needed (good event, not an error)
                 $rebootPending = (@($AllEvents | Where-Object { $_.Id -eq 1800 }).Count -gt 0)
-                # 1802 — Known firmware issue
+                # 1802 - Known firmware issue
                 $e1802 = @($AllEvents | Where-Object { $_.Id -eq 1802 })
                 if ($e1802.Count -gt 0) {
                     $latest1802 = $e1802 | Sort-Object TimeCreated -Descending | Select-Object -First 1
@@ -247,7 +247,7 @@ function Get-SecureBootStatus {
                         $knownIssueId = $matches[1]
                     }
                 }
-                # 1803 — Missing KEK
+                # 1803 - Missing KEK
                 $missingKEK = (@($AllEvents | Where-Object { $_.Id -eq 1803 }).Count -gt 0)
             }
         }
@@ -292,7 +292,7 @@ function Get-SecureBootStatus {
 
     Write-Host ""
     Write-Host $bar -ForegroundColor DarkCyan
-    Write-Host "  Secure Boot CA 2023 — Detection Report" -ForegroundColor Cyan
+    Write-Host "  Secure Boot CA 2023 - Detection Report" -ForegroundColor Cyan
     Write-Host $bar -ForegroundColor DarkCyan
 
     # Header row
@@ -335,7 +335,7 @@ function Get-SecureBootStatus {
 
     # --- Event Log Summary ---
     Write-Host ""
-    Write-Host "  [Event Log] System — TPM-WMI" -ForegroundColor DarkCyan
+    Write-Host "  [Event Log] System - TPM-WMI" -ForegroundColor DarkCyan
 
     $clr = if ($confidenceLevel -match 'High Confidence') { 'Green' } elseif ($confidenceLevel -eq 'N/A') { 'DarkGray' } else { 'Yellow' }
     Write-DebugField 'Confidence' $confidenceLevel $clr 'Event 1801 bucket level'
