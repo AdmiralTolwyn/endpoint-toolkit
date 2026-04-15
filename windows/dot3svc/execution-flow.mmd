@@ -1,0 +1,131 @@
+%%{init: {'theme': 'base', 'themeVariables': {
+    'background': '#ffffff',
+    'primaryColor': '#f3efff',
+    'primaryTextColor': '#111111',
+    'primaryBorderColor': '#6f42c1',
+    'lineColor': '#4b5563',
+    'secondaryColor': '#fff4d6',
+    'tertiaryColor': '#e9f7f3',
+    'fontFamily': 'Segoe UI'
+}}}%%
+
+flowchart TD
+    A([Start]) --> B[Initialize Logging]
+    B --> C{Log Directory<br/>exists?}
+    C -->|No| C1[Create directory<br/>or fallback to TEMP]
+    C -->|Yes| D
+    C1 --> D[Write Banner<br/>+ Log Parameters]
+    D --> E{Running as<br/>Administrator?}
+    E -->|No| E1[WARN: Not admin]
+    E -->|Yes| F
+    E1 --> F{dot3svc service<br/>exists?}
+    F -->|No| F1[ERROR: Service<br/>not found] --> Z1([Exit 1])
+    F -->|Yes| G[Log initial<br/>service state]
+
+    G --> H[/Iteration Loop<br/>i = 1 to MaxRetries/]
+
+    H --> I{Registry path<br/>exists?}
+    I -->|No| I1[Create registry path<br/>HKLM:...MigrationData]
+    I -->|Yes| J
+    I1 -->|Fail| IFAIL[iterationSuccess = false]
+    I1 -->|OK| J
+
+    J[Read current<br/>dot3svcMigrationDone<br/>value] --> K[Set<br/>dot3svcMigrationDone = 0]
+    K -->|Fail| IFAIL
+    K -->|OK| L{Service<br/>state?}
+
+    L -->|Stopped| L1[Start-Service]
+    L -->|Running| L2[Restart-Service]
+    L1 --> M{Service Running<br/>within 30s?}
+    L2 --> M
+    M -->|Yes| M1[SUCCESS:<br/>iteration passed]
+    M -->|No| IFAIL
+
+    IFAIL --> N1[failCount++]
+    M1 --> N2[successCount++]
+    N1 --> O{More<br/>iterations?}
+    N2 --> O
+
+    O -->|Yes| P[Sleep<br/>RetryDelaySeconds] --> H
+    O -->|No| Q{-RepairPolicies<br/>switch set?}
+
+    Q -->|No| SUM
+
+    Q -->|Yes| R[Write Policy<br/>Repair Banner]
+    R --> S{-SkipSymlinkCheck?}
+
+    S -->|No| T{Policies folder<br/>exists?}
+    S -->|Yes| S1[Log: symlink<br/>check skipped] --> V
+
+    T -->|No| T1[WARN: folder<br/>not found] --> V
+    T -->|Yes| U[Enumerate files<br/>in Policies folder]
+
+    U --> U1{Each file}
+    U1 -->|ReparsePoint| U2[SYMLINK detected<br/>Resolve target]
+    U2 --> U3{Target<br/>exists?}
+    U3 -->|Yes| U4[INFO: accessible]
+    U3 -->|No| U5[ERROR: broken]
+    U1 -->|Real file| U6[SUCCESS: OK<br/>log size]
+    U4 --> U7[Log symlink<br/>vs real summary]
+    U5 --> U7
+    U6 --> U7
+    U7 --> V
+
+    V["--- Windows.old Policy Recovery ---"]
+    V --> W{Windows.old<br/>Policies folder<br/>exists?}
+    W -->|No| W1[INFO: no previous<br/>OS or cleaned up] --> PH3
+    W -->|Yes| X{.tmp files<br/>found?}
+    X -->|No| X1[WARN: no .tmp<br/>files found] --> PH3
+    X -->|Yes| X2[Log file list<br/>with sizes and dates]
+
+    X2 --> Y{Target dir<br/>exists?}
+    Y -->|No| Y1[Create target<br/>directory]
+    Y -->|Yes| LOOP
+    Y1 -->|Fail| PH3
+    Y1 -->|OK| LOOP
+
+    LOOP[/For each .tmp file/] --> AA{File exists<br/>in target?}
+    AA -->|No| COPY[Copy from<br/>Windows.old]
+    AA -->|Yes| AB{Is it a<br/>symlink?}
+    AB -->|Yes| AC[Remove symlink<br/>then copy] --> COPY
+    AB -->|No| AD["SKIP: real file<br/>already present"]
+    AD --> LOOP_NEXT
+    COPY -->|OK| COPY_OK[copiedCount++]
+    COPY -->|Fail| COPY_FAIL[copyFailCount++]
+    COPY_OK --> LOOP_NEXT
+    COPY_FAIL --> LOOP_NEXT
+    LOOP_NEXT{More<br/>files?} -->|Yes| LOOP
+    LOOP_NEXT -->|No| RESULT
+
+    RESULT[Log recovery<br/>result summary]
+    RESULT --> PH3
+
+    PH3{Policies<br/>were copied?}
+    PH3 -->|No| SUM
+    PH3 -->|Yes| PH3A[Restart dot3svc]
+    PH3A --> PH3B{Running<br/>within 30s?}
+    PH3B -->|Yes| PH3C[SUCCESS:<br/>service restarted]
+    PH3B -->|No| PH3D[WARN:<br/>timeout]
+
+    PH3C --> SUM
+    PH3D --> SUM
+
+    SUM[/"Summary Banner"/]
+    SUM --> SUM1[Log iteration<br/>results]
+    SUM1 --> SUM2[Log final<br/>service state]
+    SUM2 --> SUM3{RepairPolicies<br/>was set?}
+    SUM3 -->|Yes| SUM4[Log repair<br/>outcome]
+    SUM3 -->|No| SUM5
+    SUM4 --> SUM5[Log file<br/>path + finished]
+    SUM5 --> ZEND{Any<br/>failures?}
+    ZEND -->|Yes| Z1
+    ZEND -->|No| Z0([Exit 0])
+
+    style A fill:#4a9eff,color:#fff
+    style Z0 fill:#2ecc71,color:#fff
+    style Z1 fill:#e74c3c,color:#fff
+    style H fill:#f39c12,color:#fff
+    style LOOP fill:#f39c12,color:#fff
+    style Q fill:#9b59b6,color:#fff
+    style V fill:#8e44ad,color:#fff
+    style SUM fill:#1abc9c,color:#fff

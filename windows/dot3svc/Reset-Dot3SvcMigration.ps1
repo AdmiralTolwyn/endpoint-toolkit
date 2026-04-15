@@ -9,6 +9,11 @@
 
     The script produces both a structured log file and color-coded console output.
 
+    This script is provided as-is, without warranty of any kind, express or implied,
+    including but not limited to merchantability, fitness for a particular purpose,
+    and noninfringement. Use at your own risk and validate behavior in a test
+    environment before broad deployment.
+
 .PARAMETER MaxRetries
     Number of reset iterations to perform. Default: 3.
 
@@ -19,14 +24,18 @@
     Directory for the log file. Default: $env:SystemDrive\Windows\Temp.
 
 .PARAMETER RepairPolicies
-    Enables post-upgrade policy repair logic. When set, the script will:
+    Enables post-upgrade policy repair logic for specific customer edge cases seen after
+    Windows upgrades. Use only when the environment matches the observed failure pattern
+    (missing or broken migrated 802.1x policy files and recoverable originals in Windows.old).
+    When set, the script will:
     1. Check for symlinks in the dot3svc Policies folder (unless -SkipSymlinkCheck is set)
     2. Search C:\Windows.old for the original 802.1x policy files
     3. Copy recovered policies to the active policies folder and restart the service
-    This switch is DISABLED by default.
+    This switch is DISABLED by default and should not be used for normal environments.
 
 .PARAMETER SkipSymlinkCheck
     When -RepairPolicies is enabled, skip the symlink detection step.
+    Use only in the same customer edge-case scenarios where RepairPolicies is appropriate.
     By default (without this switch), symlink checking IS performed.
 
 .EXAMPLE
@@ -38,7 +47,7 @@
     Runs 5 iterations with 15-second delays.
 
 .EXAMPLE
-    .\Reset-Dot3SvcMigration.ps1 -RepairPolicies
+    .\Reset-Dot3SvcMigration.ps1 -RepairPolicies 
     Runs migration reset AND checks for symlinks + recovers policies from Windows.old.
 
 .EXAMPLE
@@ -384,19 +393,24 @@ if ($RepairPolicies) {
             if (Test-Path $targetPolicies) {
                 $copiedCount = 0
                 $copyFailCount = 0
+                $skippedCount = 0
                 foreach ($f in $oldPolicyFiles) {
                     $destFile = Join-Path $targetPolicies $f.Name
                     try {
-                        # If a symlink or file already exists at destination, remove it first
                         if (Test-Path $destFile) {
                             $existingItem = Get-Item $destFile -ErrorAction SilentlyContinue
                             if ($existingItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
-                                Write-Log "Removing existing symlink at destination: $($f.Name)" -Level WARN
+                                # Symlink/junction — remove it so we can copy the real file
+                                Write-Log "Removing broken symlink at destination: $($f.Name)" -Level WARN
+                                Remove-Item $destFile -Force -ErrorAction Stop
                             }
                             else {
-                                Write-Log "Overwriting existing file at destination: $($f.Name)" -Level WARN
+                                # Real file already exists — do not overwrite
+                                $sizeKB = [math]::Round($existingItem.Length / 1KB, 1)
+                                Write-Log "SKIP: $($f.Name) — real file already in target ($sizeKB KB)" -Level INFO
+                                $skippedCount++
+                                continue
                             }
-                            Remove-Item $destFile -Force -ErrorAction Stop
                         }
                         Copy-Item -Path $f.FullName -Destination $destFile -Force -ErrorAction Stop
                         $copiedCount++
@@ -407,8 +421,11 @@ if ($RepairPolicies) {
                         Write-Log "Failed to copy '$($f.Name)': $($_.Exception.Message)" -Level ERROR
                     }
                 }
+                if ($skippedCount -gt 0) {
+                    Write-Log "$skippedCount file(s) already present in target — no overwrite needed" -Level SUCCESS
+                }
                 if ($copyFailCount -eq 0) { $copyLevel = 'SUCCESS' } else { $copyLevel = 'WARN' }
-                Write-Log "Copy result: $copiedCount succeeded, $copyFailCount failed" -Level $copyLevel
+                Write-Log "Recovery result: $copiedCount copied, $skippedCount skipped, $copyFailCount failed" -Level $copyLevel
 
                 if ($copiedCount -gt 0) {
                     $policyRepairDone = $true
