@@ -3210,50 +3210,50 @@ tr.filter-hidden{display:none}
 <body>
 <div class="toolbar">
   <h1><span class="footer-dot"></span>AVD Assessment Report</h1>
-  <div class="spacer"></p>
+  <div class="spacer"></div>
   <button class="btn" onclick="var t=document.documentElement.getAttribute('data-theme');document.documentElement.setAttribute('data-theme',t==='dark'?'light':'dark')">Theme</button>
   <button class="btn" onclick="var s=document.getElementsByClassName('section-content');for(var i=0;i<s.length;i++){s[i].className='section-content open'};var h=document.getElementsByClassName('section-header');for(var j=0;j<h.length;j++){h[j].className='section-header open'}">Expand</button>
   <button class="btn" onclick="var s=document.getElementsByClassName('section-content open');while(s.length>0){s[0].className='section-content'};var h=document.getElementsByClassName('section-header open');while(h.length>0){h[0].className='section-header'}">Collapse</button>
   <button class="btn" onclick="window.print()">Print</button>
-</p>
+</div>
 <div class="filter-bar">
   <input type="text" id="searchBox" placeholder="Search checks by name, ID, or details…" oninput="applyFilters()">
-  <div class="filter-sep"></p>
+  <div class="filter-sep"></div>
   <span class="filter-pill pill-pass" onclick="togglePill(this,'status','Pass')">Pass</span>
   <span class="filter-pill pill-fail" onclick="togglePill(this,'status','Fail')">Fail</span>
   <span class="filter-pill pill-warning" onclick="togglePill(this,'status','Warning')">Warning</span>
   <span class="filter-pill pill-na" onclick="togglePill(this,'status','N/A')">N/A</span>
-  <div class="filter-sep"></p>
+  <div class="filter-sep"></div>
   <span class="filter-pill pill-crit" onclick="togglePill(this,'sev','Critical')">Critical</span>
   <span class="filter-pill pill-high" onclick="togglePill(this,'sev','High')">High</span>
   <span class="filter-pill pill-med" onclick="togglePill(this,'sev','Medium')">Medium</span>
   <span class="filter-pill pill-low" onclick="togglePill(this,'sev','Low')">Low</span>
   <span class="filter-count" id="filterCount"></span>
-</p>
+</div>
 <div class="container">
 
 <!-- Meta -->
 <div class="meta-grid">
-  <div class="meta-item">Customer <span>$(& $enc $Global:Assessment.CustomerName)</span></p>
-  <div class="meta-item">Assessor <span>$(& $enc $Global:Assessment.AssessorName)</span></p>
-  <div class="meta-item">Date <span>$($Global:Assessment.Date)</span></p>
-  <div class="meta-item">Tool <span>AVD Assessor v$Global:AppVersion</span></p>
-</p>
+  <div class="meta-item">Customer <span>$(& $enc $Global:Assessment.CustomerName)</span></div>
+  <div class="meta-item">Assessor <span>$(& $enc $Global:Assessment.AssessorName)</span></div>
+  <div class="meta-item">Date <span>$($Global:Assessment.Date)</span></div>
+  <div class="meta-item">Tool <span>AVD Assessor v$Global:AppVersion</span></div>
+</div>
 
 <!-- Score Hero -->
 <div class="score-hero">
-  <div class="score-value $OverallClass">$(if ($Overall -ge 0) { "$Overall%" } else { '—' })</p>
-  <div class="score-label">Overall Readiness Score</p>
-</p>
+  <div class="score-value $OverallClass">$(if ($Overall -ge 0) { "$Overall%" } else { '—' })</div>
+  <div class="score-label">Overall Readiness Score</div>
+</div>
 
 <!-- Summary cards -->
 <div class="summary">
-  <div class="stat-card pass"><div class="accent-bar"></p><div class="num">$PassCount</p><div class="label">Pass</p></p>
-  <div class="stat-card warn"><div class="accent-bar"></p><div class="num">$WarnCount</p><div class="label">Warning</p></p>
-  <div class="stat-card fail"><div class="accent-bar"></p><div class="num">$FailCount</p><div class="label">Fail</p></p>
-  <div class="stat-card na"><div class="accent-bar"></p><div class="num">$NACount</p><div class="label">N/A</p></p>
-  <div class="stat-card total"><div class="accent-bar"></p><div class="num">$($Global:Assessment.Checks.Count)</p><div class="label">Total</p></p>
-</p>
+  <div class="stat-card pass"><div class="accent-bar"></div><div class="num">$PassCount</div><div class="label">Pass</div></div>
+  <div class="stat-card warn"><div class="accent-bar"></div><div class="num">$WarnCount</div><div class="label">Warning</div></div>
+  <div class="stat-card fail"><div class="accent-bar"></div><div class="num">$FailCount</div><div class="label">Fail</div></div>
+  <div class="stat-card na"><div class="accent-bar"></div><div class="num">$NACount</div><div class="label">N/A</div></div>
+  <div class="stat-card total"><div class="accent-bar"></div><div class="num">$($Global:Assessment.Checks.Count)</div><div class="label">Total</div></div>
+</div>
 
 <!-- Progress bar -->
 "@)
@@ -3262,7 +3262,7 @@ tr.filter-hidden{display:none}
     $PctPass = [math]::Round(($PassCount + $NACount) / $Total * 100, 1)
     $PctWarn = [math]::Round($WarnCount / $Total * 100, 1)
     $PctFail = [math]::Round($FailCount / $Total * 100, 1)
-    [void]$html.Append("<div class='progress-bar'><div class='seg seg-pass' style='width:${PctPass}%'></p><div class='seg seg-warn' style='width:${PctWarn}%'></p><div class='seg seg-fail' style='width:${PctFail}%'></p></p>`n")
+    [void]$html.Append("<div class='progress-bar'><div class='seg seg-pass' style='width:${PctPass}%'></div><div class='seg seg-warn' style='width:${PctWarn}%'></div><div class='seg seg-fail' style='width:${PctFail}%'></div></div>`n")
 
     # ─── MATURITY RADAR ────────────────────────────────────────────────
     $Composite = Get-CompositeMaturityScore
@@ -3321,38 +3321,38 @@ tr.filter-hidden{display:none}
     [void]$html.Append(@"
 <!-- Maturity Section -->
 <div class="maturity-section">
-<div class="maturity-title">Environment Maturity</p>
-<div class="maturity-subtitle">Composite score across 6 dimensions — aligned to WAF, CAF, LZA, and Security best practices</p>
+<div class="maturity-title">Environment Maturity</div>
+<div class="maturity-subtitle">Composite score across 6 dimensions — aligned to WAF, CAF, LZA, and Security best practices</div>
 <div class="maturity-header">
   <div class="maturity-radar">
     <svg width="240" height="240" viewBox="0 0 300 300">
     $($SvgPolys.ToString())
     </svg>
-  </p>
+  </div>
   <div class="maturity-composite">
-    <div class="big-score $CompClass">$(if ($Composite -ge 0) { "$Composite%" } else { '—' })</p>
-    <div class="level-label">$MatLevel</p>
-  </p>
+    <div class="big-score $CompClass">$(if ($Composite -ge 0) { "$Composite%" } else { '—' })</div>
+    <div class="level-label">$MatLevel</div>
+  </div>
   <div class="maturity-zone-strip">
     <div class="maturity-zone-bar">
-      <div class="zone" style="flex:35;background:var(--red);opacity:0.25"></p>
-      <div class="zone" style="flex:20;background:var(--orange);opacity:0.3"></p>
-      <div class="zone" style="flex:20;background:#EAB308;opacity:0.3"></p>
-      <div class="zone" style="flex:15;background:#14B8A6;opacity:0.3"></p>
-      <div class="zone" style="flex:11;background:var(--green);opacity:0.3"></p>
-    </p>
+      <div class="zone" style="flex:35;background:var(--red);opacity:0.25"></div>
+      <div class="zone" style="flex:20;background:var(--orange);opacity:0.3"></div>
+      <div class="zone" style="flex:20;background:#EAB308;opacity:0.3"></div>
+      <div class="zone" style="flex:15;background:#14B8A6;opacity:0.3"></div>
+      <div class="zone" style="flex:11;background:var(--green);opacity:0.3"></div>
+    </div>
     <div class="maturity-zone-marker" style="width:100%">
-      <div class="pin" style="left:clamp(0%,$(if ($Composite -ge 0) { $Composite } else { 0 })%,100%)"></p>
-    </p>
+      <div class="pin" style="left:clamp(0%,$(if ($Composite -ge 0) { $Composite } else { 0 })%,100%)"></div>
+    </div>
     <div class="maturity-zone-labels">
       <span style="flex:35">Initial</span>
       <span style="flex:20">Developing</span>
       <span style="flex:20">Defined</span>
       <span style="flex:15">Managed</span>
       <span style="flex:11">Optimized</span>
-    </p>
-  </p>
-</p>
+    </div>
+  </div>
+</div>
 <div class="maturity-dims">
 "@)
 
@@ -3376,14 +3376,14 @@ tr.filter-hidden{display:none}
   <div class="dim-header">
     <span class="dim-label">$(& $enc $DLabel)</span>
     <span class="dim-score" style="color:$DColor">$(if ($DS -ge 0) { "$DS%" } else { '—' })</span>
-  </p>
-  <div class="dim-bar"><div class="dim-bar-fill" style="width:${DWidth}%;background:$DColor"></p></p>
-  <div class="dim-meta"><span style="color:var(--green-text)">$DPass pass</span><span style="color:var(--orange-text)">$DWarn warn</span><span style="color:var(--red-text)">$DFail fail</span></p>
-</p>
+  </div>
+  <div class="dim-bar"><div class="dim-bar-fill" style="width:${DWidth}%;background:$DColor"></div></div>
+  <div class="dim-meta"><span style="color:var(--green-text)">$DPass pass</span><span style="color:var(--orange-text)">$DWarn warn</span><span style="color:var(--red-text)">$DFail fail</span></div>
+</div>
 "@)
     }
 
-    [void]$html.Append("</p></p>`n")
+    [void]$html.Append("</div></div>`n")
 
     # ─── EFFORT BREAKDOWN ──────────────────────────────────────────────
     $EffortQuick = @($Global:Assessment.Checks | Where-Object { $_.Effort -eq 'Quick Win' -and $_.Status -in @('Fail','Warning') }).Count
@@ -3392,14 +3392,14 @@ tr.filter-hidden{display:none}
     if ($EffortQuick + $EffortSome + $EffortMajor -gt 0) {
         [void]$html.Append(@"
 <div style="margin-bottom:32px">
-<div style="font-size:16px;font-weight:700;color:var(--text-bright);margin-bottom:4px">Priority Matrix</p>
-<div style="font-size:12px;color:var(--text-dim);margin-bottom:14px">Findings that need attention, grouped by remediation effort</p>
+<div style="font-size:16px;font-weight:700;color:var(--text-bright);margin-bottom:4px">Priority Matrix</div>
+<div style="font-size:12px;color:var(--text-dim);margin-bottom:14px">Findings that need attention, grouped by remediation effort</div>
 <div class="effort-grid">
-  <div class="effort-card quick"><div class="effort-icon">&#9889;</p><div class="effort-count">$EffortQuick</p><div class="effort-label">Quick Wins</p></p>
-  <div class="effort-card some"><div class="effort-icon">&#128736;</p><div class="effort-count">$EffortSome</p><div class="effort-label">Some Effort</p></p>
-  <div class="effort-card major"><div class="effort-icon">&#127959;</p><div class="effort-count">$EffortMajor</p><div class="effort-label">Major Effort</p></p>
-</p>
-</p>
+  <div class="effort-card quick"><div class="effort-icon">&#9889;</div><div class="effort-count">$EffortQuick</div><div class="effort-label">Quick Wins</div></div>
+  <div class="effort-card some"><div class="effort-icon">&#128736;</div><div class="effort-count">$EffortSome</div><div class="effort-label">Some Effort</div></div>
+  <div class="effort-card major"><div class="effort-icon">&#127959;</div><div class="effort-count">$EffortMajor</div><div class="effort-label">Major Effort</div></div>
+</div>
+</div>
 "@)
     }
 
@@ -3421,9 +3421,9 @@ tr.filter-hidden{display:none}
   $(& $enc $Cat)
   <span class="section-score" style="color:$ScoreColor">$(if ($Score -ge 0) { "$Score%" } else { '—' })</span>
   <span class="section-count">$CatPass/$($CatAssessed.Count) pass</span>
-</p>
+</div>
 <div class="section-content">
-<div class="cat-progress"><div class="cat-progress-fill" style="width:${BarWidth}%;background:$ScoreColor"></p></p>
+<div class="cat-progress"><div class="cat-progress-fill" style="width:${BarWidth}%;background:$ScoreColor"></div></div>
 "@)
         # ─── CATEGORY DATA SUMMARY ────────────────────────────────────
         $CatSummary = $null
@@ -3516,7 +3516,7 @@ tr.filter-hidden{display:none}
             }
         }
         if ($CatSummary) {
-            [void]$html.Append("<div class='cat-summary'>$CatSummary</p>`n")
+            [void]$html.Append("<div class='cat-summary'>$CatSummary</div>`n")
         }
 
         [void]$html.Append(@"
@@ -3546,7 +3546,7 @@ tr.filter-hidden{display:none}
             [void]$html.Append("<td><span class='wt' title='Weight $WVal/5'>$WDots</span></td>")
             [void]$html.Append("<td>$OriginBadges</td>")
             [void]$html.Append("<td>$($Check.Source)</td>")
-            [void]$html.Append("<td>$(& $enc $Check.Details)$(if($Check.Notes){"`n<div style='margin-top:6px;padding:4px 8px;background:var(--accent-dim);border-left:2px solid var(--accent);border-radius:var(--radius-xs);font-size:11px;color:var(--accent-text)'><strong>Note:</strong> $(& $enc $Check.Notes)</p>"})$(if($Check.Impact -and $Check.Status -in @('Fail','Warning')){"`n<div class='impact-box'><strong>Impact:</strong> $(& $enc $Check.Impact)</p>"})$(if($Check.Remediation -and $Check.Status -in @('Fail','Warning')){"`n<div class='remediation-box'><strong>Fix:</strong> $(& $enc $Check.Remediation)</p>"})</td>")
+            [void]$html.Append("<td>$(& $enc $Check.Details)$(if($Check.Notes){"`n<div style='margin-top:6px;padding:4px 8px;background:var(--accent-dim);border-left:2px solid var(--accent);border-radius:var(--radius-xs);font-size:11px;color:var(--accent-text)'><strong>Note:</strong> $(& $enc $Check.Notes)</div>"})$(if($Check.Impact -and $Check.Status -in @('Fail','Warning')){"`n<div class='impact-box'><strong>Impact:</strong> $(& $enc $Check.Impact)</div>"})$(if($Check.Remediation -and $Check.Status -in @('Fail','Warning')){"`n<div class='remediation-box'><strong>Fix:</strong> $(& $enc $Check.Remediation)</div>"})</td>")
             $RefHtml = if ($Check.Reference) { "<a href='$(& $enc $Check.Reference)' target='_blank' style='color:var(--accent);font-size:11px;word-break:break-all'>$(& $enc $Check.Reference)</a>" } else { '' }
             [void]$html.Append("<td>$RefHtml</td>")
             [void]$html.Append("</tr>`n")
@@ -3560,7 +3560,7 @@ tr.filter-hidden{display:none}
                     $SHs = @($Inv.SessionHosts)
                     if ($SHs.Count -gt 0) {
                         $SKUGroups = @($SHs | Group-Object VMSize | Sort-Object Count -Descending)
-                        [void]$html.Append("<div style='margin-top:12px;font-size:13px;font-weight:600;color:var(--text-bright)'>VM SKU Distribution</p>`n")
+                        [void]$html.Append("<div style='margin-top:12px;font-size:13px;font-weight:600;color:var(--text-bright)'>VM SKU Distribution</div>`n")
                         [void]$html.Append("<table class='comparison-table'><thead><tr><th>VM Size</th><th>Count</th><th>% of Fleet</th></tr></thead><tbody>`n")
                         foreach ($G in $SKUGroups) {
                             $Pct = [math]::Round($G.Count / $SHs.Count * 100, 0)
@@ -3572,7 +3572,7 @@ tr.filter-hidden{display:none}
                 'FSLogix*' {
                     $SAs = @($Inv.StorageAccounts)
                     if ($SAs.Count -gt 0) {
-                        [void]$html.Append("<div style='margin-top:12px;font-size:13px;font-weight:600;color:var(--text-bright)'>Storage Account Comparison</p>`n")
+                        [void]$html.Append("<div style='margin-top:12px;font-size:13px;font-weight:600;color:var(--text-bright)'>Storage Account Comparison</div>`n")
                         [void]$html.Append("<table class='comparison-table'><thead><tr><th>Name</th><th>Tier</th><th>Replication</th><th>TLS</th><th>Private EP</th><th>Firewall</th></tr></thead><tbody>`n")
                         foreach ($SA in $SAs) {
                             $TlsBadge = if ($SA.Tls -match '1_2|1.2') { "<span style='color:var(--green-text)'>TLS 1.2</span>" } else { "<span style='color:var(--red-text)'>$($SA.Tls)</span>" }
@@ -3586,7 +3586,7 @@ tr.filter-hidden{display:none}
                 'Governance*' {
                     $OrphDisks = @($Inv.OrphanedDisks)
                     if ($OrphDisks.Count -gt 0) {
-                        [void]$html.Append("<div style='margin-top:12px;font-size:13px;font-weight:600;color:var(--text-bright)'>Orphaned Disks</p>`n")
+                        [void]$html.Append("<div style='margin-top:12px;font-size:13px;font-weight:600;color:var(--text-bright)'>Orphaned Disks</div>`n")
                         [void]$html.Append("<table class='comparison-table'><thead><tr><th>Name</th><th>Resource Group</th><th>Size (GB)</th><th>SKU</th></tr></thead><tbody>`n")
                         foreach ($D in $OrphDisks) {
                             [void]$html.Append("<tr><td>$(& $enc $D.Name)</td><td>$(& $enc $D.ResourceGroup)</td><td>$($D.SizeGB)</td><td>$($D.Sku)</td></tr>`n")
@@ -3595,7 +3595,7 @@ tr.filter-hidden{display:none}
                     }
                     $Quotas = @($Inv.Quotas)
                     if ($Quotas.Count -gt 0) {
-                        [void]$html.Append("<div style='margin-top:12px;font-size:13px;font-weight:600;color:var(--text-bright)'>VM Quota Usage</p>`n")
+                        [void]$html.Append("<div style='margin-top:12px;font-size:13px;font-weight:600;color:var(--text-bright)'>VM Quota Usage</div>`n")
                         [void]$html.Append("<table class='comparison-table'><thead><tr><th>Region</th><th>Quota</th><th>Used</th><th>Limit</th><th>Usage %</th></tr></thead><tbody>`n")
                         foreach ($Q in ($Quotas | Sort-Object UsagePct -Descending)) {
                             $QColor = if ($Q.UsagePct -ge 80) { "color:var(--red-text)" } elseif ($Q.UsagePct -ge 60) { "color:var(--orange-text)" } else { "color:var(--green-text)" }
@@ -3613,7 +3613,7 @@ tr.filter-hidden{display:none}
             'Security*' {
                 $FieldNote = @"
 <div class="field-note">
-<div class="field-note-title">Field Notes — Security & Identity</p>
+<div class="field-note-title">Field Notes — Security & Identity</div>
 <p>RDP property security is one of the most overlooked areas in AVD deployments. The default RDP template allows <strong>all device redirections</strong> — drives, clipboard, printers, USB — creating data exfiltration vectors. Always parse <code>CustomRdpProperty</code> and explicitly restrict each channel.</p>
 <ul>
 <li><strong>Clipboard</strong> — Use <a href="https://learn.microsoft.com/en-us/azure/virtual-desktop/clipboard-transfer-direction-data-types">clipboard transfer direction policies</a> for granular control instead of binary enable/disable</li>
@@ -3625,26 +3625,26 @@ tr.filter-hidden{display:none}
 <li><strong>Key Vault</strong> — Store AVD deployment secrets, certificates, and encryption keys centrally. Enable soft delete + purge protection. Use RBAC (not access policies) for granular control. Always configure private endpoints — Key Vault without PE exposes secrets over the public internet</li>
 <li><strong>Host Pool Private Link</strong> — AVD Private Link keeps control-plane traffic (session brokering, diagnostics) off the public internet. Requires private endpoints on host pools and workspaces with DNS configuration for <code>wvd.microsoft.com</code></li>
 </ul>
-</p>
+</div>
 "@
             }
             'Identity*' {
                 $FieldNote = @"
 <div class="field-note">
-<div class="field-note-title">Field Notes — Identity & Access</p>
+<div class="field-note-title">Field Notes — Identity & Access</div>
 <p>SSO (<code>enablerdsaadauth:i:1</code>) is <strong>strongly recommended</strong> for Entra ID joined pools — without it, users face a double authentication prompt. For Hybrid-joined hosts, SSO requires specific <a href="https://learn.microsoft.com/en-us/azure/virtual-desktop/configure-single-sign-on">Kerberos configuration</a>.</p>
 <ul>
 <li><strong>Entra ID Join</strong> — Preferred for new deployments. Eliminates AD DS dependency and simplifies CA policies</li>
 <li><strong>Conditional Access</strong> — Create separate policies for the "Windows 365 / Azure Virtual Desktop" cloud app with device compliance, MFA, and session controls</li>
 <li><strong>RBAC least privilege</strong> — Use <em>Desktop Virtualization User</em> (not Contributor) for end users, <em>Desktop Virtualization Host Pool Contributor</em> for operators</li>
 </ul>
-</p>
+</div>
 "@
             }
             'Network*' {
                 $FieldNote = @"
 <div class="field-note">
-<div class="field-note-title">Field Notes — Networking</p>
+<div class="field-note-title">Field Notes — Networking</div>
 <p>AVD requires very specific outbound connectivity. If NSGs use <strong>deny-all outbound</strong>, you must explicitly allow the <a href="https://learn.microsoft.com/en-us/azure/virtual-desktop/required-fqdn-endpoint">required FQDNs and service tags</a>: <code>WindowsVirtualDesktop</code>, <code>AzureActiveDirectory</code>, <code>AzureResourceManager</code> on port 443.</p>
 <ul>
 <li><strong>Subnet capacity</strong> — Each session host needs 1 IP. Azure reserves 5 per subnet. A /24 gives 251 usable IPs. Plan for 30% headroom for scaling and maintenance replacements</li>
@@ -3656,13 +3656,13 @@ tr.filter-hidden{display:none}
 <li><strong>Hub Firewall</strong> — Azure Firewall (or NVA) in the hub VNet provides centralized egress filtering with threat intelligence. Essential for deny-all-outbound with explicit allow rules using AVD service tags</li>
 <li><strong>VPN/ExpressRoute</strong> — Required for hybrid identity (AD DS), on-premises file shares, and LOB apps. ExpressRoute provides private, low-latency connectivity; VPN is cost-effective for smaller deployments</li>
 </ul>
-</p>
+</div>
 "@
             }
             'Session*' {
                 $FieldNote = @"
 <div class="field-note">
-<div class="field-note-title">Field Notes — Session Hosts</p>
+<div class="field-note-title">Field Notes — Session Hosts</div>
 <p>Session host sizing is the single biggest cost lever. D-series (general purpose) is the default recommendation, but measure actual workloads before right-sizing.</p>
 <ul>
 <li><strong>Ephemeral OS disks</strong> — Pooled hosts should use ephemeral disks when VM SKU supports it. Eliminates storage cost and provides faster reimage (~2 min vs ~10 min)</li>
@@ -3672,13 +3672,13 @@ tr.filter-hidden{display:none}
 <li><strong>Premium vs Standard SSD</strong> — For pooled hosts with ephemeral disks, the OS disk type is moot. For persistent disks, Standard SSD is usually sufficient — Premium only helps with high-IOPS workloads</li>
 <li><strong>NeedsAssistance status</strong> — Typically means the agent crashed or the VM lost connectivity. Check the RDAgent and Geneva logs on the VM</li>
 </ul>
-</p>
+</div>
 "@
             }
             'FSLogix*' {
                 $FieldNote = @"
 <div class="field-note">
-<div class="field-note-title">Field Notes — FSLogix & Profiles</p>
+<div class="field-note-title">Field Notes — FSLogix & Profiles</div>
 <p>Profile storage is often the hidden bottleneck in AVD deployments. Premium FileStorage with private endpoints is the gold standard for production.</p>
 <ul>
 <li><strong>SMB security</strong> — Disable SMB 2.1 and NTLMv2 on storage accounts. Use <code>AES-256-GCM</code> channel encryption and <code>AES-256</code> Kerberos ticket encryption</li>
@@ -3687,13 +3687,13 @@ tr.filter-hidden{display:none}
 <li><strong>Soft delete</strong> — Always enable. Default 7-day retention. Saved us from accidental deletion dozens of times in production</li>
 <li><strong>AV exclusions</strong> — FSLogix VHD/VHDX files MUST be excluded from antivirus scanning. Without this, profile mount times can jump from ~2s to 30s+</li>
 </ul>
-</p>
+</div>
 "@
             }
             'Monitor*' {
                 $FieldNote = @"
 <div class="field-note">
-<div class="field-note-title">Field Notes — Monitoring & Telemetry</p>
+<div class="field-note-title">Field Notes — Monitoring & Telemetry</div>
 <p>Without diagnostic settings on host pools, you lose visibility into connection quality, session errors, and scaling events. <a href="https://learn.microsoft.com/en-us/azure/virtual-desktop/insights">AVD Insights</a> is free but requires AMA on every session host.</p>
 <ul>. Ensure all 6 recommended log categories are enabled: Checkpoint, Error, Management, Connection, HostRegistration, AgentHealthStatus
 <li><strong>Diagnostic coverage</strong> — Enable diagnostics on host pools, workspaces, AND app groups. Missing any one creates blind spots in AVD Insights</li>
@@ -3701,13 +3701,13 @@ tr.filter-hidden{display:none}
 <li><strong>Defender for Cloud</strong> — Standard tier enables vulnerability assessment, adaptive application controls, and just-in-time VM access — all applicable to AVD</li>
 <li><strong>Performance counters</strong> — For AVD Insights: CPU, Available Memory, Disk Queue Length, and Input Delay (under RemoteFX Graphics)</li>
 </ul>
-</p>
+</div>
 "@
             }
             'BCDR*' {
                 $FieldNote = @"
 <div class="field-note">
-<div class="field-note-title">Field Notes — Resiliency & BCDR</p>
+<div class="field-note-title">Field Notes — Resiliency & BCDR</div>
 <p>AVD control plane is Microsoft-managed and geo-redundant. Your BCDR focus should be on session hosts, images, and profile storage.</p>
 <ul>
 <li><strong>Availability Zones</strong> — Spread session hosts across 3 zones. Use <code>FaultDomainMode</code> or zone-pinned deployments</li>
@@ -3715,13 +3715,13 @@ tr.filter-hidden{display:none}
 <li><strong>Single-region risk</strong> — Acceptable for many workloads if documented. DR via secondary region is expensive — evaluate if RTO justifies cost</li>
 <li><strong>Image replication</strong> — Use Compute Gallery with multi-region replication so DR region can spin up VMs without copying the image first</li>
 </ul>
-</p>
+</div>
 "@
             }
             'Governance*' {
                 $FieldNote = @"
 <div class="field-note">
-<div class="field-note-title">Field Notes — Governance & Cost</p>
+<div class="field-note-title">Field Notes — Governance & Cost</div>
 <p>AVD costs are primarily compute (VMs) and storage (disks + profiles). Scaling plans typically save 40-70% on compute for pooled host pools.</p>
 <ul>
 <li><strong>Tag strategy</strong> — At minimum: <code>Environment</code>, <code>Owner</code>, <code>CostCenter</code>, <code>Application</code>. Tags enable cost allocation and automated governance</li>
@@ -3734,70 +3734,70 @@ tr.filter-hidden{display:none}
 <li><strong>Quota headroom</strong> — Monitor vCPU quota usage per region. If quota is near limits, scaling plans silently fail to start new hosts. Request increases proactively before peak seasons</li>
 <li><strong>Cross-resource tagging</strong> — Don't just tag host pools — tag VMs, storage, VNets, and NSGs consistently. Use Azure Policy <em>'Inherit a tag from the resource group'</em> for automatic propagation</li>
 </ul>
-</p>
+</div>
 "@
             }
             'Landing*' {
                 $FieldNote = @"
 <div class="field-note">
-<div class="field-note-title">Field Notes — Landing Zone</p>
+<div class="field-note-title">Field Notes — Landing Zone</div>
 <p>The <a href="https://github.com/Azure/avdaccelerator">AVD Landing Zone Accelerator</a> provides Bicep/Terraform templates that encode Microsoft's opinionated best practices.</p>
 <ul>
 <li><strong>Application vs Platform LZ</strong> — AVD should be in an application landing zone, consuming shared services (DNS, firewall, ExpressRoute) from the platform</li>
 <li><strong>Azure Policy</strong> — Enforce guardrails: require Trusted Launch, block public IPs on VMs, enforce NSGs — these are preventive, not detective controls</li>
 </ul>
-</p>
+</div>
 "@
             }
             'Application*' {
                 $FieldNote = @"
 <div class="field-note">
-<div class="field-note-title">Field Notes — Application Delivery</p>
+<div class="field-note-title">Field Notes — Application Delivery</div>
 <p>App Attach enables dynamic app delivery without baking apps into the golden image — decouples app lifecycle from image lifecycle.</p>
 <ul>
 <li><strong>Desktop vs RemoteApp</strong> — RemoteApp provides individual apps in their own window. Better for task workers. Desktop gives full Windows experience</li>
 <li><strong>Teams optimization</strong> — New Teams (Chromium-based) with <a href="https://learn.microsoft.com/en-us/azure/virtual-desktop/teams-on-avd">media optimization</a> is the recommended path. Classic Teams with WebRTC redirector is end-of-life</li>
 </ul>
-</p>
+</div>
 "@
             }
             'Operations*' {
                 $FieldNote = @"
 <div class="field-note">
-<div class="field-note-title">Field Notes — Operations</p>
+<div class="field-note-title">Field Notes — Operations</div>
 <p>Image management and agent currency are the most common operational gaps. Stale agents cause registration failures and connectivity issues.</p>
 <ul>
 <li><strong>Agent auto-update</strong> — Works only when VM is running. VMs deallocated >90 days may need manual re-registration</li>
 <li><strong>Golden image pipeline</strong> — Automate via <a href="https://learn.microsoft.com/en-us/azure/virtual-machines/image-builder-overview">Azure Image Builder</a> + Compute Gallery. Monthly cadence for security updates</li>
 </ul>
-</p>
+</div>
 "@
             }
         }
         if ($FieldNote) {
             [void]$html.Append($FieldNote)
         }
-        [void]$html.Append("</p>`n")
+        [void]$html.Append("</div>`n")
     }
 
     # Notes
     if ($Global:Assessment.Notes) {
         [void]$html.Append("<h2 style='font-size:16px;font-weight:600;margin:28px 0 12px;color:var(--text-bright)'>Notes</h2>`n")
-        [void]$html.Append("<div class='notes-section'>$(& $enc $Global:Assessment.Notes)</p>`n")
+        [void]$html.Append("<div class='notes-section'>$(& $enc $Global:Assessment.Notes)</div>`n")
     }
 
     # Footer
     [void]$html.Append(@"
 <div class="footer">
-  <div><span class="footer-dot"></span>Generated by AVD Assessor v$Global:AppVersion on $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') &middot; Overall: <strong>$(Get-MaturityLevel $Overall)</strong> ($Overall%)</p>
+  <div><span class="footer-dot"></span>Generated by AVD Assessor v$Global:AppVersion on $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') &middot; Overall: <strong>$(Get-MaturityLevel $Overall)</strong> ($Overall%)</div>
   <div>
     <a href="https://learn.microsoft.com/en-us/azure/well-architected/azure-virtual-desktop/">WAF</a> &middot;
     <a href="https://learn.microsoft.com/en-us/azure/cloud-adoption-framework/scenarios/azure-virtual-desktop/">CAF</a> &middot;
     <a href="https://github.com/Azure/avdaccelerator">LZA</a> &middot;
     <a href="https://learn.microsoft.com/en-us/azure/architecture/guide/virtual-desktop/start-here">Architecture</a>
-  </p>
-</p>
-</p>
+  </div>
+</div>
+</div>
 <script>
 var cols = document.getElementsByClassName('section-header');
 for (var i = 0; i < cols.length; i++) {
