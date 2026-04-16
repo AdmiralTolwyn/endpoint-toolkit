@@ -3698,10 +3698,24 @@ function Start-LogStreaming {
         # Force InvariantCulture for consistent formatting
         [System.Threading.Thread]::CurrentThread.CurrentCulture = [System.Globalization.CultureInfo]::InvariantCulture
 
+        # Explicitly import Az modules — background runspaces don't auto-discover them
+        Import-Module Az.Accounts -ErrorAction SilentlyContinue
+        Import-Module Az.ContainerInstance -ErrorAction SilentlyContinue
+        Import-Module Az.Storage -ErrorAction SilentlyContinue
+
         $RG = $BuildInfo.ResourceGroup
         $CGName = $BuildInfo.ContainerGroup
         $CName = $BuildInfo.ContainerName
         $PollMs = $SyncHash.PollIntervalSec * 1000
+
+        # Detect correct container-name parameter (v1.x uses -Name, v3+/v4+ uses -ContainerName)
+        $LogParams = @{ ResourceGroupName = $RG; ContainerGroupName = $CGName; ErrorAction = 'Stop' }
+        $Cmd = Get-Command Get-AzContainerInstanceLog -ErrorAction SilentlyContinue
+        if ($Cmd -and $Cmd.Parameters.ContainsKey('ContainerName')) {
+            $LogParams['ContainerName'] = $CName
+        } else {
+            $LogParams['Name'] = $CName
+        }
 
         # Initial status message
         $SyncHash.LogQueue.Enqueue(@{
@@ -3794,12 +3808,8 @@ function Start-LogStreaming {
 
         while (-not $SyncHash.StopFlag) {
             try {
-                # Fetch the full log
-                $Log = Get-AzContainerInstanceLog `
-                    -ResourceGroupName $RG `
-                    -ContainerGroupName $CGName `
-                    -Name $CName `
-                    -ErrorAction Stop
+                # Fetch the full log (splatted — param name varies by module version)
+                $Log = Get-AzContainerInstanceLog @LogParams
 
                 $ConsecutiveErrors = 0   # Reset on success
 
