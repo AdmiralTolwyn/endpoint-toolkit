@@ -3398,6 +3398,13 @@ function Get-ActiveBuilds {
         UI thread so the window never freezes. Results are dispatched back to the UI
         via the DispatcherTimer polling system.
     #>
+    # Guard: prevent overlapping scans
+    if ($Global:BuildScanActive) {
+        Write-DebugLog "Get-ActiveBuilds: SKIPPED — scan already in progress"
+        return
+    }
+    $Global:BuildScanActive = $true
+
     $lblStatus.Text = "Scanning for active builds..."
     $lblBuildCount.Text = "Scanning..."
     $buildScanDot.Opacity = 1
@@ -3584,6 +3591,7 @@ function Get-ActiveBuilds {
         Update-TickerStrip -Builds @($R.Builds)
         $buildScanDot.Opacity = 0
         $btnRefreshBuilds.IsEnabled = $true
+        $Global:BuildScanActive = $false
         Write-DebugLog "Get-ActiveBuilds OnComplete: <<< EXIT"
     }
 }
@@ -3895,6 +3903,9 @@ function Start-LogStreaming {
         $SyncHash.IsStreaming = $false
     }) | Out-Null
 
+    # Safety: mark scan as not active so auto-poll isn't permanently blocked
+    $Global:BuildScanActive = $false
+
     # Store runspace references for cleanup
     $Global:WorkerPS = $PowerShell
     $Global:WorkerHandle = $PowerShell.BeginInvoke()
@@ -4195,6 +4206,12 @@ $Timer.Add_Tick({
                 Get-ActiveBuilds
             }
         }
+    }
+
+    # Safety: detect stuck IsStreaming flag (worker runspace died without clearing it)
+    if ($Global:SyncHash.IsStreaming -and $Global:WorkerHandle -and $Global:WorkerHandle.IsCompleted) {
+        Write-DebugLog "Auto-poll safety: IsStreaming stuck true but worker finished — resetting" -Level 'WARN'
+        $Global:SyncHash.IsStreaming = $false
     }
 
     # Update line count
