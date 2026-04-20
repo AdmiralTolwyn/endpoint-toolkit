@@ -254,7 +254,10 @@ param(
 
     [switch]$RegisterPrivateDnsZones,
 
-    [string]$LogDirectory = ".\logs"
+    [string]$LogDirectory = ".\logs",
+
+    [ValidateScript({ if ($_ -and -not (Test-Path $_)) { throw "RestSourcePath '$_' does not exist." }; $true })]
+    [string]$RestSourcePath
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1094,6 +1097,9 @@ function Step-DeployRestSource {
                 InformationAction          = 'Continue'
                 Verbose                    = $true
             }
+            if ($RestSourcePath) {
+                $deployParams['RestSourcePath'] = (Resolve-Path $RestSourcePath).Path
+            }
             if ($Authentication -eq 'MicrosoftEntraId') {
                 $deployParams['RestSourceAuthentication'] = 'MicrosoftEntraId'
                 if ($entraResource) {
@@ -1134,7 +1140,7 @@ function Step-DeployRestSource {
             $mod = Get-Module Microsoft.WinGet.RestSource
             $modBase = $mod.ModuleBase
             $templateFolder   = Join-Path $modBase 'Data\ARMTemplates'
-            $restSourceZip    = Join-Path $modBase 'Data\WinGet.RestSource.Functions.zip'
+            $restSourceZip    = if ($RestSourcePath) { (Resolve-Path $RestSourcePath).Path } else { Join-Path $modBase 'Data\WinGet.RestSource.Functions.zip' }
             $paramOutputPath  = Join-Path (Get-Location).Path 'Parameters'
 
             # Step 1: Create Entra ID app if needed
@@ -1372,7 +1378,7 @@ function Step-PostDeployHealthCheck {
     Write-Log "  Attempting manual ZipDeploy of function code..." -Level INFO
 
     $mod = Get-Module Microsoft.WinGet.RestSource
-    $zipPath = Join-Path $mod.ModuleBase 'Data\WinGet.RestSource.Functions.zip'
+    $zipPath = if ($RestSourcePath) { (Resolve-Path $RestSourcePath).Path } else { Join-Path $mod.ModuleBase 'Data\WinGet.RestSource.Functions.zip' }
     if (-not (Test-Path $zipPath)) {
         Write-Log "  Function zip not found at $zipPath — cannot recover." -Level ERROR
         return
