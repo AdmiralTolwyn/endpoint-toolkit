@@ -37,7 +37,9 @@ Install-Module -Name Microsoft.WinGet.RestSource -Scope CurrentUser
 
 ### Option B — Patched module from the fork (adds BasicV2/StandardV2 tiers)
 
-Use this if you need APIM v2 SKUs for VNet integration or private endpoints:
+Use this if you need APIM v2 SKUs for VNet integration or private endpoints.
+
+Patched fork: [AdmiralTolwyn/winget-cli-restsource](https://github.com/AdmiralTolwyn/winget-cli-restsource/tree/fix/apim-v2-tiers-and-isolated-worker)
 
 ```powershell
 # Clone the patched fork
