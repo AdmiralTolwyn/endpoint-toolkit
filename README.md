@@ -19,6 +19,19 @@ tools/              # Standalone PowerShell/WPF utilities
 windows/            # Windows OS-level fixes and helpers
 ```
 
+## Tools
+
+| Tool | Description |
+|------|-------------|
+| [ADMXPolicyComparer](tools/ADMXPolicyComparer/) | Compare ADMX policy baselines across Windows versions |
+| [AIBLogMonitor](tools/AIBLogMonitor/) | Azure Image Builder log monitor |
+| [AvdAssessor](tools/AvdAssessor/) | AVD environment assessment |
+| [AvdRewind](tools/AvdRewind/) | AVD session host rollback |
+| [AzChangeTracker](tools/AzChangeTracker/) | Azure resource change tracking |
+| [BaselineAssessor](tools/BaselineAssessor/) | Windows security baseline assessment (263 checks) |
+| [PolicyPilot](tools/PolicyPilot/) | Group Policy & MDM documentation — scans AD/Local/Intune, conflict detection, ADMX/CSP enrichment |
+| [WinGetManifestManager](tools/WinGetManifestManager/) | WinGet package manifest manager for private repos |
+
 ## Getting Started
 
 Most pipeline files use `<YOURVALUE>` placeholders — search for `<YOUR` and replace with your environment-specific values before use.
