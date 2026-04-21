@@ -28,7 +28,7 @@
     Date   : 2026-04-07
     Requires: PowerShell 5.1+, WPF (PresentationFramework)
     Requires: admx_metadata.json + csp_metadata.json (built by Build-AdmxDatabase.ps1 / Build-CspDatabase.ps1)
-    Optional: RSAT GroupPolicy module (AD mode), Microsoft.Graph.DeviceManagement (Intune mode)
+    Optional: RSAT GroupPolicy module (AD mode headless CLI only)
 .EXAMPLE
     .\PolicyPilot.ps1
     Launches the WPF UI with default settings.
