@@ -122,6 +122,11 @@
     the VNet. If your environment already has DNS forwarding or centralized
     Private DNS Zones, skip this switch.
 
+.PARAMETER RestSourcePath
+    Path to the compiled Azure Function zip file (WinGet.RestSource.Functions.zip).
+    If omitted, defaults to .\WinGet.RestSource.Functions.zip in the script directory.
+    Use this to deploy a custom or patched build of the REST source Functions app.
+
 .PARAMETER LogDirectory
     Directory for log files. Default: ".\logs"
 
@@ -214,7 +219,7 @@ param(
 
     [string]$SubscriptionId,
 
-    [ValidateSet("Developer","Basic","Enhanced")]
+    [ValidateSet("Developer","Basic","Enhanced","BasicV2","StandardV2")]
     [string]$PerformanceTier = "Developer",
 
     [string]$PublisherName,
