@@ -15,8 +15,6 @@ avd/
 devops/
 └── aib-task-v1-patched/   # Patched Azure Image Builder DevOps task (v2)
 
-docs/               # Internal reference documentation and email templates
-
 intune/
 └── bitlocker/      # BitLocker detection & remediation scripts for Intune
 
