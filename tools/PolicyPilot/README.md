@@ -9,7 +9,7 @@ PolicyPilot is a WPF-based PowerShell tool that scans, documents, and compares G
 │                     PolicyPilot.ps1 (WPF GUI)                       │
 │                     PolicyPilot_UI.xaml (XAML layout)                │
 ├─────────────┬───────────────┬──────────────┬────────────────────────┤
-│  AD Scan    │  Local RSoP   │  Intune Scan │  Combined (all three)  │
+│  AD Scan    │  Local RSoP   │  Intune Scan │  Combined (Local+MDM)  │
 │  LDAP/SYSVOL│  gpresult /x  │  Local MDM   │                        │
 ├─────────────┴───────────────┴──────────────┴────────────────────────┤
 │  admx_metadata.json (2,027 policies)  │  csp_metadata.json (~3,000) │
