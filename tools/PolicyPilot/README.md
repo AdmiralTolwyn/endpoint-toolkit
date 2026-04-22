@@ -10,7 +10,7 @@ PolicyPilot is a WPF-based PowerShell tool that scans, documents, and compares G
 │                     PolicyPilot_UI.xaml (XAML layout)                │
 ├─────────────┬───────────────┬──────────────┬────────────────────────┤
 │  AD Scan    │  Local RSoP   │  Intune Scan │  Combined (all three)  │
-│  LDAP/SYSVOL│  gpresult /x  │  Graph API   │                        │
+│  LDAP/SYSVOL│  gpresult /x  │  Local MDM   │                        │
 ├─────────────┴───────────────┴──────────────┴────────────────────────┤
 │  admx_metadata.json (2,027 policies)  │  csp_metadata.json (~3,000) │
 │  Built by Build-AdmxDatabase.ps1      │  Built by Build-CspDatabase │
@@ -36,7 +36,7 @@ Select a scan mode in the sidebar, configure domain/DC/OU scope if needed, and c
 |------|--------|-------------|
 | **Local** | `gpresult /x` on this machine | None (built-in) |
 | **AD** | LDAP + SYSVOL across the domain | Network access to a DC |
-| **Intune** | Microsoft Graph API | `Microsoft.Graph.DeviceManagement` module |
+| **Intune** | Local registry (PolicyManager) + WMI (MDM Bridge) | Intune-enrolled device |
 | **Combined** | Merges Local + Intune results | Both of the above |
 
 ### 3. Generate a Headless Report (CLI)
@@ -75,7 +75,7 @@ Runs `gpresult /scope:computer /x` to get the Resultant Set of Policy (RSoP) app
 
 ### Intune Mode
 
-Authenticates via `Connect-MgGraph` and queries device configuration profiles, compliance policies, and administrative templates. Supports WAM-based auth with subscription selection.
+Reads applied MDM policies from the local device — no cloud authentication required. Sources: `HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device` (CSP policies), WMI `root/cimv2/mdm/dmmap` (MDM Bridge), and `mdmdiagnosticstool` diagnostics output. Enriches raw CSP paths with friendly names from `csp_metadata.json`.
 
 ### Combined Mode
 
@@ -212,7 +212,7 @@ Three built-in log viewers with:
 | PowerShell 5.1+ | Yes | Core runtime |
 | .NET Framework 4.7.2+ | Yes | WPF (ships with Windows 10 1803+) |
 | RSAT GroupPolicy module | No* | AD scan mode (auto-prompts to install) |
-| `Microsoft.Graph.DeviceManagement` | No* | Intune scan mode |
+| Intune-enrolled device | No* | Intune scan mode (reads local MDM registry/WMI) |
 | Network access to DC / SYSVOL | No* | AD scan mode |
 | Local administrator | No* | Local RSoP scan (`gpresult`) |
 
