@@ -1,0 +1,386 @@
+name: $(Date:yyyyMMdd)$(Rev:.r)-AVD-ImageBuild
+
+trigger: none # Run manually
+
+# =============================================================================
+# Azure Image Builder - Bicep-Only Pipeline (No Extension Required)
+# =============================================================================
+# Replaces AzureImageBuilderTask@1 entirely with:
+#   - AzureCLI@2 for blob upload + Bicep deployment + build trigger + polling
+#   - Bicep module for image template resource (API 2024-02-01)
+#   - Workload identity federation support
+#   - No marketplace extension dependency
+#
+# Stages:
+#   1. Prepare  — Checkout, fetch secrets, zip & upload artifacts to staging blob
+#   2. Build    — Deploy AIB template via Bicep, trigger build, poll for completion
+#   3. Cleanup  — Delete template + staging container (runs always)
+# =============================================================================
+
+resources:
+  repositories:
+    - repository: aib_sources
+      type: git
+      name: '<YOURREPOSITORYNAME>'
+
+pool:
+  vmImage: 'windows-latest'
+
+# -----------------------------------------------------------------------------
+# CENTRALIZED CONFIGURATION
+# -----------------------------------------------------------------------------
+# Update the values below to match your environment. Everything else is derived.
+# -----------------------------------------------------------------------------
+variables:
+  # ── YOUR ENVIRONMENT (update these) ────────────────────────────────────────
+  - name: serviceConnection
+    value: '<YOURSERVICECONNECTION>'
+  - name: subscriptionId
+    value: '<YOURSUBSCRIPTIONID>'
+  - name: keyVaultName
+    value: '<YOURKEYVAULTNAME>'
+  - name: resourceGroup
+    value: '<YOURRESOURCEGROUP-AIB>'
+  - name: location
+    value: 'westeurope'
+  - name: managedIdentityName
+    value: '<YOURMANAGEDIDENTITY>'
+  - name: galleryName
+    value: '<YOURGALLERYNAME>'
+  - name: imageDefinitionName
+    value: '<YOURIMAGEDEFINITION>'
+  - name: baseImageSku
+    value: 'win11-25h2-avd-m365'
+  - name: storageAccountName
+    value: '<YOURSTORAGEACCOUNT>'
+  - name: aibCheckoutDir
+    value: '_<YOURREPOSITORYNAME>'
+
+  # ── STATIC / DERIVED (no changes needed) ──────────────────────────────────
+  - name: baseImagePublisher
+    value: 'microsoftwindowsdesktop'
+  - name: baseImageOffer
+    value: 'office-365'
+  - name: targetRegions
+    value: 'westeurope'
+  - name: vmSize
+    value: 'Standard_D4_v5'
+  - name: buildTimeout
+    value: 150
+  - name: cleanupScriptPath
+    value: '$(System.DefaultWorkingDirectory)/valueadd/CleanupAIBstorage.ps1'
+  - name: bicepTemplatePath
+    value: '$(System.DefaultWorkingDirectory)/bicep/modules/imageTemplate.bicep'
+  - name: managedIdentity
+    value: '/subscriptions/$(subscriptionId)/resourceGroups/$(resourceGroup)/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$(managedIdentityName)'
+  - name: galleryImageId
+    value: '/subscriptions/$(subscriptionId)/resourceGroups/$(resourceGroup)/providers/Microsoft.Compute/galleries/$(galleryName)/images/$(imageDefinitionName)'
+  - name: aibInternalScriptBasePath
+    value: 'C:\BuildArtifacts\$(aibCheckoutDir)\customizer'
+
+stages:
+  # ---------------------------------------------------------------------------
+  # STAGE 1: PREPARE
+  # Checks out sources, fetches secrets, uploads build artifacts to blob.
+  # ---------------------------------------------------------------------------
+  - stage: Prepare
+    displayName: "Prepare Build"
+    jobs:
+      - job: UploadArtifacts
+        displayName: "Upload Build Artifacts"
+        steps:
+          # ── 1. Checkout repository ─────────────────────────────────────────
+          - checkout: aib_sources
+            path: _<YOURREPOSITORYNAME>
+
+          # ── 2. Inspect checkout contents ───────────────────────────────────
+          - task: PowerShell@2
+            displayName: 'Inspect Checkout Contents'
+            inputs:
+              targetType: inline
+              script: |
+                Write-Host "=== Workspace contents (2 levels deep) ==="
+                Get-ChildItem -Path "$(System.DefaultWorkingDirectory)" -Recurse -Depth 2 |
+                  Select-Object FullName, Mode, LastWriteTime | Format-Table -AutoSize
+
+          # ── 3. Download secrets from Key Vault ─────────────────────────────
+          - task: AzureKeyVault@2
+            displayName: "Fetch Secrets"
+            inputs:
+              azureSubscription: $(serviceConnection)
+              KeyVaultName: $(keyVaultName)
+              SecretsFilter: '<YOURSTORAGEACCOUNT>'
+              RunAsPreJob: false
+
+          # ── 4. Upload build artifacts to staging blob ──────────────────────
+          - task: AzureCLI@2
+            displayName: 'Upload Artifacts to Staging Blob'
+            name: upload
+            inputs:
+              azureSubscription: $(serviceConnection)
+              scriptType: pscore
+              addSpnToEnvironment: true
+              scriptLocation: inlineScript
+              inlineScript: |
+                $ErrorActionPreference = 'Stop'
+
+                $container = "aib-staging-$(Build.BuildId)"
+                $blobName  = "buildartifacts.zip"
+                $sourcePath = "$(System.DefaultWorkingDirectory)"
+                $zipPath   = "$env:TEMP\$blobName"
+
+                Write-Host "=== Zipping build artifacts ==="
+                Write-Host "Source: $sourcePath"
+                Compress-Archive -Path "$sourcePath\*" -DestinationPath $zipPath -Force
+                $zipSize = (Get-Item $zipPath).Length / 1MB
+                Write-Host "Archive size: $([math]::Round($zipSize, 2)) MB"
+
+                Write-Host "=== Creating staging container ==="
+                az storage container create `
+                  --account-name $(storageAccountName) `
+                  --name $container `
+                  --auth-mode login `
+                  --output none
+
+                Write-Host "=== Uploading artifacts ==="
+                az storage blob upload `
+                  --account-name $(storageAccountName) `
+                  --container-name $container `
+                  --file $zipPath `
+                  --name $blobName `
+                  --auth-mode login `
+                  --output none
+
+                Write-Host "=== Generating SAS token (4 hour expiry) ==="
+                $expiry = (Get-Date).AddHours(4).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+                $sas = az storage blob generate-sas `
+                  --account-name $(storageAccountName) `
+                  --container-name $container `
+                  --name $blobName `
+                  --permissions r `
+                  --expiry $expiry `
+                  --auth-mode login `
+                  -o tsv
+
+                $blobUrl = "https://$(storageAccountName).blob.core.windows.net/$container/$blobName`?$sas"
+                Write-Host "Artifact URL generated (expires: $expiry)"
+
+                # Pipeline output variables
+                Write-Host "##vso[task.setvariable variable=artifactBlobUrl;isOutput=true;issecret=true]$blobUrl"
+                Write-Host "##vso[task.setvariable variable=stagingContainer;isOutput=true]$container"
+                Write-Host "##vso[task.setvariable variable=templateName;isOutput=true]t_$(Build.BuildId)_$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())"
+
+                Remove-Item $zipPath -Force
+
+  # ---------------------------------------------------------------------------
+  # STAGE 2: BUILD IMAGE
+  # Deploys the AIB image template via Bicep, triggers the build, polls status.
+  # ---------------------------------------------------------------------------
+  - stage: Build
+    displayName: "Build Image"
+    dependsOn: Prepare
+    variables:
+      artifactBlobUrl: $[ stageDependencies.Prepare.UploadArtifacts.outputs['upload.artifactBlobUrl'] ]
+      stagingContainer: $[ stageDependencies.Prepare.UploadArtifacts.outputs['upload.stagingContainer'] ]
+      templateName: $[ stageDependencies.Prepare.UploadArtifacts.outputs['upload.templateName'] ]
+    jobs:
+      - job: DeployAndRun
+        displayName: "Deploy Template & Run Build"
+        timeoutInMinutes: 180
+        steps:
+          # ── 5. Deploy AIB image template via Bicep ─────────────────────────
+          - task: AzureCLI@2
+            displayName: 'Deploy AIB Image Template (Bicep)'
+            name: deploy
+            timeoutInMinutes: 15
+            inputs:
+              azureSubscription: $(serviceConnection)
+              scriptType: pscore
+              addSpnToEnvironment: true
+              scriptLocation: inlineScript
+              inlineScript: |
+                $ErrorActionPreference = 'Stop'
+
+                $templateName = "$(templateName)"
+                Write-Host "=== Deploying image template: $templateName ==="
+
+                # ── Inline customizer script ────────────────────────────────
+                # Customize this section to match your image build requirements.
+                # Scripts referenced here must exist in the checked-out repository
+                # under the customizer/ folder.
+                $inlineScript = @'
+                Write-Host "*** AVD AIB CUSTOMIZER PHASE : Checking for artifacts...***"
+                Get-ChildItem -Path "C:\BuildArtifacts" -Recurse | ForEach-Object { Write-Host $_.FullName }
+
+                $ScriptBaseFolder = "$(aibInternalScriptBasePath)"
+
+                # Example customization steps (update to match your scripts):
+                # & "$ScriptBaseFolder\DisableAutoUpdates.ps1" -Verbose
+                # & "$ScriptBaseFolder\Install-Applications.ps1" -Verbose
+                # & "$ScriptBaseFolder\WindowsOptimization.ps1" -Verbose
+                # & "$ScriptBaseFolder\AdminSysPrep.ps1" -Verbose
+
+                Write-Host "*** AVD AIB CUSTOMIZER PHASE : Customization complete.***"
+                '@
+
+                az deployment group create `
+                  --resource-group $(resourceGroup) `
+                  --template-file "$(bicepTemplatePath)" `
+                  --parameters `
+                    templateName=$templateName `
+                    location=$(location) `
+                    userAssignedIdentityId="$(managedIdentity)" `
+                    sourceType=PlatformImage `
+                    imagePublisher=$(baseImagePublisher) `
+                    imageOffer=$(baseImageOffer) `
+                    imageSku=$(baseImageSku) `
+                    artifactsBlobUrl="$(artifactBlobUrl)" `
+                    inlineCustomizerScript="$inlineScript" `
+                    provisioner=powershell `
+                    runElevated=true `
+                    windowsUpdate=true `
+                    distributeType=SharedImage `
+                    galleryImageId="$(galleryImageId)" `
+                    targetRegions="$(targetRegions)" `
+                    vmSize=$(vmSize) `
+                    buildTimeoutInMinutes=$(buildTimeout) `
+                  --verbose
+
+                Write-Host "=== Image template deployed successfully ==="
+
+          # ── 6. Trigger the image build ─────────────────────────────────────
+          - task: AzureCLI@2
+            displayName: 'Run AIB Image Build'
+            name: run
+            timeoutInMinutes: 160
+            inputs:
+              azureSubscription: $(serviceConnection)
+              scriptType: pscore
+              addSpnToEnvironment: true
+              scriptLocation: inlineScript
+              inlineScript: |
+                $ErrorActionPreference = 'Stop'
+
+                $templateName = "$(templateName)"
+                Write-Host "=== Starting image build: $templateName ==="
+                Write-Host "This will take a while (timeout: $(buildTimeout) min)..."
+
+                # Trigger (async)
+                az image builder run `
+                  --name $templateName `
+                  --resource-group $(resourceGroup) `
+                  --no-wait
+
+                # Poll for completion
+                Write-Host "=== Monitoring build progress ==="
+                $startTime = Get-Date
+                $timeoutMinutes = $(buildTimeout)
+
+                while ($true) {
+                  $elapsed = (Get-Date) - $startTime
+                  $status = az image builder show `
+                    --name $templateName `
+                    --resource-group $(resourceGroup) `
+                    --query "properties.lastRunStatus" `
+                    -o json 2>$null | ConvertFrom-Json
+
+                  if ($status) {
+                    $runState = $status.runState
+                    $runSubState = $status.runSubState
+                    Write-Host "[$($elapsed.ToString('hh\:mm\:ss'))] State: $runState | SubState: $runSubState"
+
+                    if ($runState -eq 'Succeeded') {
+                      Write-Host "=== Build completed successfully! ==="
+                      break
+                    }
+                    elseif ($runState -eq 'Failed' -or $runState -eq 'Canceled') {
+                      $message = $status.message
+                      Write-Host "##vso[task.logissue type=error]Build $runState`: $message"
+                      throw "Image build $runState`: $message"
+                    }
+                  }
+                  else {
+                    Write-Host "[$($elapsed.ToString('hh\:mm\:ss'))] Waiting for build status..."
+                  }
+
+                  if ($elapsed.TotalMinutes -gt $timeoutMinutes) {
+                    throw "Build timed out after $timeoutMinutes minutes"
+                  }
+
+                  Start-Sleep -Seconds 30
+                }
+
+                # Retrieve the run output (image version URI)
+                $runOutputs = az image builder show-runs `
+                  --name $templateName `
+                  --resource-group $(resourceGroup) `
+                  -o json | ConvertFrom-Json
+
+                if ($runOutputs -and $runOutputs.Count -gt 0) {
+                  $artifactId = $runOutputs[0].artifactId
+                  $artifactUri = $runOutputs[0].artifactUri
+                  $imageUri = if ($artifactId) { $artifactId } else { $artifactUri }
+                  Write-Host "=== Output image: $imageUri ==="
+                  Write-Host "##vso[task.setvariable variable=imageUri;isOutput=true]$imageUri"
+                }
+
+  # ---------------------------------------------------------------------------
+  # STAGE 3: CLEANUP
+  # Always runs — deletes template, staging blob, and orphaned artifacts.
+  # ---------------------------------------------------------------------------
+  - stage: Cleanup
+    displayName: "Cleanup"
+    dependsOn: [Prepare, Build]
+    condition: always()
+    variables:
+      templateName: $[ stageDependencies.Prepare.UploadArtifacts.outputs['upload.templateName'] ]
+      stagingContainer: $[ stageDependencies.Prepare.UploadArtifacts.outputs['upload.stagingContainer'] ]
+    jobs:
+      - job: CleanupResources
+        displayName: "Delete Template & Staging"
+        steps:
+          # ── 7. Delete image template + staging container ───────────────────
+          - task: AzureCLI@2
+            displayName: 'Delete AIB Template & Staging Blob'
+            inputs:
+              azureSubscription: $(serviceConnection)
+              scriptType: pscore
+              addSpnToEnvironment: true
+              scriptLocation: inlineScript
+              inlineScript: |
+                $ErrorActionPreference = 'Continue'
+
+                $templateName = "$(templateName)"
+                $container = "$(stagingContainer)"
+
+                Write-Host "=== Deleting image template: $templateName ==="
+                az image builder delete `
+                  --name $templateName `
+                  --resource-group $(resourceGroup) `
+                  --output none 2>$null
+                Write-Host "Template deleted."
+
+                Write-Host "=== Deleting staging container: $container ==="
+                az storage container delete `
+                  --account-name $(storageAccountName) `
+                  --name $container `
+                  --auth-mode login `
+                  --output none 2>$null
+                Write-Host "Staging container deleted."
+
+          # ── 8. Cleanup legacy AIB storage artifacts ────────────────────────
+          - task: AzureKeyVault@2
+            displayName: "Fetch Storage Key"
+            inputs:
+              azureSubscription: $(serviceConnection)
+              KeyVaultName: $(keyVaultName)
+              SecretsFilter: '<YOURSTORAGEACCOUNT>'
+
+          - task: AzurePowerShell@5
+            displayName: 'Cleanup AIB Storage Artifacts'
+            inputs:
+              azureSubscription: $(serviceConnection)
+              ScriptType: 'FilePath'
+              ScriptPath: $(cleanupScriptPath)
+              ScriptArguments: '-StorageAccountName $(storageAccountName) -StorageAccountKey $(<YOURSTORAGEACCOUNT>)'
+              azurePowerShellVersion: 'LatestVersion'
