@@ -576,6 +576,10 @@ function Load-MetadataDatabases {
                     Scope         = $entry.Scope
                     Default       = $entry.Def
                     AllowedValues = $entry.AllowedValues
+                    Editions      = $entry.Editions
+                    MinVersion    = $entry.MinVersion
+                    Format        = $entry.Format
+                    GPMapping     = $entry.GPMapping
                 }
                 $Script:CspByPath[$key] = $cspInfo
                 # Registry-key index from GPMapping
@@ -679,10 +683,16 @@ function Resolve-PolicyFromRegistry {
             if ($Script:CspByReg.ContainsKey($parentKey)) { $csp = $Script:CspByReg[$parentKey] }
         }
         if ($csp) {
-            $result.Name     = if ($csp.Friendly) { $csp.Friendly } else { $FallbackName }
-            $result.Desc     = if ($csp.Desc) { $csp.Desc } else { '' }
-            $result.Source   = 'CSP'
-            $result.CspPath  = $csp.CspPath
+            $result.Name       = if ($csp.Friendly) { $csp.Friendly } else { $FallbackName }
+            $result.Desc       = if ($csp.Desc) { $csp.Desc } else { '' }
+            $result.Source     = 'CSP'
+            $result.CspPath    = $csp.CspPath
+            $result.Scope      = $csp.Scope
+            $result.Editions   = $csp.Editions
+            $result.MinVersion = $csp.MinVersion
+            $result.Format     = $csp.Format
+            $result.Default    = $csp.Default
+            $result.GPMapping  = $csp.GPMapping
             if ($csp.AllowedValues) { $result.AllowedValues = $csp.AllowedValues }
             return $result
         }
@@ -6746,11 +6756,20 @@ tr.non-default td:first-child { border-left:3px solid var(--orange); }
                 [void]$html.Append("<tr class=`"csp-row`"><td colspan=`"6`"><details class=`"csp-ref`"><summary><span class=`"csp-chevron`">&#x25B6;</span><span class=`"csp-sum-icon`">$(if ($resolved.Source -eq 'ADMX') {'&#x1F4D6;'} else {'&#x2601;'})</span> <span class=`"csp-sum-label`">$($resolved.Source) Reference:</span> $(& $enc $resolved.Name)</summary><div class=`"csp-body`">")
                 if ($resolved.Desc) { [void]$html.Append("<div class=`"csp-desc`">$(& $enc $resolved.Desc)</div>") }
                 [void]$html.Append('<div class="csp-grid">')
-                [void]$html.Append("<span class=`"csp-pill`"><span class=`"csp-label`">Source</span><span class=`"csp-val`">$($resolved.Source)</span></span>")
-                if ($resolved.AdmxFile) { [void]$html.Append("<span class=`"csp-pill`"><span class=`"csp-label`">ADMX</span><span class=`"csp-val`">$(& $enc $resolved.AdmxFile)</span></span>") }
-                if ($resolved.CspPath)  { [void]$html.Append("<span class=`"csp-pill`"><span class=`"csp-label`">CSP</span><span class=`"csp-val`">$(& $enc $resolved.CspPath)</span></span>") }
-                if ($resolved.Category) { [void]$html.Append("<span class=`"csp-pill`"><span class=`"csp-label`">Category</span><span class=`"csp-val`">$(& $enc $resolved.Category)</span></span>") }
-                if ($regKey)            { [void]$html.Append("<span class=`"csp-pill`"><span class=`"csp-label`">Registry</span><span class=`"csp-val`" style=`"font-family:var(--mono);font-size:10px`">$(& $enc $regKey)\$(& $enc $regVal)</span></span>") }
+                if ($resolved.Source -eq 'CSP') {
+                    # CSP-specific metadata pills
+                    if ($resolved.Scope)      { [void]$html.Append("<span class=`"csp-pill`"><span class=`"csp-label`">Scope</span><span class=`"csp-val`">$(& $enc $resolved.Scope)</span></span>") }
+                    if ($resolved.Editions)   { [void]$html.Append("<span class=`"csp-pill`"><span class=`"csp-label`">Editions</span><span class=`"csp-val`">$(& $enc $resolved.Editions)</span></span>") }
+                    if ($resolved.MinVersion) { [void]$html.Append("<span class=`"csp-pill`"><span class=`"csp-label`">Min Version</span><span class=`"csp-val`">$(& $enc $resolved.MinVersion)</span></span>") }
+                    if ($resolved.Format)     { [void]$html.Append("<span class=`"csp-pill`"><span class=`"csp-label`">Format</span><span class=`"csp-val`">$(& $enc $resolved.Format)</span></span>") }
+                    if ($resolved.Default)    { [void]$html.Append("<span class=`"csp-pill`"><span class=`"csp-label`">Default</span><span class=`"csp-val`">$(& $enc $resolved.Default)</span></span>") }
+                } else {
+                    # ADMX-specific metadata pills
+                    [void]$html.Append("<span class=`"csp-pill`"><span class=`"csp-label`">Source</span><span class=`"csp-val`">$($resolved.Source)</span></span>")
+                    if ($resolved.AdmxFile) { [void]$html.Append("<span class=`"csp-pill`"><span class=`"csp-label`">ADMX</span><span class=`"csp-val`">$(& $enc $resolved.AdmxFile)</span></span>") }
+                    if ($resolved.Category) { [void]$html.Append("<span class=`"csp-pill`"><span class=`"csp-label`">Category</span><span class=`"csp-val`">$(& $enc $resolved.Category)</span></span>") }
+                    if ($regKey)            { [void]$html.Append("<span class=`"csp-pill`"><span class=`"csp-label`">Registry</span><span class=`"csp-val`" style=`"font-family:var(--mono);font-size:10px`">$(& $enc $regKey)\$(& $enc $regVal)</span></span>") }
+                }
                 [void]$html.Append('</div>')
                 # Allowed values from ADMX Elements or CSP AllowedValues
                 if ($resolved.AllowedValues) {
@@ -6776,6 +6795,19 @@ tr.non-default td:first-child { border-left:3px solid var(--orange); }
                             [void]$html.Append("<div class=`"csp-av-item`"><span class=`"av-key`">$(& $enc $av.Name)</span><span class=`"av-eq`">=</span>$(& $enc $av.Value)</div>")
                         }
                     }
+                    [void]$html.Append('</div></div>')
+                }
+                # Group Policy Mapping section (from CSP GPMapping metadata)
+                if ($resolved.Source -eq 'CSP' -and $resolved.GPMapping) {
+                    $gpm = $resolved.GPMapping
+                    [void]$html.Append('<div class="csp-section-divider"></div><div class="csp-gp"><div class="csp-gp-title">Group Policy Mapping</div><div class="csp-gp-grid">')
+                    if ($gpm.'ADMX File Name')      { [void]$html.Append("<div class=`"csp-gp-item`"><span class=`"csp-label`">ADMX File Name</span><span>$(& $enc $gpm.'ADMX File Name')</span></div>") }
+                    if ($gpm.Location)               { [void]$html.Append("<div class=`"csp-gp-item`"><span class=`"csp-label`">Location</span><span>$(& $enc $gpm.Location)</span></div>") }
+                    if ($gpm.'Registry Value Name')  { [void]$html.Append("<div class=`"csp-gp-item`"><span class=`"csp-label`">Registry Value Name</span><span>$(& $enc $gpm.'Registry Value Name')</span></div>") }
+                    if ($gpm.'Friendly Name')        { [void]$html.Append("<div class=`"csp-gp-item`"><span class=`"csp-label`">Friendly Name</span><span>$(& $enc $gpm.'Friendly Name')</span></div>") }
+                    if ($gpm.Name)                   { [void]$html.Append("<div class=`"csp-gp-item`"><span class=`"csp-label`">Name</span><span>$(& $enc $gpm.Name)</span></div>") }
+                    if ($gpm.Path)                   { [void]$html.Append("<div class=`"csp-gp-item`"><span class=`"csp-label`">Path</span><span>$(& $enc $gpm.Path)</span></div>") }
+                    if ($gpm.'Registry Key Name')    { [void]$html.Append("<div class=`"csp-gp-item`"><span class=`"csp-label`">Registry Key Name</span><span>$(& $enc $gpm.'Registry Key Name')</span></div>") }
                     [void]$html.Append('</div></div>')
                 }
                 if ($Script:AdmxDbAge -and $Script:AdmxDbAge -gt 90) { [void]$html.Append("<div class=`"csp-stale`">&#x26A0; ADMX database is $($Script:AdmxDbAge) days old - consider regenerating</div>") }
