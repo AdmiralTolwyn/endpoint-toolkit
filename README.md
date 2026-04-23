@@ -22,7 +22,8 @@ tools/              # Standalone PowerShell/WPF utilities
 
 windows/
 ├── dot3svc/        # Wired AutoConfig (dot3svc) migration reset
-└── security/       # Hardware speculation mitigations, Secure Boot remediation
+├── security/       # Hardware speculation mitigations, Secure Boot remediation
+└── w365/           # Windows 365 Cloud PC disk resize automation
 ```
 
 ## Tools
