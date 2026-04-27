@@ -40,6 +40,7 @@ comparison_history.json
 node_modules/
 
 # Runtime data / backups
+_backups/
 backups/
 saved_logs/
 reports/
