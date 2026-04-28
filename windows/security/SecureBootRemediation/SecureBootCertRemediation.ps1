@@ -144,7 +144,11 @@ function Get-SecureBootStatus {
     # C. Event Log - Full Sweep (System log, TPM-WMI)
     # -------------------------------------------------------------------------
     $GoodEventIDs = @(1034, 1036, 1037, 1042, 1043, 1044, 1045, 1799, 1800, 1808)
-    $BadEventIDs  = @(1032, 1033, 1795, 1796, 1797, 1798, 1801, 1802, 1803)
+    # 1801 is a STATUS/assessment event (fires under "Under Observation" too) — tracked as warning,
+    # but NOT a real blocker. True blockers are firmware/KI/KEK errors.
+    $WarningEventIDs = @(1032, 1033, 1801)
+    $BlockingEventIDs = @(1795, 1796, 1797, 1798, 1802, 1803)
+    $BadEventIDs  = $WarningEventIDs + $BlockingEventIDs
     $AllKnownIDs  = $GoodEventIDs + $BadEventIDs
 
     # --- C1. Event 1801 - Confidence, BucketId, UpdateType, DeviceAttributes ---
@@ -212,7 +216,10 @@ function Get-SecureBootStatus {
             $latestGoodEvt = $AllEvents | Where-Object { $_.Id -in $GoodEventIDs } | Sort-Object TimeCreated -Descending | Select-Object -First 1
             $latestBadEvt  = $AllEvents | Where-Object { $_.Id -in $BadEventIDs }  | Sort-Object TimeCreated -Descending | Select-Object -First 1
             if ($latestGoodEvt) { $latestGoodId = $latestGoodEvt.Id }
-            if ($latestBadEvt)  { $latestBadId  = $latestBadEvt.Id; $blockingIssue = $true }
+            if ($latestBadEvt)  { $latestBadId  = $latestBadEvt.Id }
+            # Only flag as blocking if a true error event is present (not status/warning like 1801)
+            $latestBlockingEvt = $AllEvents | Where-Object { $_.Id -in $BlockingEventIDs } | Sort-Object TimeCreated -Descending | Select-Object -First 1
+            if ($latestBlockingEvt) { $blockingIssue = $true }
 
             # Event 1799 - bootloader swapped (System log)
             $bootloaderSwapped = (@($AllEvents | Where-Object { $_.Id -eq 1799 }).Count -gt 0)
