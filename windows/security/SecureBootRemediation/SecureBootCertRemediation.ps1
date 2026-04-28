@@ -53,12 +53,28 @@ function Write-ColorLog {
 
 # Column widths for debug output alignment
 $script:ColLabel = 30
-$script:ColValue = 18
+$script:ColValue = 28
+
+function Format-FieldValue {
+    # Sanitize a value pulled from event log messages so it fits a single table cell:
+    # collapse all whitespace (newlines, tabs, multi-spaces) into single spaces and
+    # truncate with an ellipsis when it overflows the column width.
+    param([string]$Value, [int]$MaxLen = $script:ColValue)
+    if ([string]::IsNullOrWhiteSpace($Value)) { return '' }
+    $clean = ($Value -replace '\s+', ' ').Trim()
+    if ($clean.Length -gt $MaxLen) { return $clean.Substring(0, $MaxLen - 1) + '...' }
+    return $clean
+}
 
 function Write-DebugField {
     param([string]$Label, [string]$Value, [string]$Color = 'White', [string]$Comment = '')
+    # Hard-truncate value to column width so long URLs / multi-line strings don't
+    # spill into the DESCRIPTION column and corrupt the table layout.
+    $safeValue = if ($Value.Length -gt $script:ColValue) {
+        $Value.Substring(0, $script:ColValue - 1) + '...'
+    } else { $Value }
     $padLabel = $Label.PadRight($script:ColLabel)
-    $padValue = $Value.PadRight($script:ColValue)
+    $padValue = $safeValue.PadRight($script:ColValue)
     Write-Host "  $padLabel" -NoNewline
     Write-Host " $padValue" -ForegroundColor $Color -NoNewline
     if ($Comment) { Write-Host " $Comment" -ForegroundColor DarkGray } else { Write-Host "" }
@@ -146,8 +162,8 @@ function Get-SecureBootStatus {
     $GoodEventIDs = @(1034, 1036, 1037, 1042, 1043, 1044, 1045, 1799, 1800, 1808)
     # 1801 is a STATUS/assessment event (fires under "Under Observation" too) — tracked as warning,
     # but NOT a real blocker. True blockers are firmware/KI/KEK errors.
-    $WarningEventIDs = @(1032, 1033, 1801)
-    $BlockingEventIDs = @(1795, 1796, 1797, 1798, 1802, 1803)
+    $WarningEventIDs = @(1801)
+    $BlockingEventIDs = @(1032, 1033, 1795, 1796, 1797, 1798, 1802, 1803)
     $BadEventIDs  = $WarningEventIDs + $BlockingEventIDs
     $AllKnownIDs  = $GoodEventIDs + $BadEventIDs
 
@@ -162,16 +178,18 @@ function Get-SecureBootStatus {
     try {
         $Evt1801 = Get-WinEvent -FilterHashtable @{LogName='System'; ProviderName=$TpmWmiProvider; ID=1801} -MaxEvents 1 -ErrorAction SilentlyContinue
         if ($Evt1801) {
-            if ($Evt1801.Message -match 'BucketConfidenceLevel:\s*(.*)') {
+            # NOTE: use [^\r\n]* (NOT \s*) for the gap so we don't accidentally swallow
+            # the newline and capture the NEXT field's label as the value.
+            if ($Evt1801.Message -match 'BucketConfidenceLevel:[^\r\n]*?([^\r\n]*)') {
                 $v = $matches[1].Trim()
                 $confidenceLevel = if ([string]::IsNullOrEmpty($v)) { 'Empty (not yet evaluated)' } else { $v }
             }
-            if ($Evt1801.Message -match 'BucketId:\s*(.+)')      { $bucketId         = $matches[1].Trim() }
-            if ($Evt1801.Message -match 'UpdateType:\s*(.*)')     {
+            if ($Evt1801.Message -match 'BucketId:[ \t]*([^\r\n]+)')        { $bucketId         = $matches[1].Trim() }
+            if ($Evt1801.Message -match 'UpdateType:[ \t]*([^\r\n]*)')      {
                 $v = $matches[1].Trim()
                 $updateType = if ([string]::IsNullOrEmpty($v)) { 'Empty' } else { $v }
             }
-            if ($Evt1801.Message -match 'DeviceAttributes:\s*(.+)') { $deviceAttributes = $matches[1].Trim() }
+            if ($Evt1801.Message -match 'DeviceAttributes:[ \t]*([^\r\n]+)') { $deviceAttributes = $matches[1].Trim() }
             $firstLine = ($Evt1801.Message -split "`n")[0].Trim()
             if (-not [string]::IsNullOrEmpty($firstLine)) {
                 $latestStatusSummary = $firstLine
@@ -349,20 +367,29 @@ function Get-SecureBootStatus {
     Write-Host "  [Event Log] System - TPM-WMI" -ForegroundColor DarkCyan
 
     $clr = if ($confidenceLevel -match 'High Confidence') { 'Green' } elseif ($confidenceLevel -eq 'N/A') { 'DarkGray' } else { 'Yellow' }
-    Write-DebugField 'Confidence' $confidenceLevel $clr 'Event 1801 bucket level'
+    Write-DebugField 'Confidence' (Format-FieldValue $confidenceLevel) $clr 'Event 1801 bucket level'
 
-    Write-DebugField 'BucketId' $bucketId $(if ($bucketId -eq 'N/A') { 'DarkGray' } else { 'Cyan' }) 'Device bucket from Event 1801'
+    Write-DebugField 'BucketId' (Format-FieldValue $bucketId) $(if ($bucketId -eq 'N/A') { 'DarkGray' } else { 'Cyan' }) 'Device bucket from Event 1801'
 
     $clr = if ($updateType -eq 'N/A') { 'DarkGray' } else { 'Cyan' }
-    Write-DebugField 'UpdateType' $updateType $clr 'From Event 1801'
+    Write-DebugField 'UpdateType' (Format-FieldValue $updateType) $clr 'From Event 1801'
 
     if ($deviceAttributes -ne 'N/A') {
-        Write-DebugField 'DeviceAttributes' $deviceAttributes 'Cyan' 'FW/OEM info from 1801'
+        Write-DebugField 'DeviceAttributes' (Format-FieldValue $deviceAttributes) 'Cyan' 'FW/OEM info from 1801'
+        # Print full sanitized value below the table when it was truncated for display
+        $daClean = ($deviceAttributes -replace '\s+', ' ').Trim()
+        if ($daClean.Length -gt $script:ColValue) {
+            Write-Host ("    -> $daClean") -ForegroundColor DarkGray
+        }
     }
     if ($latestStatusSummary -ne 'N/A') {
         $srcLabel = if ($latestStatusSource -eq 1808) { 'StatusSummary (1808)' } else { 'StatusSummary (1801)' }
         $clr      = if ($latestStatusSource -eq 1808) { 'Green' } else { 'Yellow' }
-        Write-DebugField $srcLabel $latestStatusSummary $clr 'First line of latest status event'
+        Write-DebugField $srcLabel (Format-FieldValue $latestStatusSummary) $clr 'First line of latest status event'
+        $ssClean = ($latestStatusSummary -replace '\s+', ' ').Trim()
+        if ($ssClean.Length -gt $script:ColValue) {
+            Write-Host ("    -> $ssClean") -ForegroundColor DarkGray
+        }
     }
 
     $lgVal = if ($latestGoodId) { "$latestGoodId" } else { 'None' }
