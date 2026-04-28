@@ -348,7 +348,12 @@ function Get-SecureBootStatus {
     $clr = if ($null -eq $avUpdatesValue) { 'DarkGray' } elseif ($avUpdatesValue -eq 0) { 'Yellow' } else { 'Cyan' }
     Write-DebugField 'AvailableUpdates' $avUpdatesHex $clr 'Bitmask of pending updates'
     if ($null -ne $avUpdatesValue -and $avUpdatesValue -gt 0) {
-        Write-ColorLog -Message "  $(Get-AvailableUpdatesDecoding -Value $avUpdatesValue)" -Level "Verbose"
+        # Print decoded bitmask flags inline (no [timestamp][Verbose] prefix to keep table clean)
+        $decoded = Get-AvailableUpdatesDecoding -Value $avUpdatesValue
+        foreach ($line in ($decoded -split "`n")) {
+            $trimmed = $line.Trim()
+            if ($trimmed) { Write-Host ("    -> $trimmed") -ForegroundColor DarkGray }
+        }
     }
 
     $clr = if ($null -eq $avUpdatesPolicyValue) { 'DarkGray' } else { 'Cyan' }
