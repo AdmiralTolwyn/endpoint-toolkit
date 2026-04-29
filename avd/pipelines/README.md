@@ -15,15 +15,42 @@ Azure DevOps YAML pipelines for AVD image lifecycle and session host management.
 
 ## Image Build Approaches
 
-Two pipeline options for Azure Image Builder — choose based on your constraints:
+Two pipeline options for Azure Image Builder — choose based on your constraints. Both produce the same output: a versioned image in an Azure Compute Gallery.
+
+| Aspect | AIB Task v2 (`img-build-custom-image.yml`) | Bicep-Only (`img-build-bicep-only.yml`) |
+|--------|--------------------------------------------|------------------------------------------|
+| Marketplace dependency | Requires the [Azure VM Image Builder DevOps Task v2](https://marketplace.visualstudio.com/items?itemName=vacuumbreather.devOps-task-for-azure-image-builder-v2) extension | None (only built-in `AzureCLI@2` + `PowerShell@2`) |
+| YAML complexity | ~40 lines for the build step | ~150 lines (prepare / deploy / poll / cleanup) |
+| Customizer upload | Handled by the task (uploads `packagePath` to AIB staging blob) | Manual: pipeline zips repo + uploads to staging container |
+| Template lifecycle | Task creates / runs / cleans the AIB template | Bicep `imageTemplate.bicep` deploys; `az image builder run` triggers; explicit cleanup step deletes |
+| Progress reporting | Built-in phase transitions, elapsed time, heartbeats | Custom polling loop in the pipeline |
+| Output variables | `imageUri`, `templateName`, `runOutput` | Parsed from `az` CLI output in pipeline scripts |
+| Auth | Workload identity federation (OIDC) or service principal | Workload identity federation (OIDC) or service principal |
 
 ### Option 1: AIB Task v2 (`img-build-custom-image.yml`)
 
-Uses the `AzureImageBuilderTask@2` marketplace extension. Simpler YAML, but requires the extension to be installed in your Azure DevOps organization.
+Uses the [`AzureImageBuilderTaskV2@2`](https://marketplace.visualstudio.com/items?itemName=vacuumbreather.devOps-task-for-azure-image-builder-v2) marketplace extension — a community-maintained refresh of Microsoft's original `AzureImageBuilderTask@1`. **Recommended** when you can install the extension in your Azure DevOps organization.
+
+Key v2 improvements over the deprecated v1 task:
+
+- **Modern API**: `2024-02-01` instead of `2020-02-14`
+- **Modern runtime**: Node 20 instead of Node 10 (EOL)
+- **Federated auth (OIDC)**: workload identity federation in addition to service principal
+- **Hardened SAS tokens**: timeout-based expiry (4–25 h), HTTPS-only — instead of 1-year HTTP-allowed
+- **Modern Blob SDK**: `@azure/storage-blob` v12 instead of the deprecated `azure-storage` SDK
+- **Multiple build VM identities** (e.g. for Key Vault access during customization)
+- **Built-in validation** stage with `continueOnFailure`
+- **Multi-region distribution** with replica counts
+- **Image versioning**: automatic or explicit
+- **VM boot optimization** (enabled by default)
+- **Configurable error handling** (cleanup vs. abort)
+- **Output variables**: `imageUri`, `templateName`, `runOutput`
+
+See the [marketplace listing](https://marketplace.visualstudio.com/items?itemName=vacuumbreather.devOps-task-for-azure-image-builder-v2) for the full input reference and changelog.
 
 ### Option 2: Bicep-Only (`img-build-bicep-only.yml`)
 
-Zero extension dependency. Uses `AzureCLI@2` tasks + the shared [`imageTemplate.bicep`](../bicep/modules/imageTemplate.bicep) module:
+Zero extension dependency. Uses `AzureCLI@2` tasks + the shared [`imageTemplate.bicep`](../bicep/modules/imageTemplate.bicep) module. **Recommended** when extension installation in your Azure DevOps organization is restricted, or when you want full IaC ownership of the AIB template definition.
 
 ```
 Prepare ──► Build ──► Cleanup
@@ -35,8 +62,6 @@ Prepare ──► Build ──► Cleanup
                └─ Poll       artifacts
                   status
 ```
-
-Both pipelines produce the same output: a versioned image in an Azure Compute Gallery.
 
 ## Host Pool Update Flow
 
@@ -76,4 +101,4 @@ All pipelines use `<YOUR...>` placeholders for environment-specific values. Sear
 - User-assigned managed identity with Contributor + Storage Blob Data Contributor roles
 - Storage account for staging artifacts
 - Key Vault with admin credentials
-- For AIB Task v2: [Azure Image Builder Task](https://marketplace.visualstudio.com/items?itemName=AzureImageBuilder.devOps-task-for-azure-image-builder) extension installed
+- For AIB Task v2: [Azure VM Image Builder DevOps Task v2](https://marketplace.visualstudio.com/items?itemName=vacuumbreather.devOps-task-for-azure-image-builder-v2) extension installed (Azure DevOps agent 2.144.0+)
