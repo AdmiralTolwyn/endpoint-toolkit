@@ -18,14 +18,23 @@
       7. Re-checks free space and aborts with 1602 if still below threshold.
       8. Refuses to proceed on battery-only power (exit 1603) unless -IgnoreBattery.
 
-.PARAMETER UserTmp
+.PARAMETER IncludeUserTemp
     Clean per-user AppData\Local\Temp folders (items older than -MaxAgeDays).
 
-.PARAMETER WindowsTmp
+.PARAMETER IncludeWindowsTemp
     Clean %WinDir%\Temp (items older than -MaxAgeDays).
 
-.PARAMETER SoftwareDistribution
+.PARAMETER IncludeSoftwareDistribution
     Stop wuauserv, purge C:\Windows\SoftwareDistribution, restart wuauserv.
+    NOT recommended for routine cleanup. This is a Windows Update RESET:
+      - Forces a full WU metadata re-sync on the next scan (catalog re-download).
+      - Discards any partially staged update payloads (next WU pass re-downloads
+        multi-GB ESDs / cumulative updates).
+      - Clears Settings -> Update history (cosmetic, but visible to users / audit).
+      - On WSUS-managed devices, breaks reporting until the client re-handshakes.
+    Use only when WU is broken (0x8024xxxx, stuck scans, corrupt BITS queue),
+    when prepping a sysprep'd reference image, or when the disk is critically
+    full and cleanmgr + DISM cleanup did not free enough space.
 
 .PARAMETER Force
     Run cleanup regardless of current free space.
@@ -42,14 +51,40 @@
 .PARAMETER SageId
     Cleanmgr StateFlags slot id (1..9999). Default: 5432.
 
-.PARAMETER LogDir
+.PARAMETER ExcludeHandler
+    One or more cleanmgr VolumeCaches handler names to skip (case-insensitive,
+    exact match). Useful to opt out of an aggressive handler for a one-off run
+    without editing the script (e.g. 'DownloadsFolder','Previous Installations').
+    Names must match the subkeys under
+    HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\VolumeCaches.
+
+.PARAMETER IncludeOnlyHandler
+    Restrict cleanmgr to only the named handler(s) (case-insensitive, exact match).
+    When supplied, every handler NOT listed here is skipped, even before -ExcludeHandler
+    is applied. Use this when you want a surgical run (e.g. only 'Update Cleanup' +
+    'Windows Error Reporting Files').
+
+.PARAMETER LogDirectory
     Directory for the log file. Default: $env:TEMP.
 
 .NOTES
     File:    windows/servicing/Invoke-PreUpgradeCleanup.ps1
     Author:  Anton Romanyuk
-    Version: 1.0.0
+    Version: 1.2.0
     Requires: PowerShell 5.1+, elevated session.
+
+    Changes:
+      1.2.0 - Renamed switches to MS-idiomatic full-word names:
+                -UserTmp              -> -IncludeUserTemp
+                -WindowsTmp           -> -IncludeWindowsTemp
+                -SoftwareDistribution -> -IncludeSoftwareDistribution
+                -LogDir               -> -LogDirectory
+              BREAKING CHANGE: callers using the old names must update.
+      1.1.0 - Added -ExcludeHandler and -IncludeOnlyHandler parameters.
+              Expanded $VolumeCaches with handlers seen on modern Windows 11/Server
+              (D3D Shader Cache, Diagnostic Data Viewer database files, DownloadsFolder,
+              Feedback Hub Archive log files, Language Pack).
+      1.0.0 - Initial release. Refactor of legacy CleanupBeforeUpgrade.ps1.
 
     Exit codes:
       0    - Success / nothing to do
@@ -66,25 +101,35 @@
 
 .EXAMPLE
     # Full cleanup before a feature update
-    .\Invoke-PreUpgradeCleanup.ps1 -UserTmp -WindowsTmp -SoftwareDistribution
+    .\Invoke-PreUpgradeCleanup.ps1 -IncludeUserTemp -IncludeWindowsTemp -IncludeSoftwareDistribution
 
 .EXAMPLE
     # Force-run on a reference VM regardless of free space
-    .\Invoke-PreUpgradeCleanup.ps1 -UserTmp -WindowsTmp -SoftwareDistribution -Force -IgnoreBattery
+    .\Invoke-PreUpgradeCleanup.ps1 -IncludeUserTemp -IncludeWindowsTemp -IncludeSoftwareDistribution -Force -IgnoreBattery
+
+.EXAMPLE
+    # Skip the Downloads folder and the Previous Installations rollback
+    .\Invoke-PreUpgradeCleanup.ps1 -IncludeUserTemp -IncludeWindowsTemp -ExcludeHandler 'DownloadsFolder','Previous Installations'
+
+.EXAMPLE
+    # Surgical run: only Update Cleanup + WER
+    .\Invoke-PreUpgradeCleanup.ps1 -IncludeOnlyHandler 'Update Cleanup','Windows Error Reporting Files' -Force
 #>
 
 #Requires -RunAsAdministrator
 [CmdletBinding(SupportsShouldProcess)]
 param(
-    [switch]$UserTmp,
-    [switch]$WindowsTmp,
-    [switch]$SoftwareDistribution,
+    [switch]$IncludeUserTemp,
+    [switch]$IncludeWindowsTemp,
+    [switch]$IncludeSoftwareDistribution,
     [switch]$Force,
     [switch]$IgnoreBattery,
     [ValidateRange(1, 1024)] [int]$MinFreeGB  = 20,
     [ValidateRange(0,  365)] [int]$MaxAgeDays = 7,
     [ValidateRange(1, 9999)] [int]$SageId     = 5432,
-    [string]$LogDir = $env:TEMP
+    [string[]]$ExcludeHandler     = @(),
+    [string[]]$IncludeOnlyHandler = @(),
+    [string]$LogDirectory = $env:TEMP
 )
 
 $ErrorActionPreference = 'Stop'
@@ -93,7 +138,7 @@ $ErrorActionPreference = 'Stop'
 # LOGGING
 # -----------------------------------------------------------------------------
 $ScriptName = $MyInvocation.MyCommand.Name
-$LogFile    = Join-Path $LogDir ("{0}_{1}.log" -f [IO.Path]::GetFileNameWithoutExtension($ScriptName), (Get-Date -Format 'yyyyMMdd_HHmmss'))
+$LogFile    = Join-Path $LogDirectory ("{0}_{1}.log" -f [IO.Path]::GetFileNameWithoutExtension($ScriptName), (Get-Date -Format 'yyyyMMdd_HHmmss'))
 
 function Write-Log {
     [CmdletBinding()]
@@ -159,14 +204,20 @@ function Remove-OldItems {
 
 # Known cleanmgr.exe VolumeCaches handlers. Keys are subkey names under
 # HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\VolumeCaches
+# Handlers not present on the running SKU are silently skipped at write-time.
 $VolumeCaches = @(
     'Active Setup Temp Folders'
     'BranchCache'
     'Content Indexer Cleaner'
+    'D3D Shader Cache'
     'Delivery Optimization Files'
     'Device Driver Packages'
+    'Diagnostic Data Viewer database files'
     'Downloaded Program Files'
+    'DownloadsFolder'
+    'Feedback Hub Archive log files'
     'Internet Cache Files'
+    'Language Pack'
     'Memory Dump Files'
     'Offline Pages Files'
     'Old ChkDsk Files'
@@ -194,6 +245,43 @@ $VolumeCaches = @(
     'Windows Reset Log Files'
     'Windows Upgrade Log Files'
 )
+
+function Resolve-EffectiveHandlers {
+    <#
+      Apply -IncludeOnlyHandler and -ExcludeHandler to the master list.
+      Matching is case-insensitive; unknown names produce a warning so a typo
+      is visible instead of silently selecting nothing.
+    #>
+    param(
+        [Parameter(Mandatory)][string[]]$All,
+        [string[]]$IncludeOnly = @(),
+        [string[]]$Exclude     = @()
+    )
+    $set = [System.Collections.Generic.HashSet[string]]::new([string[]]$All, [System.StringComparer]::OrdinalIgnoreCase)
+
+    if ($IncludeOnly.Count -gt 0) {
+        foreach ($name in $IncludeOnly) {
+            if (-not $set.Contains($name)) {
+                Write-Log "-IncludeOnlyHandler '$name' is not in the known handler list (typo?)." -Level WARN
+            }
+        }
+        $effective = $All | Where-Object { $IncludeOnly -contains $_ }
+    }
+    else {
+        $effective = $All
+    }
+
+    if ($Exclude.Count -gt 0) {
+        foreach ($name in $Exclude) {
+            if (-not $set.Contains($name)) {
+                Write-Log "-ExcludeHandler '$name' is not in the known handler list (typo?)." -Level WARN
+            }
+        }
+        $effective = $effective | Where-Object { $Exclude -notcontains $_ }
+    }
+
+    return ,@($effective)
+}
 
 function Set-CleanMgrSageRun {
     param(
@@ -244,19 +332,30 @@ if ($freeBefore -gt $MinFreeGB -and -not $Force) {
 else {
     if ($Force) { Write-Log "-Force specified — running cleanup unconditionally." -Level WARN }
 
-    if ($UserTmp) {
+    if ($IncludeUserTemp) {
         Remove-OldItems -Path 'C:\Users\*\AppData\Local\Temp\*' -OlderThanDays $MaxAgeDays
     }
 
-    if ($WindowsTmp) {
+    if ($IncludeWindowsTemp) {
         Remove-OldItems -Path (Join-Path $env:WinDir 'Temp\*') -OlderThanDays $MaxAgeDays
     }
 
-    Set-CleanMgrSageRun -SageId $SageId -Caches $VolumeCaches
-    [void](Invoke-Tool -FilePath 'cleanmgr.exe' -ArgumentList @("/sagerun:$SageId"))
+    $effectiveHandlers = Resolve-EffectiveHandlers `
+        -All         $VolumeCaches `
+        -IncludeOnly $IncludeOnlyHandler `
+        -Exclude     $ExcludeHandler
 
-    if ($SoftwareDistribution) {
-        Write-Log "Purging SoftwareDistribution cache"
+    if ($effectiveHandlers.Count -eq 0) {
+        Write-Log "No cleanmgr handlers selected after applying -IncludeOnlyHandler/-ExcludeHandler. Skipping cleanmgr." -Level WARN
+    }
+    else {
+        Write-Log ("Cleanmgr handlers selected: {0}/{1}" -f $effectiveHandlers.Count, $VolumeCaches.Count)
+        Set-CleanMgrSageRun -SageId $SageId -Caches $effectiveHandlers
+        [void](Invoke-Tool -FilePath 'cleanmgr.exe' -ArgumentList @("/sagerun:$SageId"))
+    }
+
+    if ($IncludeSoftwareDistribution) {
+        Write-Log "Purging SoftwareDistribution cache (WU RESET: forces full metadata re-sync on next scan)" -Level WARN
         [void](Invoke-Tool -FilePath 'net.exe' -ArgumentList @('stop','wuauserv'))
         try {
             $sdPath = Join-Path $env:WinDir 'SoftwareDistribution'
