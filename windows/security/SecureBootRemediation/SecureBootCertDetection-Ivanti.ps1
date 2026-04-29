@@ -21,7 +21,8 @@
       - Reboot-pending signal from 1800
       - BootloaderSwapped signal from 1799 (System + TPM-WMI/Operational)
       - Update-success signal from 1808 (count of completions)
-      - LatestGood / LatestBad event id from full TPM-WMI sweep
+      - LatestGood / LatestWarning / LatestBlocking event id from full TPM-WMI sweep
+        (1801 is classified as Warning, NOT Blocking -- it's an assessment event)
       - WindowsUEFICA2023Capable raw value (with Server 2019 caveat)
 
     Output contract (one Write-Host per line, exactly these keys):
@@ -111,7 +112,8 @@ $BootloaderSwapped   = $false
 $UpdateSuccess       = $false
 $Evt1808Count        = 0
 $LatestGoodId        = $null
-$LatestBadId         = $null
+$LatestWarningId     = $null
+$LatestBlockingId    = $null
 
 # Same classification as the remediation script (kept in sync intentionally).
 $GoodEventIDs     = @(1034, 1036, 1037, 1042, 1043, 1044, 1045, 1799, 1800, 1808)
@@ -171,13 +173,18 @@ try {
         $Evt1808Count = @($Recent | Where-Object { $_.Id -eq 1808 }).Count
         if ($Evt1808Count -gt 0) { $UpdateSuccess = $true }
 
-        # LatestGood / LatestBad (informational headline event ids)
+        # LatestGood / LatestWarning / LatestBlocking (informational headline event ids).
+        # 1801 is a Warning (assessment/status), NOT a blocker -- keep it out of LatestBlocking
+        # so the 'found =' line doesn't mislabel it as a bad/blocking event.
         $latestGoodEvt = $Recent | Where-Object { $_.Id -in $GoodEventIDs } |
                          Sort-Object TimeCreated -Descending | Select-Object -First 1
-        $latestBadEvt  = $Recent | Where-Object { $_.Id -in $BadEventIDs } |
+        $latestWarnEvt = $Recent | Where-Object { $_.Id -in $WarningEventIDs } |
                          Sort-Object TimeCreated -Descending | Select-Object -First 1
-        if ($latestGoodEvt) { $LatestGoodId = $latestGoodEvt.Id }
-        if ($latestBadEvt)  { $LatestBadId  = $latestBadEvt.Id }
+        $latestBlockEvt = $Recent | Where-Object { $_.Id -in $BlockingEventIDs } |
+                          Sort-Object TimeCreated -Descending | Select-Object -First 1
+        if ($latestGoodEvt)  { $LatestGoodId     = $latestGoodEvt.Id }
+        if ($latestWarnEvt)  { $LatestWarningId  = $latestWarnEvt.Id }
+        if ($latestBlockEvt) { $LatestBlockingId = $latestBlockEvt.Id }
     }
 } catch {
     # Swallow log errors -- diagnostics are best-effort, never fatal.
@@ -209,7 +216,8 @@ $FoundParts = @(
     "BootloaderSwapped: $BootloaderSwapped"
 )
 if ($LatestGoodId)        { $FoundParts += "LatestGood: $LatestGoodId" }
-if ($LatestBadId)         { $FoundParts += "LatestBad: $LatestBadId" }
+if ($LatestWarningId)     { $FoundParts += "LatestWarning: $LatestWarningId" }
+if ($LatestBlockingId)    { $FoundParts += "LatestBlocking: $LatestBlockingId" }
 if ($KnownIssueId)        { $FoundParts += "KnownIssue: $KnownIssueId" }
 if ($MissingKEK)          { $FoundParts += 'MissingKEK: True' }
 if ($RebootPending)       { $FoundParts += 'RebootPending: True' }

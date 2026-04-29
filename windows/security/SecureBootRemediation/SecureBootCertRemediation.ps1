@@ -227,7 +227,8 @@ function Get-SecureBootStatus {
     $missingKEK         = $false
     $skipReasonKI       = $null
     $latestGoodId       = $null
-    $latestBadId        = $null
+    $latestWarningId    = $null
+    $latestBlockingId   = $null
     $bootloaderSwapped  = $false
     $blockingIssue      = $false
     $updateSuccess      = $false
@@ -241,14 +242,16 @@ function Get-SecureBootStatus {
 
             $latestOverall = $AllEvents | Sort-Object TimeCreated -Descending | Select-Object -First 1
 
-            # Latest good vs bad event
-            $latestGoodEvt = $AllEvents | Where-Object { $_.Id -in $GoodEventIDs } | Sort-Object TimeCreated -Descending | Select-Object -First 1
-            $latestBadEvt  = $AllEvents | Where-Object { $_.Id -in $BadEventIDs }  | Sort-Object TimeCreated -Descending | Select-Object -First 1
-            if ($latestGoodEvt) { $latestGoodId = $latestGoodEvt.Id }
-            if ($latestBadEvt)  { $latestBadId  = $latestBadEvt.Id }
-            # Only flag as blocking if a true error event is present (not status/warning like 1801)
+            # Latest good vs warning vs blocking event.
+            # 1801 is a Warning (assessment/status) -- it must NOT be reported as a blocking/bad
+            # event id, otherwise the detection report misleads operators into thinking a real
+            # error occurred. Blocking IDs are firmware/KI/KEK errors only.
+            $latestGoodEvt     = $AllEvents | Where-Object { $_.Id -in $GoodEventIDs }     | Sort-Object TimeCreated -Descending | Select-Object -First 1
+            $latestWarningEvt  = $AllEvents | Where-Object { $_.Id -in $WarningEventIDs }  | Sort-Object TimeCreated -Descending | Select-Object -First 1
             $latestBlockingEvt = $AllEvents | Where-Object { $_.Id -in $BlockingEventIDs } | Sort-Object TimeCreated -Descending | Select-Object -First 1
-            if ($latestBlockingEvt) { $blockingIssue = $true }
+            if ($latestGoodEvt)     { $latestGoodId     = $latestGoodEvt.Id }
+            if ($latestWarningEvt)  { $latestWarningId  = $latestWarningEvt.Id }
+            if ($latestBlockingEvt) { $latestBlockingId = $latestBlockingEvt.Id; $blockingIssue = $true }
 
             # Event 1799 - bootloader swapped (System log)
             $bootloaderSwapped = (@($AllEvents | Where-Object { $_.Id -eq 1799 }).Count -gt 0)
@@ -408,10 +411,12 @@ function Get-SecureBootStatus {
         }
     }
 
-    $lgVal = if ($latestGoodId) { "$latestGoodId" } else { 'None' }
-    $lbVal = if ($latestBadId)  { "$latestBadId"  } else { 'None' }
-    Write-DebugField 'LatestGoodEvent' $lgVal $(if ($latestGoodId) { 'Green' } else { 'DarkGray' }) 'Most recent success event'
-    Write-DebugField 'LatestBadEvent' $lbVal $(if ($latestBadId) { 'Red' } else { 'DarkGray' }) 'Most recent error event'
+    $lgVal  = if ($latestGoodId)     { "$latestGoodId"     } else { 'None' }
+    $lwVal  = if ($latestWarningId)  { "$latestWarningId"  } else { 'None' }
+    $lblVal = if ($latestBlockingId) { "$latestBlockingId" } else { 'None' }
+    Write-DebugField 'LatestGoodEvent'     $lgVal  $(if ($latestGoodId)     { 'Green' }  else { 'DarkGray' }) 'Most recent success event'
+    Write-DebugField 'LatestWarningEvent'  $lwVal  $(if ($latestWarningId)  { 'Yellow' } else { 'DarkGray' }) 'Most recent warning event (e.g. 1801 assessment)'
+    Write-DebugField 'LatestBlockingEvent' $lblVal $(if ($latestBlockingId) { 'Red' }    else { 'DarkGray' }) 'Most recent error/blocker event'
 
     $clr = if ($bootloaderSwapped) { 'Green' } else { 'DarkGray' }
     Write-DebugField 'BootloaderSwapped' "$bootloaderSwapped" $clr 'Event 1799 System/Operational'
@@ -513,7 +518,8 @@ function Get-SecureBootStatus {
         MissingKEK         = $missingKEK
         BootloaderSwapped  = $bootloaderSwapped
         LatestGoodId       = $latestGoodId
-        LatestBadId        = $latestBadId
+        LatestWarningId    = $latestWarningId
+        LatestBlockingId   = $latestBlockingId
     }
 }
 
