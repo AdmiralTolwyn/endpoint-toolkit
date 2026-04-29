@@ -1,17 +1,12 @@
 # RDP File Signer (Per-User, No Admin)
 
-> ⚠️ **EXPERIMENTAL — NOT RECOMMENDED FOR PRODUCTION.**
-> This script suppresses the RDP **"Verify the publisher"** dialog by adding
-> the cert thumbprint to the per-user `TrustedCertThumbprints` policy, and
-> trusts a self-signed code-signing cert as a per-user **Trusted Root CA**.
-> Adding to the per-user Root store still triggers the standard one-time
-> CryptoAPI **"Security Warning"** dialog — the user must click Yes once.
->
-> **Use this only for testing, lab environments, or short-lived personal workflows.**
-> For real deployments use an Enterprise CA / commercial code-signing certificate distributed
-> via Group Policy or Intune, and let users see the standard publisher confirmation.
+`Sign-RdpFile.ps1` digitally signs `.rdp` files for the current user, with **no administrator rights required**. It supports two distinct workflows:
 
-`Sign-RdpFile.ps1` digitally signs `.rdp` files using a self-signed code signing certificate that lives entirely in the current user's profile. **No administrator rights are required** — certificate generation, trust, signing, and cleanup all run as the standard user, and the recurring RDP publisher prompt is suppressed for files signed by the cert.
+1. ✅ **Batch-sign with an existing CA-issued code-signing certificate** *(fully supported, recommended)*
+   Pass `-Thumbprint` (SHA1 or SHA256) of a code-signing cert already present in `Cert:\CurrentUser\My` or `Cert:\LocalMachine\My` — for example one issued by your Enterprise CA, a commercial CA (DigiCert, Sectigo, …), or imported from a PFX. The script wraps `rdpsign.exe` to sign one file or a whole tree, registers the thumbprint in the per-user RDP trusted-publishers policy so users don't see the publisher prompt, and **does not touch the trust stores** (your CA chain already handles trust). This is the intended way to use this script for real deployments.
+
+2. ⚠️ **Generate and use a self-signed code-signing certificate** *(experimental, lab/testing only)*
+   With no `-Thumbprint` supplied, the script creates a self-signed `CodeSigningCert` in the current user's profile and installs it into the per-user Trusted Root + Trusted Publishers stores so signed files open without warnings on **this user's** machine. Adding to per-user Root triggers the standard one-time CryptoAPI "Security Warning" dialog (Yes/No), and a self-signed cert in Root means *any* certificate it issues is trusted by that user. **Do not use this in production** — use an Enterprise or commercial CA distributed via Group Policy / Intune instead.
 
 ## Why
 
@@ -20,16 +15,15 @@ Microsoft's April 2026 cumulative updates (KB5083769 / KB5082200, addressing **C
 - Every double-click shows a **"Caution: Unknown remote connection"** warning, with no "don't ask again" option.
 - All clipboard / drive / printer redirection requested by the file is **blocked by default** and must be re-enabled on every connection.
 
-Signing the `.rdp` file with a code signing certificate suppresses the unknown-publisher warning and restores redirection. The traditional fix (e.g. [pip.com.au's guide](https://pip.com.au/digitally-sign-rdp-files-a-complete-how-to/)) installs the certificate into `Cert:\LocalMachine\*` — admin-only. This script does the same thing per-user.
+Signing the `.rdp` file with a code signing certificate suppresses the unknown-publisher warning and restores redirection. The standard guidance is to install the signing certificate into `Cert:\LocalMachine\*` and trust it via Group Policy — both of which require administrator rights. This script performs the equivalent steps against the per-user stores instead, so any standard user can sign their own `.rdp` files without elevation.
 
 ## How it works
 
-1. **Reuses or creates** a `CodeSigningCert` in `Cert:\CurrentUser\My`
-   - Reuse: matches by `-Subject` (default `CN=$env:USERNAME RDP Signing`), unexpired, with the Code Signing EKU.
-   - Create: SHA256 / RSA 2048 / 3-year validity (configurable via `-ValidYears`).
-   - Tagged via `FriendlyName` prefix `EndpointToolkit:RDPSigning` so `-Cleanup` can find it later.
-2. **Trusts the cert for the current user** by importing it into:
-   - `Cert:\CurrentUser\Root` (Trusted Root CAs — per-user). **First time only**, Windows shows a "Security Warning" dialog asking the user to confirm the Root install. There is no supported API to suppress this for per-user Root.
+1. **Selects a signing certificate**:
+   - With `-Thumbprint <SHA1|SHA256>`: looks up the cert in `Cert:\CurrentUser\My`, then falls back to `Cert:\LocalMachine\My` (a standard user can read — just not write — the machine store). Verifies the cert has the Code Signing EKU and an associated private key, and uses it as-is. **No new cert is generated and the trust stores are left untouched** — trust is expected to come from the existing CA chain.
+   - Without `-Thumbprint`: reuses (matched by `-Subject`, default `CN=$env:USERNAME RDP Signing`) or creates a self-signed `CodeSigningCert` in `Cert:\CurrentUser\My` (SHA256 / RSA 2048 / 3-year validity, configurable via `-ValidYears`). The cert is tagged via `FriendlyName` prefix `EndpointToolkit:RDPSigning` so `-Cleanup` can find it later.
+2. **Trusts the cert for the current user** *(self-signed mode only — skipped for CA-issued certs)* by importing it into:
+   - `Cert:\CurrentUser\Root` (Trusted Root CAs — per-user). **First time only**, Windows shows a "Security Warning" dialog asking the user to confirm the Root install. 
    - `Cert:\CurrentUser\TrustedPublisher` (no prompt).
 3. **Suppresses the "Verify the publisher of this remote connection" dialog** by writing the thumbprint to the per-user RDP trusted-publishers policy: `HKCU:\Software\Policies\Microsoft\Windows NT\Terminal Services\TrustedCertThumbprints` (REG_SZ, semicolon-separated). This is the same policy GPMC's "Specify SHA1 thumbprints of certificates representing trusted .rdp publishers" writes to, but in the user hive (writable without admin).
 4. **Signs** each `.rdp` file via `rdpsign.exe /sha256 <thumbprint> <file>` (in-box on Windows 10/11).
@@ -113,7 +107,7 @@ The signed `.rdp` files themselves are not touched (after cleanup they will reve
 |-----------|-------------|
 | `-Path` | One or more `.rdp` files or folders (Sign mode), or `.cer` files (InstallCer mode). Folders searched recursively. |
 | `-Subject` | Subject DN used to look up or create the signing cert. Default: `CN=$env:USERNAME RDP Signing`. |
-| `-Thumbprint` | Use a specific cert from `Cert:\CurrentUser\My`. Accepts SHA1 (40 hex chars) **or** SHA256 (64 hex chars) thumbprint; spaces / colons tolerated. Overrides `-Subject`. |
+| `-Thumbprint` | Use a specific cert from `Cert:\CurrentUser\My` or `Cert:\LocalMachine\My` (CurrentUser preferred). Accepts SHA1 (40 hex chars) **or** SHA256 (64 hex chars) thumbprint; spaces / colons tolerated. Overrides `-Subject`. |
 | `-ValidYears` | Lifetime of a newly created cert (1-10). Default: 3. |
 | `-ExportCerPath` | Export the public certificate to this path for distribution. |
 | `-Force` | Re-sign files that already contain a `signature:s:` line. |

@@ -56,12 +56,13 @@
     Default: "CN=$env:USERNAME RDP Signing".
 
 .PARAMETER Thumbprint
-    Use a specific certificate from Cert:\CurrentUser\My by thumbprint.
-    Accepts either the standard SHA1 cert thumbprint (40 hex chars, what
-    Windows shows as "Thumbprint") or the cert's SHA256 fingerprint
-    (64 hex chars). Spaces / colons are tolerated.
+    Use a specific certificate by thumbprint. Searched in Cert:\CurrentUser\My
+    first, then Cert:\LocalMachine\My (a standard user can read but not write
+    the machine store). Accepts either the standard SHA1 cert thumbprint
+    (40 hex chars, what Windows shows as "Thumbprint") or the cert's SHA256
+    fingerprint (64 hex chars). Spaces / colons are tolerated.
     Overrides -Subject lookup. Useful if you've already imported a PFX
-    or have a code-signing cert from your CA in the user store.
+    or have a code-signing cert from your CA in either store.
 
 .PARAMETER ValidYears
     Lifetime of a newly created certificate. Default: 3 years. Ignored if a
@@ -113,7 +114,7 @@
     has ever created for the current user.
 
 .NOTES
-    Version : 1.2.0
+    Version : 1.2.2
     Author  : Anton Romanyuk
     Requires: Windows 10/11, PowerShell 5.1+, rdpsign.exe (in-box).
 
@@ -224,33 +225,39 @@ function Get-CertSha256Thumbprint {
 
 function Find-CertByThumbprint {
     <#
-        Looks up a cert in Cert:\CurrentUser\My by either its SHA1 (40 hex chars,
-        the value Windows shows as "Thumbprint") or its SHA256 (64 hex chars,
-        what some portals / signing services hand out). Spaces are tolerated.
+        Looks up a cert by either its SHA1 (40 hex chars, the value Windows shows
+        as "Thumbprint") or its SHA256 (64 hex chars, what some portals / signing
+        services hand out). Spaces and colons are tolerated.
+
+        Searches the supplied -StorePaths in order and returns the first match.
+        Default order is CurrentUser\My then LocalMachine\My, so a user-installed
+        cert is preferred but a machine-wide one is still found (a standard user
+        can READ LocalMachine\My without admin — they just can't write to it).
     #>
     param(
-        [Parameter(Mandatory)] [string] $Thumbprint,
-        [string] $StorePath = 'Cert:\CurrentUser\My'
+        [Parameter(Mandatory)] [string]   $Thumbprint,
+        [string[]]                        $StorePaths = @('Cert:\CurrentUser\My', 'Cert:\LocalMachine\My')
     )
 
     $clean = ($Thumbprint -replace '[\s:]', '').ToUpperInvariant()
     if ($clean -notmatch '^[0-9A-F]+$') {
         throw "Thumbprint contains non-hex characters: '$Thumbprint'."
     }
+    if ($clean.Length -ne 40 -and $clean.Length -ne 64) {
+        throw "Thumbprint must be 40 hex chars (SHA1) or 64 hex chars (SHA256). Got $($clean.Length)."
+    }
 
-    switch ($clean.Length) {
-        40 {
-            return Get-ChildItem $StorePath | Where-Object { $_.Thumbprint -eq $clean } | Select-Object -First 1
-        }
-        64 {
-            return Get-ChildItem $StorePath | Where-Object {
-                (Get-CertSha256Thumbprint -Cert $_) -eq $clean
-            } | Select-Object -First 1
-        }
-        default {
-            throw "Thumbprint must be 40 hex chars (SHA1) or 64 hex chars (SHA256). Got $($clean.Length)."
+    foreach ($path in $StorePaths) {
+        if (-not (Test-Path -LiteralPath $path)) { continue }
+        $match = Get-ChildItem -LiteralPath $path -ErrorAction SilentlyContinue | Where-Object {
+            if ($clean.Length -eq 40) { $_.Thumbprint -eq $clean }
+            else                      { (Get-CertSha256Thumbprint -Cert $_) -eq $clean }
+        } | Select-Object -First 1
+        if ($match) {
+            return [pscustomobject]@{ Cert = $match; StorePath = $path }
         }
     }
+    return $null
 }
 
 function Get-OrCreateSigningCert {
@@ -263,15 +270,55 @@ function Get-OrCreateSigningCert {
     $store = 'Cert:\CurrentUser\My'
 
     if ($Thumbprint) {
-        $cert = Find-CertByThumbprint -Thumbprint $Thumbprint -StorePath $store
-        if (-not $cert) { throw "No certificate matching thumbprint '$Thumbprint' found in $store (tried SHA1 / SHA256)." }
+        $hit = Find-CertByThumbprint -Thumbprint $Thumbprint
+        if (-not $hit) {
+            # Cert wasn't in My — check the other common stores so we can give a
+            # specific, actionable error instead of a generic "not found".
+            # rdpsign.exe ONLY signs from CurrentUser\My / LocalMachine\My, so a
+            # cert living in Root/Trust/CA/TrustedPublisher needs to be moved or
+            # imported into My first.
+            $otherStores = @(
+                'Cert:\CurrentUser\Root',  'Cert:\LocalMachine\Root',
+                'Cert:\CurrentUser\Trust', 'Cert:\LocalMachine\Trust',
+                'Cert:\CurrentUser\CA',    'Cert:\LocalMachine\CA',
+                'Cert:\CurrentUser\TrustedPublisher', 'Cert:\LocalMachine\TrustedPublisher'
+            )
+            $misplaced = Find-CertByThumbprint -Thumbprint $Thumbprint -StorePaths $otherStores
+            if ($misplaced) {
+                $hint = @"
+Certificate $($misplaced.Cert.Thumbprint) was found in $($misplaced.StorePath), not in CurrentUser\My / LocalMachine\My.
+rdpsign.exe only signs using certificates from the 'Personal' (My) store.
+Code-signing certs (and self-signed signing certs) must live in My — Root is for trust anchors only.
+
+Fix: import/move the cert (with its private key) into Cert:\CurrentUser\My, e.g.:
+
+  # If you have the original PFX:
+  `$pwd = Read-Host -AsSecureString 'PFX password'
+  Import-PfxCertificate -FilePath 'C:\path\to\codesigning.pfx' ``
+                        -CertStoreLocation Cert:\CurrentUser\My ``
+                        -Password `$pwd
+
+  # If the cert in $($misplaced.StorePath) has an exportable private key:
+  `$src = Get-Item '$($misplaced.StorePath)\$($misplaced.Cert.Thumbprint)'
+  `$tmp = Join-Path `$env:TEMP 'codesign-move.pfx'
+  `$pwd = ConvertTo-SecureString 'temp' -AsPlainText -Force
+  Export-PfxCertificate -Cert `$src -FilePath `$tmp -Password `$pwd | Out-Null
+  Import-PfxCertificate  -FilePath `$tmp -CertStoreLocation Cert:\CurrentUser\My -Password `$pwd | Out-Null
+  Remove-Item `$tmp -Force
+"@
+                throw $hint
+            }
+            throw "No certificate matching thumbprint '$Thumbprint' found in CurrentUser\My or LocalMachine\My (tried SHA1 / SHA256)."
+        }
+        $cert     = $hit.Cert
+        $foundIn  = $hit.StorePath
         if ($cert.EnhancedKeyUsageList.ObjectId -notcontains '1.3.6.1.5.5.7.3.3') {
             throw "Certificate $($cert.Thumbprint) does not have the Code Signing EKU (1.3.6.1.5.5.7.3.3)."
         }
         if (-not $cert.HasPrivateKey) {
-            throw "Certificate $($cert.Thumbprint) has no associated private key in $store — cannot sign."
+            throw "Certificate $($cert.Thumbprint) found in $foundIn has no associated private key — cannot sign."
         }
-        Write-Log "Using existing certificate by thumbprint: $($cert.Subject) [SHA1=$($cert.Thumbprint)]" -Level INFO
+        Write-Log "Using existing certificate by thumbprint: $($cert.Subject) [SHA1=$($cert.Thumbprint)] (from $foundIn)" -Level INFO
         return $cert
     }
 
