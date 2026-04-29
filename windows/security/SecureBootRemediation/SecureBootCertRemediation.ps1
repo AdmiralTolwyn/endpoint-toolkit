@@ -22,14 +22,21 @@
        - Loops for 30 seconds to track registry state changes in real-time.
 
 .PARAMETER ForceRemediation
-    Switch to force the registry trigger even if the state appears valid or indeterminate.
+    Switch that ENABLES active remediation (registry write + scheduled task trigger).
+    Without this switch the script is detection-only and does NOT modify the system,
+    which makes it safe to run as a pure compliance detect script (e.g. from Ivanti,
+    Intune Proactive Remediations detect phase, ConfigMgr CI, etc.).
 
 .NOTES
     Author:  Anton Romanyuk
-    Version: 2.2
+    Version: 2.3
     Date:    2026-04-29
     Context: Secure Boot UEFI CA 2023 Deployment
-    Changes: v2.2 - Strict compliance gate to avoid stale-1808 false positives:
+    Changes: v2.3 - Detection-only by default. All write actions (AvailableUpdates registry
+                    set, Start-ScheduledTask) now require -ForceRemediation. Without the
+                    switch the script only reports state, making it safe for compliance
+                    detect scripts.
+             v2.2 - Strict compliance gate to avoid stale-1808 false positives:
                     Compliant = 1808 AND Status=Updated AND Error=0 AND BootloaderSwapped (1799);
                     Initial-Deployment trigger now uses Compliant instead of Success so an
                     NVRAM/BIOS-reset device with a leftover 1808 is still re-armed.
@@ -517,13 +524,25 @@ function Get-SecureBootStatus {
 function Invoke-Remediation {
     param ($StateObj)
 
+    # Hard gate: NEVER touch the system unless the operator explicitly opts in.
+    # This makes the script safe to run as a detection-only script.
+    if (-not $ForceRemediation) {
+        Write-Host ""
+        if ($StateObj.Compliant) {
+            Write-ColorLog -Message "System is fully updated (Status=Updated + Error=0 + Event 1808 + BootloaderSwapped). No action needed." -Level "Success"
+        } else {
+            Write-ColorLog -Message "Detection-only mode. Re-run with -ForceRemediation to apply the registry trigger and start the scheduled task." -Level "Info"
+        }
+        return
+    }
+
     $regPath = 'HKLM:\SYSTEM\CurrentControlSet\Control\SecureBoot'
     $taskName = "\Microsoft\Windows\PI\Secure-Boot-Update"
     $triggerRequired = $false
     $triggerReason = ""
 
-    # --- LOGIC: When to trigger the task? ---
-    
+    # --- LOGIC: When to trigger the task? (only reached when -ForceRemediation is set) ---
+
     # 1. Initial Deployment: AvUpdates is 0 and we are not currently compliant.
     #    Use Compliant (not Success) so a stale Event 1808 from a pre-NVRAM-wipe
     #    install does not suppress remediation on a regressed device.
@@ -536,8 +555,8 @@ function Invoke-Remediation {
         $triggerRequired = $true
         $triggerReason = "Post-Reboot Finalization"
     }
-    # 3. Forced
-    elseif ($ForceRemediation) {
+    # 3. Forced re-trigger even though state looks settled
+    else {
         $triggerRequired = $true
         $triggerReason = "Forced by User"
     }
@@ -607,13 +626,6 @@ function Invoke-Remediation {
 
         } catch {
             Write-ColorLog -Message "Remediation Failed: $($_.Exception.Message)" -Level "Error"
-        }
-    } else {
-        # No Action Needed
-        if ($StateObj.Compliant) {
-            Write-ColorLog -Message "System is fully updated (Status=Updated + Error=0 + Event 1808 + BootloaderSwapped)." -Level "Success"
-        } else {
-            Write-ColorLog -Message "Updates in progress or intermediate state ($('0x{0:X}' -f $StateObj.AvUpdates)). No action taken." -Level "Verbose"
         }
     }
 }
