@@ -2,15 +2,23 @@
 
 ## Overview
 
-Unified detection and remediation script for the **Secure Boot UEFI CA 2023** certificate deployment. Combines comprehensive state analysis with smart remediation logic and real-time monitoring.
+Detection and remediation tooling for the **Secure Boot UEFI CA 2023** certificate deployment. Combines comprehensive state analysis with smart remediation logic and real-time monitoring, plus a sibling pure-detection script for Ivanti Custom Definitions.
 
 Reference: [KB5016061 - Secure Boot DB and DBX variable update events](https://support.microsoft.com/en-us/topic/37e47cf8-608b-4a87-8175-bdead630eb69)
 
-## Script
+## Scripts
 
-| File | Purpose |
-|------|---------|
-| `SecureBootCertRemediation.ps1` | Detects Secure Boot update state, applies remediation, and monitors progress |
+| File | Purpose | Modifies System? | Compliance Gate |
+|------|---------|------------------|-----------------|
+| `SecureBootCertRemediation.ps1` | Full detection + smart remediation + real-time monitoring | Only with `-ForceRemediation` | **Strict**: `1808 AND Status=Updated AND Error=0 AND BootloaderSwapped (1799)` |
+| `SecureBootCertDetection-Ivanti.ps1` | Pure detection for Ivanti Custom Definition (Status / Reason / Expected / Found contract) | Never | **Legacy**: `Status=Updated AND Error=0` |
+
+Both scripts share the same TPM-WMI event-id classification and diagnostic signals; only the compliance gate and remediation behavior differ.
+
+### Why two scripts?
+
+- **`SecureBootCertRemediation.ps1`** is for active deployment (Intune Proactive Remediations, manual fix-up, technician triage). Detection-only by default; only writes registry / starts the scheduled task when explicitly invoked with `-ForceRemediation`. Strict gate avoids false-positive "compliant" verdicts caused by stale Event 1808 surviving NVRAM / BIOS resets.
+- **`SecureBootCertDetection-Ivanti.ps1`** is for Ivanti baselines that already evaluate the legacy `Status + Error` gate. The compliance verdict is intentionally unchanged to avoid baseline / ticket churn; the enhanced diagnostics (1808 / 1799 / 1801 / 1802 / 1803 / latest good / latest bad / FW errors) are surfaced in the `found =` line for triage only.
 
 ## What It Does
 
@@ -33,12 +41,31 @@ Reference: [KB5016061 - Secure Boot DB and DBX variable update events](https://s
 
 ## Usage
 
+### `SecureBootCertRemediation.ps1` (detection-only by default)
+
 ```powershell
-# Standard detection + smart remediation
+# Detection-only: prints structured report, never writes registry or starts the task
 .\SecureBootCertRemediation.ps1
 
-# Force remediation even if state appears valid
+# Active remediation: applies registry value + triggers Secure-Boot-Update scheduled task
 .\SecureBootCertRemediation.ps1 -ForceRemediation
+```
+
+> Without `-ForceRemediation` the script is read-only. This is the safe default for scheduled scans, Intune Proactive Remediation *detect* scripts, and one-off triage.
+
+### `SecureBootCertDetection-Ivanti.ps1` (pure detection)
+
+```powershell
+.\SecureBootCertDetection-Ivanti.ps1
+```
+
+Emits exactly four lines on stdout (Ivanti contract):
+
+```text
+detected = true|false
+reason   = <single sentence>
+expected = Status: Updated | Error: 0
+found    = Status: <s> | Error: <e> | Confidence: <c> | Capable: <cap> | Event1808: <bool> | BootloaderSwapped: <bool> | LatestGood: <id> | ...
 ```
 
 ## AvailableUpdates State Machine
@@ -115,21 +142,44 @@ For a list of known High Confidence bucket hashes, see [microsoft/secureboot_obj
 
 ## Compliance Logic
 
-Per PG recommendation, the script determines compliance using:
+The two scripts deliberately use different compliance gates.
+
+### `SecureBootCertRemediation.ps1` -- strict gate (v2.2+)
 
 ```
-Compliant = (Event 1808 present) AND (UEFICA2023Status = "Updated")
+Compliant = (Event 1808 present)
+        AND (UEFICA2023Status = "Updated")
+        AND (UEFICA2023Error  = 0)
+        AND (Event 1799 present -- BootloaderSwapped)
 ```
 
-Event 1808 confirms the Secure Boot certificate update completed successfully. This event is now also reliably generated on **Windows Server 2025**.
+All four signals are required. The `Error=0` and `BootloaderSwapped` requirements were added in v2.2 to defend against stale Event 1808 entries surviving NVRAM / BIOS resets, which previously caused false-positive "system is fully updated" verdicts on regressed devices.
+
+### `SecureBootCertDetection-Ivanti.ps1` -- legacy gate
+
+```
+Compliant = (UEFICA2023Status = "Updated") AND (UEFICA2023Error = 0)
+```
+
+Intentionally preserved to avoid churning existing Ivanti baselines and tickets. Event 1808 / 1799 are reported in the `found =` line as informational signals only and do **not** influence the verdict.
+
+> Event 1808 is now also reliably generated on **Windows Server 2025**.
 
 ## Output
 
-Produces a structured detection report with color-coded fields and an Ivanti-compatible detection summary:
+### `SecureBootCertRemediation.ps1`
 
-- `Detected` — `true` (non-compliant) or `false` (compliant)
-- `Reason` — Human-readable status explanation
-- `Expected` / `Found` — State comparison strings
+Produces a structured, color-coded detection report (registry values, event sweep, AvailableUpdates decode) followed by an Ivanti-compatible detection summary block:
+
+- `Detected` -- `true` (non-compliant) or `false` (compliant)
+- `Reason`   -- human-readable status explanation
+- `Expected` / `Found` -- state comparison strings
+
+When `-ForceRemediation` is supplied, the script additionally logs the registry write, scheduled-task trigger, and a 30-second monitoring loop tracking `AvailableUpdates` changes.
+
+### `SecureBootCertDetection-Ivanti.ps1`
+
+Four `Write-Host` lines, no banner, no color, no extra output -- safe to consume verbatim from an Ivanti Custom Definition or any detect channel that parses `key = value` pairs.
 
 ## Requirements
 
