@@ -26,11 +26,15 @@
 
 .NOTES
     Author:  Anton Romanyuk
-    Version: 2.1
-    Date:    2026-04-15
+    Version: 2.2
+    Date:    2026-04-29
     Context: Secure Boot UEFI CA 2023 Deployment
-    Changes: v2.1 - Reclassify 1801 as warning (not good); compliance = 1808 + Updated (PG rec);
-             Server 2019 WindowsUEFICA2023Capable=0 bug caveat
+    Changes: v2.2 - Strict compliance gate to avoid stale-1808 false positives:
+                    Compliant = 1808 AND Status=Updated AND Error=0 AND BootloaderSwapped (1799);
+                    Initial-Deployment trigger now uses Compliant instead of Success so an
+                    NVRAM/BIOS-reset device with a leftover 1808 is still re-armed.
+             v2.1 - Reclassify 1801 as warning (not good); compliance = 1808 + Updated (PG rec);
+                    Server 2019 WindowsUEFICA2023Capable=0 bug caveat
 #>
 
 [CmdletBinding()]
@@ -433,18 +437,29 @@ function Get-SecureBootStatus {
     # -------------------------------------------------------------------------
     # E. Detection Summary (Ivanti-format reason)
     # -------------------------------------------------------------------------
-    # PG recommendation: compliance = Event 1808 present AND UEFICA2023Status=Updated
-    $isCompliant = ($updateSuccess -and $servicingData.Status -eq 'Updated')
+    # Strict compliance: historical success (Event 1808) AND current-state proof.
+    # Status=Updated and Error=0 alone can persist after an NVRAM wipe / BIOS reset /
+    # mainboard swap that removed the new CA from the firmware db, so we also require:
+    #   - Event 1808                  -> the update completed successfully at some point
+    #   - UEFICA2023Status = Updated  -> servicing component agrees we are done
+    #   - UEFICA2023Error  = 0        -> last servicing pass had no error
+    #   - BootloaderSwapped (1799)    -> the new bootmgr is actually in use post-reboot
+    $isCompliant = (
+        $updateSuccess `
+        -and $servicingData.Status -eq 'Updated' `
+        -and $servicingData.Error -eq 0 `
+        -and $bootloaderSwapped
+    )
 
-    $expectedStr = "Status: Updated | Event1808: True"
-    $foundStr    = "Status: $($servicingData.Status) | Event1808: $updateSuccess | Error: $($servicingData.Error) | Confidence: $confidenceLevel | Capable: $capVal | AvUpdates: $avUpdatesHex | BootloaderSwapped: $bootloaderSwapped"
+    $expectedStr = "Status: Updated | Error: 0 | Event1808: True | BootloaderSwapped: True"
+    $foundStr    = "Status: $($servicingData.Status) | Error: $($servicingData.Error) | Event1808: $updateSuccess | BootloaderSwapped: $bootloaderSwapped | Confidence: $confidenceLevel | Capable: $capVal | AvUpdates: $avUpdatesHex"
 
     Write-Host ""
     Write-ColorLog -Message "--- DETECTION SUMMARY ---" -Level "Info"
 
     if ($isCompliant) {
         Write-ColorLog -Message "Detected  : false (Compliant)" -Level "Success"
-        Write-ColorLog -Message "Reason    : Secure Boot Update successful (Event 1808 + Status=Updated)." -Level "Success"
+        Write-ColorLog -Message "Reason    : Secure Boot Update successful (1808 + Status=Updated + Error=0 + BootloaderSwapped)." -Level "Success"
     } else {
         Write-ColorLog -Message "Detected  : true (Non-Compliant)" -Level "Warning"
         if ($knownIssueId) {
@@ -462,6 +477,13 @@ function Get-SecureBootStatus {
             Write-ColorLog -Message "Reason    : Update Failed. $errDetail" -Level "Error"
         } elseif ($null -ne $servicingData.Capable -and $servicingData.Capable -eq 0) {
             Write-ColorLog -Message "Reason    : Device not capable (WindowsUEFICA2023Capable=0). NOTE: This value is unreliable on Server 2019." -Level "Error"
+        } elseif ($servicingData.Status -eq 'Updated' -and $servicingData.Error -eq 0 -and -not $bootloaderSwapped) {
+            # Status looks done but we never saw the bootloader-swap event.
+            # Most common cause: NVRAM/BIOS reset wiped the firmware db after a prior install,
+            # or the 1799 event aged out of the System log on a long-lived machine.
+            Write-ColorLog -Message "Reason    : Registry reports Updated but BootloaderSwapped (Event 1799) not seen. Possible NVRAM/BIOS reset since install, or event log rolled. Re-run update to confirm." -Level "Warning"
+        } elseif ($servicingData.Status -eq 'Updated' -and -not $updateSuccess) {
+            Write-ColorLog -Message "Reason    : Status=Updated but no Event 1808 in TPM-WMI log. Update may not have completed; consider re-running." -Level "Warning"
         } else {
             Write-ColorLog -Message "Reason    : Status is '$($servicingData.Status)' (Waiting for 'Updated')" -Level "Warning"
         }
@@ -502,8 +524,10 @@ function Invoke-Remediation {
 
     # --- LOGIC: When to trigger the task? ---
     
-    # 1. Initial Deployment: Key is 0 and no success event.
-    if (-not $StateObj.Success -and $StateObj.AvUpdates -eq 0) {
+    # 1. Initial Deployment: AvUpdates is 0 and we are not currently compliant.
+    #    Use Compliant (not Success) so a stale Event 1808 from a pre-NVRAM-wipe
+    #    install does not suppress remediation on a regressed device.
+    if (-not $StateObj.Compliant -and $StateObj.AvUpdates -eq 0) {
         $triggerRequired = $true
         $triggerReason = "Initial Deployment"
     }
@@ -586,8 +610,8 @@ function Invoke-Remediation {
         }
     } else {
         # No Action Needed
-        if ($StateObj.Success -or $StateObj.AvUpdates -eq 0x4000) {
-            Write-ColorLog -Message "System is fully updated (0x4000 / Event 1808)." -Level "Success"
+        if ($StateObj.Compliant) {
+            Write-ColorLog -Message "System is fully updated (Status=Updated + Error=0 + Event 1808 + BootloaderSwapped)." -Level "Success"
         } else {
             Write-ColorLog -Message "Updates in progress or intermediate state ($('0x{0:X}' -f $StateObj.AvUpdates)). No action taken." -Level "Verbose"
         }
