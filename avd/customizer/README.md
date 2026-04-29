@@ -25,7 +25,7 @@ All scripts in this folder follow the same conventions:
 | [ResetAutoUpdateSettings.ps1](ResetAutoUpdateSettings.ps1) | Reverts the bake-time hardening (Windows Update + Store + CDM) | Last AIB step OR post-deploy Run-Command |
 | [TimezoneRedirection.ps1](TimezoneRedirection.ps1) | Sets `fEnableTimeZoneRedirection = 1` for RDS / AVD time-zone follow | Anywhere |
 | [UpdateWinGet.ps1](UpdateWinGet.ps1) | Hardens, downloads + provisions WinGet, registers `-CustomSources`, optionally installs `-AppIds` with `--scope machine` (per-app source override supported) | Mid–late bake |
-| [WindowsOptimization.ps1](WindowsOptimization.ps1) | Wrapper around the Virtual Desktop Optimization Tool (VDOT) JSON config files | Late bake |
+| [WindowsOptimization.ps1](WindowsOptimization.ps1) | Hardened wrapper around the Virtual Desktop Optimization Tool (VDOT) JSON config files. Resilient access-denied handling, file logger, supports `-ConfigBasePath` (offline / air-gapped), `-LogDirectory`, `-ContinueOnError` | Late bake |
 
 ## Recommended pipeline order
 
