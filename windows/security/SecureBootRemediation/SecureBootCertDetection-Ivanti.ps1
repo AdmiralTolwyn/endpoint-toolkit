@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Ivanti Secure Boot CA Update Detection (Enhanced).
 
@@ -6,7 +6,7 @@
     Pure detection script intended for use as an Ivanti Custom Definition (or any
     Status/Reason/Expected/Found-style detect channel). DOES NOT modify the system.
 
-    Compliance logic (intentionally permissive — same as the original Ivanti
+    Compliance logic (intentionally permissive -- same as the original Ivanti
     detect script so existing baselines / tickets don't churn):
 
         Compliant = (UEFICA2023Status = "Updated") AND (UEFICA2023Error = 0)
@@ -19,6 +19,9 @@
       - Known-issue id from 1802 (KI_xxxx)
       - Missing-KEK signal from 1803
       - Reboot-pending signal from 1800
+      - BootloaderSwapped signal from 1799 (System + TPM-WMI/Operational)
+      - Update-success signal from 1808 (count of completions)
+      - LatestGood / LatestBad event id from full TPM-WMI sweep
       - WindowsUEFICA2023Capable raw value (with Server 2019 caveat)
 
     Output contract (one Write-Host per line, exactly these keys):
@@ -34,7 +37,7 @@
     Author:  Anton Romanyuk
     Version: 1.0
     Date:    2026-04-29
-    Context: Secure Boot UEFI CA 2023 Deployment — Ivanti Custom Definition
+    Context: Secure Boot UEFI CA 2023 Deployment -- Ivanti Custom Definition
 
     Compliance gate is DELIBERATELY the old (Status + Error) logic. Do NOT
     tighten it here without coordinating with the Ivanti detect/baseline owner;
@@ -54,7 +57,7 @@ $NameError      = 'UEFICA2023Error'
 $NameCapable    = 'WindowsUEFICA2023Capable'
 $TpmWmiProvider = 'Microsoft-Windows-TPM-WMI'
 
-# Target State (compliance gate — same as legacy Ivanti detect)
+# Target State (compliance gate -- same as legacy Ivanti detect)
 $TargetStatus = 'Updated'
 $TargetError  = 0
 
@@ -72,7 +75,7 @@ if ($null -eq $CurrentError)                 { $CurrentError  = 0 }
 $CapableStr = if ($null -ne $CurrentCapable) { "$CurrentCapable" } else { 'N/A' }
 
 # -------------------------------------------------------------------------------------------------
-# 3. Event Log Diagnostics (informational only — do NOT gate compliance on these)
+# 3. Event Log Diagnostics (informational only -- do NOT gate compliance on these)
 # -------------------------------------------------------------------------------------------------
 
 # A. Confidence level from latest 1801
@@ -104,16 +107,28 @@ $Evt1796Code         = $null
 $KnownIssueId        = $null
 $MissingKEK          = $false
 $RebootPending       = $false
+$BootloaderSwapped   = $false
+$UpdateSuccess       = $false
+$Evt1808Count        = 0
+$LatestGoodId        = $null
+$LatestBadId         = $null
 
+# Same classification as the remediation script (kept in sync intentionally).
+$GoodEventIDs     = @(1034, 1036, 1037, 1042, 1043, 1044, 1045, 1799, 1800, 1808)
+$WarningEventIDs  = @(1801)
+$BlockingEventIDs = @(1032, 1033, 1795, 1796, 1797, 1798, 1802, 1803)
+$BadEventIDs      = $WarningEventIDs + $BlockingEventIDs
+$AllKnownIDs      = $GoodEventIDs + $BadEventIDs
+
+# In-progress reason picker uses the legacy short list.
 $ProgressIDs = @(1032, 1033, 1795, 1796, 1797, 1798, 1801, 1802, 1803)
-$AllInterest = $ProgressIDs + @(1800)
 
 try {
     $Recent = @(Get-WinEvent -FilterHashtable @{
         LogName      = 'System'
         ProviderName = $TpmWmiProvider
-        ID           = $AllInterest
-    } -MaxEvents 50 -ErrorAction SilentlyContinue)
+        ID           = $AllKnownIDs
+    } -MaxEvents 100 -ErrorAction SilentlyContinue)
 
     if ($Recent.Count -gt 0) {
         if ($CurrentStatus -eq 'InProgress') {
@@ -122,35 +137,62 @@ try {
             if ($LatestProgress) { $LatestProgressEvent = $LatestProgress.Id }
         }
 
-        # 1795 — firmware error
+        # 1795 -- firmware error
         $e1795 = $Recent | Where-Object { $_.Id -eq 1795 } |
                  Sort-Object TimeCreated -Descending | Select-Object -First 1
         if ($e1795 -and $e1795.Message -match '(?:error|code|status)[:\s]*(?:0x)?([0-9A-Fa-f]{4,})') {
             $Evt1795Code = $matches[1]
         }
 
-        # 1796 — error code logged during update
+        # 1796 -- error code logged during update
         $e1796 = $Recent | Where-Object { $_.Id -eq 1796 } |
                  Sort-Object TimeCreated -Descending | Select-Object -First 1
         if ($e1796 -and $e1796.Message -match '(?:error|code|status)[:\s]*(?:0x)?([0-9A-Fa-f]{4,})') {
             $Evt1796Code = $matches[1]
         }
 
-        # 1802 — known firmware issue (KI_xxxx)
+        # 1802 -- known firmware issue (KI_xxxx)
         $e1802 = $Recent | Where-Object { $_.Id -eq 1802 } |
                  Sort-Object TimeCreated -Descending | Select-Object -First 1
         if ($e1802 -and $e1802.Message -match 'SkipReason:\s*(KI_\d+)') {
             $KnownIssueId = $matches[1]
         }
 
-        # 1803 — missing KEK
+        # 1803 -- missing KEK
         if (@($Recent | Where-Object { $_.Id -eq 1803 }).Count -gt 0) { $MissingKEK = $true }
 
-        # 1800 — reboot pending (good event, but actionable)
+        # 1800 -- reboot pending (good event, but actionable)
         if (@($Recent | Where-Object { $_.Id -eq 1800 }).Count -gt 0) { $RebootPending = $true }
+
+        # 1799 -- bootloader swapped (System log)
+        if (@($Recent | Where-Object { $_.Id -eq 1799 }).Count -gt 0) { $BootloaderSwapped = $true }
+
+        # 1808 -- update success
+        $Evt1808Count = @($Recent | Where-Object { $_.Id -eq 1808 }).Count
+        if ($Evt1808Count -gt 0) { $UpdateSuccess = $true }
+
+        # LatestGood / LatestBad (informational headline event ids)
+        $latestGoodEvt = $Recent | Where-Object { $_.Id -in $GoodEventIDs } |
+                         Sort-Object TimeCreated -Descending | Select-Object -First 1
+        $latestBadEvt  = $Recent | Where-Object { $_.Id -in $BadEventIDs } |
+                         Sort-Object TimeCreated -Descending | Select-Object -First 1
+        if ($latestGoodEvt) { $LatestGoodId = $latestGoodEvt.Id }
+        if ($latestBadEvt)  { $LatestBadId  = $latestBadEvt.Id }
     }
 } catch {
-    # Swallow log errors — diagnostics are best-effort, never fatal.
+    # Swallow log errors -- diagnostics are best-effort, never fatal.
+}
+
+# 1799 also lives in the TPM-WMI/Operational log on some SKUs. Promote BootloaderSwapped
+# if we find it there even when the System-log copy has rolled out.
+try {
+    $evt1799Op = Get-WinEvent -FilterHashtable @{
+        LogName = 'Microsoft-Windows-TPM-WMI/Operational'
+        Id      = 1799
+    } -MaxEvents 1 -ErrorAction Stop
+    if ($null -ne $evt1799Op) { $BootloaderSwapped = $true }
+} catch {
+    # Log not present / access denied / no events -- ignore.
 }
 
 # -------------------------------------------------------------------------------------------------
@@ -163,7 +205,11 @@ $FoundParts = @(
     "Error: $CurrentError"
     "Confidence: $ConfidenceMsg"
     "Capable: $CapableStr"
+    "Event1808: $UpdateSuccess"
+    "BootloaderSwapped: $BootloaderSwapped"
 )
+if ($LatestGoodId)        { $FoundParts += "LatestGood: $LatestGoodId" }
+if ($LatestBadId)         { $FoundParts += "LatestBad: $LatestBadId" }
 if ($KnownIssueId)        { $FoundParts += "KnownIssue: $KnownIssueId" }
 if ($MissingKEK)          { $FoundParts += 'MissingKEK: True' }
 if ($RebootPending)       { $FoundParts += 'RebootPending: True' }
@@ -179,7 +225,7 @@ $IsCompliant = ($CurrentStatus -eq $TargetStatus -and $CurrentError -eq $TargetE
 if (-not $IsCompliant) {
     Write-Host 'detected = true'
 
-    # Dynamic reason — most specific signal first.
+    # Dynamic reason -- most specific signal first.
     if ($KnownIssueId) {
         Write-Host "reason = Blocked by known firmware issue $KnownIssueId (Event 1802). OEM fix required."
     }
