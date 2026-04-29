@@ -36,6 +36,7 @@ PowerShell scripts for AVD session host lifecycle management. Used standalone or
 | Script | Purpose |
 |--------|---------|
 | [Get-StubAppPayloads.ps1](Get-StubAppPayloads.ps1) | Downloads Microsoft Store Stub App offline payloads via `winget download --source msstore` for side-loading during Packer image build. App list is data-driven via [StubApps.json](StubApps.json). Run locally with Entra ID auth. |
+| [Install-AppxPayloads.ps1](Install-AppxPayloads.ps1) | Side-loads / re-provisions inbox AppX/MSIX packages from a local payload tree via `Add-AppxProvisionedPackage`. `-Mode Install` (default) for the stub-app fix; `-Mode UpdateProvisioned` to refresh built-in apps from a mounted FoD / Language ISO (legacy AIB workflow). Pairs with `Get-StubAppPayloads.ps1`. |
 
 ## Usage in Pipelines
 
