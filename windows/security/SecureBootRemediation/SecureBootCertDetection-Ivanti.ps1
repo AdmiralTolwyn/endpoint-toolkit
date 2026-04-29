@@ -31,6 +31,9 @@
         expected = Status: Updated | Error: 0
         found    = Status: <s> | Error: <e> | Confidence: <c> | Capable: <cap> | ...
 
+    Diagnostic log (append-only, never written to stdout):
+        C:\Windows\Temp\SecureBootCertDetection-Ivanti.log
+
     For the active-remediation counterpart (writes registry, starts the
     Secure-Boot-Update scheduled task) see SecureBootCertRemediation.ps1.
 
@@ -48,6 +51,29 @@
 
 [CmdletBinding()]
 param ()
+
+# -------------------------------------------------------------------------------------------------
+# 0. Logging (append-only, file-based; never writes to stdout so the Ivanti contract stays clean)
+# -------------------------------------------------------------------------------------------------
+$LogPath = Join-Path $env:windir 'Temp\SecureBootCertDetection-Ivanti.log'
+
+function Write-DetectLog {
+    param(
+        [Parameter(Mandatory)] [string] $Message,
+        [ValidateSet('INFO','WARN','ERROR','DEBUG')] [string] $Level = 'INFO'
+    )
+    $line = '[{0}] [{1}] [PID:{2}] {3}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff'), $Level, $PID, $Message
+    try {
+        # UTF-8, append, swallow any IO errors so logging never breaks detection.
+        Add-Content -LiteralPath $LogPath -Value $line -Encoding UTF8 -ErrorAction Stop
+    } catch {
+        # If C:\Windows\Temp is unwritable (rare; non-admin), drop the line silently.
+    }
+}
+
+Write-DetectLog '==================================================================='
+Write-DetectLog ("Run start | User=$env:USERNAME | Computer=$env:COMPUTERNAME | OS={0} | PSVersion={1}" -f `
+    ((Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue).Caption), $PSVersionTable.PSVersion)
 
 # -------------------------------------------------------------------------------------------------
 # 1. Setup
@@ -75,6 +101,8 @@ if ([string]::IsNullOrEmpty($CurrentStatus)) { $CurrentStatus = 'NotStarted/NotF
 if ($null -eq $CurrentError)                 { $CurrentError  = 0 }
 $CapableStr = if ($null -ne $CurrentCapable) { "$CurrentCapable" } else { 'N/A' }
 
+Write-DetectLog ("Registry: Status='$CurrentStatus' | Error=$CurrentError | Capable=$CapableStr")
+
 # -------------------------------------------------------------------------------------------------
 # 3. Event Log Diagnostics (informational only -- do NOT gate compliance on these)
 # -------------------------------------------------------------------------------------------------
@@ -97,7 +125,9 @@ try {
     }
 } catch {
     $ConfidenceMsg = 'LogAccessError'
+    Write-DetectLog ("1801 confidence read failed: " + $_.Exception.Message) 'WARN'
 }
+Write-DetectLog ("Confidence (Event 1801): $ConfidenceMsg")
 
 # B. Sweep recent TPM-WMI events for in-progress / error / known-issue diagnostics.
 #    Pulls a single batch (one Get-WinEvent call) and projects different views from it
@@ -186,8 +216,10 @@ try {
         if ($latestWarnEvt)  { $LatestWarningId  = $latestWarnEvt.Id }
         if ($latestBlockEvt) { $LatestBlockingId = $latestBlockEvt.Id }
     }
+    Write-DetectLog ("Event sweep: Total=$($Recent.Count) | LatestGood=$LatestGoodId | LatestWarning=$LatestWarningId | LatestBlocking=$LatestBlockingId | 1808Count=$Evt1808Count | BootloaderSwapped=$BootloaderSwapped | RebootPending=$RebootPending | MissingKEK=$MissingKEK | KnownIssue=$KnownIssueId | FW1795=$Evt1795Code | Log1796=$Evt1796Code")
 } catch {
     # Swallow log errors -- diagnostics are best-effort, never fatal.
+    Write-DetectLog ("Event sweep failed: " + $_.Exception.Message) 'WARN'
 }
 
 # 1799 also lives in the TPM-WMI/Operational log on some SKUs. Promote BootloaderSwapped
@@ -197,7 +229,10 @@ try {
         LogName = 'Microsoft-Windows-TPM-WMI/Operational'
         Id      = 1799
     } -MaxEvents 1 -ErrorAction Stop
-    if ($null -ne $evt1799Op) { $BootloaderSwapped = $true }
+    if ($null -ne $evt1799Op) {
+        $BootloaderSwapped = $true
+        Write-DetectLog '1799 found in TPM-WMI/Operational log -> BootloaderSwapped promoted to True'
+    }
 } catch {
     # Log not present / access denied / no events -- ignore.
 }
@@ -230,39 +265,51 @@ $FoundString = $FoundParts -join ' | '
 # -------------------------------------------------------------------------------------------------
 $IsCompliant = ($CurrentStatus -eq $TargetStatus -and $CurrentError -eq $TargetError)
 
+Write-DetectLog ("Expected: $ExpectedString")
+Write-DetectLog ("Found:    $FoundString")
+Write-DetectLog ("Compliance verdict (legacy gate Status+Error): IsCompliant=$IsCompliant")
+
 if (-not $IsCompliant) {
-    Write-Host 'detected = true'
+    $DetectedString = 'true'
 
     # Dynamic reason -- most specific signal first.
     if ($KnownIssueId) {
-        Write-Host "reason = Blocked by known firmware issue $KnownIssueId (Event 1802). OEM fix required."
+        $ReasonString = "Blocked by known firmware issue $KnownIssueId (Event 1802). OEM fix required."
     }
     elseif ($MissingKEK) {
-        Write-Host 'reason = Missing KEK update (Event 1803). OEM must supply PK-signed KEK.'
+        $ReasonString = 'Missing KEK update (Event 1803). OEM must supply PK-signed KEK.'
     }
     elseif ($CurrentStatus -eq 'InProgress') {
-        Write-Host "reason = Update InProgress. Latest Event ID: $LatestProgressEvent"
+        $ReasonString = "Update InProgress. Latest Event ID: $LatestProgressEvent"
     }
     elseif ($CurrentError -ne 0) {
         $errDetail = "Error Code: $CurrentError"
         if ($Evt1795Code) { $errDetail += " | FW Error: 0x$Evt1795Code" }
         if ($Evt1796Code) { $errDetail += " | Log Error: 0x$Evt1796Code" }
-        Write-Host "reason = Update Failed. $errDetail"
+        $ReasonString = "Update Failed. $errDetail"
     }
     elseif ($RebootPending) {
-        Write-Host 'reason = Reboot pending (Event 1800). Update will proceed after reboot.'
+        $ReasonString = 'Reboot pending (Event 1800). Update will proceed after reboot.'
     }
     elseif ($null -ne $CurrentCapable -and $CurrentCapable -eq 0) {
-        Write-Host 'reason = Device not capable (WindowsUEFICA2023Capable=0). NOTE: This value is unreliable on Server 2019.'
+        $ReasonString = 'Device not capable (WindowsUEFICA2023Capable=0). NOTE: This value is unreliable on Server 2019.'
     }
     else {
-        Write-Host "reason = Status is '$CurrentStatus' (Waiting for 'Updated')"
+        $ReasonString = "Status is '$CurrentStatus' (Waiting for 'Updated')"
     }
 }
 else {
-    Write-Host 'detected = false'
-    Write-Host 'reason = Secure Boot Update successful.'
+    $DetectedString = 'false'
+    $ReasonString   = 'Secure Boot Update successful.'
 }
 
+Write-DetectLog ("detected = $DetectedString")
+Write-DetectLog ("reason   = $ReasonString")
+Write-DetectLog 'Run end'
+
+# Ivanti contract -- exactly four lines on stdout, in this order.
+Write-Host "detected = $DetectedString"
+Write-Host "reason = $ReasonString"
 Write-Host "expected = $ExpectedString"
 Write-Host "found = $FoundString"
+
