@@ -45,3 +45,7 @@ backups/
 saved_logs/
 reports/
 build_history.json
+
+# Local scratch / draft notes
+github-issue-*.md
+

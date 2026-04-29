@@ -75,11 +75,20 @@ Distribute the `.cer` alongside the `.rdp`. Each recipient runs once:
 
 This silently imports the public certificate into the recipient's per-user TrustedPublisher store and registers the thumbprint with the per-user RDP trusted-publishers policy. The Root install will prompt once with the standard CryptoAPI "Security Warning" — no admin required.
 
-### Use an existing certificate (e.g. an imported PFX)
+### Use an existing certificate (e.g. an imported PFX or CA-issued code-signing cert)
+
+Pass either the standard SHA1 thumbprint (40 hex chars) or the SHA256 fingerprint (64 hex chars). Spaces / colons in the value are stripped automatically:
 
 ```powershell
+# SHA1
 .\Sign-RdpFile.ps1 -Path 'C:\RDP\MyServer.rdp' -Thumbprint A1B2C3D4E5F6...
+
+# SHA256 (e.g. copied from a CA portal or `certutil -hashfile`)
+.\Sign-RdpFile.ps1 -Path 'C:\RDP\MyServer.rdp' `
+                   -Thumbprint '9F:86:D0:81:88:4C:7D:65:9A:2F:EA:A0:C5:5A:D0:15:A3:BF:4F:1B:2B:0B:82:2C:D1:5D:6C:15:B0:F0:0A:08'
 ```
+
+When `-Thumbprint` resolves to an existing cert in `Cert:\CurrentUser\My`, the script does **not** create a new self-signed cert and does **not** modify the trust stores beyond ensuring the publisher policy is in place — trust for a real CA-issued code-signing cert is expected to be handled by the CA chain (or by GPO / Intune for self-signed).
 
 ### Clean up everything this script has installed
 
@@ -104,7 +113,7 @@ The signed `.rdp` files themselves are not touched (after cleanup they will reve
 |-----------|-------------|
 | `-Path` | One or more `.rdp` files or folders (Sign mode), or `.cer` files (InstallCer mode). Folders searched recursively. |
 | `-Subject` | Subject DN used to look up or create the signing cert. Default: `CN=$env:USERNAME RDP Signing`. |
-| `-Thumbprint` | Use a specific cert from `Cert:\CurrentUser\My`. Overrides `-Subject`. |
+| `-Thumbprint` | Use a specific cert from `Cert:\CurrentUser\My`. Accepts SHA1 (40 hex chars) **or** SHA256 (64 hex chars) thumbprint; spaces / colons tolerated. Overrides `-Subject`. |
 | `-ValidYears` | Lifetime of a newly created cert (1-10). Default: 3. |
 | `-ExportCerPath` | Export the public certificate to this path for distribution. |
 | `-Force` | Re-sign files that already contain a `signature:s:` line. |

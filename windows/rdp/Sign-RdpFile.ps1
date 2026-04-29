@@ -57,7 +57,11 @@
 
 .PARAMETER Thumbprint
     Use a specific certificate from Cert:\CurrentUser\My by thumbprint.
-    Overrides -Subject lookup. Useful if you've already imported a PFX.
+    Accepts either the standard SHA1 cert thumbprint (40 hex chars, what
+    Windows shows as "Thumbprint") or the cert's SHA256 fingerprint
+    (64 hex chars). Spaces / colons are tolerated.
+    Overrides -Subject lookup. Useful if you've already imported a PFX
+    or have a code-signing cert from your CA in the user store.
 
 .PARAMETER ValidYears
     Lifetime of a newly created certificate. Default: 3 years. Ignored if a
@@ -109,7 +113,7 @@
     has ever created for the current user.
 
 .NOTES
-    Version : 1.1.1
+    Version : 1.2.0
     Author  : Anton Romanyuk
     Requires: Windows 10/11, PowerShell 5.1+, rdpsign.exe (in-box).
 
@@ -209,6 +213,46 @@ function Resolve-RdpFiles {
     return $results
 }
 
+function Get-CertSha256Thumbprint {
+    param([Parameter(Mandatory)] [System.Security.Cryptography.X509Certificates.X509Certificate2] $Cert)
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return ([System.BitConverter]::ToString($sha256.ComputeHash($Cert.RawData))).Replace('-', '').ToUpperInvariant()
+    }
+    finally { $sha256.Dispose() }
+}
+
+function Find-CertByThumbprint {
+    <#
+        Looks up a cert in Cert:\CurrentUser\My by either its SHA1 (40 hex chars,
+        the value Windows shows as "Thumbprint") or its SHA256 (64 hex chars,
+        what some portals / signing services hand out). Spaces are tolerated.
+    #>
+    param(
+        [Parameter(Mandatory)] [string] $Thumbprint,
+        [string] $StorePath = 'Cert:\CurrentUser\My'
+    )
+
+    $clean = ($Thumbprint -replace '[\s:]', '').ToUpperInvariant()
+    if ($clean -notmatch '^[0-9A-F]+$') {
+        throw "Thumbprint contains non-hex characters: '$Thumbprint'."
+    }
+
+    switch ($clean.Length) {
+        40 {
+            return Get-ChildItem $StorePath | Where-Object { $_.Thumbprint -eq $clean } | Select-Object -First 1
+        }
+        64 {
+            return Get-ChildItem $StorePath | Where-Object {
+                (Get-CertSha256Thumbprint -Cert $_) -eq $clean
+            } | Select-Object -First 1
+        }
+        default {
+            throw "Thumbprint must be 40 hex chars (SHA1) or 64 hex chars (SHA256). Got $($clean.Length)."
+        }
+    }
+}
+
 function Get-OrCreateSigningCert {
     param(
         [string] $Subject,
@@ -219,13 +263,15 @@ function Get-OrCreateSigningCert {
     $store = 'Cert:\CurrentUser\My'
 
     if ($Thumbprint) {
-        $clean = ($Thumbprint -replace '\s', '').ToUpperInvariant()
-        $cert  = Get-ChildItem $store | Where-Object { $_.Thumbprint -eq $clean } | Select-Object -First 1
-        if (-not $cert) { throw "No certificate with thumbprint '$clean' found in $store." }
+        $cert = Find-CertByThumbprint -Thumbprint $Thumbprint -StorePath $store
+        if (-not $cert) { throw "No certificate matching thumbprint '$Thumbprint' found in $store (tried SHA1 / SHA256)." }
         if ($cert.EnhancedKeyUsageList.ObjectId -notcontains '1.3.6.1.5.5.7.3.3') {
-            throw "Certificate $clean does not have the Code Signing EKU (1.3.6.1.5.5.7.3.3)."
+            throw "Certificate $($cert.Thumbprint) does not have the Code Signing EKU (1.3.6.1.5.5.7.3.3)."
         }
-        Write-Log "Using existing certificate by thumbprint: $($cert.Subject)" -Level INFO
+        if (-not $cert.HasPrivateKey) {
+            throw "Certificate $($cert.Thumbprint) has no associated private key in $store — cannot sign."
+        }
+        Write-Log "Using existing certificate by thumbprint: $($cert.Subject) [SHA1=$($cert.Thumbprint)]" -Level INFO
         return $cert
     }
 
@@ -522,17 +568,27 @@ catch {
     exit 2
 }
 
-# Trust for current user (no admin needed) so the signed file shows as trusted
-# when opened by THIS user. Other users still need to trust the .cer separately.
-# NOTE: adding to CurrentUser\Root triggers a one-time CryptoAPI "Security
-# Warning" dialog — there is no supported API to suppress it for per-user Root.
-try {
-    Add-CertToCurrentUserStore -Cert $cert -StoreName Root
-    Add-CertToCurrentUserStore -Cert $cert -StoreName TrustedPublisher
+# Detect whether this is a self-signed cert managed by this script (in which case
+# we install it into the per-user Trusted Root + TrustedPublisher stores) vs a
+# CA-issued code-signing cert the user already had. For the latter, the cert
+# chain is expected to be trusted by an existing Root CA (commercial or
+# Enterprise) — installing the leaf into Root would be wrong.
+$isManagedCert = $cert.FriendlyName -like "*$($Script:CertTag)*"
+
+if ($isManagedCert) {
+    # NOTE: adding to CurrentUser\Root triggers a one-time CryptoAPI "Security
+    # Warning" dialog — there is no supported API to suppress it for per-user Root.
+    try {
+        Add-CertToCurrentUserStore -Cert $cert -StoreName Root
+        Add-CertToCurrentUserStore -Cert $cert -StoreName TrustedPublisher
+    }
+    catch {
+        Write-Log "Failed to trust certificate in CurrentUser stores: $_" -Level WARN
+        Write-Log 'Signing will continue, but the signed file may show as untrusted on this machine.' -Level WARN
+    }
 }
-catch {
-    Write-Log "Failed to trust certificate in CurrentUser stores: $_" -Level WARN
-    Write-Log 'Signing will continue, but the signed file may show as untrusted on this machine.' -Level WARN
+else {
+    Write-Log "Cert appears to be CA-issued (no '$($Script:CertTag)' tag) — skipping per-user Root/TrustedPublisher install. Trust must come from the CA chain (or GPO/Intune)." -Level INFO
 }
 
 # Suppress the "Verify the publisher of this remote connection" dialog by adding
