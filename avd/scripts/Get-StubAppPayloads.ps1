@@ -73,6 +73,19 @@ $ErrorActionPreference = 'Stop'
 # HELPERS
 # -----------------------------------------------------------------------------
 function Write-Log {
+<#
+.SYNOPSIS
+    Writes a colour-coded, timestamped, level-tagged line to the console.
+.DESCRIPTION
+    Lightweight console logger used throughout the script. Format:
+        [HH:mm:ss] [LEVEL] message
+    Level controls the foreground colour (INFO/grey, WARN/yellow, ERROR/red,
+    SUCCESS/green, HEADER/cyan). No file output - this script is interactive.
+.PARAMETER Message
+    Free-form text to print.
+.PARAMETER Level
+    INFO | WARN | ERROR | SUCCESS | HEADER. Default INFO.
+#>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Message,
@@ -90,6 +103,14 @@ function Write-Log {
 }
 
 function Test-Prerequisite {
+<#
+.SYNOPSIS
+    Verifies winget.exe is installed and reachable on PATH.
+.DESCRIPTION
+    Throws a terminating error when winget is missing so the caller stops
+    before attempting any download. Required because this script depends
+    entirely on `winget download --source msstore`.
+#>
     $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
     if (-not $winget) {
         throw "winget.exe not found in PATH. Install App Installer from the Microsoft Store."
@@ -98,6 +119,19 @@ function Test-Prerequisite {
 }
 
 function Read-StubManifest {
+<#
+.SYNOPSIS
+    Loads and validates the StubApps.json manifest.
+.DESCRIPTION
+    Reads the JSON file at $Path, parses it, and returns the resulting object.
+    The manifest must contain an `apps` array with at least one entry; the
+    optional `defaults` block lets callers set `source` / `architecture` once.
+    Throws a terminating error on missing file, invalid JSON, or empty `apps`.
+.PARAMETER Path
+    Full path to the JSON manifest.
+.OUTPUTS
+    PSCustomObject parsed from the JSON.
+#>
     param([Parameter(Mandatory)][string]$Path)
     if (-not (Test-Path -LiteralPath $Path)) {
         throw "Manifest not found: $Path"

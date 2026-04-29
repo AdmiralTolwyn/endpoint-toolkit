@@ -176,6 +176,17 @@ $Script:HkcuRootKey = 'HKCU:\Software\Microsoft\SystemCertificates\Root\Certific
 #region --- Helpers ---
 
 function Write-Log {
+<#
+.SYNOPSIS
+    Writes a colour-coded, timestamped, level-tagged line to the console.
+.DESCRIPTION
+    Lightweight console logger used throughout the script. Format:
+        [HH:mm:ss] [LEVEL] message
+.PARAMETER Message
+    Free-form text to print.
+.PARAMETER Level
+    INFO | WARN | ERROR | SUCCESS. Default INFO.
+#>
     param(
         [string] $Message,
         [ValidateSet('INFO', 'WARN', 'ERROR', 'SUCCESS')]
@@ -192,6 +203,21 @@ function Write-Log {
 }
 
 function Resolve-RdpFiles {
+<#
+.SYNOPSIS
+    Expands -Path inputs into a flat list of .rdp FileInfo objects.
+.DESCRIPTION
+    Accepts any mix of file paths and folder paths:
+      * Folders are searched recursively for *.rdp
+      * Files with a .rdp extension are taken as-is
+      * Anything else is logged at WARN and ignored
+    Missing paths log a WARN and are skipped (never throw) so a single bad
+    entry in a batch does not abort the whole signing pass.
+.PARAMETER Inputs
+    One or more file or folder paths.
+.OUTPUTS
+    System.Collections.Generic.List[System.IO.FileInfo]
+#>
     param([string[]] $Inputs)
     $results = New-Object System.Collections.Generic.List[System.IO.FileInfo]
     foreach ($p in $Inputs) {
@@ -215,6 +241,18 @@ function Resolve-RdpFiles {
 }
 
 function Get-CertSha256Thumbprint {
+<#
+.SYNOPSIS
+    Computes a certificate's SHA256 fingerprint as a 64-char uppercase hex string.
+.DESCRIPTION
+    Windows exposes the SHA1 thumbprint via X509Certificate2.Thumbprint, but
+    many CA portals and signing services hand out the SHA256 fingerprint
+    instead. This helper lets -Thumbprint accept either form.
+.PARAMETER Cert
+    X509Certificate2 to fingerprint.
+.OUTPUTS
+    [string] uppercase hex SHA256 fingerprint, no separators.
+#>
     param([Parameter(Mandatory)] [System.Security.Cryptography.X509Certificates.X509Certificate2] $Cert)
     $sha256 = [System.Security.Cryptography.SHA256]::Create()
     try {
@@ -224,16 +262,26 @@ function Get-CertSha256Thumbprint {
 }
 
 function Find-CertByThumbprint {
-    <#
-        Looks up a cert by either its SHA1 (40 hex chars, the value Windows shows
-        as "Thumbprint") or its SHA256 (64 hex chars, what some portals / signing
-        services hand out). Spaces and colons are tolerated.
+<#
+.SYNOPSIS
+    Locates a certificate by SHA1 (40 hex) or SHA256 (64 hex) thumbprint across one or more cert stores.
+.DESCRIPTION
+    Looks up a cert by either its SHA1 (40 hex chars, the value Windows shows
+    as "Thumbprint") or its SHA256 (64 hex chars, what some portals / signing
+    services hand out). Spaces and colons are tolerated.
 
-        Searches the supplied -StorePaths in order and returns the first match.
-        Default order is CurrentUser\My then LocalMachine\My, so a user-installed
-        cert is preferred but a machine-wide one is still found (a standard user
-        can READ LocalMachine\My without admin — they just can't write to it).
-    #>
+    Searches the supplied -StorePaths in order and returns the first match.
+    Default order is CurrentUser\My then LocalMachine\My, so a user-installed
+    cert is preferred but a machine-wide one is still found (a standard user
+    can READ LocalMachine\My without admin - they just can't write to it).
+.PARAMETER Thumbprint
+    SHA1 (40 hex) or SHA256 (64 hex) fingerprint. Spaces and colons accepted.
+.PARAMETER StorePaths
+    Cert: provider paths to scan, in priority order. Default:
+        Cert:\CurrentUser\My, Cert:\LocalMachine\My
+.OUTPUTS
+    PSCustomObject with Cert and StorePath, or $null when no match.
+#>
     param(
         [Parameter(Mandatory)] [string]   $Thumbprint,
         [string[]]                        $StorePaths = @('Cert:\CurrentUser\My', 'Cert:\LocalMachine\My')
@@ -261,6 +309,31 @@ function Find-CertByThumbprint {
 }
 
 function Get-OrCreateSigningCert {
+<#
+.SYNOPSIS
+    Returns a usable code-signing certificate, creating a self-signed one if needed.
+.DESCRIPTION
+    Resolution order:
+      1. If -Thumbprint is supplied, locate that exact cert in CurrentUser\My
+         (or LocalMachine\My) and validate it has the Code Signing EKU and a
+         private key. Throws an actionable error (with import/move snippet) if
+         the cert exists in Root/Trust/CA/TrustedPublisher instead - rdpsign
+         only signs from My.
+      2. Otherwise, look in Cert:\CurrentUser\My for an existing, unexpired,
+         private-key-bearing CodeSigning cert with the supplied -Subject.
+         Reuse the latest match and (re-)tag its FriendlyName for cleanup.
+      3. As a last resort, generate a new SHA256 / RSA-2048 self-signed cert
+         valid for -ValidYears.
+.PARAMETER Subject
+    Distinguished name (CN=...). Used both for matching existing certs and as
+    the Subject of any newly created cert.
+.PARAMETER Thumbprint
+    Optional. SHA1 or SHA256 fingerprint of an existing cert to reuse.
+.PARAMETER ValidYears
+    Lifetime of a newly created cert. Ignored when an existing cert is reused.
+.OUTPUTS
+    [System.Security.Cryptography.X509Certificates.X509Certificate2]
+#>
     param(
         [string] $Subject,
         [string] $Thumbprint,
@@ -359,6 +432,25 @@ Fix: import/move the cert (with its private key) into Cert:\CurrentUser\My, e.g.
 }
 
 function Add-CertToCurrentUserStore {
+<#
+.SYNOPSIS
+    Imports the public portion of a certificate into a CurrentUser cert store.
+.DESCRIPTION
+    Used to populate Cert:\CurrentUser\Root (trust anchor) and
+    Cert:\CurrentUser\TrustedPublisher (suppress publisher warning) without
+    needing admin rights.
+
+    Adding to Root triggers the standard one-time CryptoAPI security warning
+    dialog the first time per user - that is intentional Windows behaviour for
+    the per-user Root store and there is no documented API to suppress it.
+
+    Only the public RawData is imported, and the FriendlyName tag is preserved
+    so -Cleanup can find and remove it later.
+.PARAMETER Cert
+    X509Certificate2 to install (private key, if any, is NOT exported).
+.PARAMETER StoreName
+    'Root' or 'TrustedPublisher'.
+#>
     param(
         [Parameter(Mandatory)] [System.Security.Cryptography.X509Certificates.X509Certificate2] $Cert,
         [Parameter(Mandatory)] [ValidateSet('Root', 'TrustedPublisher')] [string] $StoreName
@@ -389,15 +481,20 @@ function Add-CertToCurrentUserStore {
 }
 
 function Add-RdpTrustedPublisherThumbprint {
-    <#
-        Adds the thumbprint to the per-user RDP trusted-publishers policy, which
-        suppresses the "Verify the publisher of this remote connection" dialog
-        for files signed with this cert.
+<#
+.SYNOPSIS
+    Adds a SHA1 thumbprint to the per-user RDP TrustedCertThumbprints policy.
+.DESCRIPTION
+    Adds the thumbprint to the per-user RDP trusted-publishers policy, which
+    suppresses the "Verify the publisher of this remote connection" dialog
+    for files signed with this cert.
 
-        Stored as REG_SZ semicolon-separated, matching the format produced by the
-        GPMC policy "Specify SHA1 thumbprints of certificates representing trusted
-        .rdp publishers".
-    #>
+    Stored as REG_SZ semicolon-separated, matching the format produced by the
+    GPMC policy "Specify SHA1 thumbprints of certificates representing trusted
+    .rdp publishers". Already-present thumbprints are not duplicated.
+.PARAMETER Thumbprint
+    SHA1 thumbprint of the cert (spaces tolerated, case-insensitive).
+#>
     param([Parameter(Mandatory)] [string] $Thumbprint)
 
     $thumb = ($Thumbprint -replace '\s', '').ToUpperInvariant()
@@ -428,6 +525,16 @@ function Add-RdpTrustedPublisherThumbprint {
 }
 
 function Remove-RdpTrustedPublisherThumbprint {
+<#
+.SYNOPSIS
+    Removes one or more thumbprints from the per-user RDP TrustedCertThumbprints policy.
+.DESCRIPTION
+    Reverses Add-RdpTrustedPublisherThumbprint. If the resulting list is empty
+    the registry value is deleted entirely (rather than left as an empty
+    REG_SZ) so the policy effectively reverts to default. Used by -Cleanup.
+.PARAMETER Thumbprints
+    SHA1 thumbprints to drop (spaces tolerated, case-insensitive).
+#>
     param([Parameter(Mandatory)] [string[]] $Thumbprints)
 
     if (-not (Test-Path -LiteralPath $Script:TrustedPubPolicyKey)) { return }
@@ -453,6 +560,28 @@ function Remove-RdpTrustedPublisherThumbprint {
 }
 
 function Invoke-RdpSign {
+<#
+.SYNOPSIS
+    Signs a single .rdp file with rdpsign.exe /sha256 using the supplied thumbprint.
+.DESCRIPTION
+    Wraps %WinDir%\System32\rdpsign.exe so the call sites stay tidy and every
+    invocation produces a uniform result object.
+
+    Behaviour:
+      * If the file already contains a 'signature:s:' line and -Force is NOT
+        set, the file is skipped (Status = 'Skipped').
+      * Throws if rdpsign.exe is not present (unsupported Windows SKU).
+      * Captures stdout+stderr and the exit code into the result Detail field
+        so failures are diagnosable from the returned object alone.
+.PARAMETER File
+    FileInfo for the .rdp file to sign.
+.PARAMETER Thumbprint
+    SHA1 thumbprint of a cert in CurrentUser\My or LocalMachine\My.
+.PARAMETER Force
+    Re-sign even when an existing signature is present.
+.OUTPUTS
+    PSCustomObject (File, Status = Signed|Skipped|Failed, Detail).
+#>
     param(
         [Parameter(Mandatory)] [System.IO.FileInfo] $File,
         [Parameter(Mandatory)] [string] $Thumbprint,
@@ -486,6 +615,23 @@ function Invoke-RdpSign {
 }
 
 function Invoke-Cleanup {
+<#
+.SYNOPSIS
+    Removes every artefact this script has installed under the current user.
+.DESCRIPTION
+    Reverses everything Sign-RdpFile.ps1 does to the user profile:
+      1. Deletes certificates tagged with $Script:CertTag from
+         Cert:\CurrentUser\My (including the private key).
+      2. Removes the matching public copies from Cert:\CurrentUser\Root
+         (untrusts as a root CA for this user).
+      3. Removes the matching public copies from Cert:\CurrentUser\TrustedPublisher.
+      4. Strips the corresponding thumbprints from the per-user RDP
+         TrustedCertThumbprints policy via Remove-RdpTrustedPublisherThumbprint.
+
+    Identification is done by FriendlyName tag (set at create time) plus the
+    set of thumbprints removed from My, so certs imported by this script - but
+    not by the user's own hand - are the only ones touched.
+#>
     Write-Log "Cleanup: removing certificates tagged '$($Script:CertTag)' from CurrentUser stores..." -Level INFO
 
     $tagPattern = "*$($Script:CertTag)*"

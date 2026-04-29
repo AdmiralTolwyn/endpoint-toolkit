@@ -111,6 +111,19 @@ $ScriptName = $MyInvocation.MyCommand.Name
 $LogFile    = Join-Path $LogDirectory ("{0}_{1}.log" -f [IO.Path]::GetFileNameWithoutExtension($ScriptName), (Get-Date -Format 'yyyyMMdd_HHmmss'))
 
 function Write-Log {
+<#
+.SYNOPSIS
+    Writes a timestamped, level-tagged line to both the console and the log file.
+.DESCRIPTION
+    Uniform logger used by the rest of the script. Format on disk and on console:
+        [yyyy-MM-dd HH:mm:ss] [LEVEL] message
+    Console output is colour-coded by level. File writes use SilentlyContinue so a
+    transient lock on the log file never aborts the cleanup pipeline.
+.PARAMETER Message
+    Free-form text to record.
+.PARAMETER Level
+    INFO | WARN | ERROR | SUCCESS | HEADER. Default INFO.
+#>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Message,
@@ -139,6 +152,20 @@ $BundleExtensions = @('.msixbundle', '.appxbundle', '.msix')
 # treated as a dependency (e.g. Microsoft.VCLibs.x64.14.00.Desktop.appx).
 
 function Get-Payload {
+<#
+.SYNOPSIS
+    Recursively discovers AppX/MSIX bundles and dependency .appx files under a root.
+.DESCRIPTION
+    Walks $Root and partitions every file into two buckets:
+      * Bundles      - .msixbundle / .appxbundle / .msix (the main packages)
+      * Dependencies - loose .appx files that are not themselves bundles
+                       (e.g. Microsoft.VCLibs, Microsoft.UI.Xaml redistributables)
+    Throws if $Root does not exist.
+.PARAMETER Root
+    Folder to scan recursively.
+.OUTPUTS
+    PSCustomObject with Bundles and Dependencies arrays of FileInfo.
+#>
     param(
         [Parameter(Mandatory)][string]$Root
     )
@@ -165,6 +192,18 @@ function Get-Payload {
 }
 
 function Resolve-LicensePath {
+<#
+.SYNOPSIS
+    Returns the path to the license XML that pairs with a bundle, or $null.
+.DESCRIPTION
+    Convention used by both winget downloads and Microsoft FoD ISOs:
+        <BundleBaseName>.xml lives in the same directory as the bundle.
+    When no matching XML exists the caller falls back to -SkipLicense.
+.PARAMETER Bundle
+    FileInfo for the .msixbundle / .appxbundle / .msix to look up.
+.OUTPUTS
+    [string] license file path, or $null when none is found.
+#>
     param([Parameter(Mandatory)][System.IO.FileInfo]$Bundle)
     # Convention: <bundle-basename>.xml in the same directory.
     $candidate = Join-Path $Bundle.DirectoryName ("{0}.xml" -f $Bundle.BaseName)
@@ -177,6 +216,19 @@ function Resolve-LicensePath {
 # -----------------------------------------------------------------------------
 
 function Install-Dependency {
+<#
+.SYNOPSIS
+    Provisions a dependency .appx (no license) for all current and future users.
+.DESCRIPTION
+    Wraps Add-AppxProvisionedPackage -Online -SkipLicense and converts both
+    success and failure into a uniform PSCustomObject so the caller can build a
+    summary table without try/catch wrappers.
+.PARAMETER Appx
+    FileInfo for the dependency package (typically a Microsoft.VCLibs or
+    Microsoft.UI.Xaml redistributable that ships next to a stub-app bundle).
+.OUTPUTS
+    PSCustomObject (Name, Path, Kind='Dependency', Status, Error).
+#>
     param([Parameter(Mandatory)][System.IO.FileInfo]$Appx)
     Write-Log "Installing dependency: $($Appx.Name)"
     try {
@@ -203,6 +255,22 @@ function Install-Dependency {
 }
 
 function Install-Bundle {
+<#
+.SYNOPSIS
+    Provisions an AppX/MSIX bundle, attaching its license XML when present.
+.DESCRIPTION
+    Calls Add-AppxProvisionedPackage -Online -PackagePath <bundle> with either
+    -LicensePath <xml> (preferred) or -SkipLicense (fallback, with a WARN log
+    line). All exceptions are converted to a Status='Failed' result object so
+    the main loop can carry on and surface a single summary at the end.
+.PARAMETER Bundle
+    FileInfo for the .msixbundle / .appxbundle / .msix to provision.
+.PARAMETER LicensePath
+    Optional path to the matching <basename>.xml license file. When omitted /
+    null, the bundle is provisioned with -SkipLicense and a warning is logged.
+.OUTPUTS
+    PSCustomObject (Name, Path, Kind='Bundle', LicensePath, Status, Error).
+#>
     param(
         [Parameter(Mandatory)][System.IO.FileInfo]$Bundle,
         [string]$LicensePath
@@ -247,13 +315,26 @@ function Install-Bundle {
 }
 
 function Test-ShouldUpdateProvisioned {
-    <#
-      In -Mode UpdateProvisioned we only re-install a bundle if a package with
-      a matching name is already provisioned on the image. Match heuristic:
-      bundle BaseName starts with the provisioned DisplayName (handles the
-      typical "Microsoft.WindowsCalculator_2024.1234.0_neutral_~_8wekyb3d8bbwe"
-      vs "Microsoft.WindowsCalculator" comparison).
-    #>
+<#
+.SYNOPSIS
+    Decides whether a bundle should be (re)provisioned in -Mode UpdateProvisioned.
+.DESCRIPTION
+    In UpdateProvisioned mode we only refresh packages that are ALREADY part of
+    the base image, so refreshing inbox apps from a FoD/Language ISO does not
+    accidentally inject Store apps that were never present.
+
+    Match heuristic: the bundle BaseName must start (case-insensitive) with one
+    of the provisioned DisplayNames. This handles the typical
+        Microsoft.WindowsCalculator_2024.1234.0_neutral_~_8wekyb3d8bbwe
+    vs the provisioned
+        Microsoft.WindowsCalculator
+.PARAMETER Bundle
+    FileInfo for the bundle being considered.
+.PARAMETER ProvisionedNames
+    DisplayName values returned by Get-AppxProvisionedPackage on the live image.
+.OUTPUTS
+    [bool] $true when the bundle matches an already-provisioned package.
+#>
     param(
         [Parameter(Mandatory)][System.IO.FileInfo]$Bundle,
         [Parameter(Mandatory)][string[]]$ProvisionedNames

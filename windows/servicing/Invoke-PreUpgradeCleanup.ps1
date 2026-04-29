@@ -141,6 +141,19 @@ $ScriptName = $MyInvocation.MyCommand.Name
 $LogFile    = Join-Path $LogDirectory ("{0}_{1}.log" -f [IO.Path]::GetFileNameWithoutExtension($ScriptName), (Get-Date -Format 'yyyyMMdd_HHmmss'))
 
 function Write-Log {
+<#
+.SYNOPSIS
+    Writes a timestamped, level-tagged line to both the console and the log file.
+.DESCRIPTION
+    Uniform logger used by the rest of the script. Format on disk and on console:
+        [yyyy-MM-dd HH:mm:ss] [LEVEL] message
+    Console output is colour-coded by level. File writes use SilentlyContinue so a
+    transient lock on the log file never aborts the cleanup pipeline.
+.PARAMETER Message
+    Free-form text to record.
+.PARAMETER Level
+    INFO | WARN | ERROR | SUCCESS. Default INFO.
+#>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Message,
@@ -161,12 +174,35 @@ function Write-Log {
 # HELPERS
 # -----------------------------------------------------------------------------
 function Get-SystemDriveFreeGB {
+<#
+.SYNOPSIS
+    Returns the free space on $env:SystemDrive in GB, rounded to two decimals.
+.DESCRIPTION
+    Used both as the free-space gate before cleanup and for the before/after
+    delta reported in the summary. Reads via CIM (Win32_LogicalDisk).
+.OUTPUTS
+    [double] free space in gigabytes.
+#>
     $drive = $env:SystemDrive.TrimEnd(':')
     $vol   = Get-CimInstance -ClassName Win32_LogicalDisk -Filter "DeviceID='${drive}:'"
     [math]::Round($vol.FreeSpace / 1GB, 2)
 }
 
 function Test-OnBattery {
+<#
+.SYNOPSIS
+    Returns $true when the device is currently running on battery power.
+.DESCRIPTION
+    Used to bail out before kicking off a long, IO-heavy cleanup on a laptop
+    that might lose power mid-run. Returns $false on devices with no battery
+    present (desktops, VMs, servers). The bail-out can be overridden with
+    -IgnoreBattery on the script.
+
+    Match heuristic: at least one Win32_Battery instance reports BatteryStatus
+    = 1 (Discharging).
+.OUTPUTS
+    [bool]
+#>
     # Returns $true only if at least one battery is actively discharging AND no AC is reported.
     $batteries = Get-CimInstance -ClassName Win32_Battery -ErrorAction SilentlyContinue
     if (-not $batteries) { return $false }   # Desktop / VM — no battery present
@@ -178,6 +214,22 @@ function Test-OnBattery {
 }
 
 function Remove-OldItems {
+<#
+.SYNOPSIS
+    Recursively deletes items under $Path whose CreationTime is older than $OlderThanDays.
+.DESCRIPTION
+    Resilient deletion helper used for %TEMP% and %WinDir%\Temp purges:
+      * Skips when the parent folder does not exist (returns silently).
+      * Uses CreationTime (not LastWriteTime) so freshly written files in old
+        folders are still considered young.
+      * Honours -WhatIf / -Confirm via $PSCmdlet.ShouldProcess.
+      * Swallows individual file errors (file in use, ACL denial) so a single
+        failure cannot abort the whole pre-upgrade workflow.
+.PARAMETER Path
+    Wildcard or fully-qualified path to clean (e.g. C:\Users\*\AppData\Local\Temp\*).
+.PARAMETER OlderThanDays
+    Minimum age (days) before an item is eligible for deletion.
+#>
     param(
         [Parameter(Mandatory)][string]$Path,
         [Parameter(Mandatory)][int]$OlderThanDays
@@ -247,11 +299,26 @@ $VolumeCaches = @(
 )
 
 function Resolve-EffectiveHandlers {
-    <#
-      Apply -IncludeOnlyHandler and -ExcludeHandler to the master list.
-      Matching is case-insensitive; unknown names produce a warning so a typo
-      is visible instead of silently selecting nothing.
-    #>
+<#
+.SYNOPSIS
+    Filters the master cleanmgr VolumeCaches list using -IncludeOnlyHandler and -ExcludeHandler.
+.DESCRIPTION
+    Apply -IncludeOnlyHandler and -ExcludeHandler to the master list.
+    Matching is case-insensitive; unknown names produce a warning so a typo
+    is visible instead of silently selecting nothing.
+
+    Order of operations:
+      1. If -IncludeOnly is supplied, restrict the set to those names.
+      2. Then drop anything listed in -Exclude.
+.PARAMETER All
+    Master handler list (typically $VolumeCaches).
+.PARAMETER IncludeOnly
+    When non-empty, only these handler names survive step 1.
+.PARAMETER Exclude
+    Handler names to drop after step 1.
+.OUTPUTS
+    [string[]] effective handler set (always returned as an array, never $null).
+#>
     param(
         [Parameter(Mandatory)][string[]]$All,
         [string[]]$IncludeOnly = @(),
@@ -284,6 +351,20 @@ function Resolve-EffectiveHandlers {
 }
 
 function Set-CleanMgrSageRun {
+<#
+.SYNOPSIS
+    Configures cleanmgr.exe StateFlags<SageId> for the supplied handler list.
+.DESCRIPTION
+    Writes the DWORD value StateFlagsNNNN = 2 under each
+    HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\VolumeCaches\<handler>
+    subkey so that `cleanmgr.exe /sagerun:NNNN` will process exactly those
+    handlers. Handler subkeys that do not exist on the running SKU are skipped
+    silently (legitimate - not all handlers ship on every Windows version).
+.PARAMETER SageId
+    The numeric StateFlags slot id (1..9999) used in /sagerun.
+.PARAMETER Caches
+    Handler subkey names to enable.
+#>
     param(
         [Parameter(Mandatory)][int]$SageId,
         [Parameter(Mandatory)][string[]]$Caches
@@ -307,6 +388,20 @@ function Set-CleanMgrSageRun {
 }
 
 function Invoke-Tool {
+<#
+.SYNOPSIS
+    Runs an external executable synchronously and logs its exit code.
+.DESCRIPTION
+    Thin Start-Process wrapper used for cleanmgr.exe and dism.exe so the call
+    sites read top-to-bottom and every invocation gets the same logging shape
+    (full command line in, exit code out).
+.PARAMETER FilePath
+    Path or name of the executable.
+.PARAMETER ArgumentList
+    Arguments forwarded to the process.
+.OUTPUTS
+    [int] process exit code.
+#>
     param(
         [Parameter(Mandatory)][string]$FilePath,
         [string[]]$ArgumentList = @()
