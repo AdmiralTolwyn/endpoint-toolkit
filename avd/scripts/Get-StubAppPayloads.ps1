@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Downloads Microsoft Store Stub App payloads via winget for AVD Golden Image baking.
 

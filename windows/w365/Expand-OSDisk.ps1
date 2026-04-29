@@ -1,4 +1,4 @@
-#Requires -RunAsAdministrator
+﻿#Requires -RunAsAdministrator
 <#
 .SYNOPSIS
     Expands the C: partition to consume all unallocated disk space after a Windows 365 resize.

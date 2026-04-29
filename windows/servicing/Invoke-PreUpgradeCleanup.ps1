@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Frees disk space prior to a Windows feature update or after a reference image build.
 

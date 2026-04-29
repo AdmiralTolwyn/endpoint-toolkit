@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     AVD Rewind - Backup, visualize, and selectively restore Azure Virtual Desktop environments.

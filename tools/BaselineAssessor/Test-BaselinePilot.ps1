@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     BaselinePilot validation tests — validates collection data, check definitions, and evaluation logic.

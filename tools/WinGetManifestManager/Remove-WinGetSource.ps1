@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Complete teardown of a WinGet REST source deployment.
 

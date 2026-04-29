@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     Build-AdmxDatabase.ps1 — Parses ADMX/ADML files into a structured JSON database.

@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Deploys a private WinGet REST source to Azure and optionally seeds it with package manifests.
 

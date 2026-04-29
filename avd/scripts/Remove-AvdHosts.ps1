@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Decommissions outdated AVD session hosts from a host pool.
 

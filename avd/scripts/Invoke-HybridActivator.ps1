@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Activates Hybrid Azure AD Joined AVD session hosts across all host pools.
 
