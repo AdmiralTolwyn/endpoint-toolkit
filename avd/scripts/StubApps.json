@@ -1,0 +1,21 @@
+{
+    "$schema": "https://json-schema.org/draft-07/schema#",
+    "description": "Microsoft Store Stub App payload manifest for AVD Golden Image provisioning. Each entry is downloaded via 'winget download --source msstore' and bundled into the image via Packer file provisioner.",
+    "defaults": {
+        "source": "msstore",
+        "architecture": "x64"
+    },
+    "apps": [
+        { "Id": "9NV2L4XVMCXM",   "Name": "Microsoft Photos Legacy" },
+        { "Id": "9WZDNCRFJ3PR",   "Name": "Windows Clock" },
+        { "Id": "9NBLGGH5R558",   "Name": "Microsoft To Do" },
+        { "Id": "9NMPJ99VJBWV",   "Name": "Phone Link" },
+        { "Id": "9WZDNCRFHWKN",   "Name": "Windows Sound Recorder" },
+        { "Id": "XP89DCGQ3K6VLD", "Name": "Dev Home" },
+        { "Id": "9NZ6S5PMH67G",   "Name": "Power Automate" },
+        { "Id": "9NBLGGH4QGHW",   "Name": "Microsoft Sticky Notes" },
+        { "Id": "9MV0B5HZVK9Z",   "Name": "Xbox App" },
+        { "Id": "9WZDNCRFJ3Q2",   "Name": "MSN Weather" },
+        { "Id": "9WZDNCRFHVFW",   "Name": "Microsoft News" }
+    ]
+}

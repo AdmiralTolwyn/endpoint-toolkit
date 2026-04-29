@@ -31,6 +31,12 @@ PowerShell scripts for AVD session host lifecycle management. Used standalone or
 |--------|---------|
 | [Write-DeploymentTelemetry.ps1](Write-DeploymentTelemetry.ps1) | Sends structured deployment events to Log Analytics via HTTP Data Collector API |
 
+### Golden Image Provisioning
+
+| Script | Purpose |
+|--------|---------|
+| [Get-StubAppPayloads.ps1](Get-StubAppPayloads.ps1) | Downloads Microsoft Store Stub App offline payloads via `winget download --source msstore` for side-loading during Packer image build. App list is data-driven via [StubApps.json](StubApps.json). Run locally with Entra ID auth. |
+
 ## Usage in Pipelines
 
 The update and cleanup pipelines call these scripts in sequence:
