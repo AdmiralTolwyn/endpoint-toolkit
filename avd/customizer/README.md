@@ -24,7 +24,7 @@ All scripts in this folder follow the same conventions:
 | [RemoveUserApps.ps1](RemoveUserApps.ps1) | Removes per-user AppX packages with no matching provisioned package — fixes Sysprep 0x80073CF2 | Late bake (just before AdminSysPrep) |
 | [ResetAutoUpdateSettings.ps1](ResetAutoUpdateSettings.ps1) | Reverts the bake-time hardening (Windows Update + Store + CDM) | Last AIB step OR post-deploy Run-Command |
 | [TimezoneRedirection.ps1](TimezoneRedirection.ps1) | Sets `fEnableTimeZoneRedirection = 1` for RDS / AVD time-zone follow | Anywhere |
-| [UpdateWinGet.ps1](UpdateWinGet.ps1) | Hardens, downloads + provisions WinGet, optionally installs `-AppIds` with `--scope machine` | Mid–late bake |
+| [UpdateWinGet.ps1](UpdateWinGet.ps1) | Hardens, downloads + provisions WinGet, registers `-CustomSources`, optionally installs `-AppIds` with `--scope machine` (per-app source override supported) | Mid–late bake |
 | [WindowsOptimization.ps1](WindowsOptimization.ps1) | Wrapper around the Virtual Desktop Optimization Tool (VDOT) JSON config files | Late bake |
 
 ## Recommended pipeline order

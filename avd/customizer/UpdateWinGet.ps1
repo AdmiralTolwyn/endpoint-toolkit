@@ -41,10 +41,31 @@
     Skip Add-AppxPackage for the current user AND skip the source MSIX bootstrap.
     Use this when running pre-Sysprep so you do not contaminate the user hive.
 
+.PARAMETER CustomSources
+    Zero or more additional WinGet sources to register before the app install
+    loop. Each entry is a pipe-separated string:
+
+        "Name|Arg[|Type]"
+
+    Examples:
+      * "Contoso|https://winget.contoso.com/v1.0"                  - default type
+                                                                       Microsoft.Rest
+      * "Contoso|https://winget.contoso.com/v1.0|Microsoft.Rest"   - explicit
+      * "Local|\\\\fileserver\\winget|Microsoft.PreIndexed.Package" - PreIndexed
+
+    Sources are added with `winget source add --accept-source-agreements`.
+    Already-registered sources are skipped (idempotent re-runs).
+
+.PARAMETER DefaultSource
+    The WinGet source name used by every -AppIds entry that does NOT specify a
+    source override. Default: 'winget' (the public Microsoft Community Repo).
+    Set this to one of the Names registered via -CustomSources to make every
+    bare app id route through your private feed.
+
 .NOTES
     File:    avd/customizer/UpdateWinGet.ps1
     Author:  Anton Romanyuk
-    Version: 2.0.0
+    Version: 2.1.0
     Context: Azure Image Builder / Packer customizer. Runs as SYSTEM.
     Requires: Windows 10/11 / Server, PowerShell 5.1+, admin, internet egress to
               api.github.com / objects.githubusercontent.com / cdn.winget.microsoft.com.
@@ -72,6 +93,20 @@
 .EXAMPLE
     # Inline per-app argument override
     .\UpdateWinGet.ps1 -AppIds 'Adobe.Acrobat.Reader.64-bit;DISABLE_ARM_SERVICE_INSTALL=1 DISABLEDESKTOPSHORTCUT=1'
+
+.EXAMPLE
+    # Add a private REST source and route everything through it by default
+    .\UpdateWinGet.ps1 `
+        -CustomSources 'Contoso|https://winget.contoso.com/v1.0|Microsoft.Rest' `
+        -DefaultSource 'Contoso' `
+        -AppIds 'Contoso.LineOfBusinessApp','Microsoft.PowerToys'
+
+.EXAMPLE
+    # Mix: most apps from public 'winget', one app from 'Contoso' via 3rd ';' segment
+    .\UpdateWinGet.ps1 `
+        -CustomSources 'Contoso|https://winget.contoso.com/v1.0' `
+        -AppIds 'Microsoft.VisualStudioCode',
+                'Contoso.InternalTool;;Contoso'
 #>
 
 #Requires -RunAsAdministrator
@@ -84,7 +119,13 @@ param (
     [string[]]$AppIds = @(),
 
     [Parameter(Mandatory=$false)]
-    [switch]$SkipUserRegistration = $false
+    [switch]$SkipUserRegistration = $false,
+
+    [Parameter(Mandatory=$false)]
+    [string[]]$CustomSources = @(),
+
+    [Parameter(Mandatory=$false)]
+    [string]$DefaultSource = 'winget'
 )
 #############################################
 #      VDI Image Customizer - Winget        #
@@ -383,6 +424,62 @@ else {
     }
     Write-Host "   -> Using Winget Binary: $wingetCmd"
 
+    # -----------------------------------------------------------------------
+    # 7a. REGISTER CUSTOM WINGET SOURCES (-CustomSources)
+    # -----------------------------------------------------------------------
+    if ($CustomSources.Count -gt 0) {
+        Write-Host "`n*** AVD AIB CUSTOMIZER PHASE *** Registering $($CustomSources.Count) custom WinGet source(s)... ***"
+
+        # Snapshot existing source names so we don't try to re-add them.
+        $existingSourceNames = @()
+        try {
+            $listOutput = & $wingetCmd source list --accept-source-agreements 2>&1 | Out-String
+            # Parse: skip the header / separator lines, take column 1 of each remaining row.
+            foreach ($line in ($listOutput -split "`r?`n")) {
+                $trimmed = $line.Trim()
+                if (-not $trimmed) { continue }
+                if ($trimmed -match '^-+\s') { continue }                       # separator line
+                if ($trimmed -match '^(Name|Nom|Nombre|Naam)\s') { continue }   # localised header
+                $name = ($trimmed -split '\s{2,}')[0]
+                if ($name) { $existingSourceNames += $name }
+            }
+        }
+        catch {
+            Write-Host "   -> Warning: could not enumerate existing sources ($($_.Exception.Message)). Will attempt add anyway." -ForegroundColor Yellow
+        }
+
+        foreach ($entry in $CustomSources) {
+            if ([string]::IsNullOrWhiteSpace($entry)) { continue }
+            $parts = $entry -split '\|'
+            if ($parts.Count -lt 2) {
+                Write-Host "   -> SKIP: invalid -CustomSources entry '$entry' (expected 'Name|Url[|Type]')" -ForegroundColor Yellow
+                continue
+            }
+            $srcName = $parts[0].Trim()
+            $srcArg  = $parts[1].Trim()
+            $srcType = if ($parts.Count -ge 3 -and $parts[2].Trim()) { $parts[2].Trim() } else { 'Microsoft.Rest' }
+
+            if ($existingSourceNames -contains $srcName) {
+                Write-Host "   -> Source '$srcName' already registered. Skipping." -ForegroundColor Cyan
+                continue
+            }
+
+            Write-Host "   -> Adding source: Name='$srcName' Arg='$srcArg' Type='$srcType'"
+            $addArgs = @('source','add','--name', $srcName, '--arg', $srcArg, '--type', $srcType, '--accept-source-agreements')
+            try {
+                $proc = Start-Process -FilePath $wingetCmd -ArgumentList $addArgs -Wait -NoNewWindow -PassThru
+                if ($proc.ExitCode -eq 0) {
+                    Write-Host "      -> SUCCESS: source '$srcName' registered." -ForegroundColor Green
+                } else {
+                    Write-Host "      -> WARNING: source add for '$srcName' exited $($proc.ExitCode). Apps targeting it may fail." -ForegroundColor Yellow
+                }
+            }
+            catch {
+                Write-Host "      -> ERROR adding source '$srcName': $($_.Exception.Message)" -ForegroundColor Red
+            }
+        }
+    }
+
     # Source Reset
     # try {
     #    Write-Host "   -> Resetting Sources..."
@@ -391,24 +488,32 @@ else {
 
     # App Loop
     foreach ($entry in $AppIds)  {
-        
-        # LOGIC: Parse "ID;OverrideArgs" format
-        if ($entry -match ";") {
-            $parts = $entry -split ";", 2
-            $currentId = $parts[0]
-            $currentArgs = $parts[1]
-            Write-Host "   -> Installing Package: $currentId (Inline Override: $currentArgs)"
+
+        # LOGIC: Parse "ID[;OverrideArgs[;Source]]" format
+        $currentSource = $DefaultSource
+        if ($entry -match ';') {
+            $parts = $entry -split ';', 3
+            $currentId   = $parts[0]
+            $currentArgs = if ($parts.Count -ge 2 -and $parts[1]) { $parts[1] } else { $null }
+            if ($parts.Count -ge 3 -and -not [string]::IsNullOrWhiteSpace($parts[2])) {
+                $currentSource = $parts[2].Trim()
+            }
+            if (-not $currentArgs -and $DefaultAppArgs.ContainsKey($currentId)) {
+                $currentArgs = $DefaultAppArgs[$currentId]
+            }
+            $argDesc = if ($currentArgs) { "args='$currentArgs'" } else { 'no args' }
+            Write-Host "   -> Installing Package: $currentId  (source='$currentSource', $argDesc)"
         }
         else {
             $currentId = $entry
             # Check for Default Custom Args in HashTable
             if ($DefaultAppArgs.ContainsKey($currentId)) {
                 $currentArgs = $DefaultAppArgs[$currentId]
-                Write-Host "   -> Installing Package: $currentId (Default Override: $currentArgs)"
+                Write-Host "   -> Installing Package: $currentId  (source='$currentSource', default override: $currentArgs)"
             }
             else {
                 $currentArgs = $null
-                Write-Host "   -> Installing Package: $currentId"
+                Write-Host "   -> Installing Package: $currentId  (source='$currentSource')"
             }
         }
 
@@ -424,7 +529,7 @@ else {
         # --source                      : specify winget repo
 
         # Build Arguments
-        $argsList = "install --id $currentId --exact --accept-package-agreements --accept-source-agreements --scope machine --silent --disable-interactivity --source winget"
+        $argsList = "install --id $currentId --exact --accept-package-agreements --accept-source-agreements --scope machine --silent --disable-interactivity --source $currentSource"
         
         if (-not [string]::IsNullOrEmpty($currentArgs)) {
             $argsList += " --custom `"$currentArgs`""
