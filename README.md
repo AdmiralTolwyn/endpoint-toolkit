@@ -22,6 +22,7 @@ tools/              # Standalone PowerShell/WPF utilities
 
 windows/
 ├── dot3svc/        # Wired AutoConfig (dot3svc) migration reset
+├── rdp/            # Per-user RDP file signing (no admin required)
 ├── security/       # Hardware speculation mitigations, Secure Boot remediation
 └── w365/           # Windows 365 Cloud PC disk resize automation
 ```
