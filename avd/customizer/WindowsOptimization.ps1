@@ -52,20 +52,21 @@
     category.
 
 .PARAMETER ConfigBasePath
-    Optional local folder containing pre-staged VDOT JSON files. When supplied the
-    script reads each ConfigurationFiles\*.json from this folder INSTEAD of
-    downloading from raw.githubusercontent.com. Layout expected:
+    Folder containing the VDOT JSON configuration files. Defaults to the
+    `ConfigurationFiles\` subfolder shipped alongside this script (in-repo).
+    Pass an explicit folder to override (e.g. an air-gapped pre-staged path).
+    Pass an empty string ('') to force a download from
+    raw.githubusercontent.com (legacy behaviour - NOT recommended; supply-chain
+    risk + AIB egress dependency). Layout expected:
 
         <ConfigBasePath>\
             ScheduledTasks.json
             DefaultUserSettings.json
-            Autologgers.json
+            Autologgers.Json
             Services.json
             LanManWorkstation.json
             PolicyRegSettings.json
             EdgeSettings.json
-
-    Use this for air-gapped image bakes.
 
 .PARAMETER LogDirectory
     Directory for the rolling log file. Default: $env:TEMP. The log is named
@@ -80,13 +81,19 @@
     File:    avd/customizer/WindowsOptimization.ps1
     Author:  Anton Romanyuk (wrapper); upstream VDOT authored by The Virtual
              Desktop Team (Microsoft community).
-    Version: 3.0.0
-    Context: Azure Image Builder / Packer customizer. Runs as SYSTEM. Internet
-             egress to raw.githubusercontent.com required UNLESS -ConfigBasePath
-             is supplied.
+    Version: 3.1.0
+    Context: Azure Image Builder / Packer customizer. Runs as SYSTEM. NO
+             internet egress required by default (JSON shipped in-repo under
+             ConfigurationFiles\). Pass -ConfigBasePath '' to opt back into
+             downloading from raw.githubusercontent.com.
     Requires: Windows 10/11 / Server, PowerShell 5.1+, admin.
 
     Changes:
+      3.1.0 - Ship VDOT JSON in-repo under avd/customizer/ConfigurationFiles/.
+              Default -ConfigBasePath to that folder so the script no longer
+              needs raw.githubusercontent.com at runtime (eliminates the
+              supply-chain / proxy / air-gap failure mode). Pass -ConfigBasePath
+              '' to force the legacy download path.
       3.0.0 - Full rewrite. Resilient access-denied handling, file logger,
               targeted disk-sweep paths, hive load/unload checked, -ConfigBasePath
               and -ContinueOnError added, fixed Write-Host -EventId garbage call,
@@ -108,8 +115,12 @@
     .\WindowsOptimization.ps1 -Optimizations ScheduledTasks,Services,DiskCleanup
 
 .EXAMPLE
-    # Air-gapped bake with pre-staged JSON
+    # Override with a custom pre-staged JSON folder
     .\WindowsOptimization.ps1 -Optimizations All -ConfigBasePath C:\BuildArtifacts\VDOT
+
+.EXAMPLE
+    # Force the legacy GitHub download path (NOT recommended)
+    .\WindowsOptimization.ps1 -Optimizations All -ConfigBasePath ''
 #>
 
 #Requires -RunAsAdministrator
@@ -121,7 +132,7 @@ param(
                  'Edge','RemoveLegacyIE','RemoveOneDrive')]
     [string[]]$Optimizations,
 
-    [string]$ConfigBasePath,
+    [string]$ConfigBasePath = (Join-Path $PSScriptRoot 'ConfigurationFiles'),
 
     [string]$LogDirectory = $env:TEMP,
 
@@ -447,7 +458,7 @@ Write-Log "===== WindowsOptimization v3.0.0 starting =====" -Level HEADER
 Write-Log "Categories      : $($Optimizations -join ', ')"
 Write-Log "Working folder  : $Script:WorkingFolder"
 Write-Log "Log file        : $Script:LogFile"
-Write-Log "Config source   : $(if ($ConfigBasePath) { "local '$ConfigBasePath'" } else { 'GitHub raw' })"
+Write-Log "Config source   : $(if ($ConfigBasePath) { "local '$ConfigBasePath'" } else { 'GitHub raw (legacy download path)' })"
 
 # Detect Windows version (ReleaseId is missing on Win11 21H2+, so fall back).
 try {
