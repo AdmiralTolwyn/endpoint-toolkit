@@ -67,13 +67,47 @@
 .PARAMETER LogDirectory
     Directory for the log file. Default: $env:TEMP.
 
+.PARAMETER SilentCleanMgr
+    Suppress the cleanmgr.exe progress window by launching it as a one-shot
+    scheduled task running as SYSTEM in session 0 (no interactive desktop).
+    Default: cleanmgr runs in the foreground with its native progress window
+    so an admin watching the bake can see what it's doing. Use this switch
+    for non-interactive runs (Intune Win32 app, scheduled task, AIB).
+    NOTE: cleanmgr.exe ignores -WindowStyle Hidden / SW_HIDE; the scheduled
+    task is the only reliable way to hide it.
+
+.PARAMETER SkipDism
+    Skip the `dism.exe /Online /Cleanup-Image /StartComponentCleanup` step
+    entirely. Default: DISM runs (with /ResetBase unless -SkipResetBase is
+    also supplied). Use this on machines you want to keep update-uninstall
+    capability on, or when DISM is being run by a separate workflow.
+
+.PARAMETER SkipResetBase
+    Run `dism /StartComponentCleanup` WITHOUT `/ResetBase`. This still removes
+    superseded component versions from WinSxS but PRESERVES the ability to
+    uninstall previously installed Windows updates. Default: /ResetBase is
+    applied (irreversible - matches the legacy pre-feature-update behaviour).
+    Ignored when -SkipDism is also supplied.
+
 .NOTES
     File:    windows/servicing/Invoke-PreUpgradeCleanup.ps1
     Author:  Anton Romanyuk
-    Version: 1.2.0
+    Version: 1.5.0
     Requires: PowerShell 5.1+, elevated session.
 
     Changes:
+      1.5.0 - Added -SkipDism (skip the DISM component cleanup step entirely)
+              and -SkipResetBase (run /StartComponentCleanup without /ResetBase
+              to preserve update-uninstall capability). Default behaviour
+              unchanged: DISM runs with /ResetBase.
+      1.4.0 - Added -SilentCleanMgr (opt-in) which launches cleanmgr.exe via a
+              one-shot scheduled task running as SYSTEM in session 0 so the
+              progress window is never displayed. Default behaviour unchanged:
+              cleanmgr runs in the foreground with its native UI.
+      1.3.0 - Invoke-Tool now runs cleanmgr.exe / dism.exe with -WindowStyle Hidden
+              and redirects stdout/stderr to temp files, folding the captured
+              output into the log. Suppresses the dism console during interactive
+              runs (cleanmgr ignores SW_HIDE - use -SilentCleanMgr instead).
       1.2.0 - Renamed switches to MS-idiomatic full-word names:
                 -UserTmp              -> -IncludeUserTemp
                 -WindowsTmp           -> -IncludeWindowsTemp
@@ -114,6 +148,36 @@
 .EXAMPLE
     # Surgical run: only Update Cleanup + WER
     .\Invoke-PreUpgradeCleanup.ps1 -IncludeOnlyHandler 'Update Cleanup','Windows Error Reporting Files' -Force
+
+.EXAMPLE
+    # Non-interactive run (Intune / scheduled task / AIB) - hide cleanmgr UI
+    .\Invoke-PreUpgradeCleanup.ps1 -IncludeUserTemp -IncludeWindowsTemp -SilentCleanMgr -Force
+
+.EXAMPLE
+    # Free disk space WITHOUT losing the ability to uninstall updates
+    .\Invoke-PreUpgradeCleanup.ps1 -IncludeUserTemp -IncludeWindowsTemp -SkipResetBase -Force
+
+.EXAMPLE
+    # Skip DISM entirely (cleanmgr + temp sweeps only)
+    .\Invoke-PreUpgradeCleanup.ps1 -IncludeUserTemp -IncludeWindowsTemp -SkipDism -Force
+
+.EXAMPLE
+    # Curated handler set: WU/WER cleanup + caches (no Previous Installations / no Downloads)
+    .\Invoke-PreUpgradeCleanup.ps1 -IncludeUserTemp -IncludeWindowsTemp -Force -SkipDism -SilentCleanMgr -IncludeOnlyHandler `
+        'Active Setup Temp Folders',
+        'BranchCache',
+        'Content Indexer Cleaner',
+        'D3D Shader Cache',
+        'Delivery Optimization Files',
+        'Update Cleanup',
+        'Upgrade Discarded Files',
+        'User file versions',
+        'Windows Defender',
+        'Windows Error Reporting Archive Files',
+        'Windows Error Reporting Queue Files',
+        'Windows Error Reporting System Archive Files',
+        'Windows Error Reporting System Queue Files',
+        'Windows Error Reporting Files'
 #>
 
 #Requires -RunAsAdministrator
@@ -129,7 +193,10 @@ param(
     [ValidateRange(1, 9999)] [int]$SageId     = 5432,
     [string[]]$ExcludeHandler     = @(),
     [string[]]$IncludeOnlyHandler = @(),
-    [string]$LogDirectory = $env:TEMP
+    [string]$LogDirectory = $env:TEMP,
+    [switch]$SilentCleanMgr,
+    [switch]$SkipDism,
+    [switch]$SkipResetBase
 )
 
 $ErrorActionPreference = 'Stop'
@@ -407,9 +474,100 @@ function Invoke-Tool {
         [string[]]$ArgumentList = @()
     )
     Write-Log ("Running: {0} {1}" -f $FilePath, ($ArgumentList -join ' '))
-    $proc = Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -Wait -NoNewWindow -PassThru
-    Write-Log "$FilePath exited with code $($proc.ExitCode)"
-    return $proc.ExitCode
+
+    # Run hidden + redirect stdout/stderr to temp files, then fold the captured
+    # output into our log. This suppresses both the cleanmgr.exe progress window
+    # and the flashing dism.exe console.
+    $stdOut = [IO.Path]::GetTempFileName()
+    $stdErr = [IO.Path]::GetTempFileName()
+    try {
+        $proc = Start-Process -FilePath $FilePath -ArgumentList $ArgumentList `
+                              -Wait -PassThru -WindowStyle Hidden `
+                              -RedirectStandardOutput $stdOut `
+                              -RedirectStandardError  $stdErr
+        foreach ($file in @($stdOut, $stdErr)) {
+            if (Test-Path -LiteralPath $file) {
+                Get-Content -LiteralPath $file -ErrorAction SilentlyContinue |
+                    Where-Object { $_ -and $_.Trim() } |
+                    ForEach-Object { Write-Log ("  > {0}" -f $_) }
+            }
+        }
+        Write-Log "$FilePath exited with code $($proc.ExitCode)"
+        return $proc.ExitCode
+    }
+    finally {
+        Remove-Item -LiteralPath $stdOut, $stdErr -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Invoke-CleanMgrSilent {
+<#
+.SYNOPSIS
+    Runs `cleanmgr.exe /sagerun:<SageId>` silently by registering it as a one-shot
+    scheduled task running as SYSTEM in session 0.
+.DESCRIPTION
+    cleanmgr.exe is a GUI application that ignores -WindowStyle Hidden /
+    SW_HIDE - the progress window always appears in the launching session.
+    Registering it as a SYSTEM scheduled task moves the process to session 0
+    (no interactive desktop), so the window is never displayed.
+
+    The helper:
+      1. Registers task '\Microsoft\Endpoint-Toolkit\PreUpgradeCleanup_<guid>'.
+      2. Starts it.
+      3. Polls Get-ScheduledTaskInfo every 2s up to -TimeoutSec.
+      4. Logs LastTaskResult, then unregisters the task.
+
+    On timeout the task is forcibly stopped and unregistered, and the helper
+    returns 1460 (ERROR_TIMEOUT).
+.PARAMETER SageId
+    Cleanmgr StateFlags slot id (1..9999).
+.PARAMETER TimeoutSec
+    Maximum wait for the task to finish. Default: 3600 (1 hour) - cleanmgr
+    Update Cleanup + Previous Installations on a full disk can take a while.
+.OUTPUTS
+    [int] LastTaskResult (cleanmgr exit code) or 1460 on timeout.
+#>
+    param(
+        [Parameter(Mandatory)][int]$SageId,
+        [int]$TimeoutSec = 3600
+    )
+    $taskName = "PreUpgradeCleanup_{0}" -f ([guid]::NewGuid().ToString('N'))
+    $taskPath = '\Microsoft\Endpoint-Toolkit\'
+    $cleanmgr = Join-Path $env:WinDir 'System32\cleanmgr.exe'
+    Write-Log ("Running silently via scheduled task '{0}{1}': {2} /sagerun:{3}" -f $taskPath, $taskName, $cleanmgr, $SageId)
+
+    try {
+        $action    = New-ScheduledTaskAction -Execute $cleanmgr -Argument "/sagerun:$SageId"
+        $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+        $settings  = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Seconds $TimeoutSec) -MultipleInstances IgnoreNew
+        Register-ScheduledTask -TaskName $taskName -TaskPath $taskPath -Action $action -Principal $principal -Settings $settings -Force | Out-Null
+        Start-ScheduledTask  -TaskName $taskName -TaskPath $taskPath
+
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        do {
+            Start-Sleep -Seconds 2
+            $info = Get-ScheduledTaskInfo -TaskName $taskName -TaskPath $taskPath -ErrorAction SilentlyContinue
+            $task = Get-ScheduledTask     -TaskName $taskName -TaskPath $taskPath -ErrorAction SilentlyContinue
+            $state = if ($task) { $task.State } else { 'Unknown' }
+        } while ($state -eq 'Running' -and $sw.Elapsed.TotalSeconds -lt $TimeoutSec)
+
+        if ($state -eq 'Running') {
+            Write-Log "cleanmgr scheduled task still running after ${TimeoutSec}s - stopping" -Level WARN
+            Stop-ScheduledTask -TaskName $taskName -TaskPath $taskPath -ErrorAction SilentlyContinue
+            return 1460  # ERROR_TIMEOUT
+        }
+
+        $exit = if ($info) { [int]$info.LastTaskResult } else { -1 }
+        Write-Log "cleanmgr (silent) exited with code $exit (state=$state, elapsed=$([int]$sw.Elapsed.TotalSeconds)s)"
+        return $exit
+    }
+    catch {
+        Write-Log "Invoke-CleanMgrSilent failed: $($_.Exception.Message)" -Level WARN
+        return -1
+    }
+    finally {
+        Unregister-ScheduledTask -TaskName $taskName -TaskPath $taskPath -Confirm:$false -ErrorAction SilentlyContinue
+    }
 }
 
 # -----------------------------------------------------------------------------
@@ -446,7 +604,11 @@ else {
     else {
         Write-Log ("Cleanmgr handlers selected: {0}/{1}" -f $effectiveHandlers.Count, $VolumeCaches.Count)
         Set-CleanMgrSageRun -SageId $SageId -Caches $effectiveHandlers
-        [void](Invoke-Tool -FilePath 'cleanmgr.exe' -ArgumentList @("/sagerun:$SageId"))
+        if ($SilentCleanMgr) {
+            [void](Invoke-CleanMgrSilent -SageId $SageId)
+        } else {
+            [void](Invoke-Tool -FilePath 'cleanmgr.exe' -ArgumentList @("/sagerun:$SageId"))
+        }
     }
 
     if ($IncludeSoftwareDistribution) {
@@ -464,8 +626,18 @@ else {
         }
     }
 
-    [void](Invoke-Tool -FilePath 'dism.exe' `
-        -ArgumentList @('/Online','/Cleanup-Image','/StartComponentCleanup','/ResetBase'))
+    if ($SkipDism) {
+        Write-Log "-SkipDism specified - skipping DISM /StartComponentCleanup." -Level WARN
+    }
+    else {
+        $dismArgs = @('/Online','/Cleanup-Image','/StartComponentCleanup')
+        if ($SkipResetBase) {
+            Write-Log "-SkipResetBase specified - running DISM WITHOUT /ResetBase (update-uninstall preserved)." -Level WARN
+        } else {
+            $dismArgs += '/ResetBase'
+        }
+        [void](Invoke-Tool -FilePath 'dism.exe' -ArgumentList $dismArgs)
+    }
 }
 
 # -----------------------------------------------------------------------------
