@@ -54,3 +54,38 @@ All scripts in this folder follow the same conventions:
 - **Exit codes:** `0` on success, `1` on hard failure.
 - **Idempotency:** every script is safe to re-run; missing keys / packages are
   treated as already-clean and logged at INFO.
+
+## Bundled VDOT configuration
+
+[`ConfigurationFiles/`](ConfigurationFiles/) ships the seven Virtual Desktop
+Optimization Tool JSON files used by `WindowsOptimization.ps1`:
+
+| File | Purpose |
+|---|---|
+| `ScheduledTasks.json` | VDI-hostile scheduled tasks to disable. |
+| `DefaultUserSettings.json` | Registry tweaks applied to the Default user hive (`C:\Users\Default\NTUSER.DAT`). |
+| `Autologgers.Json` | Trace autologgers to disable. |
+| `Services.json` | VDI-hostile services to set to `Disabled`. |
+| `LanManWorkstation.json` | LanManWorkstation network tunings. |
+| `PolicyRegSettings.json` | Local Group Policy registry settings (LGPO equivalents). |
+| `EdgeSettings.json` | Microsoft Edge policy registry settings. |
+
+Source: [`The-Virtual-Desktop-Team/Virtual-Desktop-Optimization-Tool`](https://github.com/The-Virtual-Desktop-Team/Virtual-Desktop-Optimization-Tool)
+(`main/2009/ConfigurationFiles`). The JSON is bundled in-repo so AIB / Packer
+bakes do **not** require runtime egress to `raw.githubusercontent.com`
+(eliminates proxy / air-gap / supply-chain failure modes and makes runs
+deterministic).
+
+To refresh from upstream:
+
+```powershell
+$dir  = Join-Path $PSScriptRoot 'ConfigurationFiles'
+$base = 'https://raw.githubusercontent.com/The-Virtual-Desktop-Team/Virtual-Desktop-Optimization-Tool/main/2009/ConfigurationFiles'
+'ScheduledTasks.json','DefaultUserSettings.json','Autologgers.Json','Services.json',
+'LanManWorkstation.json','PolicyRegSettings.json','EdgeSettings.json' |
+    ForEach-Object { Invoke-WebRequest "$base/$_" -OutFile (Join-Path $dir $_) -UseBasicParsing }
+```
+
+Override the bundled folder with `-ConfigBasePath <path>` (e.g. an air-gapped
+build share). Pass `-ConfigBasePath ''` to opt into the legacy GitHub
+download path (NOT recommended).
