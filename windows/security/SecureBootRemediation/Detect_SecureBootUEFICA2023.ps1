@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Detects whether the Windows UEFI CA 2023 Secure Boot certificate update
     has been fully applied on the device.
@@ -13,9 +13,31 @@
       5. Event ID 1808 from provider Microsoft-Windows-TPM-WMI present
          in the System log (successful CA 2023 update completion).
 
-    Any failure -> exit 1 (non-compliant) which triggers the paired
-    Remediate_SecureBootUEFICA2023.ps1 script via Intune Proactive
-    Remediations.
+    Short-circuits (exit 0 = "compliant / not actionable") that suppress
+    the gate to prevent an Intune PR retry loop on devices that cannot
+    be remediated from the OS:
+      * HighConfidenceOptOut = 1 (admin-managed exclusion).
+      * Event 1803 present (missing KEK - OEM must supply PK-signed KEK).
+      * Event 1802 present (known firmware issue / SkipReason: KI_<n>).
+      * Event 1800 present without 1808 (reboot pending - update will
+        proceed after the next boot; remediation is a no-op).
+
+    Operational warnings (logged but do NOT change the gate decision):
+      * Secure-Boot-Update scheduled task missing or disabled - any
+        remediation that triggers it will silently fail.
+      * CanAttemptUpdateAfter FILETIME in the future - firmware throttle.
+      * AvailableUpdatesPolicy disagrees with AvailableUpdates - GPO/MDM
+        is overriding direct AvailableUpdates writes.
+      * Latest 1795/1796 error code captured for triage.
+
+    Diagnostic context surfaced in every run:
+      * UEFICA2023ErrorEvent (last error event id from the registry).
+      * BucketId / BucketConfidenceLevel / SkipReason parsed from the
+        most recent 1801/1808/1802 event message.
+
+    Any compliance failure that is NOT short-circuited -> exit 1
+    (non-compliant) which triggers Remediate_SecureBootUEFICA2023.ps1
+    via Intune Proactive Remediations.
 
     Logs are written in CMTrace format to:
         %ProgramData%\Microsoft\IntuneManagementExtension\Logs\PR_SecureBootUEFICA2023.log
@@ -25,16 +47,21 @@
       Enforce script signature check                  : No
       Run script in 64-bit PowerShell                 : Yes
 
+    References:
+      KB 5016061 - Secure Boot DBX update event reference
+      KB 5072718 - Sample Secure Boot Inventory Data Collection script
+      KB 5084567 - Sample Secure Boot E2E Automation Guide
+
 .OUTPUTS
     System.Int32 exit code:
-      0  = Compliant (all checks passed)
-      1  = Non-compliant or prerequisite failure
+      0  = Compliant, not-applicable, or pending-reboot (no remediation)
+      1  = Non-compliant (remediation should run)
 
     Single-line STDOUT summary suitable for the Intune PR detection column.
 
 .NOTES
     Author:   Anton Romanyuk
-    Version:  1.0
+    Version:  1.1
     Date:     2026-04-30
     Context:  Windows UEFI CA 2023 Secure Boot certificate rollout
     Requires: Windows PowerShell 5.1, 64-bit
@@ -61,11 +88,29 @@ $Script:Component  = 'Detect'                                # CMTrace component
 # Registry locations driving the Secure Boot servicing state machine.
 $Script:RegPathRoot        = 'HKLM:\SYSTEM\CurrentControlSet\Control\SecureBoot'
 $Script:RegPathServicing   = 'HKLM:\SYSTEM\CurrentControlSet\Control\SecureBoot\Servicing'
+$Script:RegPathDeviceAttr  = 'HKLM:\SYSTEM\CurrentControlSet\Control\SecureBoot\Servicing\DeviceAttributes'
 $Script:CompliantAvUpdates = 0x4000                          # Terminal "complete" bitmask state
 
-# Event log signal indicating the Secure Boot Update finished successfully.
-$Script:EventProvider = 'Microsoft-Windows-TPM-WMI'
-$Script:EventID       = 1808
+# Event log signals (provider Microsoft-Windows-TPM-WMI in the System log).
+#   1808 - Update completed successfully (gate condition).
+#   1803 - Missing KEK update (OEM responsibility - hard blocker).
+#   1802 - Known firmware issue, SkipReason: KI_<n> (hard blocker).
+#   1800 - Reboot pending (suppress non-compliant; not an error).
+#   1801 - Update initiated, reboot required (informational).
+#   1795 - Firmware returned error (capture code for triage).
+#   1796 - Generic error logged (capture code for triage).
+$Script:EventProvider          = 'Microsoft-Windows-TPM-WMI'
+$Script:EventID                = 1808
+$Script:HardBlockerEvents      = @(1802, 1803)
+$Script:RebootPendingEvent     = 1800
+$Script:ErrorEvents            = @(1795, 1796)
+$Script:AllSecureBootEvents    = @(1795, 1796, 1800, 1801, 1802, 1803, 1808)
+$Script:EventQueryMax          = 100                         # cap for History scan
+
+# Scheduled task that performs the actual servicing pass. Detection only
+# checks its existence/state; the remediate script triggers it.
+$Script:TaskPath = '\Microsoft\Windows\PI\'
+$Script:TaskName = 'Secure-Boot-Update'
 
 # ─────────────────────────────────────────────────────────────────────────────
 #region Logging
@@ -203,35 +248,181 @@ function Get-RegValue {
     }
 }
 
-function Test-Event1808 {
+function Get-SecureBootEvents {
     <#
     .SYNOPSIS
-        Returns $true if at least one Event ID 1808 from
-        Microsoft-Windows-TPM-WMI is present in the System log.
+        Queries all relevant Secure Boot events from the System log in one
+        pass and returns a hashtable of parsed signals.
 
     .DESCRIPTION
-        Event 1808 is logged by the Secure Boot servicing component when the
-        UEFI CA 2023 update completes successfully. Its presence is the
-        authoritative signal that the OS-side roll-out finished at least
-        once on this device.
+        Performs a single Get-WinEvent call (capped at $Script:EventQueryMax)
+        for every event ID in $Script:AllSecureBootEvents to keep cost low,
+        then partitions the result and parses BucketId / BucketConfidenceLevel
+        / SkipReason / error codes from message bodies via regex.
+
+    .OUTPUTS
+        Hashtable with the following keys:
+          Latest                - newest matching event (or $null)
+          ByID                  - hashtable: id -> array of events
+          Counts                - hashtable: id -> count
+          Has1808 / Has1803 / Has1802 / Has1800
+          BucketId, BucketConfidenceLevel, SkipReason   (from latest msg)
+          Event1795Code, Event1796Code                  (parsed error codes)
     #>
-    Write-Log "Test-Event1808 ENTER (LogName='System', Provider='$($Script:EventProvider)', Id=$($Script:EventID))" -Level DEBUG
+    Write-Log ("Get-SecureBootEvents ENTER (LogName='System', IDs={0}, Max={1})" -f ($Script:AllSecureBootEvents -join ','), $Script:EventQueryMax) -Level DEBUG
+    $result = @{
+        Latest                = $null
+        ByID                  = @{}
+        Counts                = @{}
+        Has1808               = $false
+        Has1803               = $false
+        Has1802               = $false
+        Has1800               = $false
+        BucketId              = $null
+        BucketConfidenceLevel = $null
+        SkipReason            = $null
+        Event1795Code         = $null
+        Event1796Code         = $null
+    }
     try {
-        $evt = Get-WinEvent -FilterHashtable @{
+        $events = @(Get-WinEvent -FilterHashtable @{
             LogName      = 'System'
             ProviderName = $Script:EventProvider
-            Id           = $Script:EventID
-        } -MaxEvents 1 -ErrorAction SilentlyContinue
-        if ($null -ne $evt) {
-            Write-Log "Test-Event1808 EXIT -> True (TimeCreated=$($evt.TimeCreated.ToString('s')), RecordId=$($evt.RecordId))" -Level DEBUG
-            return $true
-        }
-        Write-Log 'Test-Event1808 EXIT -> False (no matching event)' -Level DEBUG
-        return $false
+            Id           = $Script:AllSecureBootEvents
+        } -MaxEvents $Script:EventQueryMax -ErrorAction SilentlyContinue)
     }
     catch {
-        Write-Log "Test-Event1808: exception -> $($_.Exception.Message)" -Level DEBUG
-        return $false
+        Write-Log "Get-SecureBootEvents: query exception -> $($_.Exception.Message)" -Level DEBUG
+        return $result
+    }
+    Write-Log "Get-SecureBootEvents: retrieved $($events.Count) raw event(s) from provider $($Script:EventProvider)" -Level DEBUG
+
+    # Partition by ID (note: $events is already newest-first from Get-WinEvent).
+    foreach ($id in $Script:AllSecureBootEvents) {
+        $bucket = @($events | Where-Object { $_.Id -eq $id })
+        $result.ByID[$id]   = $bucket
+        $result.Counts[$id] = $bucket.Count
+    }
+    if ($events.Count -gt 0) { $result.Latest = $events[0] }
+    $result.Has1808 = ($result.Counts[1808] -gt 0)
+    $result.Has1803 = ($result.Counts[1803] -gt 0)
+    $result.Has1802 = ($result.Counts[1802] -gt 0)
+    $result.Has1800 = ($result.Counts[1800] -gt 0)
+
+    # Parse BucketId / Confidence / SkipReason from the latest 1801/1808/1802
+    # event message - these fields appear in the structured EventData of the
+    # Secure Boot servicing component.
+    $msgEvent = @($events | Where-Object { $_.Id -in @(1801,1808,1802) } | Select-Object -First 1)
+    if ($msgEvent.Count -gt 0 -and $null -ne $msgEvent[0].Message) {
+        $m = $msgEvent[0].Message
+        if ($m -match 'BucketId:\s*([^\r\n]+)')              { $result.BucketId              = $matches[1].Trim() }
+        if ($m -match 'BucketConfidenceLevel:\s*([^\r\n]+)') { $result.BucketConfidenceLevel = $matches[1].Trim() }
+        if ($m -match 'SkipReason:\s*(KI_\d+)')              { $result.SkipReason            = $matches[1] }
+    }
+
+    # Capture error codes from the latest 1795 / 1796 events for triage.
+    # The KB sample uses (?:error|code|status)[:\s]*(?:0x)?([0-9A-Fa-f]+) -
+    # match the same shape so the captured value matches what the inventory
+    # script would record.
+    foreach ($pair in @(@{Id=1795; Key='Event1795Code'}, @{Id=1796; Key='Event1796Code'})) {
+        $latest = @($result.ByID[$pair.Id] | Select-Object -First 1)
+        if ($latest.Count -gt 0 -and $latest[0].Message -match '(?:error|code|status)[:\s]*(?:0x)?([0-9A-Fa-f]{1,8})') {
+            $result[$pair.Key] = $matches[1]
+        }
+    }
+
+    Write-Log ("Get-SecureBootEvents EXIT (1808={0}, 1803={1}, 1802={2}, 1800={3}, 1801={4}, 1795={5}, 1796={6})" -f
+        $result.Counts[1808], $result.Counts[1803], $result.Counts[1802], $result.Counts[1800],
+        $result.Counts[1801], $result.Counts[1795], $result.Counts[1796]) -Level DEBUG
+    return $result
+}
+
+function Get-SecureBootTaskState {
+    <#
+    .SYNOPSIS
+        Returns information about the Secure-Boot-Update scheduled task.
+
+    .DESCRIPTION
+        The remediate script triggers \Microsoft\Windows\PI\Secure-Boot-Update
+        to advance the AvailableUpdates bitmask. If the task is missing or
+        disabled, the remediation will appear to run successfully but never
+        change the device state - so detection must surface that condition.
+
+    .OUTPUTS
+        Hashtable with keys:
+          Exists  - $true if the task is present
+          State   - 'Ready', 'Disabled', 'Running', 'Unknown', or 'Missing'
+          Enabled - $true if State -in @('Ready','Running')
+    #>
+    Write-Log "Get-SecureBootTaskState ENTER (TaskPath='$($Script:TaskPath)', TaskName='$($Script:TaskName)')" -Level DEBUG
+    $r = @{ Exists = $false; State = 'Missing'; Enabled = $false }
+    try {
+        $task = Get-ScheduledTask -TaskPath $Script:TaskPath -TaskName $Script:TaskName -ErrorAction Stop
+        $r.Exists  = $true
+        $r.State   = "$($task.State)"
+        $r.Enabled = ($r.State -in @('Ready','Running'))
+        Write-Log "Get-SecureBootTaskState EXIT (Exists=True, State='$($r.State)', Enabled=$($r.Enabled))" -Level DEBUG
+    }
+    catch {
+        Write-Log "Get-SecureBootTaskState: not found / not accessible -> $($_.Exception.Message)" -Level DEBUG
+    }
+    return $r
+}
+
+function Get-CanAttemptUpdateAfter {
+    <#
+    .SYNOPSIS
+        Returns the CanAttemptUpdateAfter throttle as a UTC DateTime, or
+        $null if absent / unreadable.
+
+    .DESCRIPTION
+        Stored as REG_BINARY (8-byte FILETIME, little-endian) or REG_QWORD
+        under SecureBoot\Servicing\DeviceAttributes. When set in the future,
+        the firmware refuses to attempt the update again until that time -
+        triggering the scheduled task during the throttle window is a no-op.
+
+    .OUTPUTS
+        System.DateTime (UTC) or $null.
+    #>
+    Write-Log "Get-CanAttemptUpdateAfter ENTER (Path='$($Script:RegPathDeviceAttr)')" -Level DEBUG
+    $raw = Get-RegValue -Path $Script:RegPathDeviceAttr -Name 'CanAttemptUpdateAfter'
+    if ($null -eq $raw) {
+        Write-Log "Get-CanAttemptUpdateAfter EXIT -> `$null (value not set)" -Level DEBUG
+        return $null
+    }
+    try {
+        # Coerce Object[] (PS wraps REG_BINARY as a generic object array) to a
+        # real byte[]. Get-ItemProperty returns boxed bytes when the value was
+        # round-tripped through PSObject, so an explicit [byte[]] cast is needed.
+        if ($raw -is [array] -and $raw -isnot [byte[]]) {
+            try { $raw = [byte[]]$raw }
+            catch {
+                Write-Log "Get-CanAttemptUpdateAfter: cannot coerce $($raw.GetType().FullName) to byte[] -> $($_.Exception.Message)" -Level DEBUG
+                return $null
+            }
+        }
+        if ($raw -is [byte[]]) {
+            if ($raw.Length -lt 8) {
+                Write-Log "Get-CanAttemptUpdateAfter: byte[] too short ($($raw.Length) bytes, need 8)" -Level DEBUG
+                return $null
+            }
+            $ft = [BitConverter]::ToInt64($raw, 0)
+            $dt = [DateTime]::FromFileTimeUtc($ft)
+        }
+        elseif ($raw -is [long] -or $raw -is [int]) {
+            $dt = [DateTime]::FromFileTimeUtc([int64]$raw)
+        }
+        else {
+            Write-Log "Get-CanAttemptUpdateAfter: unexpected type $($raw.GetType().FullName)" -Level DEBUG
+            return $null
+        }
+        $local = $dt.ToLocalTime()
+        Write-Log ("Get-CanAttemptUpdateAfter EXIT -> {0}Z (local {1})" -f $dt.ToString('s'), $local.ToString('s')) -Level DEBUG
+        return $dt
+    }
+    catch {
+        Write-Log "Get-CanAttemptUpdateAfter: parse failed -> $($_.Exception.Message)" -Level DEBUG
+        return $null
     }
 }
 
@@ -268,6 +459,7 @@ Write-Log ("{0,-14} : {1}" -f 'RegPathRoot',    $Script:RegPathRoot) -Level DEBU
 Write-Log ("{0,-14} : {1}" -f 'RegPathSvc',     $Script:RegPathServicing) -Level DEBUG
 Write-Log ("{0,-14} : 0x{1:X}" -f 'CompliantValue', $Script:CompliantAvUpdates) -Level DEBUG
 Write-Log ("{0,-14} : {1} (Id={2})" -f 'EventProvider', $Script:EventProvider, $Script:EventID) -Level DEBUG
+Write-Log ("{0,-14} : {1}{2}" -f 'TaskPath/Name', $Script:TaskPath, $Script:TaskName) -Level DEBUG
 
 # -- Prerequisite: 64-bit PowerShell ---------------------------------------
 if (-not (Test-Is64BitPS)) {
@@ -279,7 +471,7 @@ Write-Log 'Prerequisite passed (64-bit PS).' -Level SUCCESS
 
 # -- Check 1: Secure Boot enabled ------------------------------------------
 # Confirm-SecureBootUEFI throws on BIOS/Legacy systems where Secure Boot is
-# unavailable. Treat both 'unsupported' and 'disabled' as non-compliant —
+# unavailable. Treat both 'unsupported' and 'disabled' as non-compliant -
 # the OS cannot apply the new CA without Secure Boot active.
 Write-Log 'Check 1/5: Confirm-SecureBootUEFI ...' -Level DEBUG
 try {
@@ -298,38 +490,133 @@ if (-not $sbEnabled) {
 }
 Write-Log 'Secure Boot is ENABLED.' -Level SUCCESS
 
-# -- Checks 2 & 3: Servicing registry (Status / Error) ---------------------
-Write-Log 'Check 2/5: read UEFICA2023Status ...' -Level DEBUG
-$status = Get-RegValue -Path $Script:RegPathServicing -Name 'UEFICA2023Status'
-Write-Log 'Check 3/5: read UEFICA2023Error ...' -Level DEBUG
-$err    = Get-RegValue -Path $Script:RegPathServicing -Name 'UEFICA2023Error'
+# -- Gather extended context (registry + events + task + throttle) --------
+# All data is pulled up front in a single pass so subsequent checks and the
+# final summary can reason about the same snapshot.
+Write-Log 'Gathering extended Secure Boot context (registry / events / task / throttle) ...' -Level STEP
 
+# Servicing-side telemetry (Status, Error, last error event id).
+$status         = Get-RegValue -Path $Script:RegPathServicing -Name 'UEFICA2023Status'
+$err            = Get-RegValue -Path $Script:RegPathServicing -Name 'UEFICA2023Error'
+$errEvent       = Get-RegValue -Path $Script:RegPathServicing -Name 'UEFICA2023ErrorEvent'
+
+# Servicing root: bitmask + GPO/MDM persistent value + admin opt-out.
+$avUpdates      = Get-RegValue -Path $Script:RegPathRoot -Name 'AvailableUpdates'
+$avPolicy       = Get-RegValue -Path $Script:RegPathRoot -Name 'AvailableUpdatesPolicy'
+$optOut         = Get-RegValue -Path $Script:RegPathRoot -Name 'HighConfidenceOptOut'
+$mgmtOptIn      = Get-RegValue -Path $Script:RegPathRoot -Name 'MicrosoftUpdateManagedOptIn'
+
+# Firmware throttle: when set in the future, triggering the task is a no-op.
+$canAttemptAt   = Get-CanAttemptUpdateAfter
+
+# Scheduled task state - if missing/disabled, remediation is ineffective.
+$taskState      = Get-SecureBootTaskState
+
+# Event log signals (single query, partitioned by ID).
+$evt            = Get-SecureBootEvents
+
+# Render snapshot for the log so a single run captures the full picture.
+$avHex          = if ($null -ne $avUpdates) { '0x{0:X}' -f $avUpdates } else { '<missing>' }
+$avPolicyHex    = if ($null -ne $avPolicy)  { '0x{0:X}' -f $avPolicy }  else { '<not set>' }
+$canAttemptStr  = if ($null -ne $canAttemptAt) { '{0}Z (local {1})' -f $canAttemptAt.ToString('s'), $canAttemptAt.ToLocalTime().ToString('s') } else { '<not set>' }
+Write-Log ("{0,-22} : {1}" -f 'UEFICA2023Status',           ($status         | ForEach-Object { if ($_ -ne $null) { "'$_'" } else { '<null>' } })) -Level INFO
+Write-Log ("{0,-22} : {1}" -f 'UEFICA2023Error',            ($err            | ForEach-Object { if ($_ -ne $null) { $_ }      else { '<null>' } })) -Level INFO
+Write-Log ("{0,-22} : {1}" -f 'UEFICA2023ErrorEvent',       ($errEvent       | ForEach-Object { if ($_ -ne $null) { $_ }      else { '<null>' } })) -Level INFO
+Write-Log ("{0,-22} : {1}" -f 'AvailableUpdates',           $avHex) -Level INFO
+Write-Log ("{0,-22} : {1}" -f 'AvailableUpdatesPolicy',     $avPolicyHex) -Level INFO
+Write-Log ("{0,-22} : {1}" -f 'HighConfidenceOptOut',       ($optOut         | ForEach-Object { if ($_ -ne $null) { $_ }      else { '<not set>' } })) -Level INFO
+Write-Log ("{0,-22} : {1}" -f 'MicrosoftUpdateMgdOptIn',    ($mgmtOptIn      | ForEach-Object { if ($_ -ne $null) { $_ }      else { '<not set>' } })) -Level INFO
+Write-Log ("{0,-22} : {1}" -f 'CanAttemptUpdateAfter',      $canAttemptStr) -Level INFO
+Write-Log ("{0,-22} : {1} (Enabled={2})" -f 'Secure-Boot-Update task', $taskState.State, $taskState.Enabled) -Level INFO
+Write-Log ("{0,-22} : 1808={1} 1803={2} 1802={3} 1801={4} 1800={5} 1795={6} 1796={7}" -f 'Event counts',
+    $evt.Counts[1808], $evt.Counts[1803], $evt.Counts[1802], $evt.Counts[1801], $evt.Counts[1800], $evt.Counts[1795], $evt.Counts[1796]) -Level INFO
+if ($evt.BucketId)              { Write-Log ("{0,-22} : {1}" -f 'BucketId',              $evt.BucketId)              -Level INFO }
+if ($evt.BucketConfidenceLevel) { Write-Log ("{0,-22} : {1}" -f 'BucketConfidenceLevel', $evt.BucketConfidenceLevel) -Level INFO }
+if ($evt.SkipReason)            { Write-Log ("{0,-22} : {1}" -f 'SkipReason',            $evt.SkipReason)            -Level INFO }
+if ($evt.Event1795Code)         { Write-Log ("{0,-22} : {1}" -f 'Event 1795 ErrorCode',  $evt.Event1795Code)         -Level WARN }
+if ($evt.Event1796Code)         { Write-Log ("{0,-22} : {1}" -f 'Event 1796 ErrorCode',  $evt.Event1796Code)         -Level WARN }
+
+# -- Hard-blocker short-circuits -------------------------------------------
+# These are conditions where the device cannot be remediated from the OS.
+# Returning exit 0 prevents Intune from looping the PR forever. The reason
+# is logged and surfaced in the STDOUT summary so the device shows up in
+# reporting as "compliant for our purposes" without a failure noise spike.
+Write-Log 'Evaluating hard-blocker short-circuits (HighConfidenceOptOut / 1803 / 1802) ...' -Level STEP
+
+if ($null -ne $optOut -and [int]$optOut -eq 1) {
+    Write-Log 'HighConfidenceOptOut = 1 -> device intentionally excluded from CA 2023 rollout. Treating as not-applicable.' -Level WARN
+    Write-Output 'NOT-APPLICABLE: HighConfidenceOptOut=1 (admin-managed exclusion).'
+    exit 0
+}
+
+if ($evt.Has1803) {
+    Write-Log "Event 1803 present -> matching KEK update not found. OEM must supply a PK-signed KEK; this cannot be remediated from the OS." -Level WARN
+    Write-Output 'NOT-APPLICABLE: Event 1803 (missing KEK - OEM responsibility).'
+    exit 0
+}
+
+if ($evt.Has1802) {
+    $kiSuffix = if ($evt.SkipReason) { " ($($evt.SkipReason))" } else { '' }
+    Write-Log "Event 1802 present -> known firmware issue is blocking the update$kiSuffix. OEM firmware update required; cannot be remediated from the OS." -Level WARN
+    Write-Output ("NOT-APPLICABLE: Event 1802 (known firmware issue{0})." -f $kiSuffix)
+    exit 0
+}
+
+# -- Operational warnings (do NOT change the gate decision) ----------------
+# Surface conditions that will make a future remediation pass ineffective so
+# operators know to investigate before the bitmask state is interpreted.
+if (-not $taskState.Exists) {
+    Write-Log "Operational warning: Secure-Boot-Update scheduled task is missing. Remediation cannot trigger it." -Level WARN
+}
+elseif (-not $taskState.Enabled) {
+    Write-Log "Operational warning: Secure-Boot-Update scheduled task is in state '$($taskState.State)' (not Ready/Running). Remediation may not advance the bitmask." -Level WARN
+}
+
+if ($null -ne $canAttemptAt) {
+    $nowUtc = (Get-Date).ToUniversalTime()
+    if ($canAttemptAt -gt $nowUtc) {
+        $waitMin = [math]::Round(($canAttemptAt - $nowUtc).TotalMinutes, 1)
+        Write-Log "Operational warning: CanAttemptUpdateAfter is $waitMin minute(s) in the future ($canAttemptStr). Firmware throttle active; triggering the task before this time is a no-op." -Level WARN
+    } else {
+        Write-Log "CanAttemptUpdateAfter is in the past; throttle window has elapsed." -Level DEBUG
+    }
+}
+
+if ($null -ne $avPolicy -and $null -ne $avUpdates -and $avPolicy -ne $avUpdates) {
+    Write-Log ("Operational warning: AvailableUpdatesPolicy ({0}) differs from AvailableUpdates ({1}). GPO/MDM is overriding direct writes; remediation that writes AvailableUpdates may be reverted." -f $avPolicyHex, $avHex) -Level WARN
+}
+elseif ($null -ne $avPolicy) {
+    Write-Log "AvailableUpdatesPolicy is set ($avPolicyHex) and matches AvailableUpdates - GPO/MDM-driven deployment detected." -Level DEBUG
+}
+
+# -- Checks 2 & 3: Servicing registry (Status / Error) ---------------------
 if ($null -eq $status) {
-    # Servicing key/value missing typically means the Secure Boot Update task
-    # has never executed on this device.
-    Write-Log 'UEFICA2023Status registry value not found (servicing has not run yet).' -Level WARN
+    Write-Log 'Check 2/5: UEFICA2023Status registry value not found (servicing has not run yet).' -Level WARN
     $outputMsgs += 'UEFICA2023Status missing'
     $exitCode = 1
 }
 elseif ($status -ne 'Updated') {
     # Common transient values: 'NotStarted', 'InProgress'. Anything other
     # than 'Updated' is non-compliant from the detection script's POV.
-    Write-Log "UEFICA2023Status = '$status' (expected 'Updated')." -Level WARN
+    Write-Log "Check 2/5: UEFICA2023Status = '$status' (expected 'Updated')." -Level WARN
     $outputMsgs += "Status='$status'"
     $exitCode = 1
 }
 else {
-    Write-Log "UEFICA2023Status = 'Updated'." -Level SUCCESS
+    Write-Log "Check 2/5: UEFICA2023Status = 'Updated'." -Level SUCCESS
 }
 
 if ($null -ne $err -and $err -ne 0) {
     # Non-zero error code surfaces firmware/KEK/KI failure during servicing.
-    Write-Log "UEFICA2023Error = $err (expected 0)." -Level ERROR
+    Write-Log "Check 3/5: UEFICA2023Error = $err (expected 0)." -Level ERROR
     $outputMsgs += "Error=$err"
     $exitCode = 1
 }
 elseif ($null -ne $err) {
-    Write-Log 'UEFICA2023Error = 0.' -Level SUCCESS
+    Write-Log 'Check 3/5: UEFICA2023Error = 0.' -Level SUCCESS
+}
+else {
+    Write-Log 'Check 3/5: UEFICA2023Error not present (treated as 0).' -Level DEBUG
 }
 
 # -- Check 4: AvailableUpdates bitmask -------------------------------------
@@ -337,34 +624,43 @@ elseif ($null -ne $err) {
 # 0x5944 armed, 0x4100 staged, 0x4104 KEK pending, etc.) means the rollout
 # has not yet finished and the remediation script should re-trigger the
 # Secure Boot Update scheduled task.
-Write-Log 'Check 4/5: read AvailableUpdates bitmask ...' -Level DEBUG
-$avUpdates = Get-RegValue -Path $Script:RegPathRoot -Name 'AvailableUpdates'
 if ($null -eq $avUpdates) {
-    Write-Log ("AvailableUpdates registry value not present (expected 0x{0:X})." -f $Script:CompliantAvUpdates) -Level WARN
+    Write-Log ("Check 4/5: AvailableUpdates registry value not present (expected 0x{0:X})." -f $Script:CompliantAvUpdates) -Level WARN
     $outputMsgs += 'AvailableUpdates missing'
     $exitCode = 1
 }
+elseif ($avUpdates -eq $Script:CompliantAvUpdates) {
+    Write-Log "Check 4/5: AvailableUpdates = $avHex (compliant terminal state)." -Level SUCCESS
+}
 else {
-    $avHex = '0x{0:X}' -f $avUpdates
-    if ($avUpdates -eq $Script:CompliantAvUpdates) {
-        Write-Log "AvailableUpdates = $avHex (compliant terminal state)." -Level SUCCESS
-    }
-    else {
-        Write-Log ("AvailableUpdates = {0} (expected 0x{1:X})." -f $avHex, $Script:CompliantAvUpdates) -Level WARN
-        $outputMsgs += "AvailableUpdates=$avHex"
-        $exitCode = 1
-    }
+    Write-Log ("Check 4/5: AvailableUpdates = {0} (expected 0x{1:X})." -f $avHex, $Script:CompliantAvUpdates) -Level WARN
+    $outputMsgs += "AvailableUpdates=$avHex"
+    $exitCode = 1
 }
 
 # -- Check 5: Event 1808 (TPM-WMI completion) ------------------------------
-Write-Log 'Check 5/5: query System log for Event 1808 ...' -Level DEBUG
-if (Test-Event1808) {
-    Write-Log "Event ID $($Script:EventID) from $($Script:EventProvider) found in System log." -Level SUCCESS
+if ($evt.Has1808) {
+    $latest1808 = @($evt.ByID[1808])[0]
+    Write-Log "Check 5/5: Event 1808 found (TimeCreated=$($latest1808.TimeCreated.ToString('s')), Count=$($evt.Counts[1808]))." -Level SUCCESS
 }
 else {
-    Write-Log "Event ID $($Script:EventID) from $($Script:EventProvider) NOT found in System log." -Level WARN
+    Write-Log "Check 5/5: Event ID $($Script:EventID) from $($Script:EventProvider) NOT found in System log." -Level WARN
     $outputMsgs += "Event $($Script:EventID) missing"
     $exitCode = 1
+}
+
+# -- Reboot-pending suppression --------------------------------------------
+# If the gate failed but Event 1800 is present (and 1808 has NOT yet fired),
+# the update has been staged and is waiting for the next reboot. Returning
+# exit 1 here would cause the remediate script to re-trigger the task on
+# every PR cycle while we wait for the user to reboot - noisy and pointless.
+# Suppress to exit 0 with a clear PENDING-REBOOT marker; the next detect
+# pass after reboot will either confirm compliance or restart remediation.
+if ($exitCode -ne 0 -and $evt.Has1800 -and -not $evt.Has1808) {
+    Write-Log 'Gate failed but Event 1800 (reboot pending) is present. Suppressing non-compliant signal until the device reboots.' -Level WARN
+    Write-Output ('PENDING-REBOOT: Update staged, awaiting reboot. Gate would fail on: ' + ($outputMsgs -join ' | '))
+    Write-Log "--- Detection finished (ExitCode: 0 - reboot-pending suppression) ---" -Level STEP
+    exit 0
 }
 
 # -- Final summary + exit --------------------------------------------------

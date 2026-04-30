@@ -4,7 +4,10 @@
 
 Detection and remediation tooling for the **Secure Boot UEFI CA 2023** certificate deployment. Three flavors are included so the same logic can be wired into Intune Proactive Remediations, Ivanti baselines, or used standalone for manual triage.
 
-Reference: [KB5016061 - Secure Boot DB and DBX variable update events](https://support.microsoft.com/en-us/topic/37e47cf8-608b-4a87-8175-bdead630eb69)
+References:
+- [KB5016061 - Secure Boot DB and DBX variable update events](https://support.microsoft.com/en-us/topic/37e47cf8-608b-4a87-8175-bdead630eb69) (event-id semantics)
+- [KB5072718 - Sample Secure Boot Inventory Data Collection script](https://support.microsoft.com/en-us/topic/d02971d2-d4b5-42c9-b58a-8527f0ffa30b) (signal coverage)
+- [KB5084567 - Sample Secure Boot E2E Automation Guide](https://support.microsoft.com/en-us/topic/f850b329-9a6e-40d1-823a-0925c965b8a0) (`AvailableUpdatesPolicy` guidance, GPO/MDM ownership)
 
 ## Scripts
 
@@ -19,7 +22,7 @@ All scripts share the same TPM-WMI event-id classification and diagnostic signal
 
 ### Why so many scripts?
 
-- **`Detect_SecureBootUEFICA2023.ps1` / `Remediate_SecureBootUEFICA2023.ps1`** — the Intune PR pair. Logs to the Intune Management Extension log directory in CMTrace format with verbose DEBUG-level instrumentation. The detect script enforces a strict 5-condition gate; the remediate script uses two-pronged logic based on the current `AvailableUpdates` bitmask (see below).
+- **`Detect_SecureBootUEFICA2023.ps1` / `Remediate_SecureBootUEFICA2023.ps1`** — the Intune PR pair (v1.1). Logs to the Intune Management Extension log directory in CMTrace format with verbose DEBUG-level instrumentation. The detect script enforces a strict 5-condition gate **plus** hard-blocker short-circuits and reboot-pending suppression to prevent PR retry loops on devices that cannot be remediated from the OS. The remediate script uses two-pronged logic based on the current `AvailableUpdates` bitmask, and aborts cleanly when the Secure-Boot-Update scheduled task is missing/disabled (see below).
 - **`SecureBootCertRemediation.ps1`** — the standalone deployment / triage script. Detection-only by default; only writes registry / starts the scheduled task when explicitly invoked with `-ForceRemediation`. Strict gate avoids false-positive "compliant" verdicts caused by stale Event 1808 surviving NVRAM / BIOS resets.
 - **`SecureBootCertDetection-Ivanti.ps1`** — the legacy Ivanti baseline detect script. The compliance verdict is intentionally unchanged to avoid baseline / ticket churn; the enhanced diagnostics (1808 / 1799 / 1801 / 1802 / 1803 / latest good / latest bad / FW errors) are surfaced in the `found =` line for triage only.
 
@@ -64,13 +67,34 @@ Upload the two scripts to a single PR package:
 4. `AvailableUpdates` = `0x4000` (terminal complete state)
 5. Event ID 1808 from `Microsoft-Windows-TPM-WMI` present in System log
 
-**Remediate** branches on the current `AvailableUpdates` value:
+Before the gate is evaluated, the detect script applies several **hard-blocker short-circuits** that return exit `0` ("not actionable" / "pending reboot") instead of `1`. This prevents Intune from re-running the PR forever on devices that cannot be remediated from the OS:
+
+| Condition | Detect exit | STDOUT marker |
+|-----------|-------------|---------------|
+| `HighConfidenceOptOut = 1` | `0` | `NOT-APPLICABLE: HighConfidenceOptOut=1 (admin-managed exclusion).` |
+| Event 1803 present (missing PK-signed KEK) | `0` | `NOT-APPLICABLE: Event 1803 (missing KEK - OEM responsibility).` |
+| Event 1802 present (known firmware issue) | `0` | `NOT-APPLICABLE: Event 1802 (known firmware issue [KI_<n>]).` |
+| Event 1800 present, Event 1808 not yet present | `0` | `PENDING-REBOOT: Update staged, awaiting reboot. Gate would fail on: ...` |
+
+In addition, the detect script emits **operational warnings** (logged but do **not** change the verdict) when:
+
+- The `\Microsoft\Windows\PI\Secure-Boot-Update` scheduled task is missing or in a non-`Ready`/`Running` state — remediation will be ineffective.
+- `CanAttemptUpdateAfter` (REG_BINARY/REG_QWORD `FILETIME` under `Servicing\DeviceAttributes`) is in the future — firmware throttle active; triggering the task is a no-op until it elapses.
+- `AvailableUpdatesPolicy` disagrees with `AvailableUpdates` — GPO or Intune is the source of truth; direct registry writes may be reverted on the next policy refresh.
+
+Diagnostic context surfaced in every detect run (logged at INFO level): `UEFICA2023ErrorEvent`, `MicrosoftUpdateManagedOptIn`, per-ID event counts (`1808`/`1803`/`1802`/`1801`/`1800`/`1795`/`1796`), parsed `BucketId` / `BucketConfidenceLevel` / `SkipReason`, and captured error codes from the latest `1795` / `1796`.
+
+**Remediate** also short-circuits to exit `0` on the same hard-blocker conditions (`HighConfidenceOptOut=1`, Event 1803, Event 1802, Event 1800 without 1808) before touching the registry or the task. When none of those apply, it branches on the current `AvailableUpdates` value:
 
 | Current value | Branch | Action |
 |---------------|--------|--------|
 | missing or `0` | **A. Initial arm** | Set `AvailableUpdates = 0x5944`, then trigger `\Microsoft\Windows\PI\Secure-Boot-Update` |
 | non-zero, not `0x4000` (e.g. `0x5944`, `0x4100`, `0x4104`) | **B. Resume** | Trigger the scheduled task **without** modifying the registry (preserve in-flight state) |
 | `0x4000` | **C. No-op** | Already at the terminal complete state |
+
+The remediate script also performs a pre-flight check on the `Secure-Boot-Update` scheduled task **before** writing the registry. If the task is missing or in a non-`Ready`/`Running` state it exits `1` with a clear `FAIL:` message instead of arming the device only to discover the task cannot run.
+
+> **About `AvailableUpdatesPolicy`** — this value is reserved for Group Policy and Intune. Per Microsoft guidance it must **only be written by GPO/MDM**, never by a remediation script. Both scripts read `AvailableUpdatesPolicy` for diagnostic context (and warn when it disagrees with `AvailableUpdates`) but **never write it**. The remediate script writes only `AvailableUpdates` (the volatile, OS-consumed value).
 
 Both scripts log in CMTrace format to:
 
@@ -247,31 +271,49 @@ Intentionally preserved to avoid churning existing Ivanti baselines and tickets.
 
 ### `Detect_SecureBootUEFICA2023.ps1`
 
-Single-line STDOUT summary suitable for the Intune PR detection column:
+Single-line STDOUT summary suitable for the Intune PR detection column. Possible outputs:
 
 ```text
 COMPLIANT: Secure Boot UEFI CA 2023 update fully applied.
-```
-
-or, on failure:
-
-```text
 NON-COMPLIANT: UEFICA2023Status missing | AvailableUpdates=0x5944 | Event 1808 missing
+NOT-APPLICABLE: HighConfidenceOptOut=1 (admin-managed exclusion).
+NOT-APPLICABLE: Event 1803 (missing KEK - OEM responsibility).
+NOT-APPLICABLE: Event 1802 (known firmware issue [KI_12345]).
+PENDING-REBOOT: Update staged, awaiting reboot. Gate would fail on: AvailableUpdates=0x4100 | Event 1808 missing
+PREREQ: Not running in 64-bit PowerShell.
 ```
 
-Exit code: `0` (compliant) or `1` (non-compliant / prerequisite failure). Full per-step trace is written to the CMTrace log file.
+| Exit code | Meaning | Triggers remediation? |
+|-----------|---------|----------------------|
+| `0` | `COMPLIANT`, `NOT-APPLICABLE`, or `PENDING-REBOOT` | No |
+| `1` | `NON-COMPLIANT` or `PREREQ` failure | Yes |
+
+Full per-step trace is written to the CMTrace log file.
 
 ### `Remediate_SecureBootUEFICA2023.ps1`
 
-Single-line STDOUT summary describing the action taken:
+Single-line STDOUT summary describing the action taken. Possible outputs:
 
 ```text
 REMEDIATED: AvailableUpdates pre=0x0 post=0x5944. Reboot required to finalize.
 NO-OP: Already at compliant terminal state (0x4000).
+NOT-APPLICABLE: HighConfidenceOptOut=1 (admin-managed exclusion).
+NOT-APPLICABLE: Event 1803 (missing KEK - OEM responsibility).
+NOT-APPLICABLE: Event 1802 (known firmware issue [KI_12345]).
+PENDING-REBOOT: Update staged, awaiting reboot.
+ABORT: Secure Boot disabled.
+FAIL: Scheduled task '\Microsoft\Windows\PI\Secure-Boot-Update' is missing.
+FAIL: Scheduled task is 'Disabled' (not Ready). Re-enable before remediation.
 FAIL: Could not start Secure-Boot-Update scheduled task.
+FAIL: Registry write error - <message>
 ```
 
-Exit code: `0` (action OK or no-op) or `1` (prerequisite / registry / task failure). Full per-step trace is written to the same CMTrace log file as the detect script.
+| Exit code | Meaning |
+|-----------|---------|
+| `0` | `REMEDIATED`, `NO-OP`, `NOT-APPLICABLE`, or `PENDING-REBOOT` |
+| `1` | `PREREQ`, `ABORT`, or `FAIL` (registry / scheduled task / Secure Boot disabled) |
+
+Full per-step trace is written to the same CMTrace log file as the detect script.
 
 ### `SecureBootCertRemediation.ps1`
 
