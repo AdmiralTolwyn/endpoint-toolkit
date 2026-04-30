@@ -9,6 +9,8 @@ avd/
 ├── bicep/          # Bicep templates for AVD session host deployment
 │   ├── modules/    # Reusable modules (session hosts, image templates)
 │   └── main-*.bicep
+├── customizer/     # AIB / Packer customizer scripts (image-bake)
+│   └── ConfigurationFiles/  # Bundled VDOT JSON (no runtime download required)
 ├── pipelines/      # Azure DevOps YAML pipelines
 └── scripts/        # PowerShell scripts used by pipelines
 
@@ -24,6 +26,7 @@ windows/
 ├── dot3svc/        # Wired AutoConfig (dot3svc) migration reset
 ├── rdp/            # Per-user RDP file signing (no admin required)
 ├── security/       # Hardware speculation mitigations, Secure Boot remediation
+├── servicing/      # Pre-upgrade disk-space cleanup (cleanmgr + DISM)
 └── w365/           # Windows 365 Cloud PC disk resize automation
 ```
 
@@ -40,6 +43,21 @@ windows/
 | [PolicyPilot](tools/PolicyPilot/) | Group Policy & MDM documentation — scans AD/Local/Intune, conflict detection, ADMX/CSP enrichment |
 | [W365Assessor](tools/W365Assessor/) | Windows 365 (Cloud PC) Enterprise & Frontline tenant assessment — 128 checks, 23 automated via Microsoft Graph |
 | [WinGetManifestManager](tools/WinGetManifestManager/) | WinGet package manifest manager for private repos |
+
+## Scripts
+
+| Area | Description |
+|------|-------------|
+| [avd/customizer/](avd/customizer/) | AIB / Packer image-bake customizers — AdminSysPrep, DisableAutoUpdates, InstallLanguagePacks, RemoveAppxPackages, RemoveUserApps, ResetAutoUpdateSettings, TimezoneRedirection, UpdateWinGet, WindowsOptimization (VDOT wrapper, JSON bundled in-repo) |
+| [avd/scripts/](avd/scripts/) | AVD pipeline helpers — host-pool drain, deployment telemetry, FSLogix repair, Get-StubAppPayloads / Install-AppxPayloads, hybrid activator, Remove-AvdHosts |
+| [avd/pipelines/](avd/pipelines/) | Azure DevOps YAML pipelines for AVD activation, host-pool updates, image bakes |
+| [avd/bicep/](avd/bicep/) | Bicep templates for AVD session-host deployment (Entra ID + AD-joined variants) |
+| [intune/bitlocker/](intune/bitlocker/) | Intune Proactive Remediation pair — ensure BitLocker recovery key escrow to Entra ID; MBAM client uninstall |
+| [windows/dot3svc/](windows/dot3svc/) | Reset 802.1X / wired-AutoConfig profiles after migration |
+| [windows/rdp/](windows/rdp/) | Sign `.rdp` files in user context (no admin required) |
+| [windows/security/](windows/security/) | Hardware speculation mitigations + Secure Boot UEFI CA 2023 remediation (Intune PR pair) |
+| [windows/servicing/](windows/servicing/) | `Invoke-PreUpgradeCleanup.ps1` — reclaim disk space via cleanmgr + DISM before a feature update or after image bake |
+| [windows/w365/](windows/w365/) | Windows 365 Cloud PC disk resize automation |
 
 ## Getting Started
 
