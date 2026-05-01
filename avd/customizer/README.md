@@ -6,7 +6,7 @@ images.
 
 All scripts in this folder follow the same conventions:
 
-- `#Requires -RunAsAdministrator` (every script expects the AIB SYSTEM context).
+- `#Requires -RunAsAdministrator` (every script expects the AIB SYSTEM context, except `InstallProvisionedAppxPackage.ps1` which is designed for ADMIN user context).
 - `[CmdletBinding()]` + comment-based help (`Get-Help .\<script>.ps1 -Full` works).
 - `$ErrorActionPreference = 'Stop'` at the top.
 - Uniform `Write-Log` helper writing `[utc-timestamp] [LEVEL] [ScriptName] message`
@@ -20,6 +20,7 @@ All scripts in this folder follow the same conventions:
 | [AdminSysPrep.ps1](AdminSysPrep.ps1) | Patches `C:\DeprovisioningScript.ps1` so Sysprep runs with `/quit /mode:vm` | Late, just before image capture |
 | [DisableAutoUpdates.ps1](DisableAutoUpdates.ps1) | Blocks Store auto-downloads + Content Delivery Manager + WU Scheduled Start during bake | Early bake |
 | [InstallLanguagePacks.ps1](InstallLanguagePacks.ps1) | Installs one or more Windows Display Languages with retry + LanguageComponentsInstaller race-fix | Mid bake |
+| [InstallProvisionedAppxPackage.ps1](InstallProvisionedAppxPackage.ps1) | Side-loads a single LOB UWP / MSIX bundle as a provisioned package via `Add-AppxProvisionedPackage -Online`. Auto-discovers license + `Dependencies\`, snapshots and restores `AllowAllTrustedApps` (with `-KeepSideloadingEnabled` for chained installs), maps HRESULT 0x80073D02 (pending reboot) to success | Mid bake (admin context) |
 | [RemoveAppxPackages.ps1](RemoveAppxPackages.ps1) | De-provisions inbox AppX packages by wildcard name (`*Bing*`, `Microsoft.MSPaint`, …) | Mid bake |
 | [RemoveUserApps.ps1](RemoveUserApps.ps1) | Removes per-user AppX packages with no matching provisioned package — fixes Sysprep 0x80073CF2 | Late bake (just before AdminSysPrep) |
 | [ResetAutoUpdateSettings.ps1](ResetAutoUpdateSettings.ps1) | Reverts the bake-time hardening (Windows Update + Store + CDM) | Last AIB step OR post-deploy Run-Command |
@@ -34,11 +35,12 @@ All scripts in this folder follow the same conventions:
 3. `InstallLanguagePacks.ps1` (if needed)
 4. `RemoveAppxPackages.ps1` (de-bloat)
 5. `UpdateWinGet.ps1` (provision WinGet + apps)
-6. `WindowsOptimization.ps1 -Optimizations All` (or selective)
-7. `RemoveUserApps.ps1` (Sysprep prep — must run AFTER any user-context installs)
-8. `AdminSysPrep.ps1`
-9. *Sysprep / capture step (handled by AIB)*
-10. *(optional)* `ResetAutoUpdateSettings.ps1` on deployed hosts that need updates re-enabled.
+6. `InstallProvisionedAppxPackage.ps1` (per LOB UWP / MSIX bundle, if any)
+7. `WindowsOptimization.ps1 -Optimizations All` (or selective)
+8. `RemoveUserApps.ps1` (Sysprep prep — must run AFTER any user-context installs)
+9. `AdminSysPrep.ps1`
+10. *Sysprep / capture step (handled by AIB)*
+11. *(optional)* `ResetAutoUpdateSettings.ps1` on deployed hosts that need updates re-enabled.
 
 ## Companions outside this folder
 
