@@ -20,6 +20,9 @@ devops/
 intune/
 └── bitlocker/      # BitLocker detection & remediation scripts for Intune
 
+macos/
+└── servicing/      # Developer-storage cleanup and reclaim helpers for macOS
+
 tools/              # Standalone PowerShell/WPF utilities
 
 windows/
@@ -53,6 +56,7 @@ windows/
 | [avd/pipelines/](avd/pipelines/) | Azure DevOps YAML pipelines for AVD activation, host-pool updates, image bakes |
 | [avd/bicep/](avd/bicep/) | Bicep templates for AVD session-host deployment (Entra ID + AD-joined variants) |
 | [intune/bitlocker/](intune/bitlocker/) | Intune Proactive Remediation pair — ensure BitLocker recovery key escrow to Entra ID; MBAM client uninstall |
+| [macos/servicing/](macos/servicing/) | `macos_dev_cleanup.sh` — semi-interactive developer-storage cleanup (Xcode, VS Code/Cursor/Windsurf, .NET, Gradle, Android, Flutter, JetBrains, Homebrew, Docker, Time Machine) |
 | [windows/dot3svc/](windows/dot3svc/) | Reset 802.1X / wired-AutoConfig profiles after migration |
 | [windows/rdp/](windows/rdp/) | Sign `.rdp` files in user context (no admin required) |
 | [windows/security/](windows/security/) | Hardware speculation mitigations + Secure Boot UEFI CA 2023 remediation (Intune PR pair) |
