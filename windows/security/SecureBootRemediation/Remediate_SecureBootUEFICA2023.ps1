@@ -18,14 +18,19 @@
 
       C. Value == 0x4000              -> Already complete, no-op.
 
-    Hard-blocker short-circuits (exit 0 = "not actionable") that prevent
-    pointless re-runs on devices that cannot be remediated from the OS:
-      * HighConfidenceOptOut = 1 (admin-managed exclusion).
-      * Event 1803 present (missing KEK - OEM responsibility).
-      * Event 1802 present (known firmware issue / SkipReason: KI_<n>).
-      * Event 1800 present without 1808 (reboot already pending - the
-        bitmask will advance after the next boot; running the task again
-        does nothing useful).
+    Hard-blocker reporting markers (exit 1 with NO side effects) on devices
+    that cannot be remediated from the OS. Exit 1 ensures Intune does NOT
+    falsely mark the device as 'Remediation successful' / 'Fixed' on the
+    PR dashboard - the device IS still non-compliant, we just chose not to
+    make a system change. No registry writes, no scheduled-task triggers:
+      * HighConfidenceOptOut = 1 -> NON-COMPLIANT-NOT-ACTIONABLE
+        (admin-managed exclusion).
+      * Event 1803 present -> NON-COMPLIANT-NOT-ACTIONABLE
+        (missing KEK - OEM responsibility).
+      * Event 1802 present -> NON-COMPLIANT-NOT-ACTIONABLE
+        (known firmware issue / SkipReason: KI_<n>).
+      * Event 1800 without 1808 -> NON-COMPLIANT-PENDING-REBOOT
+        (update staged, awaiting reboot to fire 1808).
 
     Operational warnings (logged; remediation still attempts where possible):
       * Secure-Boot-Update scheduled task missing/disabled - aborts cleanly
@@ -54,15 +59,18 @@
 
 .OUTPUTS
     System.Int32 exit code:
-      0  = Action taken / no-op / not-applicable / pending-reboot
-      1  = Failure (prerequisite, registry write, or scheduled task error)
+      0  = REMEDIATED or NO-OP (Intune marks device as 'Remediation successful')
+      1  = Any other state - PREREQ / ABORT / FAIL / NON-COMPLIANT-* (Intune
+           keeps the device in the work queue)
 
     Single-line STDOUT summary suitable for the Intune PR remediation column.
+    Marker prefixes: REMEDIATED, NO-OP, NON-COMPLIANT-NOT-ACTIONABLE,
+    NON-COMPLIANT-PENDING-REBOOT, PREREQ, ABORT, FAIL.
 
 .NOTES
     Author:   Anton Romanyuk
-    Version:  1.1
-    Date:     2026-04-30
+    Version:  1.2
+    Date:     2026-05-04
     Context:  Windows UEFI CA 2023 Secure Boot certificate rollout
     Requires: Windows PowerShell 5.1, 64-bit
 
@@ -521,38 +529,42 @@ Write-Log ("{0,-22} : {1} (Enabled={2})" -f 'Secure-Boot-Update task', $taskStat
 Write-Log ("{0,-22} : 1808={1} 1803={2} 1802={3} 1800={4}" -f 'Event counts',
     $evt.Counts[1808], $evt.Counts[1803], $evt.Counts[1802], $evt.Counts[1800]) -Level INFO
 
-# -- Hard-blocker short-circuits (exit 0 = "not actionable") ---------------
-# Returning success here prevents Intune from re-running the PR forever on
-# devices that cannot be remediated from the OS. Reasons are logged + echoed
-# to STDOUT so the device shows up in reporting with a clear marker.
-Write-Log 'Evaluating hard-blocker short-circuits ...' -Level STEP
+# -- Hard-blocker reporting markers ----------------------------------------
+# These conditions cannot be remediated from the OS. We deliberately exit 1
+# (not 0) so Intune's PR dashboard does NOT mark the device as 'Remediation
+# successful' / 'Fixed' - the device IS still non-compliant; we just chose
+# not to make a system change. Side effects are still skipped (no registry
+# writes, no scheduled-task triggers) so the PR cycle is essentially free.
+# The disambiguating STDOUT prefix lets dashboards segment cohorts.
+Write-Log 'Evaluating hard-blocker reporting markers ...' -Level STEP
 
 if ($null -ne $optOut -and [int]$optOut -eq 1) {
-    Write-Log 'HighConfidenceOptOut = 1 -> device intentionally excluded from CA 2023 rollout. Skipping remediation.' -Level WARN
-    Write-Output 'NOT-APPLICABLE: HighConfidenceOptOut=1 (admin-managed exclusion).'
-    exit 0
+    Write-Log 'HighConfidenceOptOut = 1 -> device intentionally excluded from CA 2023 rollout. Skipping remediation; reporting as non-compliant (not actionable).' -Level WARN
+    Write-Output 'NON-COMPLIANT-NOT-ACTIONABLE: HighConfidenceOptOut=1 (admin-managed exclusion).'
+    exit 1
 }
 
 if ($evt.Has1803) {
     Write-Log 'Event 1803 present -> matching KEK update not found. OEM must supply a PK-signed KEK; remediation cannot proceed.' -Level WARN
-    Write-Output 'NOT-APPLICABLE: Event 1803 (missing KEK - OEM responsibility).'
-    exit 0
+    Write-Output 'NON-COMPLIANT-NOT-ACTIONABLE: Event 1803 (missing KEK - OEM responsibility).'
+    exit 1
 }
 
 if ($evt.Has1802) {
     $kiSuffix = if ($evt.SkipReason) { " ($($evt.SkipReason))" } else { '' }
     Write-Log "Event 1802 present -> known firmware issue is blocking the update$kiSuffix. OEM firmware update required." -Level WARN
-    Write-Output ("NOT-APPLICABLE: Event 1802 (known firmware issue{0})." -f $kiSuffix)
-    exit 0
+    Write-Output ("NON-COMPLIANT-NOT-ACTIONABLE: Event 1802 (known firmware issue{0})." -f $kiSuffix)
+    exit 1
 }
 
 # Reboot-pending: 1800 fired but 1808 has not yet -> the bitmask will
 # advance after the next boot. Re-triggering the task does nothing useful
-# while we wait for the user to reboot. Suppress to exit 0.
+# while we wait for the user to reboot. Skip side effects but exit 1 so
+# Intune does not falsely mark the device as 'Remediation successful'.
 if ($evt.Has1800 -and -not $evt.Has1808) {
-    Write-Log 'Event 1800 (reboot pending) is present and 1808 has not fired yet. Skipping task trigger; reboot will advance state.' -Level WARN
-    Write-Output 'PENDING-REBOOT: Update staged, awaiting reboot.'
-    exit 0
+    Write-Log 'Event 1800 (reboot pending) is present and 1808 has not fired yet. Skipping task trigger; reporting as non-compliant (pending reboot).' -Level WARN
+    Write-Output 'NON-COMPLIANT-PENDING-REBOOT: Update staged, awaiting reboot.'
+    exit 1
 }
 
 # -- Operational warnings (don't change the decision) ----------------------

@@ -22,7 +22,7 @@ All scripts share the same TPM-WMI event-id classification and diagnostic signal
 
 ### Why so many scripts?
 
-- **`Detect_SecureBootUEFICA2023.ps1` / `Remediate_SecureBootUEFICA2023.ps1`** — the Intune PR pair (v1.2). Logs to the Intune Management Extension log directory in CMTrace format with verbose DEBUG-level instrumentation. **Asymmetric design for accurate reporting**: the detect script always exits `1` when a device is not running the new CA (even when the OS cannot help) so the Intune dashboard reflects true security posture; the remediate script exits `0` instantly with no side effects on the same not-actionable conditions, so PR cycles cost only one no-op invocation. Disambiguating STDOUT markers (`NON-COMPLIANT-NOT-ACTIONABLE` / `NON-COMPLIANT-PENDING-REBOOT` / `NON-COMPLIANT`) let dashboards filter work-to-do vs. operator-escalation cohorts. The remediate script also pre-flights the Secure-Boot-Update scheduled task and aborts cleanly when missing/disabled (see below).
+- **`Detect_SecureBootUEFICA2023.ps1` / `Remediate_SecureBootUEFICA2023.ps1`** — the Intune PR pair (v1.2). Logs to the Intune Management Extension log directory in CMTrace format with verbose DEBUG-level instrumentation. **Honest-reporting design** (symmetric across detect and remediate): both scripts exit `1` whenever the device is not actually running the new CA — even when the OS cannot help — so the Intune dashboard never marks a non-compliant device as `Compliant` (detect) or `Remediation successful` / `Fixed` (remediate). The remediate script still **takes no action** (no registry writes, no scheduled-task triggers) on hard-blocker conditions, so the PR cycle stays essentially free on devices that cannot be helped. Disambiguating STDOUT markers (`NON-COMPLIANT-NOT-ACTIONABLE` / `NON-COMPLIANT-PENDING-REBOOT` / `NON-COMPLIANT`) let dashboards filter work-to-do vs. operator-escalation cohorts. The remediate script also pre-flights the Secure-Boot-Update scheduled task and aborts cleanly when missing/disabled (see below).
 - **`SecureBootCertRemediation.ps1`** — the standalone deployment / triage script. Detection-only by default; only writes registry / starts the scheduled task when explicitly invoked with `-ForceRemediation`. Strict gate avoids false-positive "compliant" verdicts caused by stale Event 1808 surviving NVRAM / BIOS resets.
 - **`SecureBootCertDetection-Ivanti.ps1`** — the legacy Ivanti baseline detect script. The compliance verdict is intentionally unchanged to avoid baseline / ticket churn; the enhanced diagnostics (1808 / 1799 / 1801 / 1802 / 1803 / latest good / latest bad / FW errors) are surfaced in the `found =` line for triage only.
 
@@ -67,14 +67,14 @@ Upload the two scripts to a single PR package:
 4. `AvailableUpdates` = `0x4000` (terminal complete state)
 5. Event ID 1808 from `Microsoft-Windows-TPM-WMI` present in System log
 
-Before the gate is evaluated, the detect script applies several **hard-blocker reporting markers**. The device IS non-compliant for security posture purposes (it is not actually running the new CA), so detect always exits `1` — but the disambiguating STDOUT prefix lets the dashboard segment cohorts. The paired remediate script ALSO short-circuits on these conditions but exits `0` with **no side effects** (no registry writes, no task triggers), so PR cycles cost only one no-op invocation:
+Before the gate is evaluated, both scripts apply several **hard-blocker reporting markers**. The device IS non-compliant for security posture purposes (it is not actually running the new CA), so both detect and remediate exit `1` — but the disambiguating STDOUT prefix lets the dashboard segment cohorts. The remediate script still takes **no action** on these paths (no registry writes, no task triggers), so the PR cycle stays essentially free on devices that cannot be helped:
 
-| Condition | Detect exit | Detect STDOUT marker | Remediate exit |
-|-----------|-------------|----------------------|----------------|
-| `HighConfidenceOptOut = 1` | `1` | `NON-COMPLIANT-NOT-ACTIONABLE: HighConfidenceOptOut=1 (admin-managed exclusion).` | `0` (no-op) |
-| Event 1803 present (missing PK-signed KEK) | `1` | `NON-COMPLIANT-NOT-ACTIONABLE: Event 1803 (missing KEK - OEM responsibility).` | `0` (no-op) |
-| Event 1802 present (known firmware issue) | `1` | `NON-COMPLIANT-NOT-ACTIONABLE: Event 1802 (known firmware issue [KI_<n>]).` | `0` (no-op) |
-| Event 1800 present, Event 1808 not yet present | `1` | `NON-COMPLIANT-PENDING-REBOOT: Update staged, awaiting reboot. Gate failures: ...` | `0` (no-op) |
+| Condition | Detect exit | Remediate exit | STDOUT marker |
+|-----------|-------------|----------------|---------------|
+| `HighConfidenceOptOut = 1` | `1` | `1` (no side effects) | `NON-COMPLIANT-NOT-ACTIONABLE: HighConfidenceOptOut=1 (admin-managed exclusion).` |
+| Event 1803 present (missing PK-signed KEK) | `1` | `1` (no side effects) | `NON-COMPLIANT-NOT-ACTIONABLE: Event 1803 (missing KEK - OEM responsibility).` |
+| Event 1802 present (known firmware issue) | `1` | `1` (no side effects) | `NON-COMPLIANT-NOT-ACTIONABLE: Event 1802 (known firmware issue [KI_<n>]).` |
+| Event 1800 present, Event 1808 not yet present | `1` | `1` (no side effects) | `NON-COMPLIANT-PENDING-REBOOT: Update staged, awaiting reboot.` |
 
 **Reporting taxonomy** — dashboards can filter on the STDOUT marker prefix:
 
@@ -94,7 +94,7 @@ In addition, the detect script emits **operational warnings** (logged but do **n
 
 Diagnostic context surfaced in every detect run (logged at INFO level): `UEFICA2023ErrorEvent`, `MicrosoftUpdateManagedOptIn`, per-ID event counts (`1808`/`1803`/`1802`/`1801`/`1800`/`1795`/`1796`), parsed `BucketId` / `BucketConfidenceLevel` / `SkipReason`, and captured error codes from the latest `1795` / `1796`.
 
-**Remediate** keeps the no-side-effect fast-path on the same hard-blocker conditions (`HighConfidenceOptOut=1`, Event 1803, Event 1802, Event 1800 without 1808): it exits `0` with a `NOT-APPLICABLE:` / `PENDING-REBOOT:` STDOUT marker before touching the registry or the task, so an Intune cycle costs nothing on devices that cannot be helped. When none of those apply, it branches on the current `AvailableUpdates` value:
+**Remediate** short-circuits with **no side effects** on the same hard-blocker conditions (`HighConfidenceOptOut=1`, Event 1803, Event 1802, Event 1800 without 1808): it exits `1` with a `NON-COMPLIANT-NOT-ACTIONABLE:` / `NON-COMPLIANT-PENDING-REBOOT:` STDOUT marker before touching the registry or the task. Exit `1` ensures Intune does **not** falsely report the device as `Remediation successful` / `Fixed` — the device is genuinely still non-compliant, we just chose not to make a system change because the OS cannot help. When none of those apply, it branches on the current `AvailableUpdates` value:
 
 | Current value | Branch | Action |
 |---------------|--------|--------|
@@ -296,7 +296,7 @@ PREREQ: Not running in 64-bit PowerShell.
 | Exit code | Meaning | Triggers remediation? |
 |-----------|---------|----------------------|
 | `0` | `COMPLIANT` only | No |
-| `1` | Any `NON-COMPLIANT*` flavour or `PREREQ` failure | Yes (remediate short-circuits to no-op on `*-NOT-ACTIONABLE` / `*-PENDING-REBOOT`) |
+| `1` | Any `NON-COMPLIANT*` flavour or `PREREQ` failure | Yes (remediate also exits `1` with no side effects on `*-NOT-ACTIONABLE` / `*-PENDING-REBOOT`, so Intune does not falsely mark the device as `Fixed`) |
 
 Full per-step trace is written to the CMTrace log file.
 
@@ -307,10 +307,10 @@ Single-line STDOUT summary describing the action taken. Possible outputs:
 ```text
 REMEDIATED: AvailableUpdates pre=0x0 post=0x5944. Reboot required to finalize.
 NO-OP: Already at compliant terminal state (0x4000).
-NOT-APPLICABLE: HighConfidenceOptOut=1 (admin-managed exclusion).
-NOT-APPLICABLE: Event 1803 (missing KEK - OEM responsibility).
-NOT-APPLICABLE: Event 1802 (known firmware issue [KI_12345]).
-PENDING-REBOOT: Update staged, awaiting reboot.
+NON-COMPLIANT-NOT-ACTIONABLE: HighConfidenceOptOut=1 (admin-managed exclusion).
+NON-COMPLIANT-NOT-ACTIONABLE: Event 1803 (missing KEK - OEM responsibility).
+NON-COMPLIANT-NOT-ACTIONABLE: Event 1802 (known firmware issue [KI_12345]).
+NON-COMPLIANT-PENDING-REBOOT: Update staged, awaiting reboot.
 ABORT: Secure Boot disabled.
 FAIL: Scheduled task '\Microsoft\Windows\PI\Secure-Boot-Update' is missing.
 FAIL: Scheduled task is 'Disabled' (not Ready). Re-enable before remediation.
@@ -318,10 +318,10 @@ FAIL: Could not start Secure-Boot-Update scheduled task.
 FAIL: Registry write error - <message>
 ```
 
-| Exit code | Meaning |
-|-----------|---------|
-| `0` | `REMEDIATED`, `NO-OP`, `NOT-APPLICABLE`, or `PENDING-REBOOT` |
-| `1` | `PREREQ`, `ABORT`, or `FAIL` (registry / scheduled task / Secure Boot disabled) |
+| Exit code | Meaning | Intune PR dashboard |
+|-----------|---------|----------------------|
+| `0` | `REMEDIATED` or `NO-OP` (action taken or already compliant) | `Remediation successful` / `Fixed` |
+| `1` | `NON-COMPLIANT-NOT-ACTIONABLE`, `NON-COMPLIANT-PENDING-REBOOT`, `PREREQ`, `ABORT`, or `FAIL` | Stays in the work queue (not falsely marked `Fixed`) |
 
 Full per-step trace is written to the same CMTrace log file as the detect script.
 
