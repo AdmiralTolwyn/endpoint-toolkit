@@ -557,21 +557,21 @@ if ($evt.Event1796Code)         { Write-Log ("{0,-22} : {1}" -f 'Event 1796 Erro
 # no side effects, so re-running the PR cycle costs nothing.
 Write-Log 'Evaluating hard-blocker reporting markers (HighConfidenceOptOut / 1803 / 1802) ...' -Level STEP
 
-if ($null -ne $optOut -and [int]$optOut -eq 1) {
+if ($null -ne $optOut -and [int]$optOut -eq 1 -and -not $evt.Has1808) {
     Write-Log 'HighConfidenceOptOut = 1 -> device intentionally excluded from CA 2023 rollout. Reporting as non-compliant (not actionable).' -Level WARN
     Write-Output 'NON-COMPLIANT-NOT-ACTIONABLE: HighConfidenceOptOut=1 (admin-managed exclusion).'
     Write-Log '--- Detection finished (ExitCode: 1 - HighConfidenceOptOut) ---' -Level STEP
     exit 1
 }
 
-if ($evt.Has1803) {
+if ($evt.Has1803 -and -not $evt.Has1808) {
     Write-Log "Event 1803 present -> matching KEK update not found. OEM must supply a PK-signed KEK; this cannot be remediated from the OS." -Level WARN
     Write-Output 'NON-COMPLIANT-NOT-ACTIONABLE: Event 1803 (missing KEK - OEM responsibility).'
     Write-Log '--- Detection finished (ExitCode: 1 - Event 1803) ---' -Level STEP
     exit 1
 }
 
-if ($evt.Has1802) {
+if ($evt.Has1802 -and -not $evt.Has1808) {
     $kiSuffix = if ($evt.SkipReason) { " ($($evt.SkipReason))" } else { '' }
     Write-Log "Event 1802 present -> known firmware issue is blocking the update$kiSuffix. OEM firmware update required; cannot be remediated from the OS." -Level WARN
     Write-Output ("NON-COMPLIANT-NOT-ACTIONABLE: Event 1802 (known firmware issue{0})." -f $kiSuffix)
