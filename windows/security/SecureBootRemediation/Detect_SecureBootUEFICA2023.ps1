@@ -13,14 +13,22 @@
       5. Event ID 1808 from provider Microsoft-Windows-TPM-WMI present
          in the System log (successful CA 2023 update completion).
 
-    Short-circuits (exit 0 = "compliant / not actionable") that suppress
-    the gate to prevent an Intune PR retry loop on devices that cannot
-    be remediated from the OS:
-      * HighConfidenceOptOut = 1 (admin-managed exclusion).
-      * Event 1803 present (missing KEK - OEM must supply PK-signed KEK).
-      * Event 1802 present (known firmware issue / SkipReason: KI_<n>).
-      * Event 1800 present without 1808 (reboot pending - update will
-        proceed after the next boot; remediation is a no-op).
+    Reporting markers (exit 1 in all cases - device IS non-compliant for
+    security posture reporting purposes - paired with disambiguating STDOUT
+    text so dashboards can segment work-to-do vs. not-actionable):
+      * HighConfidenceOptOut = 1 -> NON-COMPLIANT-NOT-ACTIONABLE
+        (admin-managed exclusion).
+      * Event 1803 present -> NON-COMPLIANT-NOT-ACTIONABLE
+        (missing KEK - OEM must supply PK-signed KEK).
+      * Event 1802 present -> NON-COMPLIANT-NOT-ACTIONABLE
+        (known firmware issue / SkipReason: KI_<n>).
+      * Event 1800 without 1808 -> NON-COMPLIANT-PENDING-REBOOT
+        (update staged, awaiting reboot to fire 1808).
+
+    The paired Remediate_SecureBootUEFICA2023.ps1 script ALSO short-circuits
+    on the same conditions, but exits 0 with no side effects (no registry
+    writes, no scheduled-task triggers) so PR cycles cost only one no-op
+    invocation and never modify a device that cannot be helped from the OS.
 
     Operational warnings (logged but do NOT change the gate decision):
       * Secure-Boot-Update scheduled task missing or disabled - any
@@ -54,15 +62,17 @@
 
 .OUTPUTS
     System.Int32 exit code:
-      0  = Compliant, not-applicable, or pending-reboot (no remediation)
-      1  = Non-compliant (remediation should run)
+      0  = Compliant
+      1  = Non-compliant (any flavour - see STDOUT marker for detail)
 
     Single-line STDOUT summary suitable for the Intune PR detection column.
+    Marker prefixes: COMPLIANT, NON-COMPLIANT, NON-COMPLIANT-NOT-ACTIONABLE,
+    NON-COMPLIANT-PENDING-REBOOT, PREREQ.
 
 .NOTES
     Author:   Anton Romanyuk
-    Version:  1.1
-    Date:     2026-04-30
+    Version:  1.2
+    Date:     2026-05-04
     Context:  Windows UEFI CA 2023 Secure Boot certificate rollout
     Requires: Windows PowerShell 5.1, 64-bit
 
@@ -536,30 +546,37 @@ if ($evt.SkipReason)            { Write-Log ("{0,-22} : {1}" -f 'SkipReason',   
 if ($evt.Event1795Code)         { Write-Log ("{0,-22} : {1}" -f 'Event 1795 ErrorCode',  $evt.Event1795Code)         -Level WARN }
 if ($evt.Event1796Code)         { Write-Log ("{0,-22} : {1}" -f 'Event 1796 ErrorCode',  $evt.Event1796Code)         -Level WARN }
 
-# -- Hard-blocker short-circuits -------------------------------------------
-# These are conditions where the device cannot be remediated from the OS.
-# Returning exit 0 prevents Intune from looping the PR forever. The reason
-# is logged and surfaced in the STDOUT summary so the device shows up in
-# reporting as "compliant for our purposes" without a failure noise spike.
-Write-Log 'Evaluating hard-blocker short-circuits (HighConfidenceOptOut / 1803 / 1802) ...' -Level STEP
+# -- Hard-blocker reporting markers ----------------------------------------
+# Devices in any of these states ARE non-compliant for security posture
+# reporting (the device is not actually running the new CA), but they cannot
+# be helped from the OS. Exit 1 with a NON-COMPLIANT-NOT-ACTIONABLE marker
+# so the Intune PR dashboard reflects the true fleet state and operators can
+# filter / segment by reason.
+#
+# The paired Remediate script ALSO checks these conditions and exits 0 with
+# no side effects, so re-running the PR cycle costs nothing.
+Write-Log 'Evaluating hard-blocker reporting markers (HighConfidenceOptOut / 1803 / 1802) ...' -Level STEP
 
 if ($null -ne $optOut -and [int]$optOut -eq 1) {
-    Write-Log 'HighConfidenceOptOut = 1 -> device intentionally excluded from CA 2023 rollout. Treating as not-applicable.' -Level WARN
-    Write-Output 'NOT-APPLICABLE: HighConfidenceOptOut=1 (admin-managed exclusion).'
-    exit 0
+    Write-Log 'HighConfidenceOptOut = 1 -> device intentionally excluded from CA 2023 rollout. Reporting as non-compliant (not actionable).' -Level WARN
+    Write-Output 'NON-COMPLIANT-NOT-ACTIONABLE: HighConfidenceOptOut=1 (admin-managed exclusion).'
+    Write-Log '--- Detection finished (ExitCode: 1 - HighConfidenceOptOut) ---' -Level STEP
+    exit 1
 }
 
 if ($evt.Has1803) {
     Write-Log "Event 1803 present -> matching KEK update not found. OEM must supply a PK-signed KEK; this cannot be remediated from the OS." -Level WARN
-    Write-Output 'NOT-APPLICABLE: Event 1803 (missing KEK - OEM responsibility).'
-    exit 0
+    Write-Output 'NON-COMPLIANT-NOT-ACTIONABLE: Event 1803 (missing KEK - OEM responsibility).'
+    Write-Log '--- Detection finished (ExitCode: 1 - Event 1803) ---' -Level STEP
+    exit 1
 }
 
 if ($evt.Has1802) {
     $kiSuffix = if ($evt.SkipReason) { " ($($evt.SkipReason))" } else { '' }
     Write-Log "Event 1802 present -> known firmware issue is blocking the update$kiSuffix. OEM firmware update required; cannot be remediated from the OS." -Level WARN
-    Write-Output ("NOT-APPLICABLE: Event 1802 (known firmware issue{0})." -f $kiSuffix)
-    exit 0
+    Write-Output ("NON-COMPLIANT-NOT-ACTIONABLE: Event 1802 (known firmware issue{0})." -f $kiSuffix)
+    Write-Log '--- Detection finished (ExitCode: 1 - Event 1802) ---' -Level STEP
+    exit 1
 }
 
 # -- Operational warnings (do NOT change the gate decision) ----------------
@@ -649,18 +666,20 @@ else {
     $exitCode = 1
 }
 
-# -- Reboot-pending suppression --------------------------------------------
+# -- Reboot-pending reporting marker ---------------------------------------
 # If the gate failed but Event 1800 is present (and 1808 has NOT yet fired),
-# the update has been staged and is waiting for the next reboot. Returning
-# exit 1 here would cause the remediate script to re-trigger the task on
-# every PR cycle while we wait for the user to reboot - noisy and pointless.
-# Suppress to exit 0 with a clear PENDING-REBOOT marker; the next detect
-# pass after reboot will either confirm compliance or restart remediation.
+# the update has been staged and is waiting for the next reboot. Exit 1 with
+# a NON-COMPLIANT-PENDING-REBOOT marker so security posture reporting still
+# flags the device (it is NOT actually running the new CA until 1808 fires)
+# while distinguishing it from genuine remediation candidates.
+#
+# The paired Remediate script short-circuits on this condition with no side
+# effects, so re-running the PR cycle costs nothing until the user reboots.
 if ($exitCode -ne 0 -and $evt.Has1800 -and -not $evt.Has1808) {
-    Write-Log 'Gate failed but Event 1800 (reboot pending) is present. Suppressing non-compliant signal until the device reboots.' -Level WARN
-    Write-Output ('PENDING-REBOOT: Update staged, awaiting reboot. Gate would fail on: ' + ($outputMsgs -join ' | '))
-    Write-Log "--- Detection finished (ExitCode: 0 - reboot-pending suppression) ---" -Level STEP
-    exit 0
+    Write-Log 'Gate failed and Event 1800 (reboot pending) is present. Reporting as non-compliant (pending reboot); remediate will no-op until the device reboots.' -Level WARN
+    Write-Output ('NON-COMPLIANT-PENDING-REBOOT: Update staged, awaiting reboot. Gate failures: ' + ($outputMsgs -join ' | '))
+    Write-Log "--- Detection finished (ExitCode: 1 - reboot pending) ---" -Level STEP
+    exit 1
 }
 
 # -- Final summary + exit --------------------------------------------------
