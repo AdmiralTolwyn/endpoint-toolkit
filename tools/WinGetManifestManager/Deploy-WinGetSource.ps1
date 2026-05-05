@@ -599,23 +599,95 @@ function Test-UpstreamSkuSupport {
     Write-Log "Upstream module accepts ImplementationPerformance values: $($supported -join ', ')" -Level INFO
 
     if ($supported -notcontains $RequestedTier) {
-        $msg = @"
+        Write-Log "Requested SKU '$RequestedTier' missing from upstream ValidateSet — attempting in-memory hot-patch." -Level WARN
+
+        # Customer feedback (2026-05 follow-up): instead of failing, try to widen the
+        # ValidateSet so the deploy actually succeeds on a vanilla module install.
+        # Strategy: walk the chain New-WinGetSource -> New-ARMObjects -> any inner
+        # cmdlet that exposes -ImplementationPerformance / -Sku, and rebuild the
+        # ValidValues list with our requested tier appended.
+        $unionValues = @($supported + $RequestedTier | Select-Object -Unique)
+        $patched = 0
+        foreach ($candidateName in @('New-WinGetSource', 'New-ARMObjects', 'New-ARMParameterObject')) {
+            $c = Get-Command -Module Microsoft.WinGet.RestSource -Name $candidateName -ErrorAction SilentlyContinue
+            if (-not $c) { continue }
+            foreach ($pName in @('ImplementationPerformance', 'Sku')) {
+                $p = $c.Parameters[$pName]
+                if (-not $p) { continue }
+                $vs = $p.Attributes | Where-Object { $_ -is [System.Management.Automation.ValidateSetAttribute] } | Select-Object -First 1
+                if (-not $vs) { continue }
+                if (@($vs.ValidValues) -contains $RequestedTier) { continue }
+                try {
+                    # ValidValues is a get-only IList<string>; replace it via reflection on the backing field.
+                    $field = [System.Management.Automation.ValidateSetAttribute].GetField('validValues', [System.Reflection.BindingFlags]::Instance -bor [System.Reflection.BindingFlags]::NonPublic)
+                    if ($field) {
+                        $field.SetValue($vs, [string[]]$unionValues)
+                        Write-Log "  Patched $candidateName -$pName ValidateSet -> $($unionValues -join ', ')" -Level SUCCESS
+                        $patched++
+                    } else {
+                        Write-Log "  Could not locate ValidateSetAttribute backing field on $candidateName -$pName (PowerShell version mismatch)." -Level WARN
+                    }
+                } catch {
+                    Write-Log "  Failed to patch $candidateName -${pName}: $($_.Exception.Message)" -Level WARN
+                }
+            }
+        }
+
+        # Also patch the ARM template's allowedValues if the JSON template ships in the module
+        # (some versions of the module hard-code allowedValues for the apimSku parameter).
+        try {
+            $modBase = (Get-Module -Name Microsoft.WinGet.RestSource).ModuleBase
+            if ($modBase) {
+                $armTemplates = Get-ChildItem -Path $modBase -Recurse -Filter '*.json' -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Name -match 'azuredeploy|template|apim' -or (Select-String -Path $_.FullName -Pattern 'apimSku|ImplementationPerformance' -SimpleMatch -Quiet -ErrorAction SilentlyContinue) }
+                foreach ($t in $armTemplates) {
+                    try {
+                        $raw = [System.IO.File]::ReadAllText($t.FullName)
+                        # Only touch files whose allowedValues array is missing our requested tier.
+                        if ($raw -match '"allowedValues"\s*:\s*\[[^\]]*\]' -and $raw -notmatch [regex]::Escape("`"$RequestedTier`"")) {
+                            $patchedRaw = [regex]::Replace($raw, '("allowedValues"\s*:\s*\[)([^\]]*)(\])', {
+                                param($m)
+                                $arr = $m.Groups[2].Value
+                                if ($arr -match [regex]::Escape("`"$RequestedTier`"")) { return $m.Value }
+                                # Heuristic: only patch arrays that already contain SKU-like values
+                                if ($arr -notmatch '"(Developer|Basic|Standard|Premium|Consumption)"') { return $m.Value }
+                                $newArr = $arr.TrimEnd(", `n`r`t".ToCharArray()) + ", `"$RequestedTier`""
+                                return $m.Groups[1].Value + $newArr + $m.Groups[3].Value
+                            })
+                            if ($patchedRaw -ne $raw) {
+                                # Backup once, then overwrite in place (in module install dir).
+                                if (-not (Test-Path "$($t.FullName).orig")) { Copy-Item $t.FullName "$($t.FullName).orig" -Force }
+                                [System.IO.File]::WriteAllText($t.FullName, $patchedRaw)
+                                Write-Log "  Patched ARM template allowedValues in $($t.Name) (backup: .orig)" -Level SUCCESS
+                                $patched++
+                            }
+                        }
+                    } catch {
+                        Write-Log "  Skipped ARM template $($t.Name): $($_.Exception.Message)" -Level DEBUG
+                    }
+                }
+            }
+        } catch {
+            Write-Log "ARM-template scan failed: $($_.Exception.Message)" -Level DEBUG
+        }
+
+        if ($patched -eq 0) {
+            $msg = @"
 Requested -PerformanceTier '$RequestedTier' is NOT supported by the installed
-Microsoft.WinGet.RestSource module. Upstream ValidateSet only accepts:
-    $($supported -join ', ')
+Microsoft.WinGet.RestSource module and the in-memory hot-patch could not find
+any ValidateSet to widen. Upstream accepts: $($supported -join ', ')
 
-This usually means the unpatched upstream module from PSGallery is shadowing
-the patched fork. Resolution options:
-
+Resolution options:
   1. Install the patched fork to a HIGHER version than the upstream copy:
         Install-PSResource -Name Microsoft.WinGet.RestSource -Repository <fork-feed> -Reinstall
-  2. Hot-patch the installed copy in-place (replace its New-WinGetSource.ps1
-     ValidateSet with: Developer,Basic,Standard,Premium,Consumption,BasicV2,StandardV2).
-  3. Pick a tier that is in the supported set above (e.g. -PerformanceTier Basic)
-     and resize APIM to StandardV2 manually after deploy:
-        Update-AzApiManagement -ResourceGroupName '$ResourceGroup' -Name 'apim-$Name' -Sku StandardV2
+  2. Manually edit the installed module's New-WinGetSource.ps1 ValidateSet.
+  3. Pick a supported tier (e.g. -PerformanceTier Basic) and resize APIM after deploy:
+        Update-AzApiManagement -ResourceGroupName '$ResourceGroup' -Name 'apim-$Name' -Sku $RequestedTier
 "@
-        throw $msg
+            throw $msg
+        }
+
+        Write-Log "Hot-patch applied to $patched location(s); upstream module will now accept '$RequestedTier'." -Level SUCCESS
     }
     return $supported
 }
