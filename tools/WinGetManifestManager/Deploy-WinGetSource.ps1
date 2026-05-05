@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Deploys a private WinGet REST source to Azure and optionally seeds it with package manifests.
 
@@ -124,8 +124,10 @@
 
 .PARAMETER RestSourcePath
     Path to the compiled Azure Function zip file (WinGet.RestSource.Functions.zip).
-    If omitted, defaults to .\WinGet.RestSource.Functions.zip in the script directory.
-    Use this to deploy a custom or patched build of the REST source Functions app.
+    Resolution order when omitted:
+      1. .\WinGet.RestSource.Functions.zip in the script directory (the fork's bundled build)
+      2. <Microsoft.WinGet.RestSource module>\Data\WinGet.RestSource.Functions.zip (upstream)
+    Pass this explicitly to deploy a custom or patched build.
 
 .PARAMETER LogDirectory
     Directory for log files. Default: ".\logs"
@@ -262,7 +264,12 @@ param(
     [string]$LogDirectory = ".\logs",
 
     [ValidateScript({ if ($_ -and -not (Test-Path $_)) { throw "RestSourcePath '$_' does not exist." }; $true })]
-    [string]$RestSourcePath
+    [string]$RestSourcePath,
+
+    # When set, runs Phase 1 (prerequisites + module hygiene + upstream SKU probe)
+    # then exits without touching Azure. Use to verify the deploy will not blow up
+    # 30 minutes in due to a stale upstream module shadowing the patched fork.
+    [switch]$DryRun
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -361,12 +368,22 @@ function Write-Log {
 }
 
 function Write-Banner {
+    $title = 'WinGet REST Source — Azure Deployment'
+    $stamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    $inner = 62  # interior width (between the side borders)
+    $top    = '╔' + ('═' * $inner) + '╗'
+    $bot    = '╚' + ('═' * $inner) + '╝'
+    $padTit = ' ' * [math]::Max(0, [math]::Floor(($inner - $title.Length) / 2))
+    $padStp = ' ' * [math]::Max(0, [math]::Floor(($inner - $stamp.Length) / 2))
+    $line1  = '║' + $padTit + $title + (' ' * ($inner - $padTit.Length - $title.Length)) + '║'
+    $line2  = '║' + $padStp + $stamp + (' ' * ($inner - $padStp.Length - $stamp.Length)) + '║'
+
     $banner = @"
 
-    ╔══════════════════════════════════════════════════════════════╗
-    ║          WinGet REST Source — Azure Deployment              ║
-    ║          $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')                            ║
-    ╚══════════════════════════════════════════════════════════════╝
+    $top
+    $line1
+    $line2
+    $bot
 
 "@
     Write-Host $banner -ForegroundColor Cyan
@@ -433,27 +450,308 @@ function Get-PlainToken {
     return $tokenObj.Token
 }
 
-function Assert-ModuleAvailable {
-    param([string]$ModuleName, [switch]$Install)
+function Resolve-RestSourceFunctionsZip {
+    <#
+    .SYNOPSIS
+        Resolves the path to WinGet.RestSource.Functions.zip with this precedence:
+          1. -RestSourcePath script parameter (explicit override)
+          2. <script-directory>\WinGet.RestSource.Functions.zip  (this fork's bundled build)
+          3. <Microsoft.WinGet.RestSource module>\Data\WinGet.RestSource.Functions.zip (upstream fallback)
+    .DESCRIPTION
+        Customer feedback (2026-05): the script was silently using the upstream module's
+        bundled zip instead of the fork's bundled zip in the script directory. The README
+        already promised the script-directory fallback, so this restores that contract.
+    .OUTPUTS
+        [string] absolute path, or $null if no zip is found.
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$ExplicitPath
+    )
 
-    $mod = Get-Module -ListAvailable -Name $ModuleName | Select-Object -First 1
+    if ($ExplicitPath) {
+        $resolved = (Resolve-Path -LiteralPath $ExplicitPath -ErrorAction Stop).Path
+        Write-Log "Functions zip: explicit -RestSourcePath → $resolved" -Level INFO
+        return $resolved
+    }
+
+    $scriptDirZip = if ($PSScriptRoot) { Join-Path $PSScriptRoot 'WinGet.RestSource.Functions.zip' } else { $null }
+    if ($scriptDirZip -and (Test-Path -LiteralPath $scriptDirZip)) {
+        $sz = [math]::Round((Get-Item -LiteralPath $scriptDirZip).Length / 1MB, 2)
+        Write-Log "Functions zip: using fork-bundled build → $scriptDirZip ($sz MB)" -Level INFO
+        return $scriptDirZip
+    }
+
+    $mod = Get-Module Microsoft.WinGet.RestSource
+    if ($mod) {
+        $upstreamZip = Join-Path $mod.ModuleBase 'Data\WinGet.RestSource.Functions.zip'
+        if (Test-Path -LiteralPath $upstreamZip) {
+            Write-Log "Functions zip: falling back to upstream module copy → $upstreamZip" -Level WARN
+            Write-Log "  (Drop a fork build at '$scriptDirZip' to override.)" -Level WARN
+            return $upstreamZip
+        }
+    }
+
+    Write-Log "Functions zip: NOT FOUND in any of: -RestSourcePath, '$($scriptDirZip ?? '<no script dir>')', upstream module Data folder." -Level ERROR
+    return $null
+}
+
+function Assert-ModuleAvailable {
+    <#
+    .SYNOPSIS
+        Ensures a module is installed AND that the highest available copy on disk is the
+        one that will load. Detects the dual-edition split (WindowsPowerShell\Modules vs
+        PowerShell\Modules), stale already-loaded instances, and reports every copy found
+        across PSModulePath so customers can spot a stale fork copy that's losing the
+        version race.
+    .NOTES
+        Customer feedback (2026-05): a stale Microsoft.WinGet.RestSource lived in
+        $HOME\Documents\PowerShell\Modules\... with the unpatched ValidateSet and
+        silently won the import. This helper now refuses to silently ignore that case.
+    #>
+    param(
+        [string]$ModuleName,
+        [switch]$Install,
+        [version]$MinimumVersion
+    )
+
+    # 1) Enumerate ALL copies across PSModulePath (both editions, all roots)
+    $allCopies = @(Get-Module -ListAvailable -Name $ModuleName -ErrorAction SilentlyContinue |
+                   Sort-Object Version -Descending)
+
+    if ($allCopies.Count -gt 1) {
+        Write-Log "Found $($allCopies.Count) installed copies of '$ModuleName':" -Level WARN
+        foreach ($c in $allCopies) {
+            Write-Log "  v$($c.Version) at $($c.ModuleBase)" -Level WARN
+        }
+        Write-Log "  → PowerShell will load v$($allCopies[0].Version) (highest version wins)." -Level WARN
+    }
+
+    $mod = $allCopies | Select-Object -First 1
+
     if (-not $mod) {
         if ($Install) {
             Write-Log "Module '$ModuleName' not found — installing..." -Level WARN
             try {
-                Install-PSResource -Name $ModuleName -Scope CurrentUser -TrustRepository -ErrorAction Stop
+                Install-PSResource -Name $ModuleName -Scope CurrentUser -TrustRepository -Reinstall -ErrorAction Stop
                 Write-Log "Module '$ModuleName' installed successfully." -Level SUCCESS
             } catch {
-                # Fallback for older PS versions without Install-PSResource
                 Install-Module -Name $ModuleName -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
                 Write-Log "Module '$ModuleName' installed (fallback Install-Module)." -Level SUCCESS
             }
+            $mod = Get-Module -ListAvailable -Name $ModuleName | Sort-Object Version -Descending | Select-Object -First 1
         } else {
             throw "Required module '$ModuleName' is not installed. Run: Install-PSResource -Name $ModuleName"
         }
     } else {
-        Write-Log "Module '$ModuleName' v$($mod.Version) found." -Level DEBUG
+        Write-Log "Module '$ModuleName' v$($mod.Version) found at $($mod.ModuleBase)" -Level DEBUG
     }
+
+    if ($MinimumVersion -and $mod.Version -lt $MinimumVersion) {
+        throw "Module '$ModuleName' v$($mod.Version) is older than required v$MinimumVersion. " +
+              "Run: Install-PSResource -Name $ModuleName -Reinstall"
+    }
+
+    # 2) Force a clean re-import: a previous session/profile may have a stale instance loaded
+    Get-Module -Name $ModuleName -All -ErrorAction SilentlyContinue | Remove-Module -Force -ErrorAction SilentlyContinue
+
+    return $mod
+}
+
+function Test-UpstreamSkuSupport {
+    <#
+    .SYNOPSIS
+        Probes the loaded Microsoft.WinGet.RestSource module to confirm the requested
+        APIM SKU is in the upstream ValidateSet for ImplementationPerformance.
+    .DESCRIPTION
+        Customer feedback (2026-05): when the user passed -PerformanceTier StandardV2 on
+        a machine where the unpatched upstream module was installed, our wrapper accepted
+        the value but the inner `New-WinGetSource` ValidateSet rejected it with:
+            "The argument 'StandardV2' does not belong to the set
+             'Developer,Basic,Standard,Premium,Consumption' ..."
+        This probe fails fast BEFORE we start any ARM work.
+    .OUTPUTS
+        [string[]] of supported values (informational), or throws if the requested
+        SKU is not in the set.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$RequestedTier
+    )
+
+    $cmd = Get-Command -Module Microsoft.WinGet.RestSource -Name New-WinGetSource -ErrorAction SilentlyContinue
+    if (-not $cmd) {
+        Write-Log "Microsoft.WinGet.RestSource\New-WinGetSource not visible — skipping SKU probe." -Level WARN
+        return @()
+    }
+    $param = $cmd.Parameters['ImplementationPerformance']
+    if (-not $param) {
+        Write-Log "Upstream New-WinGetSource has no -ImplementationPerformance parameter — skipping probe." -Level WARN
+        return @()
+    }
+    $vsAttr = $param.Attributes | Where-Object { $_ -is [System.Management.Automation.ValidateSetAttribute] } | Select-Object -First 1
+    if (-not $vsAttr) {
+        Write-Log "Upstream New-WinGetSource -ImplementationPerformance has no ValidateSet — assuming open." -Level DEBUG
+        return @()
+    }
+
+    $supported = @($vsAttr.ValidValues)
+    Write-Log "Upstream module accepts ImplementationPerformance values: $($supported -join ', ')" -Level INFO
+
+    if ($supported -notcontains $RequestedTier) {
+        $msg = @"
+Requested -PerformanceTier '$RequestedTier' is NOT supported by the installed
+Microsoft.WinGet.RestSource module. Upstream ValidateSet only accepts:
+    $($supported -join ', ')
+
+This usually means the unpatched upstream module from PSGallery is shadowing
+the patched fork. Resolution options:
+
+  1. Install the patched fork to a HIGHER version than the upstream copy:
+        Install-PSResource -Name Microsoft.WinGet.RestSource -Repository <fork-feed> -Reinstall
+  2. Hot-patch the installed copy in-place (replace its New-WinGetSource.ps1
+     ValidateSet with: Developer,Basic,Standard,Premium,Consumption,BasicV2,StandardV2).
+  3. Pick a tier that is in the supported set above (e.g. -PerformanceTier Basic)
+     and resize APIM to StandardV2 manually after deploy:
+        Update-AzApiManagement -ResourceGroupName '$ResourceGroup' -Name 'apim-$Name' -Sku StandardV2
+"@
+        throw $msg
+    }
+    return $supported
+}
+
+function Publish-FunctionZipOneDeploy {
+    <#
+    .SYNOPSIS
+        Uploads a Functions zip via the Kudu OneDeploy REST endpoint.
+    .DESCRIPTION
+        Customer feedback (2026-05): `Publish-AzWebApp -ArchivePath` fails on
+        Flex Consumption / .NET-isolated worker plans because it routes through the
+        legacy MSDeploy pipeline. OneDeploy (`/api/publish?type=zip`) works for
+        Consumption, Premium, Flex, AND isolated worker plans.
+
+        Uses bearer auth from the current Az context — no Kudu basic-auth credentials
+        required.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$ResourceGroup,
+        [Parameter(Mandatory)][string]$FunctionAppName,
+        [Parameter(Mandatory)][string]$ZipPath,
+        [int]$TimeoutSec = 600
+    )
+
+    if (-not (Test-Path $ZipPath)) {
+        throw "Zip not found: $ZipPath"
+    }
+    $zipSize = [math]::Round((Get-Item $ZipPath).Length / 1MB, 2)
+    Write-Log "OneDeploy: uploading $ZipPath ($zipSize MB) to '$FunctionAppName'..." -Level INFO
+
+    $token = Get-PlainToken
+    $uri = "https://$FunctionAppName.scm.azurewebsites.net/api/publish?type=zip&async=false&restart=true&clean=true"
+
+    $headers = @{
+        Authorization  = "Bearer $token"
+        'Content-Type' = 'application/zip'
+    }
+
+    try {
+        $resp = Invoke-WebRequest -Method POST -Uri $uri -Headers $headers `
+                                   -InFile $ZipPath -TimeoutSec $TimeoutSec `
+                                   -UseBasicParsing -ErrorAction Stop
+        Write-Log "OneDeploy: HTTP $($resp.StatusCode) — upload accepted." -Level SUCCESS
+        return $true
+    } catch {
+        $status = if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { 0 }
+        Write-Log "OneDeploy upload failed (HTTP $status): $($_.Exception.Message)" -Level ERROR
+        throw
+    }
+}
+
+function Assert-FunctionAppHealthy {
+    <#
+    .SYNOPSIS
+        Validates that the Function App has the right runtime app-settings AND that the
+        host is actually responsive after a deploy.
+    .DESCRIPTION
+        Customer feedback (2026-05): even after a successful zip upload via the portal,
+        the host failed with an "isolated worker" startup error. That error surfaces
+        when FUNCTIONS_WORKER_RUNTIME isn't 'dotnet-isolated' or when the Functions
+        runtime extension version is wrong. We assert both, fix them if needed, and
+        then ping a known endpoint to fail fast on host startup errors.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$ResourceGroup,
+        [Parameter(Mandatory)][string]$FunctionAppName,
+        [string]$HealthPath = '/api/information',
+        [int]$WarmupSec    = 60
+    )
+
+    Write-Log "Verifying Function App '$FunctionAppName' app settings..." -Level INFO
+    try {
+        $app = Get-AzFunctionApp -ResourceGroupName $ResourceGroup -Name $FunctionAppName -ErrorAction Stop
+    } catch {
+        try {
+            $app = Get-AzWebApp -ResourceGroupName $ResourceGroup -Name $FunctionAppName -ErrorAction Stop
+        } catch {
+            Write-Log "Could not fetch Function App '$FunctionAppName': $($_.Exception.Message)" -Level WARN
+            return $false
+        }
+    }
+
+    $required = @{
+        'FUNCTIONS_WORKER_RUNTIME'   = 'dotnet-isolated'
+        'FUNCTIONS_EXTENSION_VERSION'= '~4'
+    }
+    $current = @{}
+    if ($app.ApplicationSettings) {
+        foreach ($k in $app.ApplicationSettings.Keys) { $current[$k] = $app.ApplicationSettings[$k] }
+    } elseif ($app.SiteConfig -and $app.SiteConfig.AppSettings) {
+        foreach ($s in $app.SiteConfig.AppSettings) { $current[$s.Name] = $s.Value }
+    }
+
+    $patch = @{}
+    foreach ($k in $required.Keys) {
+        if ($current[$k] -ne $required[$k]) {
+            Write-Log "  $k = '$($current[$k])' ≠ expected '$($required[$k])' — will patch." -Level WARN
+            $patch[$k] = $required[$k]
+        } else {
+            Write-Log "  $k = '$($current[$k])' OK" -Level DEBUG
+        }
+    }
+
+    if ($patch.Count -gt 0) {
+        try {
+            Update-AzFunctionAppSetting -ResourceGroupName $ResourceGroup -Name $FunctionAppName -AppSetting $patch -Force -ErrorAction Stop | Out-Null
+            Write-Log "App settings patched: $($patch.Keys -join ', ')" -Level SUCCESS
+            Restart-AzFunctionApp -ResourceGroupName $ResourceGroup -Name $FunctionAppName -Force -ErrorAction Stop
+            Write-Log "Function App restarted to apply settings." -Level INFO
+        } catch {
+            Write-Log "Failed to patch app settings: $($_.Exception.Message)" -Level WARN
+        }
+    }
+
+    Write-Log "Warming up host (waiting up to ${WarmupSec}s for startup)..." -Level INFO
+    $url = "https://$FunctionAppName.azurewebsites.net$HealthPath"
+    $deadline = (Get-Date).AddSeconds($WarmupSec)
+    $lastErr = $null
+    while ((Get-Date) -lt $deadline) {
+        try {
+            $r = Invoke-WebRequest -Uri $url -Method GET -TimeoutSec 15 -UseBasicParsing -ErrorAction Stop
+            if ($r.StatusCode -lt 500) {
+                Write-Log "Function host responded: HTTP $($r.StatusCode) at $HealthPath" -Level SUCCESS
+                return $true
+            }
+            $lastErr = "HTTP $($r.StatusCode)"
+        } catch {
+            $lastErr = $_.Exception.Message
+        }
+        Start-Sleep -Seconds 5
+    }
+    Write-Log "Function host did NOT become healthy within ${WarmupSec}s. Last error: $lastErr" -Level WARN
+    Write-Log "Hint: check Kudu eventlog and confirm the .NET-isolated worker is wired correctly." -Level WARN
+    return $false
 }
 
 function Watch-DeploymentProgress {
@@ -727,7 +1025,13 @@ If the problem persists, remove the old versions:
     # 1e. Import the module
     Write-Log "Importing Microsoft.WinGet.RestSource..." -Level INFO
     Import-Module Microsoft.WinGet.RestSource -Force -ErrorAction Stop
-    Write-Log "Module imported successfully." -Level SUCCESS
+    $loadedRest = Get-Module Microsoft.WinGet.RestSource
+    Write-Log "Module imported: v$($loadedRest.Version) from $($loadedRest.ModuleBase)" -Level SUCCESS
+
+    # 1e-2. Verify the loaded module accepts the requested APIM SKU BEFORE doing
+    # any ARM work. Customer feedback (2026-05): unpatched upstream copy
+    # silently shadowed the fork and rejected StandardV2 30 minutes into deploy.
+    Test-UpstreamSkuSupport -RequestedTier $PerformanceTier | Out-Null
 
     # 1f. Validate ManifestPath contents if provided
     if ($ManifestPath) {
@@ -767,6 +1071,7 @@ function Step-ConnectAzure {
     if ($ctx -and $ctx.Account) {
         Write-Log "Already connected as: $($ctx.Account.Id)" -Level INFO
         Write-Log "Subscription: $($ctx.Subscription.Name) ($($ctx.Subscription.Id))" -Level INFO
+        Write-Log "Tenant: $($ctx.Tenant.Id)" -Level DEBUG
     } else {
         Write-Log "No active Azure session. Initiating Connect-AzAccount..." -Level WARN
         Connect-AzAccount -ErrorAction Stop | Out-Null
@@ -780,6 +1085,43 @@ function Step-ConnectAzure {
         Set-AzContext -SubscriptionId $SubscriptionId -ErrorAction Stop | Out-Null
         $ctx = Get-AzContext
         Write-Log "Subscription set: $($ctx.Subscription.Name)" -Level SUCCESS
+    }
+
+    # Verify the cached context can actually access ARM in the current subscription's tenant.
+    # Customer feedback (2026-05): a cached context from a different home tenant produces
+    # 'credentials have not been set up or have expired' on the next ARM call (e.g.
+    # New-AzResourceGroup) instead of failing here. Detect + recover gracefully.
+    try {
+        # A read-only call against the target subscription's tenant. If silent re-auth fails,
+        # this throws with the same multi-tenant message we'd otherwise see in Phase 3.
+        Get-AzResourceGroup -ErrorAction Stop -Name '__nonexistent__do_not_create__' -WarningAction SilentlyContinue | Out-Null
+    } catch {
+        $msg = $_.Exception.Message
+        $isAuthGap = $msg -match 'credentials have not been set up|have expired|User interaction is required|conditional access|AADSTS|Authentication failed against tenant'
+        # 'NotFound' on the bogus RG name is the SUCCESS signal — ARM reached.
+        if ($msg -notmatch 'NotFound|ResourceGroupNotFound|could not be found') {
+            if ($isAuthGap) {
+                $tenantId = $ctx.Tenant.Id
+                if ($msg -match 'tenant\s+([0-9a-fA-F-]{36})') { $tenantId = $Matches[1] }
+                Write-Log "Cached Azure context cannot access ARM in tenant '$tenantId' — silent re-auth failed." -Level WARN
+                Write-Log "This typically happens when your cached login is for a different home tenant or MFA is required." -Level WARN
+                Write-Log "Re-authenticating interactively (Connect-AzAccount -TenantId $tenantId)..." -Level INFO
+                try {
+                    Connect-AzAccount -TenantId $tenantId -ErrorAction Stop | Out-Null
+                    if ($SubscriptionId) {
+                        Set-AzContext -SubscriptionId $SubscriptionId -ErrorAction Stop | Out-Null
+                    }
+                    $ctx = Get-AzContext
+                    Write-Log "Re-authenticated as: $($ctx.Account.Id) (tenant $($ctx.Tenant.Id))" -Level SUCCESS
+                } catch {
+                    throw "Interactive re-authentication failed: $($_.Exception.Message). " +
+                          "Run manually: Connect-AzAccount -TenantId $tenantId" +
+                          $(if ($SubscriptionId) { " ; Set-AzContext -SubscriptionId $SubscriptionId" } else { '' })
+                }
+            } else {
+                throw
+            }
+        }
     }
 
     # Populate defaults for publisher info
@@ -1102,8 +1444,10 @@ function Step-DeployRestSource {
                 InformationAction          = 'Continue'
                 Verbose                    = $true
             }
-            if ($RestSourcePath) {
-                $deployParams['RestSourcePath'] = (Resolve-Path $RestSourcePath).Path
+            # Always pass an explicit zip path — prefer fork-bundled build over upstream module copy.
+            $resolvedZip = Resolve-RestSourceFunctionsZip -ExplicitPath $RestSourcePath
+            if ($resolvedZip) {
+                $deployParams['RestSourcePath'] = $resolvedZip
             }
             if ($Authentication -eq 'MicrosoftEntraId') {
                 $deployParams['RestSourceAuthentication'] = 'MicrosoftEntraId'
@@ -1145,7 +1489,8 @@ function Step-DeployRestSource {
             $mod = Get-Module Microsoft.WinGet.RestSource
             $modBase = $mod.ModuleBase
             $templateFolder   = Join-Path $modBase 'Data\ARMTemplates'
-            $restSourceZip    = if ($RestSourcePath) { (Resolve-Path $RestSourcePath).Path } else { Join-Path $modBase 'Data\WinGet.RestSource.Functions.zip' }
+            $restSourceZip    = Resolve-RestSourceFunctionsZip -ExplicitPath $RestSourcePath
+            if (-not $restSourceZip) { throw 'Could not locate WinGet.RestSource.Functions.zip — pass -RestSourcePath explicitly.' }
             $paramOutputPath  = Join-Path (Get-Location).Path 'Parameters'
 
             # Step 1: Create Entra ID app if needed
@@ -1282,6 +1627,32 @@ function Step-DeployRestSource {
         }
         Write-Log "REST Source URL: $Script:DeploymentUrl" -Level SUCCESS
 
+        # ── POST-DEPLOY: Verify Function App health + isolated-worker settings ──
+        # Customer feedback (2026-05): host failed with "isolated worker" error
+        # after upstream zip upload silently misconfigured FUNCTIONS_WORKER_RUNTIME.
+        $funcAppName = "func-$($Name -replace '[^a-zA-Z0-9-]', '')"
+        try {
+            $healthy = Assert-FunctionAppHealthy -ResourceGroup $ResourceGroup -FunctionAppName $funcAppName
+            if (-not $healthy) {
+                Write-Log "Function App '$funcAppName' is not yet healthy — attempting OneDeploy fallback re-publish..." -Level WARN
+                $zipForRepublish = Resolve-RestSourceFunctionsZip -ExplicitPath $RestSourcePath
+                if ($zipForRepublish -and (Test-Path $zipForRepublish)) {
+                    try {
+                        Invoke-StepWithRetry -StepName 'OneDeploy-Republish' -MaxRetries 2 -BaseDelaySec 20 -Action {
+                            Publish-FunctionZipOneDeploy -ResourceGroup $ResourceGroup -FunctionAppName $funcAppName -ZipPath $zipForRepublish
+                        } | Out-Null
+                        Assert-FunctionAppHealthy -ResourceGroup $ResourceGroup -FunctionAppName $funcAppName | Out-Null
+                    } catch {
+                        Write-Log "OneDeploy fallback also failed: $($_.Exception.Message)" -Level WARN
+                    }
+                } else {
+                    Write-Log "Functions zip not found for re-publish: $zipForRepublish" -Level WARN
+                }
+            }
+        } catch {
+            Write-Log "Function App health check skipped: $($_.Exception.Message)" -Level WARN
+        }
+
         # ── POST-DEPLOY: Remove APIM if -SkipAPIM was specified ──
         if ($SkipAPIM) {
             $apimCleanName = "apim-$($Name -replace '[^a-zA-Z0-9-]', '')"
@@ -1382,10 +1753,9 @@ function Step-PostDeployHealthCheck {
     Write-Log "  WARNING: Function app has 0 functions after $maxWait seconds." -Level WARN
     Write-Log "  Attempting manual ZipDeploy of function code..." -Level INFO
 
-    $mod = Get-Module Microsoft.WinGet.RestSource
-    $zipPath = if ($RestSourcePath) { (Resolve-Path $RestSourcePath).Path } else { Join-Path $mod.ModuleBase 'Data\WinGet.RestSource.Functions.zip' }
-    if (-not (Test-Path $zipPath)) {
-        Write-Log "  Function zip not found at $zipPath — cannot recover." -Level ERROR
+    $zipPath = Resolve-RestSourceFunctionsZip -ExplicitPath $RestSourcePath
+    if (-not $zipPath -or -not (Test-Path $zipPath)) {
+        Write-Log "  Function zip not found — cannot recover." -Level ERROR
         return
     }
 
@@ -2036,6 +2406,16 @@ try {
     # Phase 1
     Step-ValidatePrerequisites
 
+    if ($DryRun) {
+        Write-Log "" -Level INFO
+        Write-Log "DRY RUN COMPLETE" -Level SECTION
+        Write-Log "All prerequisite checks passed. Module hygiene + upstream SKU probe OK." -Level SUCCESS
+        Write-Log "Re-run without -DryRun to perform the actual Azure deployment." -Level INFO
+        $Script:ExitCode = 0
+        Write-Summary
+        exit 0
+    }
+
     # Phase 2
     Step-ConnectAzure
 
@@ -2070,8 +2450,35 @@ try {
 
 } catch {
     $Script:ExitCode = 1
-    Write-Log "FATAL: $($_.Exception.Message)" -Level ERROR
-    Write-Log "Stack trace:`n$($_.ScriptStackTrace)" -Level ERROR
+    $errMsg = $_.Exception.Message
+
+    # Detect multi-tenant / expired-credential errors and surface an actionable hint
+    # instead of a stack trace dump (customer feedback 2026-05).
+    $isAuthGap = $errMsg -match 'credentials have not been set up|have expired|User interaction is required|conditional access|AADSTS|Authentication failed against tenant|Connect-AzAccount'
+    $tenantHint = $null
+    if ($errMsg -match 'tenant\s+([0-9a-fA-F-]{36})') { $tenantHint = $Matches[1] }
+    elseif ($errMsg -match "-TenantId\s+'?([0-9a-fA-F-]{36})") { $tenantHint = $Matches[1] }
+
+    if ($isAuthGap) {
+        Write-Log "AZURE AUTHENTICATION REQUIRED" -Level SECTION
+        Write-Log "The deployment could not access Azure Resource Manager with your current session." -Level ERROR
+        Write-Log "Underlying error: $errMsg" -Level DEBUG
+        Write-Log "" -Level INFO
+        Write-Log "To resolve, run the following in this PowerShell session and re-launch the deployment:" -Level INFO
+        if ($tenantHint) {
+            Write-Log "    Connect-AzAccount -TenantId $tenantHint" -Level INFO
+        } else {
+            Write-Log "    Connect-AzAccount -TenantId <your-tenant-guid>" -Level INFO
+        }
+        if ($SubscriptionId) {
+            Write-Log "    Set-AzContext -SubscriptionId $SubscriptionId" -Level INFO
+        }
+        Write-Log "" -Level INFO
+        Write-Log "Tip: pass -SubscriptionId to this script to ensure the correct subscription/tenant is targeted." -Level INFO
+    } else {
+        Write-Log "FATAL: $errMsg" -Level ERROR
+        Write-Log "Stack trace:`n$($_.ScriptStackTrace)" -Level ERROR
+    }
 
     # Mark any pending steps as failed
     foreach ($key in $Script:Stats.Keys) {
