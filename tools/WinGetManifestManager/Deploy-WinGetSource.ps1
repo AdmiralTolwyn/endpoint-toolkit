@@ -1090,19 +1090,35 @@ If the problem persists, remove the old versions:
         Write-Log "$modName v$($nowLoaded.Version) loaded from $($nowLoaded.ModuleBase)" -Level SUCCESS
     }
 
-    # 1d. WinGet REST source module
-    Write-Log "Checking Microsoft.WinGet.RestSource module..." -Level INFO
-    Assert-ModuleAvailable -ModuleName 'Microsoft.WinGet.RestSource' -Install
+    # 1d. WinGet REST source module — prefer the bundled fork shipped alongside this script
+    # over any PSGallery copy. Customer feedback (2026-05): an upstream copy installed in
+    # $HOME\Documents\(Windows)PowerShell\Modules\ silently shadowed the fork (because
+    # Import-Module by name picks the highest version on PSModulePath, and the fork is
+    # versioned 0.1.0). Importing by ABSOLUTE PATH bypasses name resolution entirely.
+    $bundledModulePsd1 = Join-Path $PSScriptRoot 'Modules\Microsoft.WinGet.RestSource\Microsoft.WinGet.RestSource.psd1'
+    if (Test-Path $bundledModulePsd1) {
+        Write-Log "Using bundled fork module: $bundledModulePsd1" -Level INFO
+        # Force-remove any already-loaded copy so Import-Module by path actually swaps it.
+        Get-Module -Name 'Microsoft.WinGet.RestSource' -All -ErrorAction SilentlyContinue |
+            Remove-Module -Force -ErrorAction SilentlyContinue
+        Import-Module $bundledModulePsd1 -Force -ErrorAction Stop
+        $loadedRest = Get-Module Microsoft.WinGet.RestSource
+        Write-Log "Bundled fork imported: v$($loadedRest.Version) from $($loadedRest.ModuleBase)" -Level SUCCESS
+    } else {
+        Write-Log "Bundled fork not found at '$bundledModulePsd1' — falling back to PSGallery resolution." -Level WARN
+        Write-Log "Checking Microsoft.WinGet.RestSource module..." -Level INFO
+        Assert-ModuleAvailable -ModuleName 'Microsoft.WinGet.RestSource' -Install
 
-    # 1e. Import the module
-    Write-Log "Importing Microsoft.WinGet.RestSource..." -Level INFO
-    Import-Module Microsoft.WinGet.RestSource -Force -ErrorAction Stop
-    $loadedRest = Get-Module Microsoft.WinGet.RestSource
-    Write-Log "Module imported: v$($loadedRest.Version) from $($loadedRest.ModuleBase)" -Level SUCCESS
+        # 1e. Import the module
+        Write-Log "Importing Microsoft.WinGet.RestSource..." -Level INFO
+        Import-Module Microsoft.WinGet.RestSource -Force -ErrorAction Stop
+        $loadedRest = Get-Module Microsoft.WinGet.RestSource
+        Write-Log "Module imported: v$($loadedRest.Version) from $($loadedRest.ModuleBase)" -Level SUCCESS
+    }
 
     # 1e-2. Verify the loaded module accepts the requested APIM SKU BEFORE doing
-    # any ARM work. Customer feedback (2026-05): unpatched upstream copy
-    # silently shadowed the fork and rejected StandardV2 30 minutes into deploy.
+    # any ARM work. With the bundled fork this is a no-op (its ValidateSet already
+    # contains BasicV2/StandardV2); with a PSGallery fallback it auto-hotpatches.
     Test-UpstreamSkuSupport -RequestedTier $PerformanceTier | Out-Null
 
     # 1f. Validate ManifestPath contents if provided
