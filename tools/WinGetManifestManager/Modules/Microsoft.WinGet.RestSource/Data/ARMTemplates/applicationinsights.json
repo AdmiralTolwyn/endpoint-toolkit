@@ -1,0 +1,64 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "name": {
+            "type": "string",
+            "defaultValue": "[concat('appin', uniquestring(resourceGroup().id))]",
+            "metadata": {
+                "description": "Name for Application Insights."
+            }
+        },
+        "location": {
+            "type": "string",
+            "defaultValue": "[resourceGroup().location]",
+            "metadata": {
+                "description": "Location for Application Insights."
+            }
+        },
+        "type": {
+            "type": "string",
+            "defaultValue": "web",
+            "metadata": {
+                "description": "Type of Application"
+            }
+        },
+        "requestSource": {
+            "type": "string",
+            "defaultValue": "WinGet Rest Source",
+            "metadata": {
+                "description": "Source of Azure Resource Manager deployment"
+            }
+        },
+        "workspaceResourceName": {
+            "type": "string",
+            "metadata": {
+                "description": "Log Analytics workspace name to associate with your Application Insights resource."
+            }
+        }
+    },
+    "variables": {},
+    "resources": [
+        {
+            "type": "Microsoft.Insights/components",
+            "apiVersion": "2020-02-02",
+            "name": "[parameters('name')]",
+            "location": "[parameters('location')]",
+            "properties": {
+                "Application_Type": "[parameters('type')]",
+                "Request_Source": "[parameters('requestSource')]",
+                "WorkspaceResourceId": "[resourceId('Microsoft.OperationalInsights/workspaces/', parameters('workspaceResourceName'))]"
+            }
+        }
+    ],
+    "outputs": {
+        "applicationInsightsName": {
+            "type": "string",
+            "value": "[parameters('name')]"
+        },
+        "applicationInsightsResourceId": {
+            "type": "string",
+            "value": "[resourceId('microsoft.insights/components/', parameters('name'))]"
+        }
+    }
+}

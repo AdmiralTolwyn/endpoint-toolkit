@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Deploys a private WinGet REST source to Azure and optionally seeds it with package manifests.
 
@@ -336,8 +336,19 @@ function Write-Log {
     $prefix    = "[$timestamp] [$($Level.PadRight(7))]"
     $logLine   = "$prefix $Message"
 
-    # Write to log file (always)
-    Add-Content -Path $Script:LogFile -Value $logLine -Encoding UTF8 -WhatIf:$false -Confirm:$false
+    # Write to log file (always) — defensive: OneDrive/AV/file-lock interference can
+    # produce 'Stream was not readable' or 'used by another process' errors. Retry
+    # twice with a short backoff via raw .NET I/O (which does NOT keep a long-lived
+    # handle), then silently skip if still failing. Logging must NEVER abort the script.
+    $writeOk = $false
+    for ($i = 0; $i -lt 3 -and -not $writeOk; $i++) {
+        try {
+            [System.IO.File]::AppendAllText($Script:LogFile, ($logLine + [Environment]::NewLine), [System.Text.Encoding]::UTF8)
+            $writeOk = $true
+        } catch {
+            if ($i -lt 2) { Start-Sleep -Milliseconds 100 }
+        }
+    }
 
     # Console colors
     $colors = @{
@@ -392,37 +403,69 @@ function Write-Banner {
 
 function Write-Summary {
     $elapsed = (Get-Date) - $Script:StartTime
-    $summary = @"
+    # Box layout: total interior width = 76 chars; label column = 22 chars;
+    # value column = 52 chars. Long values are truncated with an ellipsis so the
+    # right border always aligns regardless of input length.
+    $valW = 53
+    $fmt = {
+        param($label, $value)
+        $v = if ($null -eq $value) { '' } else { "$value" }
+        if ($v.Length -gt $valW) { $v = $v.Substring(0, $valW - 1) + [char]0x2026 }
+        ('{0}  {1,-18} : {2,-' + $valW + '}{3}') -f [char]0x2502, $label, $v, [char]0x2502
+    }
+    $h = [char]0x2500
+    $v = [char]0x2502
+    $tl = [char]0x250C; $tr = [char]0x2510
+    $bl = [char]0x2514; $br = [char]0x2518
+    $ml = [char]0x251C; $mr = [char]0x2524
+    $bar = ($h.ToString() * 76)
+    $top    = "$tl$bar$tr"
+    $sep    = "$ml$bar$mr"
+    $bot    = "$bl$bar$br"
+    $titleText = 'DEPLOYMENT SUMMARY'
+    $padLeftAmt = [int](([double]76 - $titleText.Length) / 2)
+    $titleInner = (' ' * $padLeftAmt) + $titleText
+    $titleInner = $titleInner.PadRight(76)
+    $title  = "$v$titleInner$v"
 
-    ┌──────────────────────────────────────────────────────────────┐
-    │                    DEPLOYMENT SUMMARY                        │
-    ├──────────────────────────────────────────────────────────────┤
-    │  Source Name      : $($Name.PadRight(38))│
-    │  Resource Group   : $($ResourceGroup.PadRight(38))│
-    │  Region           : $($Region.PadRight(38))│
-    │  Performance      : $($PerformanceTier.PadRight(38))│
-    │  CosmosDB Zone-HA : $($(if($CosmosDBZoneRedundant){'Enabled'}else{'Disabled'}).PadRight(38))│
-    │  CosmosDB Region  : $($(if($CosmosDBRegion){$CosmosDBRegion}else{$Region}).PadRight(38))│
-    │  Authentication   : $($Authentication.PadRight(38))│
-    ├──────────────────────────────────────────────────────────────┤
-    │  Prereq Checks    : $($Script:Stats.PrereqChecks.ToString().PadRight(38))│
-    │  Azure Auth       : $($Script:Stats.AzureAuth.ToString().PadRight(38))│
-    │  Resource Group   : $($Script:Stats.ResourceGroup.ToString().PadRight(38))│
-    │  Resource Audit   : $($Script:Stats.ResourceAudit.ToString().PadRight(38))│
-    │  Deployment       : $($Script:Stats.Deployment.ToString().PadRight(38))│
-    │  Manifests OK     : $($Script:Stats.ManifestsLoaded.ToString().PadRight(38))│
-    │  Manifests Failed : $($Script:Stats.ManifestsFailed.ToString().PadRight(38))│
-    │  Source Registered: $($Script:Stats.SourceRegistered.ToString().PadRight(38))│
-    ├──────────────────────────────────────────────────────────────┤
-    │  REST Source URL  : $(if($Script:DeploymentUrl){$Script:DeploymentUrl.PadRight(38)}else{'N/A'.PadRight(38)})│
-    │  Elapsed Time     : $("$($elapsed.Minutes)m $($elapsed.Seconds)s".PadRight(38))│
-    │  Log File         : $(Split-Path $Script:LogFile -Leaf)  │
-    │  Exit Code        : $($Script:ExitCode.ToString().PadRight(38))│
-    └──────────────────────────────────────────────────────────────┘
+    $cosmosHa  = if ($CosmosDBZoneRedundant) { 'Enabled' } else { 'Disabled' }
+    $cosmosReg = if ($CosmosDBRegion) { $CosmosDBRegion } else { $Region }
+    $restUrl   = if ($Script:DeploymentUrl) { $Script:DeploymentUrl } else { 'N/A' }
 
-"@
+    $rows = @(
+        $top
+        $title
+        $sep
+        (& $fmt 'Source Name'       $Name)
+        (& $fmt 'Resource Group'    $ResourceGroup)
+        (& $fmt 'Region'            $Region)
+        (& $fmt 'Performance'       $PerformanceTier)
+        (& $fmt 'CosmosDB Zone-HA'  $cosmosHa)
+        (& $fmt 'CosmosDB Region'   $cosmosReg)
+        (& $fmt 'Authentication'    $Authentication)
+        $sep
+        (& $fmt 'Prereq Checks'     $Script:Stats.PrereqChecks)
+        (& $fmt 'Azure Auth'        $Script:Stats.AzureAuth)
+        (& $fmt 'Resource Group'    $Script:Stats.ResourceGroup)
+        (& $fmt 'Resource Audit'    $Script:Stats.ResourceAudit)
+        (& $fmt 'Deployment'        $Script:Stats.Deployment)
+        (& $fmt 'Manifests OK'      $Script:Stats.ManifestsLoaded)
+        (& $fmt 'Manifests Failed'  $Script:Stats.ManifestsFailed)
+        (& $fmt 'Source Registered' $Script:Stats.SourceRegistered)
+        $sep
+        (& $fmt 'REST Source URL'   $restUrl)
+        (& $fmt 'Elapsed Time'      ("{0}m {1}s" -f $elapsed.Minutes, $elapsed.Seconds))
+        (& $fmt 'Log File'          (Split-Path $Script:LogFile -Leaf))
+        (& $fmt 'Exit Code'         $Script:ExitCode)
+        $bot
+    )
+    $summary = [Environment]::NewLine + ('    ' + ($rows -join ("`r`n    "))) + [Environment]::NewLine
     Write-Host $summary -ForegroundColor $(if ($Script:ExitCode -eq 0) { 'Green' } else { 'Red' })
-    Add-Content -Path $Script:LogFile -Value $summary -Encoding UTF8 -WhatIf:$false -Confirm:$false
+    try {
+        [System.IO.File]::AppendAllText($Script:LogFile, $summary, [System.Text.Encoding]::UTF8)
+    } catch {
+        # log-file write failures must not abort the script
+    }
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -757,7 +800,8 @@ function Assert-FunctionAppHealthy {
         [Parameter(Mandatory)][string]$ResourceGroup,
         [Parameter(Mandatory)][string]$FunctionAppName,
         [string]$HealthPath = '/api/information',
-        [int]$WarmupSec    = 60
+        [int]$WarmupSec    = 180,
+        [int]$ProbeTimeoutSec = 30
     )
 
     Write-Log "Verifying Function App '$FunctionAppName' app settings..." -Level INFO
@@ -804,20 +848,28 @@ function Assert-FunctionAppHealthy {
         }
     }
 
-    Write-Log "Warming up host (waiting up to ${WarmupSec}s for startup)..." -Level INFO
+    Write-Log "Warming up host (waiting up to ${WarmupSec}s for startup, ${ProbeTimeoutSec}s per probe)..." -Level INFO
     $url = "https://$FunctionAppName.azurewebsites.net$HealthPath"
     $deadline = (Get-Date).AddSeconds($WarmupSec)
     $lastErr = $null
     while ((Get-Date) -lt $deadline) {
         try {
-            $r = Invoke-WebRequest -Uri $url -Method GET -TimeoutSec 15 -UseBasicParsing -ErrorAction Stop
+            $r = Invoke-WebRequest -Uri $url -Method GET -TimeoutSec $ProbeTimeoutSec -UseBasicParsing -ErrorAction Stop
             if ($r.StatusCode -lt 500) {
                 Write-Log "Function host responded: HTTP $($r.StatusCode) at $HealthPath" -Level SUCCESS
                 return $true
             }
             $lastErr = "HTTP $($r.StatusCode)"
         } catch {
-            $lastErr = $_.Exception.Message
+            $msg = $_.Exception.Message
+            # 401/403 from /api/information means the HTTP stack is fully up and the
+            # host is routing requests — it just refuses us because we don't send a
+            # function-host key. That's "healthy" for our purposes; treat as success.
+            if ($msg -match '\b(401|403)\b|Unauthorized|Forbidden') {
+                Write-Log "Function host responded: HTTP 401/403 (auth-protected) — host is up." -Level SUCCESS
+                return $true
+            }
+            $lastErr = $msg
         }
         Start-Sleep -Seconds 5
     }
@@ -833,12 +885,22 @@ function Watch-DeploymentProgress {
         Starts a background polling loop (ThreadJob) that prints live status
         every $IntervalSec seconds. Call Stop-Job on the returned job once the
         blocking operation finishes.
+
+        Customer feedback (2026-05): during the 30-40 min APIM creation the
+        previous version sat silent for the first 30 s and then only showed
+        coarse resource states. This version emits an immediate heartbeat,
+        surfaces the active ARM deployment OPERATION (which resource ARM is
+        currently working on), and shows elapsed / ETA so users know the
+        deploy is alive.
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$StepName,
         [Parameter(Mandatory)][string]$RG,
-        [int]$IntervalSec = 30
+        [int]$IntervalSec = 20,
+        # Estimated total minutes for ETA % display. Caller passes 35 for
+        # fresh APIM, 10 for APIM-reuse paths.
+        [int]$EstimateMinutes = 35
     )
 
     # Known resource type display-order (deploy sequence)
@@ -859,8 +921,8 @@ function Watch-DeploymentProgress {
     $pollSubId = (Get-AzContext).Subscription.Id
     $pollToken = Get-PlainToken
 
-    $job = Start-ThreadJob -ArgumentList $StepName, $RG, $IntervalSec, $typeOrder, $Script:LogFile, $pollSubId, $pollToken -ScriptBlock {
-        param($StepName, $RG, $IntervalSec, $typeOrder, $LogFile, $SubId, $Token)
+    $job = Start-ThreadJob -ArgumentList $StepName, $RG, $IntervalSec, $typeOrder, $Script:LogFile, $pollSubId, $pollToken, $EstimateMinutes -ScriptBlock {
+        param($StepName, $RG, $IntervalSec, $typeOrder, $LogFile, $SubId, $Token, $EstimateMinutes)
 
         function Poll-Write {
             param([string]$Msg, [string]$Level = 'INFO')
@@ -878,12 +940,17 @@ function Watch-DeploymentProgress {
             }
         }
 
-        $sw       = [System.Diagnostics.Stopwatch]::StartNew()
-        $lastHash = ''
-        $headers  = @{ Authorization = "Bearer $Token"; 'Content-Type' = 'application/json' }
+        $sw         = [System.Diagnostics.Stopwatch]::StartNew()
+        $lastHash   = ''
+        $lastOpHash = ''
+        $headers    = @{ Authorization = "Bearer $Token"; 'Content-Type' = 'application/json' }
+        $firstTick  = $true
 
         while ($true) {
-            Start-Sleep -Seconds $IntervalSec
+            # Initial heartbeat after 5s so users see the poller is alive immediately;
+            # subsequent ticks use the configured interval.
+            if ($firstTick) { Start-Sleep -Seconds 5; $firstTick = $false }
+            else            { Start-Sleep -Seconds $IntervalSec }
             $elapsed = $sw.Elapsed
 
             try {
@@ -912,16 +979,45 @@ function Watch-DeploymentProgress {
                 # Poll active ARM deployments via REST
                 $depUri = "https://management.azure.com/subscriptions/$SubId/resourceGroups/$RG/providers/Microsoft.Resources/deployments?`$filter=provisioningState eq 'Running'&api-version=2024-03-01"
                 $depResp = Invoke-RestMethod -Uri $depUri -Headers $headers -ErrorAction SilentlyContinue
-                $running = $depResp.value
+                $running = @($depResp.value)
 
-                # Build hash to detect changes
-                $lines = @($resources | ForEach-Object { "$($_.Name)|$($_.State)" })
-                $hash  = ($lines -join ';')
+                # Drill into each running deployment's operations to surface the ACTIVE
+                # sub-resource ARM is currently working on. Without this, ARM shows the
+                # outer deployment as 'Running' for the entire 30-40 min APIM wait.
+                $activeOps = @()
+                foreach ($dep in $running) {
+                    try {
+                        $opsUri = "https://management.azure.com/subscriptions/$SubId/resourceGroups/$RG/providers/Microsoft.Resources/deployments/$($dep.name)/operations?api-version=2024-03-01"
+                        $opsResp = Invoke-RestMethod -Uri $opsUri -Headers $headers -ErrorAction SilentlyContinue
+                        foreach ($op in $opsResp.value) {
+                            $opState = $op.properties.provisioningState
+                            if ($opState -in 'Running','Creating','Accepted') {
+                                $tgt = $op.properties.targetResource
+                                if ($tgt -and $tgt.resourceType) {
+                                    $shortType = ($tgt.resourceType -split '/')[-1]
+                                    $activeOps += [PSCustomObject]@{
+                                        Type  = $shortType
+                                        Name  = $tgt.resourceName
+                                        State = $opState
+                                    }
+                                }
+                            }
+                        }
+                    } catch { }
+                }
 
-                $elapsed_str = "$([int]$elapsed.TotalMinutes)m$($elapsed.Seconds)s"
+                # Build hash to detect changes (resources + active ops)
+                $resLines = @($resources | ForEach-Object { "$($_.Name)|$($_.State)" })
+                $opLines  = @($activeOps | ForEach-Object { "$($_.Type)|$($_.Name)|$($_.State)" })
+                $hash     = ($resLines -join ';')
+                $opHash   = ($opLines -join ';')
+
+                $elapsed_str = "$([int]$elapsed.TotalMinutes)m$($elapsed.Seconds.ToString('00'))s"
+                $pct = if ($EstimateMinutes -gt 0) { [math]::Min(99, [int](($elapsed.TotalMinutes / $EstimateMinutes) * 100)) } else { 0 }
+                $progress = "${elapsed_str} / ~${EstimateMinutes}m (${pct}%)"
 
                 if ($hash -ne $lastHash) {
-                    Poll-Write "[$StepName] ${elapsed_str} — Resource status:" 'INFO'
+                    Poll-Write "[$StepName] $progress — Resource status:" 'INFO'
                     foreach ($r in $resources) {
                         $icon = switch ($r.State) {
                             'Succeeded'  { '✓' }
@@ -938,8 +1034,20 @@ function Watch-DeploymentProgress {
                         Poll-Write "  Active ARM deployments: $depNames" 'INFO'
                     }
                     $lastHash = $hash
+                    $lastOpHash = ''  # force op block to print on next change too
                 } else {
-                    Poll-Write "[$StepName] ${elapsed_str} — still deploying..." 'INFO'
+                    Poll-Write "[$StepName] $progress — still deploying..." 'INFO'
+                }
+
+                # Always re-emit the active operation block when it changes, even if
+                # outer resource hash is unchanged (APIM creation reports many sub-ops).
+                if ($activeOps.Count -gt 0 -and $opHash -ne $lastOpHash) {
+                    Poll-Write "  ▶ Currently provisioning:" 'INFO'
+                    foreach ($op in $activeOps) {
+                        $tag = if ($op.Name) { "$($op.Type)/$($op.Name)" } else { $op.Type }
+                        Poll-Write "      ⧖ $($tag.PadRight(48)) $($op.State)"
+                    }
+                    $lastOpHash = $opHash
                 }
             } catch {
                 # Token may expire during long deploys — try to refresh
@@ -1187,7 +1295,8 @@ function Step-ConnectAzure {
         $msg = $_.Exception.Message
         $isAuthGap = $msg -match 'credentials have not been set up|have expired|User interaction is required|conditional access|AADSTS|Authentication failed against tenant'
         # 'NotFound' on the bogus RG name is the SUCCESS signal — ARM reached.
-        if ($msg -notmatch 'NotFound|ResourceGroupNotFound|could not be found') {
+        # Az/ARM has used several wordings over the years for the same 404; match all.
+        if ($msg -notmatch 'NotFound|ResourceGroupNotFound|could not be found|does not exist|ResourceNotFound') {
             if ($isAuthGap) {
                 $tenantId = $ctx.Tenant.Id
                 if ($msg -match 'tenant\s+([0-9a-fA-F-]{36})') { $tenantId = $Matches[1] }
@@ -1347,7 +1456,48 @@ function Step-ResourceAudit {
             try {
                 $apimDetail = Get-AzApiManagement -ResourceGroupName $ResourceGroup -Name $apimRes.Name -ErrorAction Stop
                 Write-Log "  APIM '$($apimRes.Name)' state=$($apimDetail.ProvisioningState), SKU=$($apimDetail.Sku.Name) — will be reused." -Level SUCCESS
+
+                # Detect SKU mismatch — ARM cannot perform certain cross-tier upgrades in-place
+                # (notably classic Developer/Basic/Standard ↔ V2 SKUs). Customer-confirmed failure
+                # mode: ARM returns 'Failed to connect to Management endpoint Port 3443 ... for the
+                # Developer SKU service' for ~30 min then ValidationError. Abort early with a clear
+                # remediation message instead of letting ARM retry-loop.
+                $existingSku  = "$($apimDetail.Sku.Name)"
+                $requestedSku = "$PerformanceTier"
+                $skuMap = @{
+                    'Developer'  = 'Developer'
+                    'Basic'      = 'Basic'
+                    'Enhanced'   = 'Standard'
+                    'BasicV2'    = 'Basicv2'
+                    'StandardV2' = 'Standardv2'
+                }
+                $expectedSku = $skuMap[$requestedSku]
+                if ($expectedSku -and ($existingSku -ne $expectedSku)) {
+                    $isClassicToV2 = ($existingSku -notmatch '(?i)v2$') -and ($expectedSku -match '(?i)v2$')
+                    $isV2ToClassic = ($existingSku -match '(?i)v2$') -and ($expectedSku -notmatch '(?i)v2$')
+                    if ($isClassicToV2 -or $isV2ToClassic) {
+                        Write-Log "" -Level ERROR
+                        Write-Log "═══════════════════════════════════════════════════════════════════════════" -Level ERROR
+                        Write-Log "  APIM SKU MISMATCH — IN-PLACE UPGRADE NOT SUPPORTED" -Level ERROR
+                        Write-Log "═══════════════════════════════════════════════════════════════════════════" -Level ERROR
+                        Write-Log "  Existing APIM '$($apimRes.Name)' is SKU='$existingSku'." -Level ERROR
+                        Write-Log "  Requested -PerformanceTier '$requestedSku' would deploy SKU='$expectedSku'." -Level ERROR
+                        Write-Log "  Azure does not support in-place migration between classic and V2 APIM SKUs." -Level ERROR
+                        Write-Log "  ARM would retry the deploy for ~30 minutes before failing." -Level ERROR
+                        Write-Log "" -Level ERROR
+                        Write-Log "  Resolution — delete the existing APIM first, then re-run this script:" -Level ERROR
+                        Write-Log "    Remove-AzApiManagement -ResourceGroupName '$ResourceGroup' -Name '$($apimRes.Name)'" -Level ERROR
+                        Write-Log "  (Deletion takes ~10-15 min. The script will then create a fresh '$expectedSku' APIM.)" -Level ERROR
+                        Write-Log "  Alternatively re-run with -PerformanceTier matching the existing SKU." -Level ERROR
+                        Write-Log "═══════════════════════════════════════════════════════════════════════════" -Level ERROR
+                        throw "APIM SKU mismatch (existing='$existingSku', requested='$expectedSku') — see error block above."
+                    } else {
+                        Write-Log "  APIM SKU change detected ($existingSku → $expectedSku). ARM will attempt in-place update." -Level WARN
+                    }
+                }
             } catch {
+                # Re-throw fatal SKU mismatch; otherwise log and continue (cmdlet may fail on V2 SKUs)
+                if ("$($_.Exception.Message)" -match 'SKU MISMATCH|SKU mismatch') { throw }
                 Write-Log "  APIM info query failed: $($_.Exception.Message)" -Level DEBUG
             }
         }
@@ -1417,7 +1567,7 @@ function Step-ResourceAudit {
             if ($match) {
                 Write-Log "  Found soft-deleted APIM '$apimName'. Purging to free the name..." -Level WARN
                 $purgeUri = "https://management.azure.com/subscriptions/$subId/providers/Microsoft.ApiManagement/locations/$Region/deletedservices/$apimName`?api-version=2022-08-01"
-                Invoke-RestMethod -Uri $purgeUri -Method DELETE -Headers $headers -ErrorAction Stop
+                $null = Invoke-RestMethod -Uri $purgeUri -Method DELETE -Headers $headers -ErrorAction Stop
                 Write-Log "  Waiting for APIM purge to complete..." -Level INFO
                 $purgeWait = 0
                 do {
@@ -1445,7 +1595,57 @@ function Step-ResourceAudit {
         Write-Log "APIM '$apimName' exists in RG — skipping soft-delete check." -Level DEBUG
     }
 
-    # ── 2c. Function App (informational only — cannot be explicitly purged) ──
+    # ── 2c. App Configuration soft-delete ──
+    # Customer-confirmed failure: ARM 'appconfig' deployment fails with NameUnavailable
+    # ('already in use by a soft-deleted configuration store') when a previous teardown
+    # left a soft-deleted store. App Configuration soft-delete defaults to 7-day retention
+    # and the name is reserved for the full window unless explicitly purged.
+    $appConfigName = if ($env:WINGETMM_OVERRIDE_APPCONFIG) { $env:WINGETMM_OVERRIDE_APPCONFIG } else { "appcs-$cleanName" }
+    if (-not $Script:ExistingResources.AppConfig) {
+        Write-Log "Checking for soft-deleted App Configuration store '$appConfigName'..." -Level INFO
+        try {
+            # Listing endpoint returns all soft-deleted stores in the subscription
+            $appCsDelUri = "https://management.azure.com/subscriptions/$subId/providers/Microsoft.AppConfiguration/deletedConfigurationStores?api-version=2023-03-01"
+            $appCsDel = Invoke-RestMethod -Uri $appCsDelUri -Headers $headers -ErrorAction Stop
+            $appCsMatch = $appCsDel.value | Where-Object { $_.name -eq $appConfigName }
+            if ($appCsMatch) {
+                # Listing payload has location under properties.location (not top-level)
+                $appCsLocation = $appCsMatch.properties.location
+                if (-not $appCsLocation) {
+                    # Fallback: parse from the resource id (.../locations/<loc>/deletedConfigurationStores/...)
+                    if ($appCsMatch.id -match '/locations/([^/]+)/deletedConfigurationStores/') { $appCsLocation = $Matches[1] }
+                }
+                Write-Log "  Found soft-deleted App Configuration '$appConfigName' in '$appCsLocation' (scheduled purge: $($appCsMatch.properties.scheduledPurgeDate)). Purging to free the name..." -Level WARN
+                $purgeUri = "https://management.azure.com/subscriptions/$subId/providers/Microsoft.AppConfiguration/locations/$appCsLocation/deletedConfigurationStores/$appConfigName/purge?api-version=2023-03-01"
+                $null = Invoke-RestMethod -Uri $purgeUri -Method POST -Headers $headers -ErrorAction Stop
+                Write-Log "  Waiting for App Configuration purge to complete..." -Level INFO
+                $purgeWait = 0
+                do {
+                    Start-Sleep -Seconds 10
+                    $purgeWait += 10
+                    $tok     = Get-PlainToken
+                    $headers = @{ Authorization = "Bearer $tok"; 'Content-Type' = 'application/json' }
+                    $recheck = Invoke-RestMethod -Uri $appCsDelUri -Headers $headers -ErrorAction Stop
+                    $still = $recheck.value | Where-Object { $_.name -eq $appConfigName }
+                } while ($still -and $purgeWait -lt 120)
+
+                if ($still) {
+                    Write-Log "  App Configuration purge still in progress after ${purgeWait}s — deployment will retry if needed." -Level WARN
+                } else {
+                    Write-Log "  App Configuration '$appConfigName' purged successfully." -Level SUCCESS
+                    $resolved++
+                }
+            } else {
+                Write-Log "  No soft-deleted App Configuration found. OK" -Level DEBUG
+            }
+        } catch {
+            Write-Log "  App Configuration soft-delete check failed: $($_.Exception.Message)" -Level WARN
+        }
+    } else {
+        Write-Log "App Configuration '$appConfigName' exists in RG — skipping soft-delete check." -Level DEBUG
+    }
+
+    # ── 2d. Function App (informational only — cannot be explicitly purged) ──
     $funcName = if ($env:WINGETMM_OVERRIDE_FUNCAPP) { $env:WINGETMM_OVERRIDE_FUNCAPP } else { "func-$cleanName" }
     if (-not $Script:ExistingResources.FunctionApp) {
         try {
@@ -1547,8 +1747,9 @@ function Step-DeployRestSource {
                 }
             }
 
-            # Start background status poller
-            $pollerJob = Watch-DeploymentProgress -StepName 'New-WinGetSource' -RG $ResourceGroup
+            # Start background status poller (ETA: 35 min fresh APIM, 10 min if reused)
+            $pollEtaMin = if ($Script:ExistingResources.APIM) { 10 } else { 35 }
+            $pollerJob = Watch-DeploymentProgress -StepName 'New-WinGetSource' -RG $ResourceGroup -EstimateMinutes $pollEtaMin
             try {
                 $deployResult = Invoke-StepWithRetry -StepName "New-WinGetSource" -MaxRetries 2 -BaseDelaySec 30 -Action {
                     New-WinGetSource @deployParams
@@ -1559,12 +1760,25 @@ function Step-DeployRestSource {
             }
 
             # Try to derive APIM URL for source registration
+            $apimName = "apim-$($Name -replace '[^a-zA-Z0-9-]', '')"
+            $apimUrl = $null
             try {
-                $apimName = "apim-$($Name -replace '[^a-zA-Z0-9-]', '')"
                 $apimUrl = (Get-AzApiManagement -Name $apimName -ResourceGroupName $ResourceGroup -ErrorAction Stop).RuntimeUrl
-                $Script:DeploymentUrl = "$apimUrl/winget/"
             } catch {
-                Write-Log "Could not retrieve APIM URL, will use direct function URL." -Level WARN
+                # V2 SKU — Get-AzApiManagement cmdlet enum can't deserialize. Fall back to ARM REST.
+                try {
+                    $subIdApim = (Get-AzContext).Subscription.Id
+                    $apimRestUri = "/subscriptions/$subIdApim/resourceGroups/$ResourceGroup/providers/Microsoft.ApiManagement/service/$apimName`?api-version=2023-05-01-preview"
+                    $apimRest = Invoke-AzRestMethod -Path $apimRestUri -Method GET -ErrorAction Stop
+                    if ($apimRest.StatusCode -ge 200 -and $apimRest.StatusCode -lt 300) {
+                        $apimUrl = ($apimRest.Content | ConvertFrom-Json -Depth 20).properties.gatewayUrl
+                    }
+                } catch {}
+            }
+            if ($apimUrl) {
+                $Script:DeploymentUrl = "$apimUrl/winget/"
+            } else {
+                Write-Log "Could not retrieve APIM URL via cmdlet or REST, will use direct function URL." -Level WARN
                 $Script:DeploymentUrl = "https://func-${Name}.azurewebsites.net/api/"
             }
         } else {
@@ -1649,6 +1863,30 @@ function Step-DeployRestSource {
                     $patched = $true
                 }
 
+                # 3c: Deduplicate locations[] by locationName.
+                # The upstream template ships with two entries (failoverPriority 0 and 1)
+                # that both default to the primary region — and our region override above
+                # collapses them to the same name. Cosmos DB rejects this with
+                # "Provided list of regions contains duplicate regions" (BadRequest).
+                # Keep only the first occurrence of each region and renumber failoverPriority.
+                $uniqueLocs = @()
+                $seen = @{}
+                foreach ($loc in $cosmosJson.Parameters.locations.value) {
+                    $key = "$($loc.locationName)".Trim().ToLowerInvariant()
+                    if (-not $seen.ContainsKey($key)) {
+                        $seen[$key] = $true
+                        $uniqueLocs += $loc
+                    }
+                }
+                if ($uniqueLocs.Count -lt @($cosmosJson.Parameters.locations.value).Count) {
+                    Write-Log "  Deduplicated locations[]: $(@($cosmosJson.Parameters.locations.value).Count) → $($uniqueLocs.Count) entry(ies)" -Level INFO
+                    for ($i = 0; $i -lt $uniqueLocs.Count; $i++) {
+                        $uniqueLocs[$i].failoverPriority = $i
+                    }
+                    $cosmosJson.Parameters.locations.value = @($uniqueLocs)
+                    $patched = $true
+                }
+
                 if ($patched) {
                     $cosmosJson | ConvertTo-Json -Depth 20 | Set-Content $cosmosParamFile -Encoding UTF8
                     Write-Log "Cosmos DB parameter file updated." -Level SUCCESS
@@ -1677,16 +1915,144 @@ function Step-DeployRestSource {
                 Write-Log "Deploying ARM resources (APIM creation — estimated 30-40 minutes)..." -Level INFO
             }
 
-            # Start background status poller
-            $pollerJob = Watch-DeploymentProgress -StepName 'ARM-Deploy' -RG $ResourceGroup
+            # Start background status poller (ETA: 35 min fresh APIM, 10 min if reused)
+            $pollEtaMin = if ($Script:ExistingResources.APIM) { 10 } else { 35 }
+            $pollerJob = Watch-DeploymentProgress -StepName 'ARM-Deploy' -RG $ResourceGroup -EstimateMinutes $pollEtaMin
             try {
                 $deployOk = $false
+                $apimNameForRecovery = $ARMObjects.Where({$_.ObjectType -eq 'ApiManagement'}).Parameters.Parameters.serviceName.value
+                # Derive KV name same way Step-ResourceAudit does, for the KV access-policy
+                # race recovery branch below.
+                $cleanNameForKv = $Name -replace '[^a-zA-Z0-9-]', ''
+                $kvName = if ($env:WINGETMM_OVERRIDE_KEYVAULT) { $env:WINGETMM_OVERRIDE_KEYVAULT } else { "kv-$cleanNameForKv" }
                 for ($attempt = 1; $attempt -le 5; $attempt++) {
-                    $deployOk = & $mod { param($a,$z,$rg) New-ARMObjects -ARMObjects ([ref]$a) -RestSourcePath $z -ResourceGroup $rg } $ARMObjects $restSourceZip $ResourceGroup
-                    if ($deployOk) { break }
+                    # Per-attempt banner so the user sees "we're alive, this is attempt N" — the
+                    # underlying ARM call can be silent for 5-15 minutes during APIM creation.
+                    $attemptStart = Get-Date
+                    Write-Log ("▶ ARM deploy attempt {0}/5 starting (typical: {1})..." -f $attempt, $(if($Script:ExistingResources.APIM){'5-15 min'}else{'10-20 min per attempt'})) -Level INFO
+
+                    # Wrap the inner call in try/catch + ErrorAction Stop so cmdlet/script errors
+                    # bubble up as a single catchable exception instead of being auto-rendered
+                    # by PowerShell as a giant red block with line numbers + stack frames.
+                    $deployErr = $null
+                    try {
+                        $deployOk = & $mod { param($a,$z,$rg) New-ARMObjects -ARMObjects ([ref]$a) -RestSourcePath $z -ResourceGroup $rg -ErrorAction Stop } $ARMObjects $restSourceZip $ResourceGroup
+                    } catch {
+                        $deployErr = $_.Exception.Message
+                        $deployOk = $false
+                    }
+                    $attemptDur = ((Get-Date) - $attemptStart).ToString('mm\:ss')
+                    if ($deployOk) {
+                        Write-Log ("✓ ARM deploy attempt {0}/5 succeeded after {1}." -f $attempt, $attemptDur) -Level SUCCESS
+                        break
+                    }
+                    # Always log a failure line — New-ARMObjects sometimes returns $false silently
+                    # without throwing (e.g. when its own internal $DeployError was captured but
+                    # the function chose to return-false instead of throw).
+                    if ($deployErr) {
+                        $cleanErr = $deployErr
+                        if ($cleanErr -match 'Status Message:\s*(.+?)(?:\s*Please provide correlationId|\s*\(Code:|\r|\n|$)') {
+                            $cleanErr = $Matches[1].Trim()
+                        }
+                        $errCode = if ($deployErr -match '\(Code:([^)]+)\)') { $Matches[1] } else { 'DeploymentFailed' }
+                        Write-Log ("✗ ARM deploy attempt {0}/5 failed after {1}: [{2}] {3}" -f $attempt, $attemptDur, $errCode, $cleanErr) -Level WARN
+                    } else {
+                        Write-Log ("✗ ARM deploy attempt {0}/5 failed after {1} (no exception surfaced — inner cmdlet returned `$false; check log for ARM error details)." -f $attempt, $attemptDur) -Level WARN
+                    }
                     if ($attempt -lt 5) {
-                        Write-Log "Deployment attempt $attempt failed, retrying in 15s..." -Level WARN
-                        Start-Sleep -Seconds 15
+                        # KV access-policy race recovery: ARM resolves named-value KV references
+                        # immediately after APIM creation, but the freshly-issued APIM identity
+                        # often hasn't propagated to KV yet. The error reads:
+                        #   "does not have secrets get permission on key vault '<name>;location=...'"
+                        # If APIM exists with an identity, grant 'Get' on the vault NOW so the next
+                        # attempt can resolve named values immediately. Without this, we waste an
+                        # entire attempt waiting for propagation.
+                        $kvGranted = $false
+                        if ($deployErr -and $deployErr -match 'does not have secrets get permission' -and $apimNameForRecovery) {
+                            try {
+                                $subIdKv = (Get-AzContext).Subscription.Id
+                                $apimUriKv = "/subscriptions/$subIdKv/resourceGroups/$ResourceGroup/providers/Microsoft.ApiManagement/service/$apimNameForRecovery`?api-version=2023-05-01-preview"
+                                $apimGetKv = Invoke-AzRestMethod -Path $apimUriKv -Method GET -ErrorAction SilentlyContinue
+                                if ($apimGetKv -and $apimGetKv.StatusCode -ge 200 -and $apimGetKv.StatusCode -lt 300) {
+                                    $apimObjKv = $apimGetKv.Content | ConvertFrom-Json -Depth 20
+                                    $principalId = $apimObjKv.identity.principalId
+                                    if ($principalId) {
+                                        Write-Log "↻ KV access-policy race detected — granting 'Get/secrets' to APIM identity ($principalId) on '$kvName' before retry..." -Level WARN
+                                        $null = Set-AzKeyVaultAccessPolicy -VaultName $kvName -ResourceGroupName $ResourceGroup -ObjectId $principalId -PermissionsToSecrets Get -BypassObjectIdValidation -ErrorAction SilentlyContinue -ErrorVariable kvErr
+                                        if ($kvErr) {
+                                            Write-Log "KV access-policy grant returned: $kvErr" -Level WARN
+                                        } else {
+                                            Write-Log "✓ KV access policy granted — next attempt should resolve named values successfully." -Level SUCCESS
+                                            $kvGranted = $true
+                                        }
+                                    } else {
+                                        Write-Log "APIM exists but has no system-assigned identity yet — cannot pre-grant KV; falling back to retry." -Level DEBUG
+                                    }
+                                }
+                            } catch {
+                                Write-Log "KV pre-grant check error: $($_.Exception.Message)" -Level DEBUG
+                            }
+                        }
+
+                        # Check if APIM is in Failed provisioning state — if so it MUST be deleted
+                        # before any retry can succeed (ARM returns ServiceInFailedProvisioningState
+                        # 'Please delete the service before trying to re-create it with same name').
+                        # Common after a transient ActivationFailed in the first attempt.
+                        $apimRecovered = $false
+                        if ($apimNameForRecovery) {
+                            try {
+                                $subIdRecov = (Get-AzContext).Subscription.Id
+                                $apimUriRecov = "/subscriptions/$subIdRecov/resourceGroups/$ResourceGroup/providers/Microsoft.ApiManagement/service/$apimNameForRecovery`?api-version=2023-05-01-preview"
+                                $apimGetRecov = Invoke-AzRestMethod -Path $apimUriRecov -Method GET -ErrorAction SilentlyContinue
+                                if ($apimGetRecov -and $apimGetRecov.StatusCode -ge 200 -and $apimGetRecov.StatusCode -lt 300) {
+                                    $apimObjRecov = $apimGetRecov.Content | ConvertFrom-Json -Depth 20
+                                    $stateRecov = "$($apimObjRecov.properties.provisioningState)"
+                                    if ($stateRecov -in @('Failed','Cancelled','Canceled')) {
+                                        Write-Log "↻ APIM '$apimNameForRecovery' in '$stateRecov' state — deleting + purging soft-delete shadow before retry..." -Level WARN
+                                        $delResp = Invoke-AzRestMethod -Path $apimUriRecov -Method DELETE -ErrorAction SilentlyContinue
+                                        if ($delResp -and $delResp.StatusCode -ge 200 -and $delResp.StatusCode -lt 400) {
+                                            # Poll for delete completion (typically 5-10 min for APIM).
+                                            # Log progress every minute so the user sees we're alive.
+                                            $delStart    = Get-Date
+                                            $delDeadline = $delStart.AddMinutes(15)
+                                            $lastLog     = $delStart
+                                            do {
+                                                Start-Sleep -Seconds 30
+                                                $check = Invoke-AzRestMethod -Path $apimUriRecov -Method GET -ErrorAction SilentlyContinue
+                                                if (-not $check -or $check.StatusCode -eq 404) { $apimRecovered = $true; break }
+                                                # Surface progress every ~60s so the user sees we're alive.
+                                                if (((Get-Date) - $lastLog).TotalSeconds -ge 60) {
+                                                    $delEl = ((Get-Date) - $delStart).ToString('mm\:ss')
+                                                    Write-Log ("  … still waiting for APIM delete ({0} elapsed, typical: 5-10 min)..." -f $delEl) -Level INFO
+                                                    $lastLog = Get-Date
+                                                }
+                                            } while ((Get-Date) -lt $delDeadline)
+                                            $delTotal = ((Get-Date) - $delStart).ToString('mm\:ss')
+                                            if ($apimRecovered) {
+                                                # Purge soft-deleted shadow so the next deploy can reuse the name
+                                                $purgeUri = "/subscriptions/$subIdRecov/providers/Microsoft.ApiManagement/locations/$Region/deletedservices/$apimNameForRecovery`?api-version=2023-05-01-preview"
+                                                $null = Invoke-AzRestMethod -Path $purgeUri -Method DELETE -ErrorAction SilentlyContinue
+                                                Start-Sleep -Seconds 30
+                                                Write-Log ("✓ APIM '{0}' recovered after {1} — next attempt starts with a fresh service name." -f $apimNameForRecovery, $delTotal) -Level SUCCESS
+                                            } else {
+                                                Write-Log ("APIM delete did not complete within 15 min ({0} elapsed) — next attempt may still hit ServiceInFailedProvisioningState." -f $delTotal) -Level WARN
+                                            }
+                                        } else {
+                                            Write-Log "APIM DELETE request returned status $($delResp.StatusCode): $($delResp.Content)" -Level WARN
+                                        }
+                                    }
+                                }
+                            } catch {
+                                Write-Log "Failed-APIM recovery check error: $($_.Exception.Message)" -Level DEBUG
+                            }
+                        }
+                        $waitSec   = if ($apimRecovered -or $kvGranted) { 5 } else { 15 }
+                        $reasonTxt = @()
+                        if ($kvGranted)     { $reasonTxt += 'KV access policy pre-granted' }
+                        if ($apimRecovered) { $reasonTxt += 'failed APIM purged' }
+                        $reason = if ($reasonTxt) { ' (' + ($reasonTxt -join ', ') + ')' } else { ' (no recovery applied — transient retry)' }
+                        Write-Log ("Retrying ARM deploy in {0}s — attempt {1}/5{2}..." -f $waitSec, ($attempt + 1), $reason) -Level INFO
+                        Start-Sleep -Seconds $waitSec
                     } else {
                         throw "Failed to deploy ARM resources after $attempt attempts."
                     }
@@ -1698,13 +2064,31 @@ function Step-DeployRestSource {
 
             # Step 7: Show connection instructions
             $apiMgmtName = $ARMObjects.Where({$_.ObjectType -eq 'ApiManagement'}).Parameters.Parameters.serviceName.value
+            $apiMgmtUrl = $null
             try {
-                $apiMgmtUrl = (Get-AzApiManagement -Name $apiMgmtName -ResourceGroupName $ResourceGroup).RuntimeUrl
+                $apiMgmtUrl = (Get-AzApiManagement -Name $apiMgmtName -ResourceGroupName $ResourceGroup -ErrorAction Stop).RuntimeUrl
+            } catch {
+                # Get-AzApiManagement cmdlet can't deserialize V2 SKUs back to its enum
+                # ('Error mapping types. String -> PsApiManagementSku'). Fall back to ARM REST.
+                Write-Log "Get-AzApiManagement cmdlet failed (likely V2 SKU enum issue) — falling back to ARM REST..." -Level DEBUG
+                try {
+                    $subIdApim = (Get-AzContext).Subscription.Id
+                    $apimRestUri = "/subscriptions/$subIdApim/resourceGroups/$ResourceGroup/providers/Microsoft.ApiManagement/service/$apiMgmtName`?api-version=2023-05-01-preview"
+                    $apimRest = Invoke-AzRestMethod -Path $apimRestUri -Method GET -ErrorAction Stop
+                    if ($apimRest.StatusCode -ge 200 -and $apimRest.StatusCode -lt 300) {
+                        $apimRestObj = $apimRest.Content | ConvertFrom-Json -Depth 20
+                        $apiMgmtUrl = $apimRestObj.properties.gatewayUrl
+                    }
+                } catch {
+                    Write-Log "ARM REST fallback for APIM URL also failed: $($_.Exception.Message)" -Level DEBUG
+                }
+            }
+            if ($apiMgmtUrl) {
                 $Script:DeploymentUrl = "$apiMgmtUrl/winget/"
                 Write-Log "Connection command:" -Level SUCCESS
                 Write-Log "  winget source add -n `"$Name`" -a `"$Script:DeploymentUrl`" -t `"Microsoft.Rest`"" -Level INFO
-            } catch {
-                Write-Log "Could not retrieve API Management URL: $($_.Exception.Message)" -Level WARN
+            } else {
+                Write-Log "Could not retrieve API Management URL via cmdlet or REST — falling back to direct function URL." -Level WARN
                 $Script:DeploymentUrl = "https://func-${Name}.azurewebsites.net/api/"
             }
         }
@@ -2467,6 +2851,21 @@ function Step-RegisterSource {
 
 try {
     Write-Banner
+
+    # Sanity check: confirm where the script is running from and whether the
+    # bundled fork module is reachable on disk. This is the first thing logged
+    # so future deploy logs make it trivial to confirm the bundled fork (vs a
+    # PSGallery copy) is what will be loaded later in Phase 1.
+    $bundledPsd1Check = Join-Path $PSScriptRoot 'Modules\Microsoft.WinGet.RestSource\Microsoft.WinGet.RestSource.psd1'
+    $bundledArmCheck  = Join-Path $PSScriptRoot 'Modules\Microsoft.WinGet.RestSource\Data\ARMTemplates\azurefunction.json'
+    $bundledDllCheck  = Join-Path $PSScriptRoot 'Modules\Microsoft.WinGet.RestSource\Library\WinGet.RestSource.PowershellSupport\Microsoft.WinGet.PowershellSupport.dll'
+    Write-Log "Script directory  : $PSScriptRoot" -Level INFO
+    Write-Log "Bundled fork psd1 : $bundledPsd1Check (exists=$(Test-Path $bundledPsd1Check))" -Level INFO
+    Write-Log "Bundled ARM templ : $bundledArmCheck (exists=$(Test-Path $bundledArmCheck))" -Level INFO
+    Write-Log "Bundled support   : $bundledDllCheck (exists=$(Test-Path $bundledDllCheck))" -Level INFO
+    if (-not (Test-Path $bundledPsd1Check)) {
+        Write-Log "Bundled fork module is missing — deploy will fall back to PSGallery resolution and the SKU hot-patch path." -Level WARN
+    }
 
     Write-Log "Script parameters:" -Level DEBUG
     Write-Log "  Name             = $Name" -Level DEBUG

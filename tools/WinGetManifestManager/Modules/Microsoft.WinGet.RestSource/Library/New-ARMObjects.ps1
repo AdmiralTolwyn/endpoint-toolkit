@@ -127,7 +127,16 @@ function New-ARMObjects {
             ## Create instance manually if not exist
             $ApiManagementParameters = $Object.Parameters.Parameters
             $ApiManagement = Get-AzApiManagement -ResourceGroupName $ResourceGroup -Name $ApiManagementParameters.serviceName.value -ErrorVariable ErrorGet -ErrorAction SilentlyContinue
-            if (!$ApiManagement) {
+
+            ## V2 SKUs (BasicV2, StandardV2) are not accepted by New-AzApiManagement -Sku
+            ## (the cmdlet's [PsApiManagementSku] enum only knows the legacy SKUs:
+            ## Developer/Standard/Premium/Basic/Consumption). For V2 we skip the manual
+            ## cmdlet creation and let the subsequent New-AzResourceGroupDeployment do it
+            ## via the ARM template (which accepts the SKU as a free-form string parameter).
+            $SkuValue = "$($ApiManagementParameters.sku.value)"
+            $IsV2Sku  = $SkuValue -match 'v2$'
+
+            if (!$ApiManagement -and -not $IsV2Sku) {
                 Write-Warning "Creating new Api Aanagement service. Name: $($ApiManagementParameters.serviceName.value)"
                 Write-Warning 'This is a long-running action. It can take between 30 and 40 minutes to create and activate an API Management service.'
                 $ApiManagement = New-AzApiManagement -ResourceGroupName $ResourceGroup -Name $ApiManagementParameters.serviceName.value -Location $ApiManagementParameters.location.value -Organization $ApiManagementParameters.publisherName.value -AdminEmail $ApiManagementParameters.publisherEmail.value -Sku $ApiManagementParameters.sku.value -SystemAssignedIdentity -ErrorVariable DeployError
@@ -135,14 +144,43 @@ function New-ARMObjects {
                     Write-Error "Failed to create Api Aanagement service. Error: $DeployError"
                     return $false
                 }
+            } elseif (!$ApiManagement -and $IsV2Sku) {
+                Write-Verbose "API Management SKU '$SkuValue' detected — deferring creation to ARM template (cmdlet enum does not support V2 SKUs)."
+                Write-Verbose 'This is a long-running action. It can take between 30 and 40 minutes to create and activate an API Management service.'
             }
 
-            ## Set secret get permission for Api Management service
-            Write-Verbose 'Set keyvault secret access for Api Management service'
-            $Result = Set-AzKeyVaultAccessPolicy -VaultName $KeyVaultName -ResourceGroupName $ResourceGroup -ObjectId $ApiManagement.Identity.PrincipalId -PermissionsToSecrets Get -BypassObjectIdValidation -ErrorVariable ErrorSet
-            if ($ErrorSet) {
-                Write-Error "Failed to set keyvault secret access for Api Management Service. Error: $ErrorSet"
-                return $false
+            ## Set secret get permission for Api Management service (skipped for V2 — done post-deploy below)
+            if ($ApiManagement) {
+                Write-Verbose 'Set keyvault secret access for Api Management service'
+                $Result = Set-AzKeyVaultAccessPolicy -VaultName $KeyVaultName -ResourceGroupName $ResourceGroup -ObjectId $ApiManagement.Identity.PrincipalId -PermissionsToSecrets Get -BypassObjectIdValidation -ErrorVariable ErrorSet
+                if ($ErrorSet) {
+                    Write-Error "Failed to set keyvault secret access for Api Management Service. Error: $ErrorSet"
+                    return $false
+                }
+            } elseif ($IsV2Sku) {
+                ## V2 fallback: the Az.ApiManagement cmdlet sometimes returns $null for V2 SKUs.
+                ## If APIM actually exists in ARM, fetch its identity via REST and apply the
+                ## keyvault access policy now (BEFORE the ARM deploy needs it for KV references).
+                ## Without this the ARM deployment fails with: 'does not have secrets get permission
+                ## on key vault' (Code:ValidationError) when resolving named values backed by KV refs.
+                $apimSubId = (Get-AzContext).Subscription.Id
+                $apimResUri = "/subscriptions/$apimSubId/resourceGroups/$ResourceGroup/providers/Microsoft.ApiManagement/service/$($ApiManagementParameters.serviceName.value)`?api-version=2023-05-01-preview"
+                $apimGet = Invoke-AzRestMethod -Path $apimResUri -Method GET -ErrorAction SilentlyContinue
+                if ($apimGet -and $apimGet.StatusCode -ge 200 -and $apimGet.StatusCode -lt 300) {
+                    $apimObj = $apimGet.Content | ConvertFrom-Json -Depth 20
+                    if ($apimObj.identity -and $apimObj.identity.principalId) {
+                        Write-Verbose "Set keyvault secret access for Api Management service (V2 REST fallback, principalId=$($apimObj.identity.principalId))"
+                        $Result = Set-AzKeyVaultAccessPolicy -VaultName $KeyVaultName -ResourceGroupName $ResourceGroup -ObjectId $apimObj.identity.principalId -PermissionsToSecrets Get -BypassObjectIdValidation -ErrorVariable ErrorSet
+                        if ($ErrorSet) {
+                            Write-Error "Failed to set keyvault secret access for Api Management Service (V2 REST fallback). Error: $ErrorSet"
+                            return $false
+                        }
+                    } else {
+                        Write-Verbose 'V2 APIM has no system-assigned identity yet — keyvault access policy will be set post-deploy.'
+                    }
+                } else {
+                    Write-Verbose 'V2 APIM does not exist yet — keyvault access policy will be set post-deploy after ARM creates it.'
+                }
             }
 
             ## Update backend urls and re-create parameters file if needed
@@ -158,16 +196,29 @@ function New-ARMObjects {
 
         ## ARM deployment operations
         ## Creates the Azure Resource
-        $DeployResult = New-AzResourceGroupDeployment -ResourceGroupName $ResourceGroup -TemplateFile $Object.TemplatePath -TemplateParameterFile $Object.ParameterPath -Mode Incremental -ErrorVariable DeployError
+        ## -ErrorAction SilentlyContinue + -ErrorVariable suppresses the noisy auto-rendered
+        ## cmdlet error block (line numbers, giant correlation IDs); the caller logs a clean
+        ## summary instead and the retry loop in Deploy-WinGetSource.ps1 handles recovery.
+        $DeployResult = New-AzResourceGroupDeployment -ResourceGroupName $ResourceGroup -TemplateFile $Object.TemplatePath -TemplateParameterFile $Object.ParameterPath -Mode Incremental -ErrorVariable DeployError -ErrorAction SilentlyContinue
 
         ## Verifies that no error occured when creating the Azure resource
         if ($DeployError -or ($DeployResult.ProvisioningState -ne 'Succeeded' -and $DeployResult.ProvisioningState -ne 'Created')) {
+            ## Extract just the Status Message from the ARM error (drops correlationId, timestamps,
+            ## and "Showing 1 out of 1 error(s)" boilerplate). The full error is still on $DeployError
+            ## for callers that want it via -ErrorVariable.
+            $errMsg = "$DeployError"
+            if ($errMsg -match 'Status Message:\s*(.+?)(?:\s*Please provide correlationId|\s*\(Code:|\r|\n|$)') {
+                $errMsg = $Matches[1].Trim()
+            }
+            $errCode = if ("$DeployError" -match '\(Code:([^)]+)\)') { $Matches[1] } else { 'DeploymentFailed' }
             $ErrReturnObject = @{
                 DeployError  = $DeployError
                 DeployResult = $DeployResult
             }
 
-            Write-Error "Failed to create Azure object. Error: $DeployError" -TargetObject $ErrReturnObject
+            Write-Verbose "ARM deploy failed: [$errCode] $errMsg"
+            Write-Verbose "Full error: $DeployError"
+            $null = $ErrReturnObject  # retained for diagnostic capture
             return $false
         }
 
@@ -244,6 +295,45 @@ function New-ARMObjects {
             if (!$(Restart-AzFunctionApp -Name $FunctionName -ResourceGroupName $ResourceGroup -Force -PassThru)) {
                 Write-Error "Failed to restart Function App. Name: $FunctionName"
                 return $false
+            }
+        } elseif ($Object.ObjectType -eq 'ApiManagement') {
+            ## V2 SKU post-deploy: ARM created APIM (cmdlet path was skipped above), so set
+            ## the keyvault secret access policy now using the freshly-created APIM identity.
+            $ApiManagementParameters = $Object.Parameters.Parameters
+            $SkuValue = "$($ApiManagementParameters.sku.value)"
+            if ($SkuValue -match 'v2$') {
+                $apimPrincipalId = $null
+
+                ## Try the cmdlet first (works for some V2 SKUs depending on Az.ApiManagement version)
+                $ApiManagement = Get-AzApiManagement -ResourceGroupName $ResourceGroup -Name $ApiManagementParameters.serviceName.value -ErrorAction SilentlyContinue
+                if ($ApiManagement -and $ApiManagement.Identity -and $ApiManagement.Identity.PrincipalId) {
+                    $apimPrincipalId = $ApiManagement.Identity.PrincipalId
+                } else {
+                    ## Cmdlet failed or returned no identity — fall back to ARM REST.
+                    ## Common for V2 SKUs because Get-AzApiManagement can't deserialize the SKU enum.
+                    $apimSubId = (Get-AzContext).Subscription.Id
+                    $apimResUri = "/subscriptions/$apimSubId/resourceGroups/$ResourceGroup/providers/Microsoft.ApiManagement/service/$($ApiManagementParameters.serviceName.value)`?api-version=2023-05-01-preview"
+                    $apimGet = Invoke-AzRestMethod -Path $apimResUri -Method GET -ErrorAction SilentlyContinue
+                    if ($apimGet -and $apimGet.StatusCode -ge 200 -and $apimGet.StatusCode -lt 300) {
+                        $apimObj = $apimGet.Content | ConvertFrom-Json -Depth 20
+                        if ($apimObj.identity -and $apimObj.identity.principalId) {
+                            $apimPrincipalId = $apimObj.identity.principalId
+                        }
+                    }
+                }
+
+                if ($apimPrincipalId) {
+                    Write-Verbose "Set keyvault secret access for Api Management service (V2 post-deploy, principalId=$apimPrincipalId)"
+                    $Result = Set-AzKeyVaultAccessPolicy -VaultName $KeyVaultName -ResourceGroupName $ResourceGroup -ObjectId $apimPrincipalId -PermissionsToSecrets Get -BypassObjectIdValidation -ErrorVariable ErrorSet
+                    if ($ErrorSet) {
+                        Write-Error "Failed to set keyvault secret access for Api Management Service (V2 post-deploy). Error: $ErrorSet"
+                        return $false
+                    }
+                } else {
+                    ## Pre-deploy V2 fallback already sets this in the wrapper script before ARM runs,
+                    ## so a missing identity here is usually harmless. Demote from Warning to Verbose.
+                    Write-Verbose 'V2 APIM identity not retrievable post-deploy via cmdlet or REST — pre-deploy KV access policy should already be in place.'
+                }
             }
         }
 

@@ -317,7 +317,7 @@ Fill in the deployment form:
 | Source Name | — | Alphanumeric, 3-24 chars. Used as base for all resource names. |
 | Resource Group | `rg-winget-prod-001` | Created automatically if it doesn't exist. |
 | Region | `westeurope` | Azure region for all resources. |
-| Performance Tier | `Developer` | `Developer` / `Basic` / `Enhanced` — affects Cosmos DB and App Service SKUs. |
+| Performance Tier | `Developer` | `Developer` / `Basic` / `Enhanced` / `BasicV2` / `StandardV2` — affects APIM, Cosmos DB and App Service SKUs. V2 SKUs use the modern stv2 platform with faster create / deletion and shorter cold start. |
 | Publisher Name | (your display name) | Embedded in REST source metadata. |
 | Publisher Email | (your Azure email) | Contact email for the source. |
 | Authentication | `None` | `None` or `MicrosoftEntraId` — secures the REST API with Entra ID auth. |
@@ -659,6 +659,46 @@ Install-Module Az.Accounts, Az.Resources, Az.Storage -Scope CurrentUser -Force
 
 Ensure your account has **Storage Blob Data Contributor** role on the target storage account. Key-based access is not used — the app authenticates via Entra ID (`-UseConnectedAccount`).
 
+The app's role check now distinguishes **data-plane** roles (`Storage Blob Data *`) from **control-plane** roles (Owner, Contributor, User Access Administrator). Owner/Contributor alone do **not** grant blob access — only the data-plane variant does. When the GUI detects this mismatch on the Upload tab, it shows a one-click "Assign Role" prompt and then polls every 15 s for RBAC propagation (up to 5 min).
+
+### `winget install` fails with `Conflict (409)` / `Download request status is not success`
+
+The blob exists but anonymous (unauthenticated) GET is blocked. WinGet client downloads installers without auth headers, so two layers must allow public read:
+
+1. **Storage account** — `AllowBlobPublicAccess = $true` (master kill-switch; if `$false`, container ACL is ignored)
+2. **Container ACL** — `Blob` (anonymous read on blobs only) or `Container` (also lists)
+
+The Upload tab → Storage Info panel now exposes a one-click **Enable / Disable public read** button at the bottom that handles both layers in the correct order. Use this for test/preview environments only — disable it once VNet integration + Private Endpoints are in place. Manual equivalent:
+
+```powershell
+$rg = '<rg>'; $sa = '<storage-account>'
+Set-AzStorageAccount -ResourceGroupName $rg -Name $sa -AllowBlobPublicAccess $true
+$ctx = (Get-AzStorageAccount -ResourceGroupName $rg -Name $sa).Context
+Set-AzStorageContainerAcl -Name 'packages' -Permission Blob -Context $ctx
+```
+
+If 409 persists after both layers are enabled, also check `PublicNetworkAccess = 'Enabled'` and the storage firewall (Networking → "Enabled from all networks" or your client IP allowed).
+
+### Role-propagation poll runs at full speed (no 15 s gap between attempts)
+
+Fixed in `d4db8a7`. `Start-Sleep -Seconds $Script:RBAC_POLL_SEC` inside `Poll-RolePropagation`'s background runspace was resolving to `$null` because background runspaces don't inherit `$Script:` scope. Result: the poll spun roughly once per second and threw `BgJob[0]: ERROR: Cannot validate argument on parameter 'Seconds'` repeatedly. The poll seconds value is now passed via the runspace `-Variables` hashtable with a 15 s fallback if missing.
+
+### `Get-Date` throws `Cannot find a positional parameter` repeatedly in DispatcherTimer
+
+Fixed in `306ce9b`. The WPF DispatcherTimer tick (50 ms) was calling `Get-Date` for elapsed time. Under certain WPF + PowerShell-7 thread states the cmdlet resolution intermittently fails on the dispatcher thread. Replaced with `[datetime]::Now` (no cmdlet lookup, pure CLR) — also faster.
+
+### GUI freezes / Sign Out button stops responding after a background job runs
+
+Fixed by commits `be59a99` (DispatcherTimer hardening — wrapped all WPF property writes in try/catch + outer catch block) and `8cb23b3` (cross-thread scriptblock fix — never pass a `[ScriptBlock]` via runspace `-Variables` and invoke with `&`; use a function-source string + `Invoke-Expression` per runspace instead). Symptom was `SessionStateUnauthorizedAccessException: Global scope cannot be removed` — a single uncaught exception in the dispatcher tick handler was killing the message loop.
+
+### Container browser shows "Discarding stale container results for ''"
+
+Fixed in `69cf656`. The container-load OnComplete callback compared the loaded account name against the closure-captured `$AcctInfo`, which had been re-bound by a subsequent `cmbUploadStorage_SelectionChanged` event. Result: legitimate results were discarded as "stale" and the role-warning prompt never appeared. Now the account name is **pinned at queue time** via the `-Context @{ LoadedAcctName = ... }` hashtable and read from the OnComplete's `$Ctx` parameter.
+
+### Guest user (B2B) sign-in succeeds but role assignment shows "user not found"
+
+Fixed in `e96ebcc`. `Get-AzADUser -UserPrincipalName <home-tenant-email>` returns `$null` against a customer's tenant for guest accounts (the UPN in the customer tenant is mangled — `email_home.com#EXT#@customer.onmicrosoft.com`). The new `Resolve-CurrentUserObjectId` function tries 4 strategies in order: `Get-AzADUser -SignedIn`, Microsoft Graph `/me`, `-UserPrincipalName`, then `-Mail`. Defined as a **here-string** (`$Script:ResolveOidFnSrc`) so each background runspace can re-create it via `Invoke-Expression` without cross-thread scriptblock corruption.
+
 ### Deploy script fails
 
 The deploy script requires **PowerShell 7.4+** (`pwsh`). If you launched the app with Windows PowerShell 5.1, the deploy script will spawn a separate `pwsh` process. Ensure PowerShell 7 is installed.
@@ -677,6 +717,57 @@ The wrapper accepts the V2 SKU names but the **upstream** `Microsoft.WinGet.Rest
 
 The script now (a) enumerates **every** copy of `Microsoft.WinGet.RestSource` on disk and warns when more than one is present, and (b) probes the loaded module's ValidateSet **before** any ARM work via `Test-UpstreamSkuSupport`. If the requested SKU is not supported, the deploy aborts immediately with three resolution paths: install the patched fork at a higher version, hot-patch the installed copy's `Library\New-WinGetSource.ps1`, or pick a supported tier and resize APIM after deploy with `Update-AzApiManagement -Sku StandardV2`.
 
+### Deploy fails with `Cannot bind parameter 'Sku'. Cannot convert value 'BasicV2' to type PsApiManagementSku`
+
+The bundled fork's `New-ARMObjects.ps1` historically called `New-AzApiManagement -Sku $sku` **before** delegating to the ARM template. The Az.ApiManagement cmdlet binds `-Sku` to a strongly-typed `[PsApiManagementSku]` enum that only knows the legacy SKUs (`Developer`/`Basic`/`Standard`/`Premium`/`Consumption`) — `BasicV2`/`StandardV2` are rejected at parameter binding before any REST call is made.
+
+The bundled fork now detects SKU values matching `/v2$/i`, skips the cmdlet path entirely, and lets `New-AzResourceGroupDeployment` create APIM via the ARM template (`sku.name` is a free-form string and accepts both V2 SKUs). The keyvault-access policy that the cmdlet path used to set is moved to a post-ARM-deploy block that fetches the freshly-created APIM identity. Legacy SKUs are unaffected.
+
+### Deploy fails with `Provided list of regions contains duplicate regions. Please remove duplicates from <name>, <name>` (Cosmos DB)
+
+`New-ARMParameterObjects` ships `cosmosdb.json` with two `locations[]` entries (failoverPriority 0 and 1) both defaulting to the primary region. When `-CosmosDBRegion` is supplied the wrapper renames *both* to the same region display name and ARM rejects the deploy.
+
+The wrapper now adds a deduplication pass after the existing region/zone patches: it keeps the first occurrence of each `locationName` (case- and whitespace-insensitive) and renumbers `failoverPriority` sequentially from 0. Single-region deployments end up with a single locations entry; multi-region overrides retain ordering.
+
+### Deploy aborts with `APIM SKU MISMATCH — IN-PLACE UPGRADE NOT SUPPORTED`
+
+The Phase 3b resource audit detected a reused APIM whose SKU does not match the SKU implied by `-PerformanceTier`, and the change is a classic↔V2 jump (e.g. existing `Developer` and requested `BasicV2`). Azure does not support in-place migration between classic and V2 APIM SKUs and would otherwise burn ~30 min in ARM retries before giving up.
+
+Resolution — delete the existing APIM first, then re-run:
+
+```powershell
+Remove-AzApiManagement -ResourceGroupName '<rg>' -Name '<apim-name>'
+# wait ~10-15 min for delete to complete, then re-run Deploy-WinGetSource.ps1
+```
+
+Alternatively re-run with `-PerformanceTier` matching the existing SKU. Same-family upgrades (e.g. `Basic` → `Standard`) still proceed with a WARN.
+
+### Deploy fails with `NameUnavailable` on App Configuration / Key Vault / APIM
+
+All three resource types use Azure soft-delete with multi-day retention windows that reserve the name even after the resource group is deleted. The Phase 3b pre-flight audit auto-purges soft-deleted Key Vaults (recover-into-RG when policy blocks purge), APIMs and App Configuration stores before each deploy. If you saw `NameUnavailable` in earlier ARM-deploy logs, just re-run — the audit will resolve it on the next attempt.
+
+Manual purge if needed:
+
+```powershell
+# App Configuration
+$tok = (Get-AzAccessToken -ResourceUrl 'https://management.azure.com/').Token
+$h   = @{ Authorization = "Bearer $tok" }
+$sub = (Get-AzContext).Subscription.Id
+Invoke-RestMethod -Uri "https://management.azure.com/subscriptions/$sub/providers/Microsoft.AppConfiguration/locations/<region>/deletedConfigurationStores/<name>/purge?api-version=2023-03-01" -Method POST -Headers $h
+
+# APIM
+Invoke-RestMethod -Uri "https://management.azure.com/subscriptions/$sub/providers/Microsoft.ApiManagement/locations/<region>/deletedservices/<name>?api-version=2022-08-01" -Method DELETE -Headers $h
+
+# Key Vault
+Remove-AzKeyVault -VaultName '<name>' -Location '<region>' -InRemovedState -Force
+```
+
+### Deploy aborts at Phase 1 with `Cannot find path '...Library\WinGet.RestSource.PowershellSupport\Microsoft.Winget.PowershellSupport.dll'`
+
+The upstream fork repo's `Tools/PowershellModule/src/` only contains source `.ps1` files — the compiled C# helper (`Microsoft.WinGet.PowershellSupport.dll` + `runtimes/win-{x64,x86,arm64}/native/WinGetUtil.dll`) is built separately. Earlier bundled copies of the fork shipped without those binaries and crashed at `Add-Type` during module import.
+
+The bundled fork now ships the full `Library\WinGet.RestSource.PowershellSupport\` folder (8 files, ≈12 MB) copied from the PSGallery v1.10.0 install. The startup sanity log includes a `Bundled support : <path> (exists=...)` line so missing native deps are obvious in the first ten lines of any deploy log.
+
 ### Function App returns "isolated worker" error after deploy
 
 The .NET-isolated Functions host fails to start when `FUNCTIONS_WORKER_RUNTIME` ≠ `dotnet-isolated` or when `FUNCTIONS_EXTENSION_VERSION` ≠ `~4`. Upstream's zip upload (via `Publish-AzWebApp -ArchivePath`) does not always set these and silently fails on Flex Consumption / isolated-worker plans.
@@ -690,6 +781,53 @@ The script now runs `Assert-FunctionAppHealthy` after every deploy: it checks th
 ---
 
 ## Changelog
+
+### 2026-05-06 (revision 2) — GUI hardening + Connect / Public-Access UX
+
+| Area | Change | Commit / File(s) |
+|------|--------|-----------------|
+| Connect command (new GUI button) | Added a **Connect** button next to **Test** in Settings. Resolves the WinGet REST source URL in a background runspace: looks up the Function App, then queries any APIM in the same RG via ARM REST (`api-version=2023-05-01-preview`) for `properties.gatewayUrl`. Shows themed dialog with the full `winget source add ...` command, `Invoke-RestMethod .../information` test snippet, and an APIM subscription-key hint. **Copy command** button → clipboard + toast. | `a7f7bea` · `Show-RestSourceConnectCommand` (new), `WinGetManifestManager_UI.xaml` (btnConnectCmd) |
+| Public-access toggle (new GUI control) | Added a one-click **Enable / Disable public read** button at the bottom of the Storage Info panel. Sets `AllowBlobPublicAccess` at the account level **and** the container ACL (`Blob` / `Off`) in the correct order. Confirmation dialog spells out the security tradeoff. Auto-refreshes the storage info panel on completion. Designed for test/preview environments only — to be flipped off once Private Endpoints land. | `c0d34e8` · `Set-StoragePublicAccess` (new), inline action panel in `cmbUploadStorage` OnComplete |
+| Container-load stale-check fix | OnComplete now reads the queued account name from `$Ctx.LoadedAcctName` (passed via `Start-BackgroundWork -Context @{...}`) instead of the closure-captured `$AcctInfo`, which could be re-bound by a subsequent `SelectionChanged` event. Without this, legitimate container results were silently discarded as "stale" and the role-prompt path never fired. | `69cf656` · `cmbUploadStorage.Add_SelectionChanged` |
+| Cross-thread scriptblock corruption | `Resolve-CurrentUserObjectId` is now stored as a here-string (`$Script:ResolveOidFnSrc`) and recreated inside each background runspace via `Invoke-Expression`. Previously it was passed as a `[ScriptBlock]` via `-Variables` and invoked with `&`, which carries the original session state across threads and ultimately corrupts the main thread with `SessionStateUnauthorizedAccessException: Global scope cannot be removed`. | `8cb23b3` · `Resolve-CurrentUserObjectId`, `Start-BackgroundWork` callers |
+| DispatcherTimer hardening | Wrapped all WPF property writes (`prgUpload.Value`, `lblUploadProgress.Text`, etc.) in `try/catch` and added the missing outer `catch` block to the timer tick. A single unhandled exception in the 50 ms tick was killing the dispatcher message loop, leaving the GUI frozen with no visible error. | `be59a99` · `BgJob` DispatcherTimer tick handler |
+| `Get-Date` → `[datetime]::Now` | Replaced `Get-Date` with `[datetime]::Now` in the DispatcherTimer tick and BgJob queueing. Cmdlet resolution intermittently fails on the WPF dispatcher thread under certain PS-7 thread states; the CLR static is immune and faster. | `306ce9b` · DispatcherTimer tick, `Start-BackgroundWork` |
+| Role-propagation poll Sleep | Fixed `BgJob[0]: ERROR: Cannot validate argument on parameter 'Seconds'` — `Start-Sleep -Seconds $Script:RBAC_POLL_SEC` resolved to `$null` inside the background runspace (no script scope inheritance). Poll seconds value now passed via `-Variables` with a 15 s fallback. | `d4db8a7` · `Start-RolePropagationCheck` |
+| Data-plane vs control-plane role check | The Upload-tab role check now only treats `Storage Blob Data *` roles (Reader/Contributor/Owner) as upload-OK. Owner / Contributor / User Access Administrator are control-plane only and do **not** grant blob data access — Azure Storage will still 403 the request. Without this, the GUI silently skipped the role-prompt path on accounts that had only control-plane roles assigned. | `1a6190a` · storage-prereq check inside container-load |
+| Guest user (B2B) OID resolution | `Resolve-CurrentUserObjectId` now tries 4 strategies in order: `Get-AzADUser -SignedIn`, Microsoft Graph `/me`, `-UserPrincipalName`, `-Mail`. Fixes guest-user role assignment in customer tenants where the UPN is mangled (`email_home.com#EXT#@customer.onmicrosoft.com`) and `-UserPrincipalName <home-email>` returns `$null`. | `e96ebcc` · `Resolve-CurrentUserObjectId` (new) |
+| ARM-deploy retry visibility | Per-attempt banners with `▶`/`✓`/`✗` glyphs and elapsed time. Periodic APIM delete-poll progress every 60 s (was silent for 14+ min). Generic failure summary instead of stack trace. Retry reason printed before next attempt. | `acc3b38` · `Step-DeployRestSource` retry loop |
+| Resilient `Write-Log` + redesigned summary table | Replaced `Add-Content` with `[System.IO.File]::AppendAllText` (3-attempt retry, 100 ms backoff). Without this, a transient "Stream was not readable" aborted the entire deploy. Summary table widened to 76 chars with `$fmt` scriptblock pattern + ellipsis truncation so long URLs no longer push the right border out of alignment. | `551ddb5` · `Write-Log`, `Write-Summary` |
+| KV access-policy race pre-grant | Pre-grants the APIM identity → Key Vault `secrets get` permission between ARM-deploy retries when the previous attempt failed with `does not have secrets get permission on key vault`. Collapses 2 attempts to 1. | `92a9617` · ARM-deploy retry loop |
+| Cleaner ARM deploy output | Suppressed cmdlet noise via `-ErrorAction SilentlyContinue` + `-ErrorVariable`, single-line failure summary via regex extraction (`[Code] Status Message`), friendlier recovery messages. V2 SKU warnings demoted to Verbose in `New-ARMObjects.ps1`. | `b584b09` · `Step-DeployRestSource`, `New-ARMObjects.ps1` |
+
+### 2026-05-06 — Bundled fork hardening (post-customer-test fixes)
+
+| Area | Change | Function(s) / File(s) |
+|------|--------|-----------------------|
+| Native helper bundled | Added `Library\WinGet.RestSource.PowershellSupport\` (compiled C# helper + win-{x64,x86,arm64} native `WinGetUtil.dll`, 8 files / ≈12 MB) so the bundled fork imports cleanly on machines without a PSGallery install of `Microsoft.WinGet.RestSource`. Without these, the fork's `.psm1` failed at `Add-Type` and aborted Phase 1. | `Modules\Microsoft.WinGet.RestSource\Library\WinGet.RestSource.PowershellSupport\` |
+| Sanity log | Added a 3rd existence check (`Bundled support : <path> (exists=...)`) to the startup sanity log so a missing native helper is visible in the first ten lines of any deploy log. | `Deploy-WinGetSource.ps1` (top-level startup banner) |
+| V2 SKU cmdlet binding | Bundled fork's `New-ARMObjects.ps1` now detects SKU values matching `/v2$/i`, skips the `New-AzApiManagement` cmdlet path (whose `[PsApiManagementSku]` enum doesn't accept V2 SKUs), and lets `New-AzResourceGroupDeployment` create APIM via the ARM template. A post-deploy block sets the keyvault access policy using the freshly-created APIM identity. Legacy SKUs are unaffected. | `Modules\Microsoft.WinGet.RestSource\Library\New-ARMObjects.ps1` |
+| V2 KV access policy (pre-deploy) | When `Get-AzApiManagement` returns `$null` for a V2 APIM (cmdlet enum can't deserialize V2 SKU), the bundled fork now falls back to `Invoke-AzRestMethod GET .../service/<name>?api-version=2023-05-01-preview`, reads `identity.principalId` from the JSON, and applies `Set-AzKeyVaultAccessPolicy` **before** ARM resolves named-value KV references. Without this, ARM failed with `does not have secrets get permission on key vault` (Code:ValidationError). | `New-ARMObjects.ps1` (pre-deploy ApiManagement block) |
+| V2 APIM URL retrieval | All `Get-AzApiManagement` call sites now fall back to ARM REST when the cmdlet throws `Error mapping types. String -> PsApiManagementSku` (V2 SKU). Reads `properties.gatewayUrl` from the REST response, so the printed `winget source add ...` connection command shows the real APIM gateway instead of falling back to the raw function URL. | `Step-DeployRestSource` (default + custom paths) |
+| APIM SKU mismatch on reuse | Phase 3b audit now compares the existing APIM SKU against the SKU implied by `-PerformanceTier` and aborts immediately with a multi-line error block + `Remove-AzApiManagement` remediation when a classic↔V2 cross-tier upgrade is requested. Azure rejects these with `Failed to connect to Management endpoint Port 3443 ... for the <SKU> service` and would otherwise burn ~30 min in retries. Same-family changes (e.g. Basic → Standard) still proceed with a WARN. | `Step-AuditExistingResources` |
+| APIM auto-recovery between retries | If an ARM-deploy attempt leaves APIM in `Failed`/`Cancelled`/`Canceled` provisioning state, the deploy retry loop now DELETEs the broken service via REST (works for V2 SKUs too), polls every 30 s up to 15 min for a 404, then DELETEs the soft-deleted shadow under `/providers/Microsoft.ApiManagement/locations/<region>/deletedservices/<name>` so the next attempt can reuse the name. Without this, a transient `ActivationFailed` on attempt 1 cascaded into 4 `ServiceInFailedProvisioningState` failures on the same broken service. Inter-attempt sleep drops 15 s → 5 s when recovery succeeded. | `Step-DeployRestSource` (retry loop) |
+| AppConfig soft-delete purge | New 2c block in the Phase 3b audit (parallel to existing KV/APIM checks): lists soft-deleted stores via `GET .../providers/Microsoft.AppConfiguration/deletedConfigurationStores?api-version=2023-03-01`, matches by name, then `POST .../locations/<loc>/deletedConfigurationStores/<name>/purge`. Polls every 10 s up to 120 s. Without this, ARM `appconfig` deployment failed with `NameUnavailable` for up to 7 days after a teardown. Reads `properties.location` (not top-level) from the listing payload — with regex fallback against the resource id. | `Step-AuditExistingResources` (2c) |
+| Cosmos `locations[]` dedupe | Added a deduplication pass after the existing `-CosmosDBRegion` / `-CosmosDBZoneRedundant` patches: keep the first occurrence of each `locationName` (case- and whitespace-insensitive) and renumber `failoverPriority` from 0. Fixes ARM `BadRequest: Provided list of regions contains duplicate regions`. | `Step-DeployRestSource` (Cosmos patch block) |
+| Phase 2 auth probe | Extended the success regex on the `Get-AzResourceGroup` ARM-reachability probe to also match the newer Az wording `Provided resource group does not exist` and `ResourceNotFound` (was: `NotFound\|ResourceGroupNotFound\|could not be found`). Without this the probe misclassified the 404 as a fatal multi-tenant auth error and aborted Phase 2 before any work began. | `Step-ConnectAzure` |
+| Healthy-host signal | `Assert-FunctionAppHealthy` now treats HTTP **401 / 403** as proof the host is up (auth-protected endpoint). Warmup raised 60 s → 180 s and probe timeout 15 s → 30 s to accommodate cold isolated-worker starts. | `Assert-FunctionAppHealthy` |
+| Console hygiene | Suppressed the `Invoke-RestMethod` response body that leaked to host after `Purging soft-deleted APIM ...` — the DELETE on `deletedservices` returns the deleted-service object and was being printed as raw object output. | `Step-DeployRestSource` (APIM purge block) |
+| RG delete reliability (Remove) | `Remove-WinGetSource.ps1` no longer rethrows on `Receive-Job` errors. Transient `An error occurred while sending the request` from the Az SDK is now captured, the script sleeps 30 s and re-checks `Get-AzResourceGroup` (delete usually succeeded server-side despite the client error), and re-issues `Remove-AzResourceGroup` up to 3 attempts. Final failure message includes a copy-paste fallback command. | `Remove-WinGetSource.ps1` (Step 3) |
+
+### 2026-05-05 (revision 2) — Bundled fork module + live deploy progress
+
+| Area | Change | Function(s) |
+|------|--------|-------------|
+| Bundled fork | Patched `Microsoft.WinGet.RestSource` module now ships under `Modules\Microsoft.WinGet.RestSource\` and is imported by **absolute path** before any name resolution can happen. PSGallery shadowing is no longer possible. The hot-patch path remains as a fallback. | `Step-ValidatePrerequisites` (1d) |
+| Bundled ARM templates | Patched ARM templates (incl. `azurefunction.json`) ship under `Modules\Microsoft.WinGet.RestSource\Data\ARMTemplates\`. The Function App is now born with `FUNCTIONS_WORKER_RUNTIME=dotnet-isolated` and **without** the legacy `FUNCTIONS_INPROC_NET8_ENABLED=1` flag, so the *"in-proc dotnet migration"* deprecation banner never appears in the portal. The fork's `New-WinGetSource` resolves `$PSScriptRoot\..\Data\ARMTemplates` to this bundled folder automatically. | n/a (template-level) |
+| APIM SKU hot-patch | Reflection-based widening of `New-WinGetSource` / `New-ARMObjects` ValidateSets via the `validValues` backing field; also patches `allowedValues` arrays in any bundled ARM template (with `.orig` backup). Only runs on the PSGallery-fallback path. | `Test-UpstreamSkuSupport` |
+| Live progress | Background poller now emits its first heartbeat after 5 s (was 30 s), shows elapsed / ETA / % of estimated total, and drills into the active ARM **deployment operation** so the long APIM creation surfaces *which sub-resource* ARM is currently working on. Both deploy paths pass `-EstimateMinutes 35` for fresh APIM or `10` when reusing one. | `Watch-DeploymentProgress` |
+| Banner / summary | Banner box recomputed with explicit width math (em dash no longer breaks alignment); summary box rebuilt with truncating padding helper so long URLs don't push the right border out of line. | `Write-Banner`, `Write-Summary` |
+| Multi-tenant auth | Phase 2 probes ARM with the cached context; if a multi-tenant / expired-credential error is detected it auto-runs `Connect-AzAccount -TenantId <extracted>` and continues. Outer fatal handler now emits a clean *AZURE AUTHENTICATION REQUIRED* block with copy-paste-ready `Connect-AzAccount` / `Set-AzContext` commands instead of a stack trace dump. | `Step-ConnectAzure`, outer `catch` |
 
 ### 2026-05-05 — Customer-feedback patch (Deploy-WinGetSource.ps1)
 

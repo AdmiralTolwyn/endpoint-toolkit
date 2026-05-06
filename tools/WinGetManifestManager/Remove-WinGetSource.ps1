@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Complete teardown of a WinGet REST source deployment.
 
@@ -261,26 +261,61 @@ if (-not $PurgeOnly) {
         if ($PSCmdlet.ShouldProcess($ResourceGroup, "Delete Resource Group (and all contents)")) {
             Write-Step "Deleting resource group '$ResourceGroup'... (this can take 5-15 minutes)" -Level INFO
 
-            $deleteJob = Remove-AzResourceGroup -Name $ResourceGroup -Force -AsJob
-            $spinner = @('⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏')
-            $i = 0
-            while ($deleteJob.State -eq 'Running') {
-                $elapsed = ((Get-Date) - $deleteJob.PSBeginTime).ToString('mm\:ss')
-                Write-Host "`r  $($spinner[$i % $spinner.Count]) Deleting... ($elapsed)" -NoNewline
-                Start-Sleep -Seconds 5
-                $i++
-            }
-            Write-Host ""
+            # ARM RG-delete jobs occasionally fail with transient network errors
+            # ("An error occurred while sending the request") even though the delete
+            # is still progressing server-side. Retry up to 3 times before giving up.
+            $maxRgAttempts = 3
+            $rgDeleted = $false
+            for ($rgAttempt = 1; $rgAttempt -le $maxRgAttempts; $rgAttempt++) {
+                # If a previous attempt errored, the RG might already be gone.
+                if ($rgAttempt -gt 1) {
+                    Start-Sleep -Seconds 30
+                    $stillThere = Get-AzResourceGroup -Name $ResourceGroup -ErrorAction SilentlyContinue
+                    if (-not $stillThere) {
+                        Write-Step "Resource group '$ResourceGroup' is gone — previous attempt succeeded server-side despite client error." -Level SUCCESS
+                        $rgDeleted = $true
+                        break
+                    }
+                    Write-Step "Retry $rgAttempt/$maxRgAttempts — re-issuing Remove-AzResourceGroup..." -Level WARN
+                }
 
-            if ($deleteJob.State -eq 'Completed') {
-                Write-Step "Resource group '$ResourceGroup' deleted." -Level SUCCESS
+                $deleteJob = Remove-AzResourceGroup -Name $ResourceGroup -Force -AsJob
+                $spinner = @('⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏')
+                $i = 0
+                while ($deleteJob.State -eq 'Running') {
+                    $elapsed = ((Get-Date) - $deleteJob.PSBeginTime).ToString('mm\:ss')
+                    Write-Host "`r  $($spinner[$i % $spinner.Count]) Deleting... ($elapsed)" -NoNewline
+                    Start-Sleep -Seconds 5
+                    $i++
+                }
+                Write-Host ""
+
+                if ($deleteJob.State -eq 'Completed') {
+                    Write-Step "Resource group '$ResourceGroup' deleted." -Level SUCCESS
+                    $rgDeleted = $true
+                    Remove-Job $deleteJob -Force -ErrorAction SilentlyContinue
+                    break
+                }
+
+                # Failed — capture error without re-throwing, and check if the RG is actually gone.
+                $jobErrors = @()
+                try {
+                    Receive-Job $deleteJob -ErrorAction Stop -ErrorVariable jobErrors | Out-Null
+                } catch {
+                    $jobErrors += $_
+                }
+                Write-Step "Attempt $rgAttempt/$maxRgAttempts failed:" -Level WARN
+                $jobErrors | ForEach-Object { Write-Step "  $($_.ToString())" -Level WARN }
+                Remove-Job $deleteJob -Force -ErrorAction SilentlyContinue
+            }
+
+            if ($rgDeleted) {
                 $summary.ResourceGroup = 'Deleted'
             } else {
-                Write-Step "Resource group deletion failed:" -Level ERROR
-                Receive-Job $deleteJob | ForEach-Object { Write-Step "  $_" -Level ERROR }
+                Write-Step "Resource group deletion failed after $maxRgAttempts attempts. The delete may still be in progress server-side — check the Azure Portal." -Level ERROR
+                Write-Step "Manual cleanup: Remove-AzResourceGroup -Name '$ResourceGroup' -Force" -Level INFO
                 $summary.ResourceGroup = 'Failed'
             }
-            Remove-Job $deleteJob -Force -ErrorAction SilentlyContinue
         }
     } else {
         Write-Step "Resource group '$ResourceGroup' does not exist — nothing to delete." -Level INFO
