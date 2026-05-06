@@ -72,12 +72,13 @@
     System locale for Set-WinSystemLocale. Only applied when explicitly specified.
     Controls the language used for non-Unicode programs. Example: 'en-US', 'de-CH'.
 
-.PARAMETER CopyToSystem
-    Forces Copy-UserInternationalSettingsToSystem even when not running as SYSTEM.
-    When running as SYSTEM this is automatic and does not need to be specified.
+.PARAMETER SkipCopyToSystem
+    Skips copying the current user's international settings to the welcome
+    screen and Default User profile. Use this for user-context-only deployments
+    where the SYSTEM-context script handles the system-wide copy.
 
 .NOTES
-    Version : 1.1.0
+    Version : 1.2.0
     Author  : Anton Romanyuk
     Context : Intune platform script / Autopilot Device Prep. Runs as SYSTEM or user.
     Requires: Windows 10/11, PowerShell 5.1+, admin.
@@ -88,6 +89,7 @@
 
     References:
       https://msendpointmgr.com/2025/06/27/managing-windows-11-languages-and-region-settings-part-2/
+      https://web.archive.org/web/20230315105902/https://vacuumbreather.com/index.php/blog/item/61-how-to-automate-inputpreferences-during-osd
       https://learn.microsoft.com/windows-hardware/manufacture/desktop/default-input-locales-for-windows-language-packs
       https://learn.microsoft.com/windows/win32/intl/table-of-geographical-locations
 
@@ -102,8 +104,8 @@
 .EXAMPLE
     .\Set-KeyboardLayout.ps1
     Adds Swiss German keyboard (0807:00000807) alongside the existing US English
-    keyboard. No region/culture/locale changes. When running as SYSTEM, settings
-    are automatically copied to new-user profile and welcome screen.
+    keyboard and sets it as the default input method. Settings are copied to the
+    welcome screen and Default User profile (reboot required).
 
 .EXAMPLE
     .\Set-KeyboardLayout.ps1 -GeoId 223 -Culture 'de-CH'
@@ -143,7 +145,7 @@ param(
 
     [string]$SystemLocale,
 
-    [switch]$CopyToSystem
+    [switch]$SkipCopyToSystem
 )
 
 #region --- Configuration ---
@@ -185,9 +187,9 @@ $xmlPath  = $null
 
 try {
     $isSystem     = Test-RunningAsSystem
-    $copySettings = $CopyToSystem.IsPresent -or $isSystem
+    $copySettings = -not $SkipCopyToSystem.IsPresent
 
-    Write-Log '=== Set-KeyboardLayout v1.1.0 ===' -Level SUCCESS
+    Write-Log '=== Set-KeyboardLayout v1.2.0 ===' -Level SUCCESS
     Write-Log "Running as      : $(if ($isSystem) { 'SYSTEM' } else { [Environment]::UserName })"
     Write-Log "Add keyboard    : $AddInputLocale"
     Write-Log "Remove keyboard : $(if ($RemoveInputLocale) { $RemoveInputLocale } else { '(none)' })"
@@ -219,12 +221,10 @@ try {
     }
 
     # --- Step 2: Build InputPreferences XML ------------------------------------------------
-    $userElement = if ($copySettings) {
-        '    <gs:User UserID="Current" CopySettingsToDefaultUserAcct="true" CopySettingsToSystemAcct="true"/>'
-    }
-    else {
-        '    <gs:User UserID="Current"/>'
-    }
+    # Note: CopySettings directives are NOT in the XML. We call
+    # Copy-UserInternationalSettingsToSystem explicitly AFTER setting the default
+    # input method override, so the override is included in the copy.
+    $userElement = '    <gs:User UserID="Current"/>'
 
     $inputActions = @()
     $inputActions += "    <gs:InputLanguageID Action=`"add`" ID=`"$AddInputLocale`"/>"
@@ -268,7 +268,17 @@ $($inputActions -join "`n")
     Write-Log 'Restoring modern language bar mode'
     Set-WinLanguageBarOption -UseLegacySwitchMode:$false -UseLegacyLanguageBar:$false
 
-    # --- Step 6: Verify --------------------------------------------------------------------
+    # --- Step 6: Set as default input method ------------------------------------------------
+    Write-Log "Setting default input method override to '$AddInputLocale'"
+    Set-WinDefaultInputMethodOverride -InputTip $AddInputLocale
+
+    # --- Step 7: Copy to Default User / system (welcome screen) ----------------------------
+    if ($copySettings) {
+        Write-Log 'Copying international settings to Default User profile and system account'
+        Copy-UserInternationalSettingsToSystem -WelcomeScreen $true -NewUser $true
+    }
+
+    # --- Step 8: Verify --------------------------------------------------------------------
     $langList = Get-WinUserLanguageList
     Write-Log 'Current language list:' -Level SUCCESS
     foreach ($lang in $langList) {

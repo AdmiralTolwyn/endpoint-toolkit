@@ -7,9 +7,10 @@ Uses the `intl.cpl` InputPreferences XML approach (GlobalizationServices schema)
 ## How It Works
 
 1. **Keyboard swap** (always): generates an InputPreferences XML that adds the desired keyboard and optionally removes the original one, then applies it via `control.exe intl.cpl,,/f:"<path>"`.
-2. **Regional settings** (opt-in): sets culture, GeoId, and/or system locale only when the corresponding parameter is explicitly passed — nothing changes by default.
-3. Temporarily enables the legacy language bar before the XML import (required on Windows 11), then restores the modern bar.
-4. When running as SYSTEM (or with `-CopyToSystem`), the XML includes `CopySettingsToDefaultUserAcct` and `CopySettingsToSystemAcct` directives so that the welcome screen and all new user profiles inherit the keyboard layout.
+2. **Sets the added keyboard as the default** input method via `Set-WinDefaultInputMethodOverride` — the user logs in with the new keyboard active.
+3. **Regional settings** (opt-in): sets culture, GeoId, and/or system locale only when the corresponding parameter is explicitly passed — nothing changes by default.
+4. Temporarily enables the legacy language bar before the XML import (required on Windows 11), then restores the modern bar.
+5. **Copies settings to welcome screen and Default User** by default (via `CopySettingsToDefaultUserAcct` / `CopySettingsToSystemAcct` in the XML). Use `-SkipCopyToSystem` for user-context-only deployments.
 
 > **Reboot required:** Changes to the welcome screen and Default User profile require a reboot to take effect.
 
@@ -39,7 +40,7 @@ Deploy a second copy in **user context** to change the keyboard for existing use
 | Enforce script signature check | No |
 | Run script in 64-bit PowerShell host | **Yes** |
 
-> **Two-script pattern:** Sandy Zeng recommends deploying both a SYSTEM-context and a user-context script to cover all scenarios (pre-provisioning + already-deployed devices). The user-context version does not copy settings to the welcome screen.
+> **Two-script pattern:** Sandy Zeng recommends deploying both a SYSTEM-context and a user-context script to cover all scenarios (pre-provisioning + already-deployed devices). The user-context version should use `-SkipCopyToSystem`.
 
 ## Input Locale Format
 
@@ -114,7 +115,7 @@ Full reference: [Table of Geographical Locations](https://learn.microsoft.com/wi
 | `-GeoId` | *(not set)* | Geographical location for `Set-WinHomeLocation`. Only applied when specified. |
 | `-Culture` | *(not set)* | Region format for `Set-Culture` (date/time/number). Only applied when specified. |
 | `-SystemLocale` | *(not set)* | System locale for non-Unicode programs. Only applied when specified. |
-| `-CopyToSystem` | off | Force-copy to welcome screen and Default User (automatic when SYSTEM). |
+| `-SkipCopyToSystem` | off | Skip copying settings to welcome screen and Default User profile. |
 
 ## Exit Codes
 
@@ -140,5 +141,6 @@ Written to the Intune Management Extension log folder:
 ## References
 
 - [Managing Windows 11 languages and region settings (Part 2) – Keyboard layout](https://msendpointmgr.com/2025/06/27/managing-windows-11-languages-and-region-settings-part-2/) — Sandy Zeng
+- [How to automate InputPreferences during OSD](https://web.archive.org/web/20230315105902/https://vacuumbreather.com/index.php/blog/item/61-how-to-automate-inputpreferences-during-osd) — Anton Romanyuk
 - [Default Input Locales for Windows Language Packs](https://learn.microsoft.com/windows-hardware/manufacture/desktop/default-input-locales-for-windows-language-packs)
 - [Table of Geographical Locations](https://learn.microsoft.com/windows/win32/intl/table-of-geographical-locations)
