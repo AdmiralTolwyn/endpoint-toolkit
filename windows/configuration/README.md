@@ -1,3 +1,15 @@
+# Windows Configuration
+
+Registry and policy tweaks that adjust Windows behavior outside the scope of servicing, security, or feature-specific folders.
+
+## Scripts
+
+| Script | Purpose |
+|--------|---------|
+| [Set-StartupAppsDelay.ps1](Set-StartupAppsDelay.ps1) | Reverts the Windows 11 "wait-for-idle" startup-app delay (`WaitForIdleState=0`) so Outlook / Teams / Word / Excel launch promptly after sign-in on busy devices. |
+
+---
+
 # Set-StartupAppsDelay.ps1
 
 Reverts the Windows 11 "wait-for-idle" startup-app delay so Run / RunOnce / Startup-folder apps launch promptly after sign-in.
