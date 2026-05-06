@@ -6,13 +6,15 @@ Uses the `intl.cpl` InputPreferences XML approach (GlobalizationServices schema)
 
 ## How It Works
 
-1. **Keyboard swap** (always): generates an InputPreferences XML that adds the desired keyboard and optionally removes the original one, then applies it via `control.exe intl.cpl,,/f:"<path>"`.
-2. **Sets the added keyboard as the default** input method via `Set-WinDefaultInputMethodOverride` — the user logs in with the new keyboard active.
+1. **Add keyboard** (always): builds an InputPreferences XML that adds the desired keyboard layout (and optionally removes another), then applies it via `control.exe intl.cpl,,/f:"<path>"`. The XML only adds — it does not try to reorder existing keyboards (remove+re-add corrupts the language→`InputMethodTips` association on Windows 11).
+2. **Reorder default keyboard**: directly rewrites `HKCU\Keyboard Layout\Preload` so the new keyboard's KLID lands at position `1` (the default input method). Existing KLIDs follow in their original order.
 3. **Regional settings** (opt-in): sets culture, GeoId, and/or system locale only when the corresponding parameter is explicitly passed — nothing changes by default.
-4. Temporarily enables the legacy language bar before the XML import (required on Windows 11), then restores the modern bar.
-5. **Copies settings to welcome screen and Default User** by default (via `CopySettingsToDefaultUserAcct` / `CopySettingsToSystemAcct` in the XML). Use `-SkipCopyToSystem` for user-context-only deployments.
+4. **Copies settings to welcome screen and Default User** by default (via `Copy-UserInternationalSettingsToSystem`). Use `-SkipCopyToSystem` for user-context-only deployments.
+5. **Optional — reset modern taskbar input switcher** (`-ResetTaskbarInputSwitcher`): clears residual values under `HKCU\Software\Microsoft\CTF\LangBar` (`ShowStatus`, `Label`, `Transparency`, `ExtraIconsOnMinimized`) so Windows reverts to the default modern indicator. **Off by default** — only opt in if a previous configuration suppressed the indicator.
 
-> **Reboot required:** Changes to the welcome screen and Default User profile require a reboot to take effect.
+The script does **not** toggle the legacy language bar — that workaround is only needed for display-language changes and corrupts the `LangBar` values mentioned above.
+
+> **Sign out / reboot required:** The Preload reorder is on disk immediately, but the running session caches the default keyboard at logon. Sign out and back in (or reboot) for the change to take effect in the taskbar input switcher and new apps. A reboot is also required for the welcome screen and Default User profile changes from `Copy-UserInternationalSettingsToSystem`.
 
 ## Deployment
 
