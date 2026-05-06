@@ -8627,36 +8627,65 @@ $cmbUploadStorage.Add_SelectionChanged({
             if ($R.PublicAccess) { & $AddInfoRow 'Blob Public Access' $R.PublicAccess ([string][char]0xE72E) }
             if ($R.PublicNetwork) { & $AddInfoRow 'Public Network' $R.PublicNetwork ([string][char]0xE774) }
 
-            & $AddSeparator
-
-            # Data section
-            & $AddInfoRow 'Containers' "$($R.Containers.Count)" ([string][char]0xE838)
-            if ($R.Containers.Count -gt 0) {
-                $ContainerList = ($R.Containers | Sort-Object) -join ', '
-                & $AddInfoRow '' $ContainerList $null
-            }
-            if ($R.BlobEndpoint) { & $AddInfoRow 'Blob Endpoint' $R.BlobEndpoint ([string][char]0xE71B) }
-
-            # ── Action: toggle public blob access ─────────────────────────
-            # Test-mode shortcut so installers can be downloaded anonymously by WinGet
-            # clients while VNet integration / Private Endpoints are still in flight.
+            # ── Inline action: toggle public blob access (placed in Security section
+            # for discoverability — no scrolling required to find it) ─────────────
             $IsPublic = ($R.PublicAccess -eq 'True')
             $TargetContainer = if ($cmbUploadContainer.SelectedItem) { [string]$cmbUploadContainer.SelectedItem.Content } else { 'packages' }
             $SelAcctTag = $cmbUploadStorage.SelectedItem.Tag
 
-            & $AddSeparator
+            $ActionCard = New-Object System.Windows.Controls.Border
+            $ActionCard.Margin = [System.Windows.Thickness]::new(0, 8, 0, 4)
+            $ActionCard.Padding = [System.Windows.Thickness]::new(8, 6, 8, 8)
+            $ActionCard.CornerRadius = [System.Windows.CornerRadius]::new(4)
+            $ActionCard.BorderThickness = [System.Windows.Thickness]::new(1)
+            if ($IsPublic) {
+                $ActionCard.SetResourceReference([System.Windows.Controls.Border]::BorderBrushProperty, 'ThemeWarning')
+                $ActionCard.SetResourceReference([System.Windows.Controls.Border]::BackgroundProperty, 'ThemeInputBg')
+            } else {
+                $ActionCard.SetResourceReference([System.Windows.Controls.Border]::BorderBrushProperty, 'ThemeBorder')
+                $ActionCard.SetResourceReference([System.Windows.Controls.Border]::BackgroundProperty, 'ThemeInputBg')
+            }
 
-            $ActionPanel = New-Object System.Windows.Controls.StackPanel
-            $ActionPanel.Margin = [System.Windows.Thickness]::new(0, 6, 0, 0)
+            $ActionStack = New-Object System.Windows.Controls.StackPanel
 
-            $ActionLabel = New-Object System.Windows.Controls.TextBlock
-            $ActionLabel.Text = 'PUBLIC ACCESS'
-            $ActionLabel.FontSize = 9
-            $ActionLabel.FontWeight = [System.Windows.FontWeights]::Bold
-            $ActionLabel.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'ThemeTextDim')
-            $ActionLabel.Margin = [System.Windows.Thickness]::new(0, 0, 0, 4)
-            $ActionPanel.Children.Add($ActionLabel) | Out-Null
+            # Header row: icon + label + status pill
+            $HeaderGrid = New-Object System.Windows.Controls.Grid
+            $HeaderGrid.Margin = [System.Windows.Thickness]::new(0, 0, 0, 6)
+            $HC0 = New-Object System.Windows.Controls.ColumnDefinition; $HC0.Width = 'Auto'
+            $HC1 = New-Object System.Windows.Controls.ColumnDefinition; $HC1.Width = '*'
+            $HeaderGrid.ColumnDefinitions.Add($HC0) | Out-Null
+            $HeaderGrid.ColumnDefinitions.Add($HC1) | Out-Null
 
+            $HdrLbl = New-Object System.Windows.Controls.TextBlock
+            $HdrLbl.Text = 'PUBLIC ACCESS'
+            $HdrLbl.FontSize = 9
+            $HdrLbl.FontWeight = [System.Windows.FontWeights]::Bold
+            $HdrLbl.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'ThemeTextDim')
+            $HdrLbl.VerticalAlignment = 'Center'
+            [System.Windows.Controls.Grid]::SetColumn($HdrLbl, 0)
+            $HeaderGrid.Children.Add($HdrLbl) | Out-Null
+
+            $StatusPill = New-Object System.Windows.Controls.Border
+            $StatusPill.HorizontalAlignment = 'Right'
+            $StatusPill.CornerRadius = [System.Windows.CornerRadius]::new(8)
+            $StatusPill.Padding = [System.Windows.Thickness]::new(7, 1, 7, 1)
+            if ($IsPublic) {
+                $StatusPill.SetResourceReference([System.Windows.Controls.Border]::BackgroundProperty, 'ThemeWarning')
+            } else {
+                $StatusPill.SetResourceReference([System.Windows.Controls.Border]::BackgroundProperty, 'ThemeGreenAccent')
+            }
+            $StatusTb = New-Object System.Windows.Controls.TextBlock
+            $StatusTb.Text = if ($IsPublic) { 'PUBLIC' } else { 'PRIVATE' }
+            $StatusTb.FontSize = 8.5
+            $StatusTb.FontWeight = [System.Windows.FontWeights]::Bold
+            $StatusTb.Foreground = [System.Windows.Media.Brushes]::White
+            $StatusPill.Child = $StatusTb
+            [System.Windows.Controls.Grid]::SetColumn($StatusPill, 1)
+            $HeaderGrid.Children.Add($StatusPill) | Out-Null
+
+            $ActionStack.Children.Add($HeaderGrid) | Out-Null
+
+            # Action button
             $ActionBtn = New-Object System.Windows.Controls.Button
             $ActionBtn.Padding = [System.Windows.Thickness]::new(10, 5, 10, 5)
             $ActionBtn.HorizontalAlignment = 'Stretch'
@@ -8666,13 +8695,12 @@ $cmbUploadStorage.Add_SelectionChanged({
             if ($IsPublic) {
                 $ActionBtn.Content = "Disable public read on '$TargetContainer'"
                 $ActionBtn.ToolTip = "Sets account flag AllowBlobPublicAccess=false and container ACL to Off. Anonymous downloads will stop working immediately."
-                try { $ActionBtn.Style = $Window.Resources['GhostButton'] } catch { }
             } else {
                 $ActionBtn.Content = "Enable public read on '$TargetContainer'"
                 $ActionBtn.ToolTip = "TEST MODE ONLY: Sets account flag AllowBlobPublicAccess=true and container ACL to Blob (anonymous read). Required for WinGet client installer downloads until Private Endpoints are in place."
-                try { $ActionBtn.Style = $Window.Resources['GhostButton'] } catch { }
             }
-            # Capture values for the click handler
+            try { $ActionBtn.Style = $Window.Resources['GhostButton'] } catch { }
+
             $CaptureAcct = $SelAcctTag.Name
             $CaptureRG   = $SelAcctTag.ResourceGroup
             $CaptureCnt  = $TargetContainer
@@ -8700,22 +8728,34 @@ $cmbUploadStorage.Add_SelectionChanged({
                 }
             }.GetNewClosure())
 
-            $ActionPanel.Children.Add($ActionBtn) | Out-Null
+            $ActionStack.Children.Add($ActionBtn) | Out-Null
 
+            # Caption text (warning when public)
             $WarnTb = New-Object System.Windows.Controls.TextBlock
             $WarnTb.FontSize = 9
             $WarnTb.TextWrapping = 'Wrap'
             $WarnTb.Margin = [System.Windows.Thickness]::new(0, 4, 0, 0)
             if ($IsPublic) {
-                $WarnTb.Text = "⚠ Anonymous downloads ENABLED. Disable when Private Endpoints are live."
+                $WarnTb.Text = "⚠ Anonymous downloads ENABLED on '$CaptureCnt'. Disable when Private Endpoints are live."
                 $WarnTb.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'ThemeWarning')
             } else {
-                $WarnTb.Text = "Private — WinGet clients require auth or PE. Enable for test/preview."
+                $WarnTb.Text = "Private — WinGet clients require auth or PE. Enable for test/preview only."
                 $WarnTb.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'ThemeTextMuted')
             }
-            $ActionPanel.Children.Add($WarnTb) | Out-Null
+            $ActionStack.Children.Add($WarnTb) | Out-Null
 
-            $pnlStorageInfoRows.Children.Add($ActionPanel) | Out-Null
+            $ActionCard.Child = $ActionStack
+            $pnlStorageInfoRows.Children.Add($ActionCard) | Out-Null
+
+            & $AddSeparator
+
+            # Data section
+            & $AddInfoRow 'Containers' "$($R.Containers.Count)" ([string][char]0xE838)
+            if ($R.Containers.Count -gt 0) {
+                $ContainerList = ($R.Containers | Sort-Object) -join ', '
+                & $AddInfoRow '' $ContainerList $null
+            }
+            if ($R.BlobEndpoint) { & $AddInfoRow 'Blob Endpoint' $R.BlobEndpoint ([string][char]0xE71B) }
 
             Write-DebugLog "[ContainerCB] Storage info panel update DONE" -Level 'DEBUG'
         }
