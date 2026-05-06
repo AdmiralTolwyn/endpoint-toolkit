@@ -1103,7 +1103,7 @@
                                         <TextBlock Text="STORAGE INFO" FontSize="10" FontWeight="Bold"
                                                    Foreground="{DynamicResource ThemeTextDim}" VerticalAlignment="Center"/>
                                     </StackPanel>
-                                    <ScrollViewer VerticalScrollBarVisibility="Auto" MaxHeight="200">
+                                    <ScrollViewer VerticalScrollBarVisibility="Auto">
                                         <StackPanel x:Name="pnlStorageInfoRows">
                                             <TextBlock x:Name="lblStorageInfo" Text="Select a storage account" FontSize="10"
                                                        Foreground="{DynamicResource ThemeTextDisabled}" TextWrapping="Wrap"/>

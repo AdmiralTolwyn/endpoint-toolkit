@@ -8604,51 +8604,25 @@ $cmbUploadStorage.Add_SelectionChanged({
                 $pnlStorageInfoRows.Children.Add($Sep) | Out-Null
             }
 
-            # General section
-            & $AddInfoRow 'Name' $AcctTag.Name ([string][char]0xE753)
-            & $AddInfoRow 'Resource Group' $AcctTag.ResourceGroup ([string][char]0xF168)
-            & $AddInfoRow 'Region' $AcctTag.Location ([string][char]0xE774)
-            if ($R.SubName) { & $AddInfoRow 'Subscription' $R.SubName ([string][char]0xE8D4) }
-
-            & $AddSeparator
-
-            # Configuration section
-            & $AddInfoRow 'Kind' $AcctTag.Kind ([string][char]0xE950)
-            & $AddInfoRow 'SKU' $AcctTag.Sku ([string][char]0xE945)
-            if ($R.AccessTier) { & $AddInfoRow 'Access Tier' $R.AccessTier ([string][char]0xE74A) }
-            if ($R.CreationTime) { & $AddInfoRow 'Created' $R.CreationTime ([string][char]0xE787) }
-
-            & $AddSeparator
-
-            # Security section
-            if ($R.RoleMsg) { & $AddInfoRow 'Access' $R.RoleMsg ([string][char]0xE72E) }
-            if ($R.HttpsOnly) { & $AddInfoRow 'HTTPS Only' $R.HttpsOnly ([string][char]0xE72E) }
-            if ($R.MinTls) { & $AddInfoRow 'Min TLS' $R.MinTls ([string][char]0xE72E) }
-            if ($R.PublicAccess) { & $AddInfoRow 'Blob Public Access' $R.PublicAccess ([string][char]0xE72E) }
-            if ($R.PublicNetwork) { & $AddInfoRow 'Public Network' $R.PublicNetwork ([string][char]0xE774) }
-
-            # ── Inline action: toggle public blob access (placed in Security section
-            # for discoverability — no scrolling required to find it) ─────────────
+            # ── PUBLIC ACCESS card (top — most actionable info) ───────────
             $IsPublic = ($R.PublicAccess -eq 'True')
             $TargetContainer = if ($cmbUploadContainer.SelectedItem) { [string]$cmbUploadContainer.SelectedItem.Content } else { 'packages' }
             $SelAcctTag = $cmbUploadStorage.SelectedItem.Tag
 
             $ActionCard = New-Object System.Windows.Controls.Border
-            $ActionCard.Margin = [System.Windows.Thickness]::new(0, 8, 0, 4)
+            $ActionCard.Margin = [System.Windows.Thickness]::new(0, 0, 0, 8)
             $ActionCard.Padding = [System.Windows.Thickness]::new(8, 6, 8, 8)
             $ActionCard.CornerRadius = [System.Windows.CornerRadius]::new(4)
             $ActionCard.BorderThickness = [System.Windows.Thickness]::new(1)
+            $ActionCard.SetResourceReference([System.Windows.Controls.Border]::BackgroundProperty, 'ThemeInputBg')
             if ($IsPublic) {
                 $ActionCard.SetResourceReference([System.Windows.Controls.Border]::BorderBrushProperty, 'ThemeWarning')
-                $ActionCard.SetResourceReference([System.Windows.Controls.Border]::BackgroundProperty, 'ThemeInputBg')
             } else {
                 $ActionCard.SetResourceReference([System.Windows.Controls.Border]::BorderBrushProperty, 'ThemeBorder')
-                $ActionCard.SetResourceReference([System.Windows.Controls.Border]::BackgroundProperty, 'ThemeInputBg')
             }
 
             $ActionStack = New-Object System.Windows.Controls.StackPanel
 
-            # Header row: icon + label + status pill
             $HeaderGrid = New-Object System.Windows.Controls.Grid
             $HeaderGrid.Margin = [System.Windows.Thickness]::new(0, 0, 0, 6)
             $HC0 = New-Object System.Windows.Controls.ColumnDefinition; $HC0.Width = 'Auto'
@@ -8685,7 +8659,6 @@ $cmbUploadStorage.Add_SelectionChanged({
 
             $ActionStack.Children.Add($HeaderGrid) | Out-Null
 
-            # Action button
             $ActionBtn = New-Object System.Windows.Controls.Button
             $ActionBtn.Padding = [System.Windows.Thickness]::new(10, 5, 10, 5)
             $ActionBtn.HorizontalAlignment = 'Stretch'
@@ -8730,7 +8703,6 @@ $cmbUploadStorage.Add_SelectionChanged({
 
             $ActionStack.Children.Add($ActionBtn) | Out-Null
 
-            # Caption text (warning when public)
             $WarnTb = New-Object System.Windows.Controls.TextBlock
             $WarnTb.FontSize = 9
             $WarnTb.TextWrapping = 'Wrap'
@@ -8746,6 +8718,29 @@ $cmbUploadStorage.Add_SelectionChanged({
 
             $ActionCard.Child = $ActionStack
             $pnlStorageInfoRows.Children.Add($ActionCard) | Out-Null
+
+            # General section
+            & $AddInfoRow 'Name' $AcctTag.Name ([string][char]0xE753)
+            & $AddInfoRow 'Resource Group' $AcctTag.ResourceGroup ([string][char]0xF168)
+            & $AddInfoRow 'Region' $AcctTag.Location ([string][char]0xE774)
+            if ($R.SubName) { & $AddInfoRow 'Subscription' $R.SubName ([string][char]0xE8D4) }
+
+            & $AddSeparator
+
+            # Configuration section
+            & $AddInfoRow 'Kind' $AcctTag.Kind ([string][char]0xE950)
+            & $AddInfoRow 'SKU' $AcctTag.Sku ([string][char]0xE945)
+            if ($R.AccessTier) { & $AddInfoRow 'Access Tier' $R.AccessTier ([string][char]0xE74A) }
+            if ($R.CreationTime) { & $AddInfoRow 'Created' $R.CreationTime ([string][char]0xE787) }
+
+            & $AddSeparator
+
+            # Security section
+            if ($R.RoleMsg) { & $AddInfoRow 'Access' $R.RoleMsg ([string][char]0xE72E) }
+            if ($R.HttpsOnly) { & $AddInfoRow 'HTTPS Only' $R.HttpsOnly ([string][char]0xE72E) }
+            if ($R.MinTls) { & $AddInfoRow 'Min TLS' $R.MinTls ([string][char]0xE72E) }
+            if ($R.PublicAccess) { & $AddInfoRow 'Blob Public Access' $R.PublicAccess ([string][char]0xE72E) }
+            if ($R.PublicNetwork) { & $AddInfoRow 'Public Network' $R.PublicNetwork ([string][char]0xE774) }
 
             & $AddSeparator
 
