@@ -70,8 +70,9 @@ lookup completes.
 | Autopilot | `Microsoft.Graph.DeviceManagement.Enrollment`                              | Same Graph context; needs `DeviceManagementServiceConfig.ReadWrite.All` |
 | SCCM      | `ConfigurationManager.psd1` (Endpoint Manager Console / SMS_ADMIN_UI_PATH) | Stored DPAPI credentials *or* the current Windows user           |
 
-PowerShell 5.1+ on Windows. The script must run **STA** for WPF — the
-launcher handles this; if you start it by hand, include `-STA`.
+PowerShell 5.1 or 7 on Windows. The launcher prefers `pwsh` if available
+and falls back to `powershell.exe`. The script must run **STA** for WPF —
+the launcher handles this; if you start it by hand, include `-STA`.
 
 ### Prerequisite banner
 
@@ -477,7 +478,7 @@ get a "still in progress, close anyway?" prompt. Choose Yes to force.
   (in-place mutation crashes on frozen brushes). Theme-aware resources
   (`DotColorBrush`, `GlowColorBrush`) drive the dotted-grid background and
   glow tint.
-* **PowerShell 5.1 STA**. Background work uses `RunspaceFactory` plus a
+* **PowerShell 5.1 / 7 STA**. Background work uses `RunspaceFactory` plus a
   50 ms `DispatcherTimer` polling `IAsyncResult.IsCompleted` and marshalling
   results back to the UI thread. No `Start-Job` (too slow).
 * **Three runspaces per lookup**: AD (its own), Entra+Intune+Autopilot
