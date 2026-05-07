@@ -1,4 +1,4 @@
-#Requires -RunAsAdministrator
+﻿#Requires -RunAsAdministrator
 <#
 .SYNOPSIS
     Adds a keyboard layout and sets it as the default input method for the current
@@ -106,7 +106,6 @@
       KKKKKKKK  Keyboard Layout Identifier (KLID, hex)
 
     References:
-      https://msendpointmgr.com/2025/06/27/managing-windows-11-languages-and-region-settings-part-2/
       https://web.archive.org/web/20230315105902/https://vacuumbreather.com/index.php/blog/item/61-how-to-automate-inputpreferences-during-osd
       https://learn.microsoft.com/windows-hardware/manufacture/desktop/default-input-locales-for-windows-language-packs
       https://learn.microsoft.com/windows/win32/intl/table-of-geographical-locations
