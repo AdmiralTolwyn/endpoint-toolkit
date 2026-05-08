@@ -96,7 +96,7 @@
     tool) has suppressed the indicator.
 
 .NOTES
-    Version : 1.4.0
+    Version : 1.5.0
     Author  : Anton Romanyuk
     Context : Intune platform script / Autopilot Device Prep. Runs as SYSTEM or user.
     Requires: Windows 10/11, PowerShell 5.1+, admin.
@@ -197,6 +197,90 @@ function Write-Log {
 function Test-RunningAsSystem {
     [Security.Principal.WindowsIdentity]::GetCurrent().User.Value -eq 'S-1-5-18'
 }
+
+function Get-LoadedUserHive {
+    <#
+    .SYNOPSIS
+        Returns SID + friendly name for every real-user hive loaded under HKEY_USERS.
+    #>
+    $builtIn = @('S-1-5-18','S-1-5-19','S-1-5-20')
+    foreach ($sub in (Get-ChildItem -Path 'Registry::HKEY_USERS' -ErrorAction SilentlyContinue)) {
+        $sid = $sub.PSChildName
+        if ($sid -eq '.DEFAULT')      { continue }
+        if ($sid -match '_Classes$')  { continue }
+        if ($builtIn -contains $sid)  { continue }
+        try {
+            $objSid  = [System.Security.Principal.SecurityIdentifier]::new($sid)
+            $account = $objSid.Translate([System.Security.Principal.NTAccount]).Value
+        } catch {
+            $account = $sid
+        }
+        [pscustomobject]@{ SID = $sid; Account = $account }
+    }
+}
+
+function Set-PreloadForHive {
+    <#
+    .SYNOPSIS
+        Ensures a KLID is at Preload position 1 under a given registry root.
+        Optionally removes another KLID.
+    #>
+    param(
+        [string]$RootPath,
+        [string]$AddKlid,
+        [string]$RemoveKlid,
+        [string]$Label
+    )
+    $preloadPath = Join-Path $RootPath 'Keyboard Layout\Preload'
+    if (-not (Test-Path -LiteralPath $preloadPath)) {
+        [void](New-Item -Path $preloadPath -Force)
+        Set-ItemProperty -LiteralPath $preloadPath -Name '1' -Value $AddKlid -Type String
+        Write-Log "[$Label] Created Preload with 1=$AddKlid"
+        return
+    }
+    $existing = @()
+    foreach ($name in (Get-Item -LiteralPath $preloadPath).Property) {
+        $existing += [pscustomobject]@{
+            Name = $name
+            Klid = (Get-ItemProperty -LiteralPath $preloadPath -Name $name).$name
+        }
+    }
+    $existing = $existing | Sort-Object { [int]$_.Name }
+    $beforeStr = ($existing | ForEach-Object { '{0}={1}' -f $_.Name, $_.Klid }) -join ', '
+
+    $orderedKlids = @($AddKlid)
+    foreach ($e in $existing) {
+        if ($e.Klid -eq $AddKlid) { continue }
+        if ($RemoveKlid -and $e.Klid -eq $RemoveKlid) { continue }
+        if ($orderedKlids -notcontains $e.Klid) {
+            $orderedKlids += $e.Klid
+        }
+    }
+
+    $alreadyCorrect = $true
+    if ($existing.Count -ne $orderedKlids.Count) { $alreadyCorrect = $false }
+    else {
+        for ($idx = 0; $idx -lt $orderedKlids.Count; $idx++) {
+            if ($existing[$idx].Klid -ne $orderedKlids[$idx]) { $alreadyCorrect = $false; break }
+        }
+    }
+    if ($alreadyCorrect) {
+        Write-Log "[$Label] Preload already correct: $beforeStr"
+        return
+    }
+
+    foreach ($e in $existing) {
+        Remove-ItemProperty -LiteralPath $preloadPath -Name $e.Name -ErrorAction SilentlyContinue
+    }
+    $i = 1
+    foreach ($klid in $orderedKlids) {
+        Set-ItemProperty -LiteralPath $preloadPath -Name "$i" -Value $klid -Type String
+        $i++
+    }
+    $afterStr = ($orderedKlids | ForEach-Object -Begin {$j=1} -Process { $r = '{0}={1}' -f $j,$_; $j++; $r }) -join ', '
+    Write-Log "[$Label] Preload before: $beforeStr"
+    Write-Log "[$Label] Preload after : $afterStr"
+}
 #endregion
 
 #region --- Main ---
@@ -208,7 +292,7 @@ try {
     $isSystem     = Test-RunningAsSystem
     $copySettings = -not $SkipCopyToSystem.IsPresent
 
-    Write-Log '=== Set-KeyboardLayout v1.4.0 ===' -Level SUCCESS
+    Write-Log '=== Set-KeyboardLayout v1.5.0 ===' -Level SUCCESS
     Write-Log "Running as      : $(if ($isSystem) { 'SYSTEM' } else { [Environment]::UserName })"
     Write-Log "Add keyboard    : $AddInputLocale"
     Write-Log "Remove keyboard : $(if ($RemoveInputLocale) { $RemoveInputLocale } else { '(none)' })"
@@ -291,47 +375,33 @@ $($inputActions -join "`n")
     }
     Start-Sleep -Seconds 3  # registry flush
 
-    # --- Step 4: Reorder HKCU\Keyboard Layout\Preload to set the new keyboard as default ---
+    # --- Step 4: Reorder Preload to set the new keyboard as default ----------------------
     # The Preload subkey holds REG_SZ values "1", "2", "3", ... whose data is the KLID
     # (Keyboard Layout Identifier, e.g. "00000807"). Position "1" is the default.
     # The XML add only appends to Preload; it never reorders. So we rewrite Preload
     # so the new KLID is at position 1 and existing KLIDs follow.
-    $preloadKey = 'HKCU:\Keyboard Layout\Preload'
     $newKlid    = ($AddInputLocale -split ':')[1]   # "0807:00000807" -> "00000807"
-    if (Test-Path -LiteralPath $preloadKey) {
-        $existing = @()
-        foreach ($name in (Get-Item -LiteralPath $preloadKey).Property) {
-            $existing += [pscustomobject]@{
-                Name = $name
-                Klid = (Get-ItemProperty -LiteralPath $preloadKey -Name $name).$name
-            }
-        }
-        # Sort by numeric Name to preserve stable existing order
-        $existing = $existing | Sort-Object { [int]$_.Name }
-        Write-Log "Preload before: $((($existing | ForEach-Object { '{0}={1}' -f $_.Name, $_.Klid }) -join ', '))"
+    $removeKlid = if ($RemoveInputLocale) { ($RemoveInputLocale -split ':')[1] } else { '' }
 
-        # Build new ordered KLID list: new one first, then existing minus duplicates
-        $orderedKlids = @($newKlid)
-        foreach ($e in $existing) {
-            if ($e.Klid -ne $newKlid -and $orderedKlids -notcontains $e.Klid) {
-                $orderedKlids += $e.Klid
-            }
-        }
+    # 4a: Current user (HKCU) - always
+    Set-PreloadForHive -RootPath 'HKCU:' -AddKlid $newKlid -RemoveKlid $removeKlid -Label 'HKCU'
 
-        # Wipe and rewrite Preload values
-        foreach ($e in $existing) {
-            Remove-ItemProperty -LiteralPath $preloadKey -Name $e.Name -ErrorAction SilentlyContinue
+    # 4b: Under SYSTEM, also patch every loaded real-user hive (HKU\<SID>)
+    #     This is critical on W365 / Autopilot where the user profile already exists
+    #     when the SYSTEM-context platform script runs -- the Default User copy alone
+    #     has no effect on existing profiles.
+    if ($isSystem) {
+        $loadedUsers = @(Get-LoadedUserHive)
+        if ($loadedUsers.Count -gt 0) {
+            Write-Log "Patching Preload for $($loadedUsers.Count) loaded user hive(s)"
+            foreach ($u in $loadedUsers) {
+                $hiveRoot = "Registry::HKEY_USERS\$($u.SID)"
+                Set-PreloadForHive -RootPath $hiveRoot -AddKlid $newKlid -RemoveKlid $removeKlid -Label $u.Account
+            }
+        } else {
+            Write-Log 'No loaded user hives found (no users signed in)' -Level WARN
         }
-        $i = 1
-        foreach ($klid in $orderedKlids) {
-            Set-ItemProperty -LiteralPath $preloadKey -Name "$i" -Value $klid -Type String
-            $i++
-        }
-        Write-Log "Preload after : $((($orderedKlids | ForEach-Object -Begin {$j=1} -Process { $r='{0}={1}' -f $j,$_; $j++; $r }) -join ', '))"
-    } else {
-        Write-Log "Preload key '$preloadKey' not found — skipping reorder" -Level WARN
     }
-
     # --- Step 5: Copy to Default User / system (welcome screen) ----------------------------
     if ($copySettings) {
         Write-Log 'Copying international settings to Default User profile and system account'

@@ -7,7 +7,7 @@ Uses the `intl.cpl` InputPreferences XML approach (GlobalizationServices schema)
 ## How It Works
 
 1. **Add keyboard** (always): builds an InputPreferences XML that adds the desired keyboard layout (and optionally removes another), then applies it via `control.exe intl.cpl,,/f:"<path>"`. The XML only adds — it does not try to reorder existing keyboards (remove+re-add corrupts the language→`InputMethodTips` association on Windows 11).
-2. **Reorder default keyboard**: directly rewrites `HKCU\Keyboard Layout\Preload` so the new keyboard's KLID lands at position `1` (the default input method). Existing KLIDs follow in their original order.
+2. **Reorder default keyboard**: directly rewrites `HKCU\Keyboard Layout\Preload` so the new keyboard's KLID lands at position `1` (the default input method). Under SYSTEM context, also patches every loaded user hive (`HKU\<SID>`) so existing profiles on W365 / Autopilot devices get the keyboard change immediately. Existing KLIDs follow in their original order.
 3. **Regional settings** (opt-in): sets culture, GeoId, and/or system locale only when the corresponding parameter is explicitly passed — nothing changes by default.
 4. **Copies settings to welcome screen and Default User** by default (via `Copy-UserInternationalSettingsToSystem`). Use `-SkipCopyToSystem` for user-context-only deployments.
 5. **Optional — reset modern taskbar input switcher** (`-ResetTaskbarInputSwitcher`): clears residual values under `HKCU\Software\Microsoft\CTF\LangBar` (`ShowStatus`, `Label`, `Transparency`, `ExtraIconsOnMinimized`) so Windows reverts to the default modern indicator. **Off by default** — only opt in if a previous configuration suppressed the indicator.
@@ -30,7 +30,7 @@ Deploy as an **Intune platform script** (Devices → Scripts and remediations �
 
 Autopilot Device Prep supports up to **10 platform scripts** during OOBE — assign the script to the device preparation device group. No Win32 packaging required.
 
-The script automatically detects SYSTEM context and copies settings to the welcome screen and Default User profile.
+The script automatically detects SYSTEM context, patches every loaded user hive (`HKU\<SID>`), and copies settings to the welcome screen and Default User profile. This ensures existing user profiles (common on W365 where profiles are pre-provisioned) get the keyboard change immediately.
 
 ### User context (already-enrolled devices)
 
