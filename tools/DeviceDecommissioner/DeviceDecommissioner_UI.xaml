@@ -213,6 +213,13 @@
             </Style.Triggers>
         </Style>
 
+        <!-- V8: Section header for the in-app tabbed Settings view.
+             A small accent square + the section name + subtitle text.
+             Used to add rhythm between groups of fields. -->
+        <Style x:Key="SettingsSectionHeader" TargetType="StackPanel">
+            <Setter Property="Margin" Value="0,16,0,8"/>
+        </Style>
+
         <!-- ============================================================ -->
         <!-- TAB BUTTON (underlined active state)                          -->
         <!-- ============================================================ -->
@@ -1347,7 +1354,10 @@
                             <Grid HorizontalAlignment="Left" MaxWidth="720">
                                 <!-- GENERAL tab -->
                                 <StackPanel x:Name="setPaneGeneral">
-                                    <TextBlock Text="Application" FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource ThemeTextPrimary}" Margin="0,0,0,8"/>
+                                    <DockPanel Margin="0,0,0,8">
+                                        <Border Width="3" Height="14" Background="{DynamicResource ThemeAccent}" CornerRadius="1.5" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                        <TextBlock Text="Application" FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource ThemeTextPrimary}" VerticalAlignment="Center"/>
+                                    </DockPanel>
                                     <TextBlock Text="Settings file" FontSize="11" Foreground="{DynamicResource ThemeTextSecondary}"/>
                                     <TextBlock x:Name="lblSettingsFilePath" Text="" FontSize="11" Foreground="{DynamicResource ThemeTextDim}" Margin="0,2,0,12" TextWrapping="Wrap"/>
                                     <TextBlock Text="Recent devices file" FontSize="11" Foreground="{DynamicResource ThemeTextSecondary}"/>
@@ -1360,12 +1370,20 @@
                                     <TextBlock x:Name="lblAuditFilePath"    Text="" FontSize="11" Foreground="{DynamicResource ThemeTextDim}" Margin="0,2,0,12" TextWrapping="Wrap"/>
                                     <TextBlock Text="Appended after every decommission (including dry-runs). Never auto-rotated." FontSize="11" Foreground="{DynamicResource ThemeTextDim}" Margin="0,0,0,16" TextWrapping="Wrap"/>
 
-                                    <TextBlock Text="Safety" FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource ThemeTextPrimary}" Margin="0,8,0,8"/>
+                                    <Border Background="{DynamicResource ThemeBorder}" Height="1" Margin="0,8,0,0" SnapsToDevicePixels="True"/>
+                                    <DockPanel Margin="0,16,0,8">
+                                        <Border Width="3" Height="14" Background="{DynamicResource ThemeAccent}" CornerRadius="1.5" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                        <TextBlock Text="Safety" FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource ThemeTextPrimary}" VerticalAlignment="Center"/>
+                                    </DockPanel>
                                     <TextBlock Text="Recently-active threshold (days)" FontSize="11" Foreground="{DynamicResource ThemeTextSecondary}"/>
                                     <TextBox x:Name="txtSetRecentDays" Padding="10,7" Margin="0,4,0,2" MaxWidth="100" HorizontalAlignment="Left"/>
                                     <TextBlock Text="Warn before decommissioning a device whose last logon/sync is within this many days (default 7)." FontSize="11" Foreground="{DynamicResource ThemeTextDim}" Margin="0,0,0,16" TextWrapping="Wrap"/>
 
-                                    <TextBlock Text="Data" FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource ThemeTextPrimary}" Margin="0,8,0,8"/>
+                                    <Border Background="{DynamicResource ThemeBorder}" Height="1" Margin="0,8,0,0" SnapsToDevicePixels="True"/>
+                                    <DockPanel Margin="0,16,0,8">
+                                        <Border Width="3" Height="14" Background="{DynamicResource ThemeAccent}" CornerRadius="1.5" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                        <TextBlock Text="Data" FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource ThemeTextPrimary}" VerticalAlignment="Center"/>
+                                    </DockPanel>
                                     <Button x:Name="btnExportAudit" Style="{StaticResource GhostButton}" Padding="12,6" HorizontalAlignment="Left" Margin="0,0,0,4">
                                         <StackPanel Orientation="Horizontal">
                                             <TextBlock Text="&#xEDE1;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="11" VerticalAlignment="Center"/>
@@ -1377,7 +1395,10 @@
 
                                 <!-- AD tab -->
                                 <StackPanel x:Name="setPaneAD" Visibility="Collapsed">
-                                    <TextBlock Text="Active Directory" FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource ThemeTextPrimary}" Margin="0,0,0,8"/>
+                                    <DockPanel Margin="0,0,0,8">
+                                        <Border Width="3" Height="14" Background="{DynamicResource ThemeAccent}" CornerRadius="1.5" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                        <TextBlock Text="Active Directory" FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource ThemeTextPrimary}" VerticalAlignment="Center"/>
+                                    </DockPanel>
                                     <TextBlock Text="Domain controller (optional)" FontSize="11" Foreground="{DynamicResource ThemeTextSecondary}"/>
                                     <TextBox x:Name="txtSetADServer" Padding="10,7" Margin="0,4,0,2"/>
                                     <TextBlock Text="Preferred DC FQDN. Leave blank to use the nearest discoverable DC." FontSize="11" Foreground="{DynamicResource ThemeTextDim}" Margin="0,0,0,16" TextWrapping="Wrap"/>
@@ -1390,7 +1411,10 @@
 
                                 <!-- Entra tab -->
                                 <StackPanel x:Name="setPaneEntra" Visibility="Collapsed">
-                                    <TextBlock Text="Entra ID" FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource ThemeTextPrimary}" Margin="0,0,0,8"/>
+                                    <DockPanel Margin="0,0,0,8">
+                                        <Border Width="3" Height="14" Background="{DynamicResource ThemeAccent}" CornerRadius="1.5" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                        <TextBlock Text="Entra ID" FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource ThemeTextPrimary}" VerticalAlignment="Center"/>
+                                    </DockPanel>
                                     <TextBlock Text="Tenant ID (optional)" FontSize="11" Foreground="{DynamicResource ThemeTextSecondary}"/>
                                     <TextBox x:Name="txtSetEntraTenant" Padding="10,7" Margin="0,4,0,2"/>
                                     <TextBlock Text="Pin sign-in to a specific tenant. Blank = home tenant of the signed-in account." FontSize="11" Foreground="{DynamicResource ThemeTextDim}" Margin="0,0,0,16" TextWrapping="Wrap"/>
@@ -1400,7 +1424,10 @@
 
                                 <!-- Intune tab -->
                                 <StackPanel x:Name="setPaneIntune" Visibility="Collapsed">
-                                    <TextBlock Text="Intune" FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource ThemeTextPrimary}" Margin="0,0,0,8"/>
+                                    <DockPanel Margin="0,0,0,8">
+                                        <Border Width="3" Height="14" Background="{DynamicResource ThemeAccent}" CornerRadius="1.5" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                        <TextBlock Text="Intune" FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource ThemeTextPrimary}" VerticalAlignment="Center"/>
+                                    </DockPanel>
                                     <CheckBox x:Name="chkSetIntuneEnabled" Content="Enable Intune by default"/>
                                     <TextBlock Text="Removes the Intune managed-device record only. It does NOT wipe or retire the device." FontSize="11" Foreground="{DynamicResource ThemeTextDim}" Margin="22,2,0,16" TextWrapping="Wrap"/>
                                     <CheckBox x:Name="chkSetAutopilotEnabled" Content="Enable Autopilot by default"/>
@@ -1409,7 +1436,10 @@
 
                                 <!-- SCCM tab -->
                                 <StackPanel x:Name="setPaneSCCM" Visibility="Collapsed">
-                                    <TextBlock Text="Configuration Manager (SCCM)" FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource ThemeTextPrimary}" Margin="0,0,0,8"/>
+                                    <DockPanel Margin="0,0,0,8">
+                                        <Border Width="3" Height="14" Background="{DynamicResource ThemeAccent}" CornerRadius="1.5" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                        <TextBlock Text="Configuration Manager (SCCM)" FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource ThemeTextPrimary}" VerticalAlignment="Center"/>
+                                    </DockPanel>
                                     <TextBlock Text="Site server FQDN" FontSize="11" Foreground="{DynamicResource ThemeTextSecondary}"/>
                                     <TextBox x:Name="txtSetSCCMServer" Padding="10,7" Margin="0,4,0,2"/>
                                     <TextBlock Text="Primary site server FQDN. Required for any SCCM operation." FontSize="11" Foreground="{DynamicResource ThemeTextDim}" Margin="0,0,0,16" TextWrapping="Wrap"/>
@@ -1422,7 +1452,10 @@
 
                                 <!-- Appearance tab -->
                                 <StackPanel x:Name="setPaneAppearance" Visibility="Collapsed">
-                                    <TextBlock Text="Appearance" FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource ThemeTextPrimary}" Margin="0,0,0,8"/>
+                                    <DockPanel Margin="0,0,0,8">
+                                        <Border Width="3" Height="14" Background="{DynamicResource ThemeAccent}" CornerRadius="1.5" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                        <TextBlock Text="Appearance" FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource ThemeTextPrimary}" VerticalAlignment="Center"/>
+                                    </DockPanel>
                                     <TextBlock Text="Theme" FontSize="11" Foreground="{DynamicResource ThemeTextSecondary}"/>
                                     <StackPanel Orientation="Horizontal" Margin="0,6,0,2">
                                         <RadioButton x:Name="rbThemeDark"  GroupName="Theme" Content="Dark"  IsChecked="True" Margin="0,0,16,0"/>
@@ -1874,7 +1907,14 @@
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
                 <StackPanel Grid.Column="0" Orientation="Horizontal" Margin="12,0,0,0" VerticalAlignment="Center">
-                    <Ellipse x:Name="statusDot" Width="8" Height="8" Fill="{DynamicResource ThemeGreenAccent}" VerticalAlignment="Center"/>
+                    <Grid Width="14" Height="14" VerticalAlignment="Center">
+                        <Ellipse x:Name="statusDot" Width="8" Height="8" Fill="{DynamicResource ThemeGreenAccent}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        <TextBlock x:Name="statusSpinner" Text="&#xE9F5;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="13"
+                                   Foreground="{DynamicResource ThemeWarning}" Visibility="Collapsed"
+                                   HorizontalAlignment="Center" VerticalAlignment="Center" RenderTransformOrigin="0.5,0.5">
+                            <TextBlock.RenderTransform><RotateTransform x:Name="statusSpinnerRot" Angle="0"/></TextBlock.RenderTransform>
+                        </TextBlock>
+                    </Grid>
                     <TextBlock x:Name="lblStatus" Text="Ready" FontSize="11" Foreground="{DynamicResource ThemeTextSecondary}" Margin="8,0,0,0" VerticalAlignment="Center"/>
                 </StackPanel>
                 <TextBlock Grid.Column="1" x:Name="lblStatusDetail" Text="" FontSize="11" Foreground="{DynamicResource ThemeTextDim}"

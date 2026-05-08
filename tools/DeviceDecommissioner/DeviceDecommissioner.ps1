@@ -190,7 +190,7 @@ try {
 # ELEMENT EXTRACTION
 # ============================================================================
 $names = @(
-    'lblTitle','lblTitleVersion','lblVersion','lblStatus','lblStatusDetail','statusDot'
+    'lblTitle','lblTitleVersion','lblVersion','lblStatus','lblStatusDetail','statusDot','statusSpinner','statusSpinnerRot'
     'btnHelp','btnSettings','btnThemeToggle','btnMinimize','btnMaximize','btnClose'
     # Toolbar (Entra auth)
     'authDot','lblAuthStatus','bdrTenantInfo','lblTenantInfo','btnEntraSignIn','btnEntraSignOut'
@@ -349,6 +349,23 @@ function Set-Status { param([string]$Text,[string]$Detail='',[ValidateSet('Idle'
         default   { '#888888' }
     }
     $statusDot.Fill = $Global:CachedBC.ConvertFromString($color)
+    # V5: spinner glyph rotates while busy, hides otherwise.
+    if ($statusSpinner -and $statusSpinnerRot) {
+        if ($State -eq 'Busy') {
+            $statusDot.Visibility    = 'Collapsed'
+            $statusSpinner.Visibility = 'Visible'
+            $rot = New-Object System.Windows.Media.Animation.DoubleAnimation
+            $rot.From            = 0
+            $rot.To              = 360
+            $rot.Duration        = [System.Windows.Duration]::new([TimeSpan]::FromSeconds(1.2))
+            $rot.RepeatBehavior  = [System.Windows.Media.Animation.RepeatBehavior]::Forever
+            $statusSpinnerRot.BeginAnimation([System.Windows.Media.RotateTransform]::AngleProperty, $rot)
+        } else {
+            $statusSpinnerRot.BeginAnimation([System.Windows.Media.RotateTransform]::AngleProperty, $null)
+            $statusSpinner.Visibility = 'Collapsed'
+            $statusDot.Visibility     = 'Visible'
+        }
+    }
 }
 
 # ============================================================================
@@ -500,6 +517,7 @@ function Show-ModalConfirm {
     $btnModalCancel.Visibility = if ($HideCancel) { 'Collapsed' } else { 'Visible' }
     $Global:ModalCallback  = $OnConfirm
     $pnlModalOverlay.Visibility = 'Visible'
+    Invoke-FadeIn $pnlModalOverlay
     [void]$btnModalConfirm.Focus()
     Write-DebugLog "[Modal] show confirm: '$Title' (details=$($DetailItems.Count) warnings=$($Warnings.Count) commands=$($Commands.Count))" -Level 'DEBUG'
 }
@@ -514,6 +532,7 @@ function Show-ModalInput {
         [switch]$AsPassword,
         [array]$DetailItems = @(),
         [string[]]$Warnings = @(),
+        [array]$Commands = @(),
         [scriptblock]$OnConfirm
     )
     Reset-ModalPanels
@@ -528,6 +547,11 @@ function Show-ModalInput {
     if ($Warnings -and $Warnings.Count -gt 0) {
         $pnlModalWarnings.ItemsSource = $Warnings
         $pnlModalDetailsScroll.Visibility = 'Visible'
+    }
+    if ($Commands -and $Commands.Count -gt 0) {
+        $pnlModalCommands.ItemsSource = $Commands
+        $pnlModalDetailsScroll.Visibility = 'Visible'
+        Wire-ModalCommandCopyButtons
     }
     if ($InputPrompt -and $lblModalInputPrompt) {
         $lblModalInputPrompt.Text = $InputPrompt
@@ -548,6 +572,7 @@ function Show-ModalInput {
     $btnModalCancel.Visibility = 'Visible'
     $Global:ModalCallback = $OnConfirm
     $pnlModalOverlay.Visibility = 'Visible'
+    Invoke-FadeIn $pnlModalOverlay
     Write-DebugLog "[Modal] show input: '$Title' (asPassword=$AsPassword details=$($DetailItems.Count))" -Level 'DEBUG'
 }
 function Hide-Modal {
@@ -555,6 +580,19 @@ function Hide-Modal {
     $pnlModalOverlay.Visibility = 'Collapsed'
     Reset-ModalPanels
     $Global:ModalCallback = $null
+}
+
+# Reusable 150 ms fade-in for any UIElement. Used by modal show + (potentially)
+# other transient overlays. Sets Opacity=1 at the end so subsequent Visibility
+# toggles still render at full opacity.
+function Invoke-FadeIn {
+    param([System.Windows.UIElement]$Element, [int]$DurationMs = 150)
+    if (-not $Element) { return }
+    $a = New-Object System.Windows.Media.Animation.DoubleAnimation
+    $a.From     = 0.0
+    $a.To       = 1.0
+    $a.Duration = [System.Windows.Duration]::new([TimeSpan]::FromMilliseconds($DurationMs))
+    $Element.BeginAnimation([System.Windows.UIElement]::OpacityProperty, $a)
 }
 
 # ============================================================================
@@ -573,6 +611,7 @@ function Get-DefaultSettings {
         SidebarVisible  = $false
         LogPanelVisible = $false
         RecentActivityDays = 7
+        TourSeen = $false
     }
 }
 
@@ -620,6 +659,7 @@ function Load-Settings {
             if ($null -ne $raw.SidebarVisible)  { $Global:Settings.SidebarVisible  = [bool]$raw.SidebarVisible }
             if ($null -ne $raw.LogPanelVisible) { $Global:Settings.LogPanelVisible = [bool]$raw.LogPanelVisible }
             if ($null -ne $raw.RecentActivityDays) { $Global:Settings.RecentActivityDays = [int]$raw.RecentActivityDays }
+            if ($null -ne $raw.TourSeen) { $Global:Settings.TourSeen = [bool]$raw.TourSeen }
             # Migrate legacy: RecentDevices used to live in user_settings.json
             if ($raw.RecentDevices -and -not (Test-Path $Global:RecentFile)) {
                 $Global:RecentDevices = @($raw.RecentDevices | Where-Object { $_ } | ForEach-Object { [string]$_ })
@@ -782,6 +822,19 @@ function Set-CardStatus {
     }
     if ($card.Progress) {
         $card.Progress.Visibility = if ($State -eq 'Busy') { 'Visible' } else { 'Collapsed' }
+    }
+    # V1: pulse the dot while Busy (1.2s breathe), restore full opacity otherwise.
+    if ($State -eq 'Busy') {
+        $pulse = New-Object System.Windows.Media.Animation.DoubleAnimation
+        $pulse.From            = 1.0
+        $pulse.To              = 0.35
+        $pulse.Duration        = [System.Windows.Duration]::new([TimeSpan]::FromMilliseconds(600))
+        $pulse.AutoReverse     = $true
+        $pulse.RepeatBehavior  = [System.Windows.Media.Animation.RepeatBehavior]::Forever
+        $dot.BeginAnimation([System.Windows.UIElement]::OpacityProperty, $pulse)
+    } else {
+        $dot.BeginAnimation([System.Windows.UIElement]::OpacityProperty, $null)
+        $dot.Opacity = 1.0
     }
 }
 
@@ -1768,6 +1821,64 @@ function Start-Decommission {
         $Global:LastWarnedDevice = $null
     }
 
+    # S3: build the equivalent PowerShell commands per target so the operator
+    # can see (and copy) exactly what's about to run. This is presented in the
+    # confirm modal alongside the structured device cards + warnings.
+    $results = $Global:LookupState.Results
+    $cmds = @()
+    foreach ($sys in $targets) {
+        $r = $results[$sys]
+        if (-not $r -or -not $r.Found -or -not $r.Raw) { continue }
+        $raw = $r.Raw
+        switch ($sys) {
+            'AD' {
+                if ($raw.DistinguishedName) {
+                    $cmds += [pscustomobject]@{
+                        Label       = 'Active Directory'
+                        Description = "Recursive — also clears child registration leaves (msDS-DeviceRegistration etc). Idempotent: 'object not found' is treated as success."
+                        Command     = "Remove-ADObject -Identity '$($raw.DistinguishedName)' -Recursive -Confirm:`$false"
+                    }
+                }
+            }
+            'Entra' {
+                if ($raw.Id) {
+                    $cmds += [pscustomobject]@{
+                        Label       = 'Entra ID'
+                        Description = 'Removes the directory device object. Hybrid-joined devices may be re-synced from on-prem if you do not also remove the AD object.'
+                        Command     = "Remove-MgDevice -DeviceId '$($raw.Id)'"
+                    }
+                }
+            }
+            'Intune' {
+                if ($raw.Id) {
+                    $cmds += [pscustomobject]@{
+                        Label       = 'Intune'
+                        Description = "Deletes the managed-device record only — does NOT wipe or retire the device. Use the Intune portal for wipe."
+                        Command     = "Remove-MgDeviceManagementManagedDevice -ManagedDeviceId '$($raw.Id)'"
+                    }
+                }
+            }
+            'Autopilot' {
+                if ($raw.Id) {
+                    $cmds += [pscustomobject]@{
+                        Label       = 'Windows Autopilot'
+                        Description = "Removes the Autopilot enrollment identity (hardware hash, serial, group tag). The device won't auto-enroll on next reset."
+                        Command     = "Remove-MgDeviceManagementWindowsAutopilotDeviceIdentity -WindowsAutopilotDeviceIdentityId '$($raw.Id)'"
+                    }
+                }
+            }
+            'SCCM' {
+                if ($raw.ResourceID) {
+                    $cmds += [pscustomobject]@{
+                        Label       = 'Configuration Manager (SCCM)'
+                        Description = 'Drops the device record (and policy assignments) from the site. The client itself is not uninstalled.'
+                        Command     = "Remove-CMDevice -ResourceId $($raw.ResourceID) -Force"
+                    }
+                }
+            }
+        }
+    }
+
     $dry = [bool]$chkDryRun.IsChecked
     Write-DebugLog "[Decommission] dryRun=$dry" -Level 'DEBUG'
     if ($dry) {
@@ -1776,7 +1887,7 @@ function Start-Decommission {
         $body = "Dry-run for '$q' — will validate connectivity, scopes, and lookup completeness for $list. No destructive cmdlet will be executed."
         Show-ModalConfirm -Title 'Confirm dry-run' -Icon ([string][char]0xE7BA) `
             -Message $body `
-            -DetailItems $preflight -Warnings $warnings `
+            -DetailItems $preflight -Warnings $warnings -Commands $cmds `
             -ConfirmLabel 'Run dry-run' -OnConfirm {
                 Hide-Modal
                 Invoke-DecommissionWork -DeviceQuery $q -Targets $targets -DryRun
@@ -1787,7 +1898,7 @@ function Start-Decommission {
     $body = "This will PERMANENTLY remove '$q' from " + ($targets -join ', ') + "."
     Show-ModalInput -Title 'Confirm decommission' -Message $body -ConfirmLabel 'Decommission' `
                     -Icon ([string][char]0xE74D) `
-                    -DetailItems $preflight -Warnings $warnings `
+                    -DetailItems $preflight -Warnings $warnings -Commands $cmds `
                     -InputPrompt "Type the device name ($q) to confirm:" -OnConfirm {
         $typed = $txtModalInput.Text.Trim()
         Hide-Modal
@@ -2207,14 +2318,8 @@ $btnMaximize.Add_Click({
 })
 $btnClose.Add_Click({ $Window.Close() })
 $btnHelp.Add_Click({
-    Show-ModalConfirm -Title 'Device Decommissioner' -Icon ([string][char]0xE897) -HideCancel `
-        -Message ("Removes a device from AD, Entra ID, Intune and SCCM in one action.`n`n" +
-                  "1. Enter the device hostname (or AzureAD ObjectId) and click Look up.`n" +
-                  "2. Review the four discovery cards and uncheck any system you do NOT want to touch.`n" +
-                  "3. Click Decommission and type the device name to confirm.`n`n" +
-                  "AD/SCCM use stored DPAPI-encrypted credentials (per Windows user). " +
-                  "Entra ID and Intune use interactive Microsoft Graph sign-in.") `
-        -ConfirmLabel 'Got it' -OnConfirm { Hide-Modal }
+    # Help button now re-runs the first-run tour (better than a stale text blurb).
+    Show-FirstRunTour
 })
 $btnThemeToggle.Add_Click({
     $newLight = -not $Global:IsLightMode
@@ -3020,6 +3125,63 @@ Write-DebugLog "$Global:AppTitle v$Global:AppVersion started" -Level 'SUCCESS'
 Write-DebugLog "Settings: $Global:SettingsFile" -Level 'DEBUG'
 Write-DebugLog "Credentials: $Global:CredsFile" -Level 'DEBUG'
 Write-DebugLog "Log file: $Global:DebugLogFile" -Level 'DEBUG'
+
+# I4: First-run guided tour. Shown once per user, gated by Settings.TourSeen.
+# Re-runnable from the Help button if we ever wire a "Show tour" action there.
+function Show-FirstRunTour {
+    $steps = @(
+        [pscustomobject]@{
+            System      = 'Step 1'
+            DisplayName = 'Sign in to Entra'
+            Fields      = @(
+                [pscustomobject]@{ Label='Where'; Value='Top toolbar — blue Sign in to Entra button.' }
+                [pscustomobject]@{ Label='Why';   Value='Lookups against Entra ID, Intune, and Autopilot need a Microsoft Graph context. The same sign-in covers all three.' }
+                [pscustomobject]@{ Label='Tip';   Value='If a Graph module is missing, click Install Microsoft.Graph in the prereq banner first (no admin needed).' }
+            )
+        }
+        [pscustomobject]@{
+            System      = 'Step 2'
+            DisplayName = 'Look up a device'
+            Fields      = @(
+                [pscustomobject]@{ Label='Where'; Value='Big input box at the top of the main view.' }
+                [pscustomobject]@{ Label='Input'; Value='Hostname (LAPTOP-ABC), Entra ObjectId GUID, Autopilot serial, or wildcard (LAPTOP-*).' }
+                [pscustomobject]@{ Label='Result';Value='5 cards (AD/Entra/Intune/Autopilot/SCCM) light up with Found/Not found/Error in parallel.' }
+            )
+        }
+        [pscustomobject]@{
+            System      = 'Step 3'
+            DisplayName = 'Review + select'
+            Fields      = @(
+                [pscustomobject]@{ Label='Cards';     Value='Each card has a checkbox — uncheck any system you do NOT want to touch.' }
+                [pscustomobject]@{ Label='Dry-run';   Value='Toggle Dry run before clicking Decommission to validate without removing anything.' }
+                [pscustomobject]@{ Label='Inventory'; Value='Need to check many devices at once? Use the checklist icon in the rail (read-only multi-device matrix).' }
+            )
+        }
+        [pscustomobject]@{
+            System      = 'Step 4'
+            DisplayName = 'Confirm + decommission'
+            Fields      = @(
+                [pscustomobject]@{ Label='Modal';   Value='Shows pre-flight cards (OS, last logon, BitLocker keys, LAPS) and yellow safety warnings.' }
+                [pscustomobject]@{ Label='Type';    Value='Type the device name to confirm — case-insensitive. Esc cancels safely.' }
+                [pscustomobject]@{ Label='History'; Value='Every decommission (including dry-runs) is logged to decommission-history.json. View via the clock icon in the rail.' }
+            )
+        }
+    )
+    Show-ModalConfirm -Title 'Welcome to Device Decommissioner' -Icon ([string][char]0xE7BE) -HideCancel `
+        -Message "Quick four-step tour. You can re-run this from the Help button anytime." `
+        -DetailItems $steps -ConfirmLabel "Got it, don't show again" -OnConfirm {
+            $Global:Settings.TourSeen = $true
+            Save-Settings
+            Hide-Modal
+        }
+}
+if (-not $Global:Settings.TourSeen) {
+    # Defer one tick so the main window has rendered.
+    $tourTimer = New-Object System.Windows.Threading.DispatcherTimer
+    $tourTimer.Interval = [TimeSpan]::FromMilliseconds(400)
+    $tourTimer.Add_Tick({ $tourTimer.Stop(); Show-FirstRunTour })
+    $tourTimer.Start()
+}
 
 $pollTimer.Start()
 $Window.Add_Closing({
