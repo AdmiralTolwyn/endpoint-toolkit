@@ -8,10 +8,15 @@
     long each upgrade phase actually took. Uses a compiled C# helper (StreamReader
     + regex) so multi-GB setupact.log files are processed in seconds.
 
-    By default the Downlevel phase is excluded because the user is still able to
-    work during it; pass -IncludeDownlevel to keep it. If a setupact_unattendGC.log
-    sits next to setupact.log, its WinDeploy/OOBE timestamps are used to extend
-    the timeline through the OOBE phase.
+    By default the ONLINE phases (Downlevel, Pre-Finalize, Finalize) are
+    excluded because they run inside the still-booted source OS - the user
+    can keep working during them. Pass -IncludeDownlevel to keep them. The
+    remaining (OFFLINE) phases run after the device reboots into WinRE /
+    Safe OS and the first boot of the new OS, when the user is locked out.
+    Every row is tagged 'online' or 'offline' in the Mode column.
+
+    If a setupact_unattendGC.log sits next to setupact.log, its WinDeploy/
+    OOBE timestamps are used to extend the timeline through the OOBE phase.
 
     Idle gaps (system shut down, hibernated, or asleep) are detected by looking
     for jumps between consecutive log timestamps that exceed -IdleGapSeconds and
@@ -27,7 +32,10 @@
     If omitted, the local machine's Panther folder is auto-discovered.
 
 .PARAMETER IncludeDownlevel
-    Include the Downlevel phase in the timeline (off by default).
+    Include the online phases (Downlevel, Pre-Finalize, Finalize) in the
+    timeline. Off by default - these phases run in the source OS while the
+    user is still productive, so excluding them gives the "lockout time"
+    number that IT typically wants to quote. Name kept for backward compat.
 
 .PARAMETER AsObject
     Emit the timeline as PSCustomObjects instead of writing the formatted report.
@@ -64,7 +72,7 @@
 
 .NOTES
     Author     : Anton Romanyuk
-    Version    : 1.1.0
+    Version    : 1.2.0
     Requires   : Windows PowerShell 5.1 or PowerShell 7+
     License    : MIT
 
@@ -91,7 +99,9 @@ param(
     [Parameter(Mandatory = $false, Position = 0)]
     [string]$LogPath,
 
-    # Include Downlevel as a row (off by default - user is productive during it).
+    # Include the online phases (Downlevel, Pre-Finalize, Finalize). Off by
+    # default - they run in the source OS while the user is still productive.
+    # Name kept (rather than -IncludeOnlinePhases) for backward compat.
     [switch]$IncludeDownlevel,
 
     # Return PSCustomObjects instead of the formatted report.
@@ -112,7 +122,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 # Bump $ScriptVersion when behaviour or output format changes.
-$ScriptVersion = '1.1.0'
+$ScriptVersion = '1.2.0'
 $ScriptAuthor  = 'Anton Romanyuk'
 
 Write-Verbose ("Get-SetupTimeline v{0}" -f $ScriptVersion)
@@ -267,7 +277,7 @@ if ($unattendLog -and (Test-Path -LiteralPath $unattendLog)) {
     Write-Verbose 'UnattendGC   : (not present - OOBE timeline will be skipped)'
 }
 Write-Verbose ("Idle gap     : > {0} seconds treated as off / standby" -f $IdleGapSeconds)
-Write-Verbose ("Downlevel    : {0}" -f ($(if ($IncludeDownlevel) { 'INCLUDED' } else { 'excluded' })))
+Write-Verbose ("Online phases: {0} (Downlevel, Pre-Finalize, Finalize)" -f ($(if ($IncludeDownlevel) { 'INCLUDED' } else { 'excluded' })))
 
 # =============================================================================
 # STEP 2 - Compile the C# scanner once per AppDomain.
@@ -512,8 +522,11 @@ foreach ($s in $segments) {
 # -----------------------------------------------------------------------------
 $timeline = New-Object System.Collections.Generic.List[object]
 $prevEnd  = $null
+# Phases that run inside the still-booted source OS (user is productive).
+# Everything else runs in WinRE / Safe OS / first boot / OOBE - user locked out.
+$onlinePhases = @('Downlevel','Pre-Finalize','Finalize')
 foreach ($s in $coalesced) {
-    if (-not $IncludeDownlevel -and $s.Phase -eq 'Downlevel') { continue }
+    if (-not $IncludeDownlevel -and $onlinePhases -contains $s.Phase) { continue }
     $wall = $s.End - $s.Start
     $idle = [TimeSpan]::Zero
     foreach ($g in $gaps) {
@@ -534,6 +547,7 @@ foreach ($s in $coalesced) {
     $prevEnd = $s.End
     $timeline.Add([pscustomobject]@{
         Phase    = $s.Phase
+        Mode     = if ($onlinePhases -contains $s.Phase) { 'online' } else { 'offline' }
         Start    = $s.Start
         End      = $s.End
         Duration = $active
@@ -554,6 +568,7 @@ if ($AsObject) {
 if ($Csv) {
     $timeline |
         Select-Object Phase,
+            Mode,
             @{n='Start';     e={ $_.Start.ToString('yyyy-MM-dd HH:mm:ss') }},
             @{n='End';       e={ $_.End.ToString('yyyy-MM-dd HH:mm:ss') }},
             @{n='ActiveSec'; e={ [int]$_.Duration.TotalSeconds }},
@@ -591,6 +606,7 @@ $rows = foreach ($t in $timeline) {
     $prevDay  = $t.Start.Date
     [pscustomobject]@{
         Phase   = $t.Phase
+        Mode    = $t.Mode
         Start   = $startStr
         End     = $endStr
         Active  = Format-Duration $t.Duration
@@ -602,22 +618,22 @@ $rows = foreach ($t in $timeline) {
 }
 
 # Column widths sized for longest phase name ("Post First Boot") + timestamps.
-$fmt = "  {0,-16} {1,14} {2,14} {3,11} {4,11} {5,9}  {6,-10}"
-$sep = '-' * 91
+$fmt = "  {0,-16} {1,-7} {2,14} {3,14} {4,11} {5,11} {6,9}  {7,-10}"
+$sep = '-' * 100
 
 # Header
 Write-Host ''
 Write-Host ('  Setup Timeline')                                    -ForegroundColor Cyan
-Write-Host ('  Log:       {0}' -f $mainLog)                        -ForegroundColor DarkGray
-Write-Host ('  Downlevel: {0}' -f ($(if ($IncludeDownlevel) { 'INCLUDED' } else { 'excluded (user productive)' }))) -ForegroundColor DarkGray
-Write-Host ('  Idle gap:  > {0}s treated as off / standby / sleep' -f $IdleGapSeconds) -ForegroundColor DarkGray
+Write-Host ('  Log:        {0}' -f $mainLog)                       -ForegroundColor DarkGray
+Write-Host ('  Online:     {0}' -f ($(if ($IncludeDownlevel) { 'INCLUDED (Downlevel, Pre-Finalize, Finalize)' } else { 'excluded (Downlevel, Pre-Finalize, Finalize - user productive)' }))) -ForegroundColor DarkGray
+Write-Host ('  Idle gap:   > {0}s treated as off / standby / sleep' -f $IdleGapSeconds) -ForegroundColor DarkGray
 Write-Host ''
-Write-Host ($fmt -f 'Phase','Start','End','Active','Idle','Gap','HRESULT') -ForegroundColor Yellow
+Write-Host ($fmt -f 'Phase','Mode','Start','End','Active','Idle','Gap','HRESULT') -ForegroundColor Yellow
 Write-Host $sep -ForegroundColor DarkGray
 
 # Rows (failed phases highlighted red)
 foreach ($r in $rows) {
-    $line = $fmt -f $r.Phase, $r.Start, $r.End, $r.Active, $r.Idle, $r.Gap, $r.HResult
+    $line = $fmt -f $r.Phase, $r.Mode, $r.Start, $r.End, $r.Active, $r.Idle, $r.Gap, $r.HResult
     if ($r.IsError) { Write-Host $line -ForegroundColor Red }
     else            { Write-Host $line }
 }
