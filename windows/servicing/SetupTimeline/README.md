@@ -12,11 +12,11 @@ Built for the most common feature-update post-mortem question:
 ## Highlights
 
 - **Online vs offline phase split** — by default only the **offline** phases
-  (Safe OS, First Boot, OOBE…) count toward "active upgrade time". The
-  **online** phases (Downlevel, Pre-Finalize, Finalize) run inside the
-  source OS while the user can still work, so they are excluded by default
-  but visible as `online` in the `Mode` column. Use `-IncludeDownlevel` to
-  fold them into the total.
+  (Finalize, Safe OS, First Boot, OOBE…) count toward "active upgrade time".
+  The **online** phases (Downlevel, Pre-Finalize) run inside the source OS
+  while the user can still work, so they are excluded by default but visible
+  as `online` in the `Mode` column. Use `-IncludeDownlevel` to fold them
+  into the total.
 - **Compiled C# scanner** (StreamReader + precompiled regex) — multi-GB
   `setupact.log` files parse at ~30 MB/s.
 - **Idle-gap detection** — gaps between consecutive log timestamps that exceed
@@ -43,7 +43,7 @@ Built for the most common feature-update post-mortem question:
 # Analyse a captured Panther archive:
 .\Get-SetupTimeline.ps1 -LogPath C:\Cases\Device42\Panther
 
-# Include the online phases (Downlevel, Pre-Finalize, Finalize - excluded by default):
+# Include the online phases (Downlevel, Pre-Finalize - excluded by default):
 .\Get-SetupTimeline.ps1 -LogPath C:\Windows\Panther -IncludeDownlevel
 
 # Just the rounded minute count (CI / telemetry):
@@ -56,8 +56,8 @@ Windows in-place upgrade phases fall into two buckets:
 
 | Mode | Phases | What's happening | User experience |
 |------|--------|------------------|-----------------|
-| **online**  | `Downlevel`, `Pre-Finalize`, `Finalize` | Setup runs inside the old / source OS — staging the image, copying files, applying drivers, writing the BCD. | Device is up, desktop available, **user can keep working**. |
-| **offline** | `Safe OS`, `Pre First Boot`, `Pre SysPrep`, `Post SysPrep`, `Post First Boot`, `Pre OOBE Boot`, `Pre OOBE`, `Post OOBE`, `Post OOBE Boot`, `End` (and synthetic `WinDeploy/OOBE`) | Device has rebooted into WinRE / Safe OS or the first boot of the new OS. | Device is locked / OOBE screen — **user is locked out**. |
+| **online**  | `Downlevel`, `Pre-Finalize` | Setup runs inside the old / source OS — staging the image, copying files, applying drivers. | Device is up, desktop available, **user can keep working**. |
+| **offline** | `Finalize`, `Safe OS`, `Pre First Boot`, `Pre SysPrep`, `Post SysPrep`, `Post First Boot`, `Pre OOBE Boot`, `Pre OOBE`, `Post OOBE`, `Post OOBE Boot`, `End` (and synthetic `WinDeploy/OOBE`) | Finalize shows the full-screen "restarting" UI; everything after has rebooted into WinRE / Safe OS or the first boot of the new OS. | Desktop gone / OOBE screen — **user is locked out**. |
 
 By default the script reports **only offline time** — the "how long was the
 user locked out" number that IT typically wants to quote. The `Mode` column
@@ -69,7 +69,7 @@ the online phases back into the total.
 | Parameter | Default | Purpose |
 |---|---|---|
 | `-LogPath` | auto-discover | File or folder containing `setupact.log`. Folder may be a Panther root or its `UnattendGC` subfolder. If omitted, the script probes `C:\Windows\Panther` and then `C:\$WINDOWS.~BT\Sources\Panther`. |
-| `-IncludeDownlevel` | off | Include the **online** phases (Downlevel, Pre-Finalize, Finalize). Excluded by default because the user is still productive while they run in the source OS. Name kept for backward compat — the switch covers all three online phases, not just Downlevel. |
+| `-IncludeDownlevel` | off | Include the **online** phases (Downlevel, Pre-Finalize). Excluded by default because the user is still productive while they run in the source OS. Name kept for backward compat — the switch covers both online phases, not just Downlevel. |
 | `-IdleGapSeconds` | `600` | Threshold above which a gap between consecutive log timestamps is treated as the device being off / asleep. Empirically 600 s avoids false positives from legitimate Setup pauses (driver install, dynamic update download, BCD writes). |
 | `-AsObject` | off | Emit the timeline as `PSCustomObject`s (`Phase`, `Mode`, `Start`, `End`, `Duration`, `Idle`, `Gap`, `Wall`, `HResult`). |
 | `-Csv` | off | Emit the timeline as a semicolon-separated CSV on stdout. |
@@ -80,12 +80,13 @@ the online phases back into the total.
 ```text
   Setup Timeline
   Log:        C:\Windows\Panther\setupact.log
-  Online:     excluded (Downlevel, Pre-Finalize, Finalize - user productive)
+  Online:     excluded (Downlevel, Pre-Finalize - user productive)
   Idle gap:   > 600s treated as off / standby / sleep
 
   Phase            Mode             Start            End      Active        Idle       Gap  HRESULT
 ----------------------------------------------------------------------------------------------------
-  Safe OS          offline 04-13 12:54:29       13:11:40     17m 11s           -         -  0x00000000
+  Finalize         offline 04-13 12:49:32       12:54:29      5m 57s           -         -  -
+  Safe OS          offline       12:54:29       13:11:40     17m 11s           -         -  0x00000000
   Pre First Boot   offline       13:12:18       13:12:36         18s           -       38s  -
   Pre SysPrep      offline       13:12:36       13:12:37          1s           -         -  0x00000000
   Post SysPrep     offline       13:15:08       13:15:08          0s           -    3m 31s  -
@@ -96,32 +97,33 @@ the online phases back into the total.
   Post OOBE Boot   offline       13:20:11       13:20:11          0s           -         -  -
   End              offline       13:20:11       13:20:11          0s           -         -  -
 ----------------------------------------------------------------------------------------------------
-  Active upgrade time : 23m 31s         (23 min)
+  Active upgrade time : 27m 28s         (27 min)
   Excluded idle time  : 0s
   Inter-phase gaps    : 3m 11s          (reboots and phase handoffs)
-  Wall-clock span     : 26m 42s         (2026-04-13 12:54 -> 2026-04-13 13:20)
+  Wall-clock span     : 31m 39s         (2026-04-13 12:49 -> 2026-04-13 13:20)
 ```
 
-In this example the wall clock from first reboot to End is ~27 min, of which
-Setup was actually running offline work for **23 min** — that is the time the
-user was locked out. The 3m 11s of inter-phase gap time is reboots and phase
-handoffs (not user-visible work). The online portion (Downlevel /
-Pre-Finalize / Finalize) is hidden by default and would add a further ~1h
-04m of "upgrade in the background while you keep working" time.
+In this example the wall clock from Finalize to End is ~32 min, of which
+Setup did **27 min** of offline work — that is the time the user was locked
+out (Finalize's full-screen "restarting" UI through the post-OOBE first
+login). The 3m 11s of inter-phase gap time is reboots and phase handoffs
+(not user-visible work). The online portion (Downlevel + Pre-Finalize) is
+hidden by default and would add a further ~58 min of "upgrade in the
+background while you keep working" time.
 
 ## Sample output — `-IncludeDownlevel` (online + offline)
 
 ```text
   Setup Timeline
   Log:        C:\Windows\Panther\setupact.log
-  Online:     INCLUDED (Downlevel, Pre-Finalize, Finalize)
+  Online:     INCLUDED (Downlevel, Pre-Finalize)
   Idle gap:   > 600s treated as off / standby / sleep
 
   Phase            Mode             Start            End      Active        Idle       Gap  HRESULT
 ----------------------------------------------------------------------------------------------------
   Downlevel        online  04-13 11:53:56       12:05:46     12m 50s           -         -  -
   Pre-Finalize     online        12:05:46       12:49:32     44m 46s           -         -  -
-  Finalize         online        12:49:32       12:54:29      5m 57s           -         -  -
+  Finalize         offline       12:49:32       12:54:29      5m 57s           -         -  -
   Safe OS          offline       12:54:29       13:11:40     17m 11s           -         -  0x00000000
   ...
 ----------------------------------------------------------------------------------------------------
@@ -135,16 +137,16 @@ Pre-Finalize / Finalize) is hidden by default and would add a further ~1h
 
 ```csv
 "Phase";"Mode";"Start";"End";"ActiveSec";"IdleSec";"GapSec";"WallSec";"HResult"
+"Finalize";"offline";"2026-04-13 12:49:32";"2026-04-13 12:54:29";"357";"0";"0";"357";
 "Safe OS";"offline";"2026-04-13 12:54:29";"2026-04-13 13:11:40";"1031";"0";"0";"1031";"0x00000000"
 "Pre First Boot";"offline";"2026-04-13 13:12:18";"2026-04-13 13:12:36";"18";"0";"38";"18";
-"Pre SysPrep";"offline";"2026-04-13 13:12:36";"2026-04-13 13:12:37";"1";"0";"0";"1";"0x00000000"
 ...
 ```
 
 ## Sample output — `-TotalActiveMinutes`
 
 ```text
-23
+27
 ```
 
 ## Sample output — `-Verbose`
@@ -155,7 +157,7 @@ VERBOSE: PowerShell 5.1.26100.8115 on Microsoft Windows NT 10.0.26200.0
 VERBOSE: Main log     : C:\Windows\Panther\setupact.log (710.3 MB)
 VERBOSE: UnattendGC   : C:\Windows\Panther\UnattendGC\setupact.log (0.1 MB)
 VERBOSE: Idle gap     : > 600 seconds treated as off / standby
-VERBOSE: Online phases: excluded (Downlevel, Pre-Finalize, Finalize)
+VERBOSE: Online phases: excluded (Downlevel, Pre-Finalize)
 VERBOSE: Scanned setupact.log in 23.9s (29.7 MB/s) - 20 phase markers, 6 idle gaps
 VERBOSE: Scanned setupact.log in 0.0s - 2 markers, 7 idle gaps
 ```
@@ -208,7 +210,7 @@ subsequent runs in the same session skip the compilation step entirely.
 |---|---|---|
 | `Downlevel` | online | Old OS still running. Image staging starts. User productive. |
 | `Pre-Finalize` | online | Bulk of the offline work pre-staged online — typically the largest phase. Image copy, driver staging. User productive. |
-| `Finalize` | online | Last step before the SafeOS reboot. BCD write, final disk prep. User productive. |
+| `Finalize` | offline | Last step before the SafeOS reboot. Setup shows its full-screen "restarting" UI — user is locked out of the desktop. |
 | `Safe OS` | offline | WinRE phase after reboot. Driver injection, image apply. User locked out. |
 | `WinDeploy/OOBE` | offline | Synthetic — bracketed by `windeploy.exe` log lines from `UnattendGC\setupact.log`. |
 | `Pre First Boot` / `Post First Boot` | offline | First-boot SetupPlatform passes. |

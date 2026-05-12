@@ -8,11 +8,11 @@
     long each upgrade phase actually took. Uses a compiled C# helper (StreamReader
     + regex) so multi-GB setupact.log files are processed in seconds.
 
-    By default the ONLINE phases (Downlevel, Pre-Finalize, Finalize) are
-    excluded because they run inside the still-booted source OS - the user
-    can keep working during them. Pass -IncludeDownlevel to keep them. The
-    remaining (OFFLINE) phases run after the device reboots into WinRE /
-    Safe OS and the first boot of the new OS, when the user is locked out.
+    By default the ONLINE phases (Downlevel, Pre-Finalize) are excluded
+    because they run inside the still-booted source OS - the user can keep
+    working during them. Pass -IncludeDownlevel to keep them. The remaining
+    (OFFLINE) phases - including Finalize, which shows the full-screen
+    "restarting" UI - run after the user is locked out of the desktop.
     Every row is tagged 'online' or 'offline' in the Mode column.
 
     If a setupact_unattendGC.log sits next to setupact.log, its WinDeploy/
@@ -32,10 +32,10 @@
     If omitted, the local machine's Panther folder is auto-discovered.
 
 .PARAMETER IncludeDownlevel
-    Include the online phases (Downlevel, Pre-Finalize, Finalize) in the
-    timeline. Off by default - these phases run in the source OS while the
-    user is still productive, so excluding them gives the "lockout time"
-    number that IT typically wants to quote. Name kept for backward compat.
+    Include the online phases (Downlevel, Pre-Finalize) in the timeline.
+    Off by default - these phases run in the source OS while the user is
+    still productive, so excluding them gives the "lockout time" number
+    that IT typically wants to quote. Name kept for backward compat.
 
 .PARAMETER AsObject
     Emit the timeline as PSCustomObjects instead of writing the formatted report.
@@ -99,9 +99,9 @@ param(
     [Parameter(Mandatory = $false, Position = 0)]
     [string]$LogPath,
 
-    # Include the online phases (Downlevel, Pre-Finalize, Finalize). Off by
-    # default - they run in the source OS while the user is still productive.
-    # Name kept (rather than -IncludeOnlinePhases) for backward compat.
+    # Include the online phases (Downlevel, Pre-Finalize). Off by default -
+    # they run in the source OS while the user is still productive. Name
+    # kept (rather than -IncludeOnlinePhases) for backward compat.
     [switch]$IncludeDownlevel,
 
     # Return PSCustomObjects instead of the formatted report.
@@ -277,7 +277,7 @@ if ($unattendLog -and (Test-Path -LiteralPath $unattendLog)) {
     Write-Verbose 'UnattendGC   : (not present - OOBE timeline will be skipped)'
 }
 Write-Verbose ("Idle gap     : > {0} seconds treated as off / standby" -f $IdleGapSeconds)
-Write-Verbose ("Online phases: {0} (Downlevel, Pre-Finalize, Finalize)" -f ($(if ($IncludeDownlevel) { 'INCLUDED' } else { 'excluded' })))
+Write-Verbose ("Online phases: {0} (Downlevel, Pre-Finalize)" -f ($(if ($IncludeDownlevel) { 'INCLUDED' } else { 'excluded' })))
 
 # =============================================================================
 # STEP 2 - Compile the C# scanner once per AppDomain.
@@ -524,7 +524,9 @@ $timeline = New-Object System.Collections.Generic.List[object]
 $prevEnd  = $null
 # Phases that run inside the still-booted source OS (user is productive).
 # Everything else runs in WinRE / Safe OS / first boot / OOBE - user locked out.
-$onlinePhases = @('Downlevel','Pre-Finalize','Finalize')
+# Finalize is offline because Setup shows its full-screen "restarting" UI
+# and the user can no longer interact with the desktop.
+$onlinePhases = @('Downlevel','Pre-Finalize')
 foreach ($s in $coalesced) {
     if (-not $IncludeDownlevel -and $onlinePhases -contains $s.Phase) { continue }
     $wall = $s.End - $s.Start
@@ -625,7 +627,7 @@ $sep = '-' * 100
 Write-Host ''
 Write-Host ('  Setup Timeline')                                    -ForegroundColor Cyan
 Write-Host ('  Log:        {0}' -f $mainLog)                       -ForegroundColor DarkGray
-Write-Host ('  Online:     {0}' -f ($(if ($IncludeDownlevel) { 'INCLUDED (Downlevel, Pre-Finalize, Finalize)' } else { 'excluded (Downlevel, Pre-Finalize, Finalize - user productive)' }))) -ForegroundColor DarkGray
+Write-Host ('  Online:     {0}' -f ($(if ($IncludeDownlevel) { 'INCLUDED (Downlevel, Pre-Finalize)' } else { 'excluded (Downlevel, Pre-Finalize - user productive)' }))) -ForegroundColor DarkGray
 Write-Host ('  Idle gap:   > {0}s treated as off / standby / sleep' -f $IdleGapSeconds) -ForegroundColor DarkGray
 Write-Host ''
 Write-Host ($fmt -f 'Phase','Mode','Start','End','Active','Idle','Gap','HRESULT') -ForegroundColor Yellow
