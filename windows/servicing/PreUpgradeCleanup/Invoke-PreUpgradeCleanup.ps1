@@ -54,7 +54,7 @@
 .PARAMETER ExcludeHandler
     One or more cleanmgr VolumeCaches handler names to skip (case-insensitive,
     exact match). Useful to opt out of an aggressive handler for a one-off run
-    without editing the script (e.g. 'DownloadsFolder','Previous Installations').
+    without editing the script (e.g. 'Previous Installations').
     Names must match the subkeys under
     HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\VolumeCaches.
 
@@ -92,10 +92,17 @@
 .NOTES
     File:    windows/servicing/Invoke-PreUpgradeCleanup.ps1
     Author:  Anton Romanyuk
-    Version: 1.5.0
+    Version: 1.6.0
     Requires: PowerShell 5.1+, elevated session.
 
     Changes:
+      1.6.0 - Removed the 'DownloadsFolder' cleanmgr handler from the master
+              VolumeCaches list. The handler is no longer documented by
+              Microsoft and is a no-op on current Windows builds (the function
+              moved to Storage Sense). Invoke-CleanMgrSilent now registers the
+              one-shot scheduled task at the Task Scheduler root ('\') instead
+              of under '\Microsoft\Endpoint-Toolkit\', so no vendor folder is
+              left behind after Unregister-ScheduledTask runs.
       1.5.0 - Added -SkipDism (skip the DISM component cleanup step entirely)
               and -SkipResetBase (run /StartComponentCleanup without /ResetBase
               to preserve update-uninstall capability). Default behaviour
@@ -142,8 +149,8 @@
     .\Invoke-PreUpgradeCleanup.ps1 -IncludeUserTemp -IncludeWindowsTemp -IncludeSoftwareDistribution -Force -IgnoreBattery
 
 .EXAMPLE
-    # Skip the Downloads folder and the Previous Installations rollback
-    .\Invoke-PreUpgradeCleanup.ps1 -IncludeUserTemp -IncludeWindowsTemp -ExcludeHandler 'DownloadsFolder','Previous Installations'
+    # Skip the Previous Installations rollback
+    .\Invoke-PreUpgradeCleanup.ps1 -IncludeUserTemp -IncludeWindowsTemp -ExcludeHandler 'Previous Installations'
 
 .EXAMPLE
     # Surgical run: only Update Cleanup + WER
@@ -162,7 +169,7 @@
     .\Invoke-PreUpgradeCleanup.ps1 -IncludeUserTemp -IncludeWindowsTemp -SkipDism -Force
 
 .EXAMPLE
-    # Curated handler set: WU/WER cleanup + caches (no Previous Installations / no Downloads)
+    # Curated handler set: WU/WER cleanup + caches (no Previous Installations)
     .\Invoke-PreUpgradeCleanup.ps1 -IncludeUserTemp -IncludeWindowsTemp -Force -SkipDism -SilentCleanMgr -IncludeOnlyHandler `
         'Active Setup Temp Folders',
         'BranchCache',
@@ -333,7 +340,6 @@ $VolumeCaches = @(
     'Device Driver Packages'
     'Diagnostic Data Viewer database files'
     'Downloaded Program Files'
-    'DownloadsFolder'
     'Feedback Hub Archive log files'
     'Internet Cache Files'
     'Language Pack'
@@ -512,7 +518,7 @@ function Invoke-CleanMgrSilent {
     (no interactive desktop), so the window is never displayed.
 
     The helper:
-      1. Registers task '\Microsoft\Endpoint-Toolkit\PreUpgradeCleanup_<guid>'.
+      1. Registers task '\PreUpgradeCleanup_<guid>' at the Task Scheduler root.
       2. Starts it.
       3. Polls Get-ScheduledTaskInfo every 2s up to -TimeoutSec.
       4. Logs LastTaskResult, then unregisters the task.
@@ -532,7 +538,7 @@ function Invoke-CleanMgrSilent {
         [int]$TimeoutSec = 3600
     )
     $taskName = "PreUpgradeCleanup_{0}" -f ([guid]::NewGuid().ToString('N'))
-    $taskPath = '\Microsoft\Endpoint-Toolkit\'
+    $taskPath = '\'
     $cleanmgr = Join-Path $env:WinDir 'System32\cleanmgr.exe'
     Write-Log ("Running silently via scheduled task '{0}{1}': {2} /sagerun:{3}" -f $taskPath, $taskName, $cleanmgr, $SageId)
 

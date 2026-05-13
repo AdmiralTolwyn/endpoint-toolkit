@@ -15,7 +15,7 @@ Reclaims disk space prior to a Windows feature update or after a reference image
 
 > **`/ResetBase` warning:** Default DISM invocation includes `/ResetBase`, which permanently removes the ability to uninstall previously installed Windows updates. Use `-SkipResetBase` on production endpoints that still need rollback capability.
 
-> **`cleanmgr.exe` UI:** cleanmgr ignores `-WindowStyle Hidden` / `SW_HIDE`, so its progress window appears by default. `-SilentCleanMgr` registers a one-shot scheduled task `\Microsoft\Endpoint-Toolkit\PreUpgradeCleanup_<guid>` running as SYSTEM (session 0, no interactive desktop), polls `Get-ScheduledTaskInfo` every 2 s, and unregisters it when done. On timeout (default 3600 s) the task is force-stopped and `1460` (`ERROR_TIMEOUT`) is logged.
+> **`cleanmgr.exe` UI:** cleanmgr ignores `-WindowStyle Hidden` / `SW_HIDE`, so its progress window appears by default. `-SilentCleanMgr` registers a one-shot scheduled task `\PreUpgradeCleanup_<guid>` at the Task Scheduler root, running as SYSTEM (session 0, no interactive desktop), polls `Get-ScheduledTaskInfo` every 2 s, and unregisters it when done. On timeout (default 3600 s) the task is force-stopped and `1460` (`ERROR_TIMEOUT`) is logged.
 
 > **DISM vs cleanmgr coverage:** `dism /StartComponentCleanup` only touches the Component Store (WinSxS). It does **not** clean `Windows.old` (Previous Installations), `$GetCurrent` / Windows ESD installation files, Delivery Optimization cache, WER, Recycle Bin, Temp, or per-user caches. `-SkipDism` is therefore safe when you still want the cleanmgr handlers to run; the inverse (cleanmgr-only) is what `-SkipDism` implements.
 
@@ -41,8 +41,8 @@ Reclaims disk space prior to a Windows feature update or after a reference image
 # Conservative - keep last 30 days of temp files, larger free-space target
 .\Invoke-PreUpgradeCleanup.ps1 -IncludeUserTemp -IncludeWindowsTemp -MaxAgeDays 30 -MinFreeGB 30
 
-# Skip the Downloads folder + Previous Installations rollback for a feature-update prep
-.\Invoke-PreUpgradeCleanup.ps1 -IncludeUserTemp -IncludeWindowsTemp -ExcludeHandler 'DownloadsFolder','Previous Installations'
+# Skip Previous Installations rollback for a feature-update prep
+.\Invoke-PreUpgradeCleanup.ps1 -IncludeUserTemp -IncludeWindowsTemp -ExcludeHandler 'Previous Installations'
 
 # Surgical run: only Update Cleanup + WER, force regardless of free space
 .\Invoke-PreUpgradeCleanup.ps1 -IncludeOnlyHandler 'Update Cleanup','Windows Error Reporting Files' -Force
@@ -56,7 +56,7 @@ Reclaims disk space prior to a Windows feature update or after a reference image
 # Skip DISM entirely (cleanmgr + temp sweeps only)
 .\Invoke-PreUpgradeCleanup.ps1 -IncludeUserTemp -IncludeWindowsTemp -SkipDism -Force
 
-# Curated handler set (no Previous Installations / no Downloads), silent, no DISM
+# Curated handler set (no Previous Installations), silent, no DISM
 .\Invoke-PreUpgradeCleanup.ps1 -IncludeUserTemp -IncludeWindowsTemp -Force -SkipDism -SilentCleanMgr -IncludeOnlyHandler `
     'Active Setup Temp Folders',
     'BranchCache',
