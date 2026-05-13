@@ -594,10 +594,13 @@ if ($TotalActiveMinutes) {
 }
 
 # Compact human-friendly TimeSpan formatter.
+# NB: use [Math]::Floor for the leading bucket, NOT [int] - PowerShell's
+# [int] cast does banker's rounding (e.g. [int]4.6 = 5), which inflates
+# h/m and makes the row total disagree with what the user adds up.
 function Format-Duration([TimeSpan]$d) {
-    if ($d.TotalHours   -ge 1) { return ('{0:0}h {1:00}m {2:00}s' -f [int]$d.TotalHours, $d.Minutes, $d.Seconds) }
-    if ($d.TotalMinutes -ge 1) { return ('{0:0}m {1:00}s'         -f [int]$d.TotalMinutes, $d.Seconds) }
-    return ('{0}s' -f [int]$d.TotalSeconds)
+    if ($d.TotalHours   -ge 1) { return ('{0:0}h {1:00}m {2:00}s' -f [int][Math]::Floor($d.TotalHours),   $d.Minutes, $d.Seconds) }
+    if ($d.TotalMinutes -ge 1) { return ('{0:0}m {1:00}s'         -f [int][Math]::Floor($d.TotalMinutes), $d.Seconds) }
+    return ('{0}s' -f [int][Math]::Floor($d.TotalSeconds))
 }
 
 # Build rendered rows. Date prefix only shown when it changes between adjacent rows.
@@ -642,7 +645,7 @@ foreach ($r in $rows) {
 
 # Footer
 Write-Host $sep -ForegroundColor DarkGray
-Write-Host ('  Active upgrade time : {0,-14}  ({1} min)' -f (Format-Duration $totalSpan), [int][math]::Round($totalSpan.TotalMinutes)) -ForegroundColor Green
+Write-Host ('  Active upgrade time : {0,-14}  ({1} min)' -f (Format-Duration $totalSpan), [int][Math]::Floor($totalSpan.TotalMinutes)) -ForegroundColor Green
 Write-Host ('  Excluded idle time  : {0}' -f (Format-Duration $totalIdle)) -ForegroundColor DarkGray
 Write-Host ('  Inter-phase gaps    : {0,-14}  (reboots and phase handoffs)' -f (Format-Duration $totalGap)) -ForegroundColor DarkGray
 
