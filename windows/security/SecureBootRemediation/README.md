@@ -104,6 +104,8 @@ Diagnostic context surfaced in every detect run (logged at INFO level): `UEFICA2
 
 The remediate script also performs a pre-flight check on the `Secure-Boot-Update` scheduled task **before** writing the registry. If the task is missing or in a non-`Ready`/`Running` state it exits `1` with a clear `FAIL:` message instead of arming the device only to discover the task cannot run.
 
+> **Optional BitLocker suspend (Branch A only, v1.3+)** — top-of-file flag `$Script:SuspendBitLockerOnArm` (default `$false` for backwards compatibility). When set to `$true`, the script suspends BitLocker on the system drive for 2 reboots (matching Microsoft's Event 1032 mitigation) *before* writing `AvailableUpdates = 0x5944`, protecting against BDE recovery prompts if firmware later rolls the certs back. Only Branch A triggers the suspend — branches B and C preserve in-flight state and don't move PCR 7 in a recovery-triggering way. If the suspend fails, the script aborts with `FAIL:` rather than arming an unprotected device. Intune PR cannot pass parameters, so flip the flag in the script before uploading to your tenant. Leave at `$false` if you already handle BDE suspend via a separate Intune Configuration Profile or pre-flight script.
+
 > **About `AvailableUpdatesPolicy`** — this value is reserved for Group Policy and Intune. Per Microsoft guidance it must **only be written by GPO/MDM**, never by a remediation script. Both scripts read `AvailableUpdatesPolicy` for diagnostic context (and warn when it disagrees with `AvailableUpdates`) but **never write it**. The remediate script writes only `AvailableUpdates` (the volatile, OS-consumed value).
 
 Both scripts log in CMTrace format to:

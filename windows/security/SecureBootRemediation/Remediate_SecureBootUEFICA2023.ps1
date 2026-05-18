@@ -41,6 +41,19 @@
         is the source of truth; direct AvailableUpdates writes may be
         reverted on the next policy refresh.
 
+    Optional BitLocker suspend (Branch A only):
+      $Script:SuspendBitLockerOnArm is a top-of-file tunable (default $false
+      for backwards compatibility). When set to $true, the script suspends
+      BitLocker for 2 reboots (Microsoft's recommended precaution per
+      Event 1032) before writing AvailableUpdates = 0x5944. This protects
+      against BDE recovery prompts on devices whose firmware later rolls
+      the certs back. Only applied on Branch A (the initial arm) - the
+      other branches preserve in-flight state and do not move PCR 7 in a
+      recovery-triggering way. If the suspend fails, the script ABORTS
+      rather than arming an unprotected device (fail-safe). Intune cannot
+      pass parameters to PR scripts, so this is configured by editing the
+      script once before upload.
+
     Logs are written in CMTrace format to:
         %ProgramData%\Microsoft\IntuneManagementExtension\Logs\PR_SecureBootUEFICA2023.log
 
@@ -69,8 +82,8 @@
 
 .NOTES
     Author:   Anton Romanyuk
-    Version:  1.2
-    Date:     2026-05-04
+    Version:  1.3
+    Date:     2026-05-18
     Context:  Windows UEFI CA 2023 Secure Boot certificate rollout
     Requires: Windows PowerShell 5.1, 64-bit
 
@@ -114,6 +127,13 @@ $Script:EventQueryMax       = 50
 # Scheduled task that performs the actual servicing pass.
 $Script:TaskPath = '\Microsoft\Windows\PI\'
 $Script:TaskName = 'Secure-Boot-Update'
+
+# Optional BitLocker suspend (Branch A only - the initial arm). When $true,
+# the script suspends BitLocker for 2 reboots before writing the arm value,
+# matching Microsoft's Event 1032 mitigation. Default $false for backwards
+# compatibility with v1.2 behavior. Intune PR cannot pass parameters, so
+# customers who want the precaution must flip this flag before uploading.
+$Script:SuspendBitLockerOnArm = $false
 
 # ─────────────────────────────────────────────────────────────────────────────
 #region Logging
@@ -449,6 +469,67 @@ function Start-SecureBootUpdateTask {
     }
 }
 
+function Suspend-BitLockerForArm {
+    <#
+    .SYNOPSIS
+        Suspends BitLocker on the system drive for 2 reboots before arming
+        the Secure Boot Update servicing state.
+
+    .DESCRIPTION
+        Mirrors Microsoft's documented mitigation for Event 1032 (BitLocker
+        recovery risk during Secure Boot updates). Uses Suspend-BitLocker
+        with -RebootCount 2 where available; falls back to manage-bde.exe.
+        Only the system drive is suspended; data volumes are left alone.
+
+        Returns $true if BitLocker was either successfully suspended OR is
+        not protecting the system drive (no-op case). Returns $false on any
+        protection enumeration / suspend failure so the caller can ABORT
+        rather than arm an unprotected device.
+
+    .OUTPUTS
+        System.Boolean.
+    #>
+    Write-Log "Suspend-BitLockerForArm ENTER (SystemDrive='$env:SystemDrive')" -Level DEBUG
+    $sysDrive = $env:SystemDrive
+    if ([string]::IsNullOrWhiteSpace($sysDrive)) {
+        Write-Log 'SystemDrive environment variable is empty; cannot determine which volume to suspend.' -Level ERROR
+        return $false
+    }
+    try {
+        $vol = Get-BitLockerVolume -MountPoint $sysDrive -ErrorAction Stop
+    }
+    catch {
+        Write-Log "Get-BitLockerVolume failed for '$sysDrive': $($_.Exception.Message)" -Level ERROR
+        return $false
+    }
+    Write-Log ("BitLocker volume state: ProtectionStatus=$($vol.ProtectionStatus), VolumeStatus=$($vol.VolumeStatus), EncryptionPercentage=$($vol.EncryptionPercentage)") -Level DEBUG
+    if ($vol.ProtectionStatus -ne 'On') {
+        Write-Log "BitLocker ProtectionStatus on $sysDrive is '$($vol.ProtectionStatus)' (not On); no suspend required." -Level INFO
+        return $true
+    }
+    try {
+        $null = Suspend-BitLocker -MountPoint $sysDrive -RebootCount 2 -ErrorAction Stop
+        Write-Log "BitLocker suspended on $sysDrive for 2 reboots (Suspend-BitLocker cmdlet)." -Level SUCCESS
+        return $true
+    }
+    catch {
+        Write-Log "Suspend-BitLocker cmdlet failed: $($_.Exception.Message). Falling back to manage-bde.exe." -Level WARN
+    }
+    try {
+        $mb = & "$env:SystemRoot\System32\manage-bde.exe" -Protectors -Disable $sysDrive -RebootCount 2 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            Write-Log "BitLocker suspended on $sysDrive for 2 reboots (manage-bde.exe)." -Level SUCCESS
+            return $true
+        }
+        Write-Log "manage-bde.exe -Disable returned exit code $LASTEXITCODE. Output: $($mb -join ' | ')" -Level ERROR
+        return $false
+    }
+    catch {
+        Write-Log "manage-bde.exe invocation failed: $($_.Exception.Message)" -Level ERROR
+        return $false
+    }
+}
+
 #endregion
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -606,6 +687,23 @@ if ($null -ne $avUpdates -and $avUpdates -eq $Script:CompliantValue) {
 #    Write the well-known kick-off bitmask, then trigger the task below.
 if ($null -eq $avUpdates -or $avUpdates -eq 0) {
     Write-Log 'Branch A: Initial arm (AvailableUpdates missing or 0).' -Level STEP
+
+    # Optional precaution: suspend BitLocker for 2 reboots before arming.
+    # Mitigates the BDE recovery risk if firmware later rolls the certs back
+    # (e.g. on devices hit by a KI that hadn't surfaced 1802 yet). Default
+    # $false for backwards compatibility; flip the top-of-file flag to enable.
+    if ($Script:SuspendBitLockerOnArm) {
+        Write-Log 'SuspendBitLockerOnArm flag enabled; suspending BitLocker for 2 reboots before arming.' -Level STEP
+        if (-not (Suspend-BitLockerForArm)) {
+            Write-Log 'BitLocker suspend failed; refusing to arm an unprotected device.' -Level ERROR
+            Write-Output 'FAIL: BitLocker suspend failed; refusing to arm (SuspendBitLockerOnArm=$true).'
+            exit 1
+        }
+    }
+    else {
+        Write-Log 'SuspendBitLockerOnArm flag disabled (default); skipping BitLocker suspend before arm.' -Level DEBUG
+    }
+
     try {
         Set-RegDword -Path $Script:RegPathRoot -Name 'AvailableUpdates' -Value $Script:ArmValue
         Write-Log ("Set AvailableUpdates = 0x{0:X} (arm value)." -f $Script:ArmValue) -Level SUCCESS
