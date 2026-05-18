@@ -112,6 +112,12 @@ $Global:SyncHash = [Hashtable]::Synchronized(@{
     LastLogLength   = 0
     TotalLines      = 0
     BuildStartTime  = $null
+    # Self-healing / watchdog telemetry — updated by worker, read by dispatcher tick
+    LastPollAt        = $null   # UTC time of last successful Get-AzContainerInstanceLog call
+    LastDataAt        = $null   # UTC time of last NEW line enqueued (ACI or blob)
+    LastEmittedTotal  = 0       # cumulative lines ever enqueued (ground truth across rollovers)
+    AciRolloverCount  = 0       # diagnostic: how many ACI buffer rollovers detected
+    BlobRefreshCount  = 0       # diagnostic: how many blob safety-net refreshes done
 })
 
 # Background job tracker — polled by the DispatcherTimer to avoid UI-thread hangs
@@ -866,6 +872,11 @@ $Global:PhaseDefinitions = @(
     @{ Pattern = 'SysPrep|Sysprep|AdminSysPrep|Generalize|CUSTOMIZER PHASE.*SysPrep|deprovision\+user';               Name = 'SysPrep/Generalize';   Icon = [char]0xE912 }
     @{ Pattern = 'Artifacts were created|SharedImageGallery|Creating image version|Published to|Capturing image';      Name = 'Publish Image';        Icon = [char]0xE73E }
 )
+# Pre-compile phase patterns — same trick as KnownIssues. Eliminates per-line
+# regex re-compilation in the dispatcher hot path (was ~11 compilations/line).
+foreach ($P in $Global:PhaseDefinitions) {
+    $P['CompiledRx'] = [regex]::new($P.Pattern, 'Compiled, IgnoreCase')
+}
 $Global:PhaseStatus = @{}
 
 function Reset-PhaseTracker {
@@ -889,7 +900,7 @@ function Update-PhaseFromLine {
     foreach ($Phase in $Global:PhaseDefinitions) {
         $Key = $Phase.Name
         if ($Global:PhaseStatus[$Key] -eq 'done') { continue }
-        if ($Line -match $Phase.Pattern) {
+        if ($Phase.CompiledRx.IsMatch($Line)) {
             # Mark previous in-progress phase as done
             foreach ($PK in @($Global:PhaseStatus.Keys)) {
                 if ($Global:PhaseStatus[$PK] -eq 'active') {
@@ -1174,7 +1185,9 @@ function Format-JsonPretty {
 # ==============================================================================
 
 $Global:MaxParagraphs = 15000
-$Global:MaxLinesPerTick = 200          # batch cap — keeps UI responsive during backfill
+$Global:MaxLinesPerTick = 200          # batch cap — keeps UI responsive during normal tail
+$Global:BackfillLinesPerTick = 1500    # raised cap when queue is large (initial blob backfill)
+$Global:BackfillThreshold = 500        # when QueueLeft >= this, switch to backfill rendering
 $Global:TrimmedCount  = 0
 $Global:ParagraphCount = 0             # O(1) counter — avoids linked-list walk in Trim-FlowDocument
 
@@ -1880,8 +1893,9 @@ function Update-PackageTracker {
 
     # Custom script package discovery  (-> Installing Package: <id>)
     # This line fires BEFORE WinGet's 'Found' line, so we add the package early
-    if ($Line -match $Global:PkgPatterns.CustomStart) {
-        $PkgId = $Matches[1].Trim() -replace '\s*\(.*$', ''   # strip any trailing override text
+    $M = $Global:PkgRx.CustomStart.Match($Line)
+    if ($M.Success) {
+        $PkgId = $M.Groups[1].Value.Trim() -replace '\s*\(.*$', ''   # strip any trailing override text
         $Key = $PkgId
         if (-not $Global:PackageTracker.ContainsKey($Key)) {
             $Global:PackageTracker[$Key] = [PSCustomObject]@{
@@ -1898,9 +1912,10 @@ function Update-PackageTracker {
     }
 
     # WinGet package discovery  (Found <name> [<id>] Version <ver>)
-    if ($Line -match $Global:PkgPatterns.WinGetStart) {
-        $PkgName = $Matches[1].Trim()
-        $PkgId = $Matches[2].Trim()
+    $M = $Global:PkgRx.WinGetStart.Match($Line)
+    if ($M.Success) {
+        $PkgName = $M.Groups[1].Value.Trim()
+        $PkgId = $M.Groups[2].Value.Trim()
         $Key = $PkgId
         if ($Global:PackageTracker.ContainsKey($Key)) {
             # Update friendly name from custom-script discovery
@@ -1920,8 +1935,9 @@ function Update-PackageTracker {
     }
 
     # WinGet download progress
-    if ($Line -match $Global:PkgPatterns.WinGetDownload) {
-        $Pct = [int]$Matches[1]
+    $M = $Global:PkgRx.WinGetDownload.Match($Line)
+    if ($M.Success) {
+        $Pct = [int]$M.Groups[1].Value
         $LastPkg = $Global:PackageTracker.Values | Where-Object { $_.Status -eq 'Downloading' -or $_.Status -eq 'Pending' } | Select-Object -Last 1
         if ($LastPkg) {
             $LastPkg.Status = 'Downloading'
@@ -1932,7 +1948,8 @@ function Update-PackageTracker {
     }
 
     # WinGet installing  (match 'Starting package install' but NOT '-> Installing Package:')
-    if ($Line -match 'Starting package install' -or ($Line -match 'Installing' -and $Line -notmatch '->\s*Installing Package:')) {
+    if ($Global:PkgRxStartingInstall.IsMatch($Line) -or
+        ($Global:PkgRxInstalling.IsMatch($Line) -and -not $Global:PkgRxInstallingPkg.IsMatch($Line))) {
         $LastPkg = $Global:PackageTracker.Values | Where-Object { $_.Status -in @('Pending','Downloading') } | Select-Object -Last 1
         if ($LastPkg) {
             $LastPkg.Status = 'Installing'
@@ -1943,7 +1960,7 @@ function Update-PackageTracker {
     }
 
     # WinGet success
-    if ($Line -match $Global:PkgPatterns.WinGetSuccess) {
+    if ($Global:PkgRx.WinGetSuccess.IsMatch($Line)) {
         $LastPkg = $Global:PackageTracker.Values | Where-Object { $_.Status -in @('Pending','Downloading','Installing') } | Select-Object -Last 1
         if ($LastPkg) {
             $LastPkg.Status = 'Installed'
@@ -1954,7 +1971,7 @@ function Update-PackageTracker {
     }
 
     # WinGet failed
-    if ($Line -match $Global:PkgPatterns.WinGetFailed) {
+    if ($Global:PkgRx.WinGetFailed.IsMatch($Line)) {
         $LastPkg = $Global:PackageTracker.Values | Where-Object { $_.Status -in @('Pending','Downloading','Installing') } | Select-Object -Last 1
         if ($LastPkg) {
             $LastPkg.Status = 'Failed'
@@ -1965,7 +1982,7 @@ function Update-PackageTracker {
     }
 
     # WinGet skipped
-    if ($Line -match $Global:PkgPatterns.WinGetSkip) {
+    if ($Global:PkgRx.WinGetSkip.IsMatch($Line)) {
         $LastPkg = $Global:PackageTracker.Values | Where-Object { $_.Status -eq 'Pending' } | Select-Object -Last 1
         if ($LastPkg) {
             $LastPkg.Status = 'Skipped'
@@ -2577,6 +2594,10 @@ $Global:ProfilerPatterns = @(
     @{ Pattern = 'CUSTOMIZER PHASE.*Running:\s*(.+?)\s*\.\.\.'; Name = 'generic' }
     @{ Pattern = 'Apply-Customizations|Customization\.ps1'; Name = 'Apply-Customizations' }
 )
+# Pre-compile profiler patterns once; same motivation as PhaseDefinitions/KnownIssues.
+foreach ($P in $Global:ProfilerPatterns) {
+    $P['CompiledRx'] = [regex]::new($P.Pattern, 'Compiled, IgnoreCase')
+}
 
 function Update-ScriptProfiler {
     <#
@@ -2607,11 +2628,12 @@ function Update-ScriptProfiler {
     # ── 2. Detect script name from line ──
     $DetectedScript = $null
     foreach ($Pat in $Global:ProfilerPatterns) {
-        if ($Line -match $Pat.Pattern) {
+        $M = $Pat.CompiledRx.Match($Line)
+        if ($M.Success) {
             if ($Pat.Name -eq 'generic') {
-                $DetectedScript = $Matches[1]
+                $DetectedScript = $M.Groups[1].Value
             } elseif ($Pat.Name -eq '$1') {
-                $DetectedScript = $Matches[1]
+                $DetectedScript = $M.Groups[1].Value
             } else {
                 $DetectedScript = $Pat.Name
             }
@@ -2982,12 +3004,15 @@ $Global:VMCostTable = @{
 $Global:DetectedVMSku = $null
 $Global:EstimatedCostPerHr = $Global:VMCostTable['_default']
 
+$Global:DetectedVMSkuRx = [regex]::new('(Standard_[A-Za-z0-9_]+)', 'Compiled')
+
 function Detect-VMSku {
     <# Attempts to detect VM SKU from packer log output #>
     param([string]$Line)
     if ($Global:DetectedVMSku) { return }  # Already detected
-    if ($Line -match '(Standard_[A-Za-z0-9_]+)') {
-        $Sku = $Matches[1]
+    $M = $Global:DetectedVMSkuRx.Match($Line)
+    if ($M.Success) {
+        $Sku = $M.Groups[1].Value
         if ($Global:VMCostTable.ContainsKey($Sku)) {
             $Global:DetectedVMSku = $Sku
             $Global:EstimatedCostPerHr = $Global:VMCostTable[$Sku]
@@ -3661,18 +3686,41 @@ function Start-LogStreaming {
         The worker runspace calls Get-AzContainerInstanceLog at the configured poll interval.
         It tracks the last-seen log length to send only new (delta) lines to the UI queue.
     #>
-    param([PSCustomObject]$Build)
+    param(
+        [PSCustomObject]$Build,
+        # When true, keep LastEmittedTotal so the worker resumes from where the
+        # previous worker left off instead of re-emitting the entire blob. Used
+        # by the watchdog auto-restart path.
+        [switch]$Resume
+    )
+
+    # Detect resume-of-same-build to preserve emitted-line cursor
+    $IsSameBuild = $Resume -and $Global:SyncHash.SelectedBuild -and
+                   ($Global:SyncHash.SelectedBuild.ContainerGroup -eq $Build.ContainerGroup) -and
+                   ($Global:SyncHash.SelectedBuild.ResourceGroup -eq $Build.ResourceGroup)
+    $PreservedOffset = if ($IsSameBuild) { [int]$Global:SyncHash.LastEmittedTotal } else { 0 }
 
     # Stop any existing stream
     Stop-LogStreaming
-    Write-DebugLog "Start-LogStreaming: $($Build.TemplateName) in $($Build.ResourceGroup)"
+    Write-DebugLog "Start-LogStreaming: $($Build.TemplateName) in $($Build.ResourceGroup) (resume=$IsSameBuild, offset=$PreservedOffset)"
 
     $Global:SyncHash.StopFlag = $false
     $Global:SyncHash.IsStreaming = $true
     $Global:SyncHash.SelectedBuild = $Build
     $Global:SyncHash.LastLogLength = 0
-    $Global:SyncHash.TotalLines = 0
+    if (-not $IsSameBuild) { $Global:SyncHash.TotalLines = 0 }
     $Global:SyncHash.BuildStartTime = $Build.StartTime
+    # Reset self-healing telemetry for the new stream
+    $Global:SyncHash.LastPollAt       = [DateTime]::UtcNow
+    $Global:SyncHash.LastDataAt       = [DateTime]::UtcNow
+    $Global:SyncHash.LastEmittedTotal = $PreservedOffset
+    if (-not $IsSameBuild) {
+        $Global:SyncHash.AciRolloverCount = 0
+        $Global:SyncHash.BlobRefreshCount = 0
+    }
+    # Clear one-shot watchdog flags so the new stream gets fresh warnings
+    $Global:StreamStallWarned  = $false
+    $Global:StreamAutoRestarted = $false
 
     # Parse poll interval
     $PollSec = 5
@@ -3742,132 +3790,198 @@ function Start-LogStreaming {
             Bold  = $false
         })
 
-        # === BACKFILL: Try to fetch the full Packer log from blob storage ===
+        # === BLOB SOURCE DISCOVERY ===
         # AIB writes the complete customization.log to a storage account in the
-        # staging resource group.  ACI stdout is capped at ~4 MB, so long builds
-        # lose early lines.  We backfill from the blob first, then switch to
-        # ACI polling for live tail.
-        $BlobLineCount = 0
+        # staging resource group. ACI stdout is capped at ~4 MB, so on long
+        # builds the ACI buffer ROLLS OVER (returned line count shrinks),
+        # which silently breaks any naive "TotalLines - Previous" delta. We
+        # therefore treat the blob as the authoritative source, use ACI as the
+        # low-latency live tail, and fall back to a blob re-read whenever ACI
+        # rolls over or stops producing data.
+        $BlobCtx       = $null
+        $BlobName      = $null
+        $BlobContainer = 'packerlogs'
         try {
             $SA = Get-AzStorageAccount -ResourceGroupName $RG -ErrorAction SilentlyContinue |
                   Select-Object -First 1
             if ($SA) {
-                $Ctx = $SA.Context
+                $BlobCtx = $SA.Context
                 # AIB places logs under   packerlogs/<run-guid>/customization.log
-                $Blobs = Get-AzStorageBlob -Container 'packerlogs' -Context $Ctx -ErrorAction SilentlyContinue |
-                         Where-Object { $_.Name -like '*/customization.log' } |
-                         Sort-Object -Property LastModified -Descending
-
-                $LogBlob = $Blobs | Select-Object -First 1
-                if ($LogBlob) {
-                    $SyncHash.LogQueue.Enqueue(@{
-                        Text  = "[BACKFILL] Fetching full log from blob: $($LogBlob.Name) ($([math]::Round($LogBlob.Length / 1KB, 1)) KB)"
-                        Color = "#8764B8"
-                        Bold  = $false
-                    })
-
-                    # Download blob content to memory
-                    $TempFile = [System.IO.Path]::GetTempFileName()
-                    try {
-                        Get-AzStorageBlobContent -Blob $LogBlob.Name -Container 'packerlogs' `
-                            -Context $Ctx -Destination $TempFile -Force -ErrorAction Stop | Out-Null
-
-                        $BlobLines = [System.IO.File]::ReadAllLines($TempFile)
-                        $BlobLineCount = $BlobLines.Count
-
-                        foreach ($BLine in $BlobLines) {
-                            $Trimmed = $BLine.TrimEnd("`r")
-                            if ([string]::IsNullOrWhiteSpace($Trimmed)) { continue }
-                            $SyncHash.LogQueue.Enqueue(@{
-                                Text  = $Trimmed
-                                Color = "__AUTO__"
-                                Bold  = $false
-                            })
-                        }
-
-                        $SyncHash.LogQueue.Enqueue(@{
-                            Text  = "[BACKFILL] Loaded $BlobLineCount lines from blob storage"
-                            Color = "#107C10"
-                            Bold  = $true
-                        })
-                        $SyncHash.LogQueue.Enqueue(@{
-                            Text  = [string]::new([char]0x2500, 80)
-                            Color = "#333333"
-                            Bold  = $false
-                        })
-                    } finally {
-                        if (Test-Path $TempFile) { Remove-Item $TempFile -Force -ErrorAction SilentlyContinue }
-                    }
-                }
+                $LogBlob = Get-AzStorageBlob -Container $BlobContainer -Context $BlobCtx -ErrorAction SilentlyContinue |
+                           Where-Object { $_.Name -like '*/customization.log' } |
+                           Sort-Object -Property LastModified -Descending |
+                           Select-Object -First 1
+                if ($LogBlob) { $BlobName = $LogBlob.Name }
             }
         } catch {
             $SyncHash.LogQueue.Enqueue(@{
-                Text  = "[BACKFILL] Could not fetch blob log: $($_.Exception.Message)"
+                Text  = "[BACKFILL] Could not discover blob log: $($_.Exception.Message)"
                 Color = "#FFB900"
                 Bold  = $false
             })
         }
 
-        # === LIVE TAIL: Poll ACI logs for new lines ===
-        $PreviousLineCount = 0
-        $ConsecutiveErrors = 0
-        $MaxConsecutiveErrors = 10
-        $SkippedFirstPoll = $false   # when blob backfill ran, skip first ACI batch
-
-        while (-not $SyncHash.StopFlag) {
+        # Reusable blob-delta reader. Downloads the current blob to a temp file
+        # and enqueues any lines past $SyncHash.LastEmittedTotal. Returns the
+        # number of lines emitted.
+        $ReadBlobDelta = {
+            param([string]$Tag)
+            if (-not $BlobCtx -or -not $BlobName) { return 0 }
+            $emitted = 0
+            $TempFile = [System.IO.Path]::GetTempFileName()
             try {
-                # Fetch the full log (splatted — param name varies by module version)
-                $Log = Get-AzContainerInstanceLog @LogParams
-
-                $ConsecutiveErrors = 0   # Reset on success
-
-                if ($Log) {
-                    $Lines = $Log -split "`n"
-                    $TotalLines = $Lines.Count
-
-                    # If blob backfill loaded data, skip the first ACI batch
-                    # (those lines are already displayed from the blob).
-                    if ($BlobLineCount -gt 0 -and -not $SkippedFirstPoll) {
-                        $SkippedFirstPoll = $true
-                        $PreviousLineCount = $TotalLines
-                        $SyncHash.TotalLines = $BlobLineCount + $TotalLines
+                Get-AzStorageBlobContent -Blob $BlobName -Container $BlobContainer `
+                    -Context $BlobCtx -Destination $TempFile -Force -ErrorAction Stop | Out-Null
+                $BlobLines = [System.IO.File]::ReadAllLines($TempFile)
+                $Total = $BlobLines.Count
+                $Start = [int]$SyncHash.LastEmittedTotal
+                if ($Total -gt $Start) {
+                    if ($Tag) {
                         $SyncHash.LogQueue.Enqueue(@{
-                            Text  = "[LIVE] ACI buffer has $TotalLines lines (already in blob). Streaming new lines only."
-                            Color = "#888888"
+                            Text  = "[$Tag] Blob has $Total lines, emitting $(($Total - $Start)) new line(s) from offset $Start"
+                            Color = "#8764B8"
                             Bold  = $false
                         })
                     }
+                    for ($i = $Start; $i -lt $Total; $i++) {
+                        $Trimmed = $BlobLines[$i].TrimEnd("`r")
+                        if ([string]::IsNullOrWhiteSpace($Trimmed)) {
+                            $SyncHash.LastEmittedTotal = $i + 1
+                            continue
+                        }
+                        $SyncHash.LogQueue.Enqueue(@{
+                            Text  = $Trimmed
+                            Color = "__AUTO__"
+                            Bold  = $false
+                        })
+                        $SyncHash.LastEmittedTotal = $i + 1
+                        $emitted++
+                    }
+                    $SyncHash.TotalLines = [int]$SyncHash.LastEmittedTotal
+                    $SyncHash.LastDataAt = [DateTime]::UtcNow
+                }
+            } catch {
+                $SyncHash.LogQueue.Enqueue(@{
+                    Text  = "[BLOB] Read failed: $($_.Exception.Message)"
+                    Color = "#FFB900"
+                    Bold  = $false
+                })
+            } finally {
+                if (Test-Path $TempFile) { Remove-Item $TempFile -Force -ErrorAction SilentlyContinue }
+            }
+            return $emitted
+        }
 
-                    # Send only NEW lines (delta)
-                    if ($TotalLines -gt $PreviousLineCount) {
-                        $NewLines = $Lines[$PreviousLineCount..($TotalLines - 1)]
+        # === Initial backfill from blob (best-effort) ===
+        # On a watchdog-restart we resume from the previous worker's offset,
+        # so we may emit zero new lines here — that's expected and means the
+        # UI keeps all existing analytics state intact.
+        if ($BlobName) {
+            $ResumeOffset = [int]$SyncHash.LastEmittedTotal
+            $Tag = if ($ResumeOffset -gt 0) { 'RESUME' } else { 'BACKFILL' }
+            $SyncHash.LogQueue.Enqueue(@{
+                Text  = "[$Tag] Reading log from blob: $BlobName (starting at line $ResumeOffset)"
+                Color = "#8764B8"
+                Bold  = $false
+            })
+            $bf = & $ReadBlobDelta $Tag
+            $SyncHash.LogQueue.Enqueue(@{
+                Text  = "[$Tag] Loaded $bf new line(s) from blob storage (cumulative: $($SyncHash.LastEmittedTotal))"
+                Color = "#107C10"
+                Bold  = $true
+            })
+            $SyncHash.LogQueue.Enqueue(@{
+                Text  = [string]::new([char]0x2500, 80)
+                Color = "#333333"
+                Bold  = $false
+            })
+        }
+
+        # === LIVE TAIL: Poll ACI for low-latency new lines; reconcile via blob ===
+        # AciBaseline: line count of the most recent successful ACI poll. The
+        # delta against the next poll is what we ship to the UI. On rollover
+        # (count drops) we resync from blob and reset the baseline.
+        $AciBaseline           = -1   # -1 = uninitialized
+        $ConsecutiveErrors     = 0
+        $MaxConsecutiveErrors  = 10
+        $LastBlobSafetyAt      = [DateTime]::UtcNow
+        $BlobSafetyIntervalSec = 60   # if ACI hasn't emitted in this long, re-read blob
+
+        while (-not $SyncHash.StopFlag) {
+            $PolledAt    = [DateTime]::UtcNow
+            $EmittedThis = 0
+            try {
+                $Log = Get-AzContainerInstanceLog @LogParams
+                $SyncHash.LastPollAt = $PolledAt
+                $ConsecutiveErrors   = 0
+
+                if ($Log) {
+                    $Lines     = $Log -split "`n"
+                    $AciTotal  = $Lines.Count
+
+                    if ($AciBaseline -lt 0) {
+                        # First successful ACI poll. Blob backfill already
+                        # shipped the historical content, so just set the
+                        # baseline without re-emitting the overlap.
+                        $AciBaseline = $AciTotal
+                        $SyncHash.LogQueue.Enqueue(@{
+                            Text  = "[LIVE] ACI tail attached at $AciTotal lines (blob-synced offset $($SyncHash.LastEmittedTotal))."
+                            Color = "#888888"
+                            Bold  = $false
+                        })
+                    } elseif ($AciTotal -lt $AciBaseline) {
+                        # ACI buffer rolled over (Azure trimmed the head).
+                        $SyncHash.AciRolloverCount = [int]$SyncHash.AciRolloverCount + 1
+                        $SyncHash.LogQueue.Enqueue(@{
+                            Text  = "[STREAM] ACI buffer rolled over (was $AciBaseline lines, now $AciTotal). Resyncing from blob..."
+                            Color = "#FFB900"
+                            Bold  = $true
+                        })
+                        $EmittedThis += & $ReadBlobDelta 'RESYNC'
+                        $SyncHash.BlobRefreshCount = [int]$SyncHash.BlobRefreshCount + 1
+                        $LastBlobSafetyAt = [DateTime]::UtcNow
+                        # After a rollover we can't trust position math on the
+                        # new ACI buffer either; just track its current count
+                        # and wait for further growth to ship from blob.
+                        $AciBaseline = $AciTotal
+                    } elseif ($AciTotal -gt $AciBaseline) {
+                        # Normal growth — ship the delta straight from ACI.
+                        $NewLines = $Lines[$AciBaseline..($AciTotal - 1)]
                         foreach ($Line in $NewLines) {
                             $Trimmed = $Line.TrimEnd("`r")
-                            if ([string]::IsNullOrWhiteSpace($Trimmed)) { continue }
-
+                            if ([string]::IsNullOrWhiteSpace($Trimmed)) {
+                                $SyncHash.LastEmittedTotal = [int]$SyncHash.LastEmittedTotal + 1
+                                continue
+                            }
                             $SyncHash.LogQueue.Enqueue(@{
                                 Text  = $Trimmed
-                                Color = "__AUTO__"    # Signal the UI to apply color rules
+                                Color = "__AUTO__"
                                 Bold  = $false
                             })
+                            $SyncHash.LastEmittedTotal = [int]$SyncHash.LastEmittedTotal + 1
+                            $EmittedThis++
                         }
-                        $PreviousLineCount = $TotalLines
-                        $SyncHash.TotalLines = $BlobLineCount + $TotalLines
+                        $AciBaseline         = $AciTotal
+                        $SyncHash.TotalLines = [int]$SyncHash.LastEmittedTotal
+                        $SyncHash.LastDataAt = [DateTime]::UtcNow
                     }
                 }
             } catch {
                 $ConsecutiveErrors++
                 $ErrMsg = $_.Exception.Message
 
-                # Check if container/RG was deleted (build completed/cleanup)
                 if ($ErrMsg -match 'ResourceGroupNotFound|ResourceNotFound|ContainerGroupNotFound|not found|does not exist') {
+                    # Container gone — one final blob sweep so we don't lose
+                    # the tail that was written between the last poll and
+                    # cleanup, then exit cleanly.
+                    & $ReadBlobDelta 'FINAL' | Out-Null
                     $SyncHash.LogQueue.Enqueue(@{
                         Text  = "`n[BUILD COMPLETED] Container has been removed — build finished or was cleaned up."
                         Color = "#FFB900"
                         Bold  = $true
                     })
                     $SyncHash.LogQueue.Enqueue(@{
-                        Text  = "Log streaming stopped. Total lines captured: $PreviousLineCount"
+                        Text  = "Log streaming stopped. Total lines captured: $($SyncHash.LastEmittedTotal)"
                         Color = "#888888"
                         Bold  = $false
                     })
@@ -3875,20 +3989,20 @@ function Start-LogStreaming {
                 }
 
                 if ($ConsecutiveErrors -ge $MaxConsecutiveErrors) {
+                    # Don't give up — try a blob refresh and keep going at a
+                    # slower cadence; the build may still be alive.
                     $SyncHash.LogQueue.Enqueue(@{
-                        Text  = "[ERROR] Too many consecutive errors ($MaxConsecutiveErrors). Stopping log stream."
-                        Color = "#D13438"
+                        Text  = "[WARN] $ConsecutiveErrors consecutive ACI errors. Falling back to blob-only polling. Last error: $ErrMsg"
+                        Color = "#FFB900"
                         Bold  = $true
                     })
-                    $SyncHash.LogQueue.Enqueue(@{
-                        Text  = "Last error: $ErrMsg"
-                        Color = "#D13438"
-                        Bold  = $false
-                    })
-                    break
+                    & $ReadBlobDelta 'FALLBACK' | Out-Null
+                    $SyncHash.BlobRefreshCount = [int]$SyncHash.BlobRefreshCount + 1
+                    $ConsecutiveErrors = 0
+                    Start-Sleep -Milliseconds ([Math]::Max($PollMs, 15000))
+                    continue
                 }
 
-                # Transient error — log it and retry
                 $SyncHash.LogQueue.Enqueue(@{
                     Text  = "[WARN] Poll error ($ConsecutiveErrors/$MaxConsecutiveErrors): $ErrMsg"
                     Color = "#FFB900"
@@ -3896,7 +4010,20 @@ function Start-LogStreaming {
                 })
             }
 
-            # Sleep for poll interval
+            # Periodic blob safety-net: if ACI hasn't produced new lines in a
+            # while (long Windows-update phase, packer provisioner restart,
+            # buffer stalled on a single huge line, etc.), re-read the blob
+            # to confirm we're not silently behind.
+            if ($BlobName -and ($PolledAt - $LastBlobSafetyAt).TotalSeconds -ge $BlobSafetyIntervalSec) {
+                $LastBlobSafetyAt = $PolledAt
+                if ($EmittedThis -eq 0) {
+                    $delta = & $ReadBlobDelta 'SAFETY'
+                    if ($delta -gt 0) {
+                        $SyncHash.BlobRefreshCount = [int]$SyncHash.BlobRefreshCount + 1
+                    }
+                }
+            }
+
             Start-Sleep -Milliseconds $PollMs
         }
 
@@ -3993,8 +4120,14 @@ $Timer.Add_Tick({
     $LineIndex = $Global:LogStats.TotalLines
     $BatchCount = 0
     $QueueRemaining = $Global:SyncHash.LogQueue.Count
+    # Backfill mode: bigger batch, skip cosmetic per-line decorations (severity
+    # badge, JSON pretty-print, timestamp delta). These add 2-3 extra Run objects
+    # and 1-2 regex calls per line — fine for live tail, painful for a 30k-line
+    # blob load. Live lines coming in after the queue drains get full treatment.
+    $BackfillMode = $QueueRemaining -ge $Global:BackfillThreshold
+    $BatchCap = if ($BackfillMode) { $Global:BackfillLinesPerTick } else { $Global:MaxLinesPerTick }
 
-    while ($Global:SyncHash.LogQueue.Count -gt 0 -and $BatchCount -lt $Global:MaxLinesPerTick) {
+    while ($Global:SyncHash.LogQueue.Count -gt 0 -and $BatchCount -lt $BatchCap) {
         $Item = $Global:SyncHash.LogQueue.Dequeue()
         $BatchCount++
         if (-not $Item -or -not $Item.Text) { continue }
@@ -4090,34 +4223,37 @@ $Timer.Add_Tick({
         $Para.LineHeight = 1
 
         # Severity badge (#1) — use un-remapped color for canonical matching
-        $Badge = Get-SeverityBadge $CanonicalColor
-        if ($Badge) {
-            $BadgeRun = New-Object System.Windows.Documents.Run(" $($Badge.Label) ")
-            $BadgeRun.FontSize = 9
-            $BadgeRun.FontWeight = 'Bold'
-            $BadgeRun.FontFamily = [System.Windows.Media.FontFamily]::new("Consolas")
-            try {
-                $BadgeRun.Background = $BC.ConvertFromString($Badge.Bg)
-                $BadgeRun.Foreground = $BC.ConvertFromString($Badge.Fg)
-            } catch { }
-            $Para.Inlines.Add($BadgeRun)
-            $SpacerRun = New-Object System.Windows.Documents.Run(" ")
-            $SpacerRun.FontSize = 9
-            $Para.Inlines.Add($SpacerRun)
+        # Skip cosmetic inlines in backfill mode — they add ~3 Run objects per line.
+        if (-not $BackfillMode) {
+            $Badge = Get-SeverityBadge $CanonicalColor
+            if ($Badge) {
+                $BadgeRun = New-Object System.Windows.Documents.Run(" $($Badge.Label) ")
+                $BadgeRun.FontSize = 9
+                $BadgeRun.FontWeight = 'Bold'
+                $BadgeRun.FontFamily = [System.Windows.Media.FontFamily]::new("Consolas")
+                try {
+                    $BadgeRun.Background = $BC.ConvertFromString($Badge.Bg)
+                    $BadgeRun.Foreground = $BC.ConvertFromString($Badge.Fg)
+                } catch { }
+                $Para.Inlines.Add($BadgeRun)
+                $SpacerRun = New-Object System.Windows.Documents.Run(" ")
+                $SpacerRun.FontSize = 9
+                $Para.Inlines.Add($SpacerRun)
+            }
+
+            # Timestamp delta prefix
+            $Delta = Get-RelativeTimestamp $CleanText
+            if ($Delta) {
+                $DeltaRun = New-Object System.Windows.Documents.Run("$Delta ")
+                $DeltaRun.Foreground = $Window.Resources['ThemeTextDisabled']
+                $DeltaRun.FontSize = 10
+                $Para.Inlines.Add($DeltaRun)
+            }
         }
 
-        # Timestamp delta prefix
-        $Delta = Get-RelativeTimestamp $CleanText
-        if ($Delta) {
-            $DeltaRun = New-Object System.Windows.Documents.Run("$Delta ")
-            $DeltaRun.Foreground = $Window.Resources['ThemeTextDisabled']
-            $DeltaRun.FontSize = 10
-            $Para.Inlines.Add($DeltaRun)
-        }
-
-        # JSON structured view (#11) — detect and pretty-print
+        # JSON structured view (#11) — detect and pretty-print (skipped in backfill)
         $DisplayText = $CleanText
-        if (Test-JsonLine $CleanText) {
+        if (-not $BackfillMode -and (Test-JsonLine $CleanText)) {
             $Pretty = Format-JsonPretty $CleanText
             if ($Pretty) { $DisplayText = $Pretty }
         }
@@ -4212,6 +4348,44 @@ $Timer.Add_Tick({
     if ($Global:SyncHash.IsStreaming -and $Global:WorkerHandle -and $Global:WorkerHandle.IsCompleted) {
         Write-DebugLog "Auto-poll safety: IsStreaming stuck true but worker finished — resetting" -Level 'WARN'
         $Global:SyncHash.IsStreaming = $false
+        # If we have a selected build, try to recover automatically. Use
+        # -Resume so we keep the existing emitted-line cursor and don't
+        # re-render the whole log or double-count analytics.
+        if ($Global:SyncHash.SelectedBuild) {
+            Write-DebugLog "Watchdog: worker exited, auto-restarting stream for $($Global:SyncHash.SelectedBuild.TemplateName)" -Level 'WARN'
+            try { Start-LogStreaming -Build $Global:SyncHash.SelectedBuild -Resume } catch {
+                Write-DebugLog "Watchdog: auto-restart failed: $($_.Exception.Message)" -Level 'ERROR'
+            }
+        }
+    }
+
+    # Silence watchdog: worker is still alive but hasn't enqueued any new lines
+    # in a long time. Most common cause is ACI buffer rollover during the
+    # Windows-update phase. Warn the user once, then force a restart so the
+    # blob safety-net kicks in on a fresh worker.
+    if ($Global:SyncHash.IsStreaming -and $Global:SyncHash.LastDataAt) {
+        $SilenceSec = ($TickNow.ToUniversalTime() - $Global:SyncHash.LastDataAt).TotalSeconds
+        if ($SilenceSec -ge 180 -and -not $Global:StreamStallWarned) {
+            $Global:StreamStallWarned = $true
+            $Global:SyncHash.LogQueue.Enqueue(@{
+                Text  = "[WATCHDOG] No new log lines in $([int]$SilenceSec)s. Worker is still polling — will auto-restart at 300s if silence continues."
+                Color = "#FFB900"
+                Bold  = $true
+            })
+            Write-DebugLog "Watchdog: stream silent for $([int]$SilenceSec)s (rollovers=$($Global:SyncHash.AciRolloverCount), blob refreshes=$($Global:SyncHash.BlobRefreshCount))" -Level 'WARN'
+        }
+        if ($SilenceSec -ge 300 -and -not $Global:StreamAutoRestarted -and $Global:SyncHash.SelectedBuild) {
+            $Global:StreamAutoRestarted = $true
+            Write-DebugLog "Watchdog: silence $([int]$SilenceSec)s, auto-restarting worker for $($Global:SyncHash.SelectedBuild.TemplateName)" -Level 'WARN'
+            $Global:SyncHash.LogQueue.Enqueue(@{
+                Text  = "[WATCHDOG] Restarting log worker (silence ${SilenceSec}s) — preserved $($Global:SyncHash.LastEmittedTotal) line(s)."
+                Color = "#FFB900"
+                Bold  = $true
+            })
+            try { Start-LogStreaming -Build $Global:SyncHash.SelectedBuild -Resume } catch {
+                Write-DebugLog "Watchdog: auto-restart failed: $($_.Exception.Message)" -Level 'ERROR'
+            }
+        }
     }
 
     # Update line count
