@@ -161,7 +161,7 @@ Log location depends on execution context:
 | Context | Path |
 |---------|------|
 | SYSTEM | `%ProgramData%\Microsoft\IntuneManagementExtension\Logs\SetKeyboardLayout_<timestamp>.log` |
-| User   | `%LocalAppData%\Endpoint-Toolkit\Logs\SetKeyboardLayout_<timestamp>.log` |
+| User   | `%LocalAppData%\Microsoft\IntuneManagementExtension\Logs\SetKeyboardLayout_<timestamp>.log` |
 
 ## Requirements
 

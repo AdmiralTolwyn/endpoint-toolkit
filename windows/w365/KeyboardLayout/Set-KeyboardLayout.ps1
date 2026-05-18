@@ -198,7 +198,7 @@ param(
 if ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value -eq 'S-1-5-18') {
     $LogFolder = Join-Path $env:ProgramData 'Microsoft\IntuneManagementExtension\Logs'
 } else {
-    $LogFolder = Join-Path $env:LOCALAPPDATA 'Endpoint-Toolkit\Logs'
+    $LogFolder = Join-Path $env:LOCALAPPDATA 'Microsoft\IntuneManagementExtension\Logs'
 }
 $LogFile = Join-Path $LogFolder ('SetKeyboardLayout_{0}.log' -f (Get-Date -Format 'yyyyMMdd_HHmmss'))
 #endregion
