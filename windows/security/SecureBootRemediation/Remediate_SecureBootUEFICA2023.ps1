@@ -44,15 +44,14 @@
     Optional BitLocker suspend (Branch A only):
       $Script:SuspendBitLockerOnArm is a top-of-file tunable (default $false
       for backwards compatibility). When set to $true, the script suspends
-      BitLocker for 2 reboots (Microsoft's recommended precaution per
-      Event 1032) before writing AvailableUpdates = 0x5944. This protects
-      against BDE recovery prompts on devices whose firmware later rolls
-      the certs back. Only applied on Branch A (the initial arm) - the
-      other branches preserve in-flight state and do not move PCR 7 in a
-      recovery-triggering way. If the suspend fails, the script ABORTS
-      rather than arming an unprotected device (fail-safe). Intune cannot
-      pass parameters to PR scripts, so this is configured by editing the
-      script once before upload.
+      BitLocker for 1 reboot (narrow workaround targeting HP KI devices
+      where the firmware rolls the new certs back on the next boot) before
+      writing AvailableUpdates = 0x5944. Only applied on Branch A (the
+      initial arm) - the other branches preserve in-flight state and do
+      not move PCR 7 in a recovery-triggering way. If the suspend fails,
+      the script ABORTS rather than arming an unprotected device
+      (fail-safe). Intune cannot pass parameters to PR scripts, so this is
+      configured by editing the script once before upload.
 
     Logs are written in CMTrace format to:
         %ProgramData%\Microsoft\IntuneManagementExtension\Logs\PR_SecureBootUEFICA2023.log
@@ -129,10 +128,13 @@ $Script:TaskPath = '\Microsoft\Windows\PI\'
 $Script:TaskName = 'Secure-Boot-Update'
 
 # Optional BitLocker suspend (Branch A only - the initial arm). When $true,
-# the script suspends BitLocker for 2 reboots before writing the arm value,
-# matching Microsoft's Event 1032 mitigation. Default $false for backwards
-# compatibility with v1.2 behavior. Intune PR cannot pass parameters, so
-# customers who want the precaution must flip this flag before uploading.
+# the script suspends BitLocker for 1 reboot before writing the arm value -
+# a narrow workaround targeting HP KI devices where the firmware rolls the
+# new certs back on the very next boot (1 reboot is enough to cover the
+# arm -> firmware-apply transition without leaving BDE suspended longer
+# than necessary). Default $false for backwards compatibility with v1.2.
+# Intune PR cannot pass parameters, so customers who want the precaution
+# must flip this flag before uploading.
 $Script:SuspendBitLockerOnArm = $false
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -472,13 +474,16 @@ function Start-SecureBootUpdateTask {
 function Suspend-BitLockerForArm {
     <#
     .SYNOPSIS
-        Suspends BitLocker on the system drive for 2 reboots before arming
+        Suspends BitLocker on the system drive for 1 reboot before arming
         the Secure Boot Update servicing state.
 
     .DESCRIPTION
-        Mirrors Microsoft's documented mitigation for Event 1032 (BitLocker
-        recovery risk during Secure Boot updates). Uses Suspend-BitLocker
-        with -RebootCount 2 where available; falls back to manage-bde.exe.
+        Narrow workaround targeting HP KI devices whose firmware rolls the
+        new Secure Boot certs back on the very next boot, which would
+        otherwise trigger a BitLocker recovery prompt. 1 reboot is enough
+        to cover the arm -> firmware-apply transition without leaving BDE
+        suspended any longer than necessary. Uses Suspend-BitLocker with
+        -RebootCount 1 where available; falls back to manage-bde.exe.
         Only the system drive is suspended; data volumes are left alone.
 
         Returns $true if BitLocker was either successfully suspended OR is
@@ -508,17 +513,17 @@ function Suspend-BitLockerForArm {
         return $true
     }
     try {
-        $null = Suspend-BitLocker -MountPoint $sysDrive -RebootCount 2 -ErrorAction Stop
-        Write-Log "BitLocker suspended on $sysDrive for 2 reboots (Suspend-BitLocker cmdlet)." -Level SUCCESS
+        $null = Suspend-BitLocker -MountPoint $sysDrive -RebootCount 1 -ErrorAction Stop
+        Write-Log "BitLocker suspended on $sysDrive for 1 reboot (Suspend-BitLocker cmdlet)." -Level SUCCESS
         return $true
     }
     catch {
         Write-Log "Suspend-BitLocker cmdlet failed: $($_.Exception.Message). Falling back to manage-bde.exe." -Level WARN
     }
     try {
-        $mb = & "$env:SystemRoot\System32\manage-bde.exe" -Protectors -Disable $sysDrive -RebootCount 2 2>&1
+        $mb = & "$env:SystemRoot\System32\manage-bde.exe" -Protectors -Disable $sysDrive -RebootCount 1 2>&1
         if ($LASTEXITCODE -eq 0) {
-            Write-Log "BitLocker suspended on $sysDrive for 2 reboots (manage-bde.exe)." -Level SUCCESS
+            Write-Log "BitLocker suspended on $sysDrive for 1 reboot (manage-bde.exe)." -Level SUCCESS
             return $true
         }
         Write-Log "manage-bde.exe -Disable returned exit code $LASTEXITCODE. Output: $($mb -join ' | ')" -Level ERROR
@@ -693,7 +698,7 @@ if ($null -eq $avUpdates -or $avUpdates -eq 0) {
     # (e.g. on devices hit by a KI that hadn't surfaced 1802 yet). Default
     # $false for backwards compatibility; flip the top-of-file flag to enable.
     if ($Script:SuspendBitLockerOnArm) {
-        Write-Log 'SuspendBitLockerOnArm flag enabled; suspending BitLocker for 2 reboots before arming.' -Level STEP
+        Write-Log 'SuspendBitLockerOnArm flag enabled; suspending BitLocker for 1 reboot before arming.' -Level STEP
         if (-not (Suspend-BitLockerForArm)) {
             Write-Log 'BitLocker suspend failed; refusing to arm an unprotected device.' -Level ERROR
             Write-Output 'FAIL: BitLocker suspend failed; refusing to arm (SuspendBitLockerOnArm=$true).'
