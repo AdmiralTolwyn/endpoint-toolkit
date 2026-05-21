@@ -64,6 +64,42 @@ reliably for this use case.
 - **Symbols** — if `_NT_SYMBOL_PATH` is not set, falls back to the public
   Microsoft symbol server. Override in Settings or pass `-SymbolPath`.
 
+### Setting up the symbol path
+
+DumpPilot needs a symbol path to resolve stack frames. You can configure it
+in the GUI (Settings > Symbol path override) or set the `_NT_SYMBOL_PATH`
+environment variable system-wide.
+
+**Option 1 — Windows GUI**
+
+1. Press `Win + R`, type `sysdm.cpl`, press Enter.
+2. Go to the **Advanced** tab → **Environment Variables**.
+3. Under **System variables**, click **New**.
+4. Set **Variable name** to: `_NT_SYMBOL_PATH`
+5. Set **Variable value** to:
+   ```
+   srv*C:\Symbols*https://msdl.microsoft.com/download/symbols
+   ```
+6. Click **OK** on all windows to save.
+
+**Option 2 — Command Prompt (current session)**
+
+```cmd
+set _NT_SYMBOL_PATH=srv*C:\Symbols*https://msdl.microsoft.com/download/symbols
+```
+
+**Option 3 — PowerShell (persistent for current user)**
+
+```powershell
+[Environment]::SetEnvironmentVariable('_NT_SYMBOL_PATH',
+    'srv*C:\Symbols*https://msdl.microsoft.com/download/symbols',
+    'User')
+```
+
+> **Note:** The `C:\Symbols` folder is a local cache — symbols are downloaded
+> once from Microsoft's server and reused on subsequent runs. First runs may
+> take 1–2 minutes longer while the cache populates.
+
 ## Key files
 
 | File | Purpose |
