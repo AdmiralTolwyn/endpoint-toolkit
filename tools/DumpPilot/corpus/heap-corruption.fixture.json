@@ -1,0 +1,15 @@
+{
+  "DumpKind": "UserMinidump",
+  "DumpPath": "synthetic://heap-corruption",
+  "Process": { "Name": "MyApp.exe", "CommandLine": "MyApp.exe" },
+  "Exception": { "Code": "c0000374", "Address": "00007ffff0000000", "Bucket": "STATUS_HEAP_CORRUPTION_c0000374_ntdll.dll!RtlReportCriticalFailure" },
+  "Faulting": {
+    "Module": "ntdll",
+    "Image": "ntdll.dll",
+    "Symbol": "ntdll!RtlReportCriticalFailure",
+    "Stack": [
+      { "Frame": "ntdll!RtlReportCriticalFailure+0x60", "Module": "ntdll", "Symbol": "RtlReportCriticalFailure" }
+    ]
+  },
+  "__expect": { "rule": "ntdll-heap-corruption" }
+}

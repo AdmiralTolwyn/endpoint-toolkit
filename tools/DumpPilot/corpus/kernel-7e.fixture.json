@@ -1,0 +1,16 @@
+{
+  "DumpKind": "KernelDump",
+  "DumpPath": "synthetic://kernel-7e",
+  "Process": { "Name": "System", "CommandLine": null },
+  "Exception": { "Code": "c0000005", "Address": "fffff80000000000", "Bucket": "0x7E_c0000005_someoem.sys!Unknown" },
+  "Faulting": {
+    "Module": "someoem",
+    "Image": "someoem.sys",
+    "Symbol": "someoem+1234",
+    "Stack": [
+      { "Frame": "someoem!Foo+0x10", "Module": "someoem", "Symbol": "Foo" },
+      { "Frame": "nt!KiSystemServiceCopyEnd+0x25", "Module": "nt", "Symbol": "KiSystemServiceCopyEnd" }
+    ]
+  },
+  "__expect": { "rule": "kernel-bugcheck-7e" }
+}

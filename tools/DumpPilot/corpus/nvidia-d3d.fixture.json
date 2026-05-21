@@ -1,0 +1,15 @@
+{
+  "DumpKind": "UserMinidump",
+  "DumpPath": "synthetic://nvidia-d3d",
+  "Process": { "Name": "chrome.exe", "CommandLine": "chrome.exe --type=gpu-process" },
+  "Exception": { "Code": "c0000005", "Address": "00007fff00000000", "Bucket": "APPLICATION_FAULT_INVALID_POINTER_READ_c0000005_nvwgf2umx.dll!Unknown" },
+  "Faulting": {
+    "Module": "nvwgf2umx",
+    "Image": "nvwgf2umx.dll",
+    "Symbol": "nvwgf2umx+12345",
+    "Stack": [
+      { "Frame": "nvwgf2umx+0x12345", "Module": "nvwgf2umx", "Symbol": null }
+    ]
+  },
+  "__expect": { "rule": "nvidia-d3d-umd-av" }
+}

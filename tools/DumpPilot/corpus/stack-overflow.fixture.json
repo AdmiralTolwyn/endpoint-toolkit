@@ -1,0 +1,17 @@
+{
+  "DumpKind": "UserMinidump",
+  "DumpPath": "synthetic://stack-overflow",
+  "Process": { "Name": "BadRecursion.exe", "CommandLine": "BadRecursion.exe" },
+  "Exception": { "Code": "c00000fd", "Address": "00007fffabcdef00", "Bucket": "STATUS_STACK_OVERFLOW_c00000fd_BadRecursion.exe!main" },
+  "Faulting": {
+    "Module": "BadRecursion",
+    "Image": "BadRecursion.exe",
+    "Symbol": "BadRecursion!main",
+    "Stack": [
+      { "Frame": "BadRecursion!recurse+0x10", "Module": "BadRecursion", "Symbol": "recurse" },
+      { "Frame": "BadRecursion!recurse+0x10", "Module": "BadRecursion", "Symbol": "recurse" },
+      { "Frame": "BadRecursion!recurse+0x10", "Module": "BadRecursion", "Symbol": "recurse" }
+    ]
+  },
+  "__expect": { "rule": "stack-overflow" }
+}

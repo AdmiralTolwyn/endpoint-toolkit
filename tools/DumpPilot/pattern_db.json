@@ -1,0 +1,114 @@
+﻿{
+  "schemaVersion": "0.1",
+  "rules": [
+    {
+      "id": "java-intel-opengl-icd",
+      "match": {
+        "ProcessImage": "^java(w)?\\.exe$",
+        "FaultingModule": "^igxelp(g)?icd64\\.dll$",
+        "ExceptionCode": "c0000005|c000041d",
+        "StackRegex": "wglSetPixelFormat|opengl32!|sun\\.java2d|prism"
+      },
+      "severity": "High",
+      "title": "Java OpenGL/D3D pipeline crashes in Intel iGPU ICD"
+    },
+    {
+      "id": "nvidia-d3d-umd-av",
+      "match": {
+        "FaultingModule": "^nvwgf2um(x)?\\.dll$",
+        "ExceptionCode": "c0000005|c0000409"
+      },
+      "severity": "High",
+      "title": "Access violation in NVIDIA D3D user-mode driver (nvwgf2umx.dll)"
+    },
+    {
+      "id": "fslogix-frxccd-av",
+      "match": {
+        "FaultingModule": "^frxccd(s)?\\.sys$"
+      },
+      "severity": "Critical",
+      "title": "Bugcheck in FSLogix Cloud Cache mini-filter (frxccd.sys)"
+    },
+    {
+      "id": "citrix-icaclient-av",
+      "match": {
+        "ProcessImage": "^(wfica32|wfcrun32|Receiver|CDViewer)\\.exe$",
+        "ExceptionCode": "c0000005"
+      },
+      "severity": "Medium",
+      "title": "Citrix Workspace App / Receiver process AV"
+    },
+    {
+      "id": "ntdll-heap-corruption",
+      "match": {
+        "FaultingModule": "^ntdll\\.dll$",
+        "ExceptionCode": "c0000374"
+      },
+      "severity": "High",
+      "title": "Heap corruption detected by ntdll (STATUS_HEAP_CORRUPTION)"
+    },
+    {
+      "id": "stack-overflow",
+      "match": {
+        "ExceptionCode": "c00000fd"
+      },
+      "severity": "High",
+      "title": "Stack overflow (STATUS_STACK_OVERFLOW)"
+    },
+    {
+      "id": "defender-mpengine-av",
+      "match": {
+        "ProcessImage": "^MsMpEng\\.exe$",
+        "ExceptionCode": "c0000005|c0000409"
+      },
+      "severity": "High",
+      "title": "Microsoft Defender engine (MsMpEng / MpEngine) access violation"
+    },
+    {
+      "id": "rdpclip-clipboard-av",
+      "match": {
+        "ProcessImage": "^rdpclip\\.exe$",
+        "ExceptionCode": "c0000005"
+      },
+      "severity": "Medium",
+      "title": "rdpclip.exe crash (RDP/AVD clipboard redirection)"
+    },
+    {
+      "id": "outlook-mso-av",
+      "match": {
+        "ProcessImage": "^(OUTLOOK|olk)\\.exe$",
+        "ExceptionCode": "c0000005"
+      },
+      "severity": "Medium",
+      "title": "Outlook (classic OUTLOOK.EXE or new olk.exe) crash"
+    },
+    {
+      "id": "edge-chrome-gpu-av",
+      "match": {
+        "ProcessImage": "^(msedge|chrome|brave|opera)\\.exe$",
+        "ExceptionCode": "c0000005",
+        "StackRegex": "gpu_main|GpuProcessMain|SwiftShader|skia|gl_|angle_|d3d11!|dxgi!"
+      },
+      "severity": "Medium",
+      "title": "Chromium browser GPU process crash"
+    },
+    {
+      "id": "wow64-c0000005",
+      "match": {
+        "FaultingModule": "^wow64(cpu|win)?\\.dll$",
+        "ExceptionCode": "c0000005"
+      },
+      "severity": "Low",
+      "title": "AV inside WoW64 thunking layer"
+    },
+    {
+      "id": "kernel-bugcheck-7e",
+      "match": {
+        "ExceptionCode": "0x7E|c0000005",
+        "StackRegex": "nt!KeBugCheck|nt!KiSystemServiceCopyEnd|nt!KiPageFault"
+      },
+      "severity": "Critical",
+      "title": "Kernel-mode SYSTEM_THREAD_EXCEPTION_NOT_HANDLED (0x7E)"
+    }
+  ]
+}

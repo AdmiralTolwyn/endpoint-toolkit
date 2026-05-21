@@ -1,0 +1,15 @@
+{
+  "DumpKind": "UserMinidump",
+  "DumpPath": "synthetic://wow64",
+  "Process": { "Name": "Legacy32App.exe", "CommandLine": "Legacy32App.exe" },
+  "Exception": { "Code": "c0000005", "Address": "00007fff00000000", "Bucket": "APPLICATION_FAULT_INVALID_POINTER_READ_c0000005_wow64cpu.dll!Unknown" },
+  "Faulting": {
+    "Module": "wow64cpu",
+    "Image": "wow64cpu.dll",
+    "Symbol": "wow64cpu+0x100",
+    "Stack": [
+      { "Frame": "wow64cpu+0x100", "Module": "wow64cpu", "Symbol": null }
+    ]
+  },
+  "__expect": { "rule": "wow64-c0000005" }
+}

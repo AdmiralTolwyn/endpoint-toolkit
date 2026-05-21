@@ -1,0 +1,16 @@
+{
+  "DumpKind": "UserMinidump",
+  "DumpPath": "synthetic://edge-gpu",
+  "Process": { "Name": "msedge.exe", "CommandLine": "msedge.exe --type=gpu-process" },
+  "Exception": { "Code": "c0000005", "Address": "00007fff00000000", "Bucket": "APPLICATION_FAULT_INVALID_POINTER_READ_c0000005_msedge.dll!gpu_main" },
+  "Faulting": {
+    "Module": "msedge",
+    "Image": "msedge.dll",
+    "Symbol": "msedge!gpu_main",
+    "Stack": [
+      { "Frame": "msedge!gpu_main+0x123", "Module": "msedge", "Symbol": "gpu_main" },
+      { "Frame": "msedge!GpuProcessMain+0x45",  "Module": "msedge", "Symbol": "GpuProcessMain" }
+    ]
+  },
+  "__expect": { "rule": "edge-chrome-gpu-av" }
+}

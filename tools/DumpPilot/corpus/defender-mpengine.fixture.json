@@ -1,0 +1,15 @@
+{
+  "DumpKind": "UserMinidump",
+  "DumpPath": "synthetic://defender-mpengine",
+  "Process": { "Name": "MsMpEng.exe", "CommandLine": "MsMpEng.exe" },
+  "Exception": { "Code": "c0000005", "Address": "00007fff00000000", "Bucket": "APPLICATION_FAULT_INVALID_POINTER_READ_c0000005_MpEngine.dll!Unknown" },
+  "Faulting": {
+    "Module": "MpEngine",
+    "Image": "MpEngine.dll",
+    "Symbol": "MpEngine+1234",
+    "Stack": [
+      { "Frame": "MpEngine+0x1234", "Module": "MpEngine", "Symbol": null }
+    ]
+  },
+  "__expect": { "rule": "defender-mpengine-av" }
+}

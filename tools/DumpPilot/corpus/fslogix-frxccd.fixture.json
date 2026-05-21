@@ -1,0 +1,15 @@
+{
+  "DumpKind": "KernelDump",
+  "DumpPath": "synthetic://fslogix-frxccd",
+  "Process": { "Name": "System", "CommandLine": null },
+  "Exception": { "Code": "c0000005", "Address": "fffff80000000000", "Bucket": "0x3B_c0000005_frxccd!Unknown" },
+  "Faulting": {
+    "Module": "frxccd",
+    "Image": "frxccd.sys",
+    "Symbol": "frxccd+1234",
+    "Stack": [
+      { "Frame": "frxccd+0x1234", "Module": "frxccd", "Symbol": null }
+    ]
+  },
+  "__expect": { "rule": "fslogix-frxccd-av" }
+}

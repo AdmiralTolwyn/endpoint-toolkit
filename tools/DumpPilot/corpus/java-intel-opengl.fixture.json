@@ -1,0 +1,16 @@
+{
+  "DumpKind": "UserMinidump",
+  "DumpPath": "synthetic://java-intel-opengl",
+  "Process": { "Name": "java.exe", "CommandLine": "java.exe -jar app.jar" },
+  "Exception": { "Code": "c000041d", "Address": "00007fff71837cde", "Bucket": "FATAL_USER_CALLBACK_EXCEPTION_c000041d_igxelpgicd64.dll!Unknown" },
+  "Faulting": {
+    "Module": "igxelpgicd64",
+    "Image": "igxelpgicd64.dll",
+    "Symbol": "igxelpgicd64+87cde",
+    "Stack": [
+      { "Frame": "igxelpgicd64+0x87cde", "Module": "igxelpgicd64", "Symbol": null },
+      { "Frame": "opengl32!wglSetPixelFormat+0x289", "Module": "opengl32", "Symbol": "wglSetPixelFormat" }
+    ]
+  },
+  "__expect": { "rule": "java-intel-opengl-icd" }
+}

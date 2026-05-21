@@ -1,0 +1,15 @@
+{
+  "DumpKind": "UserMinidump",
+  "DumpPath": "synthetic://no-match",
+  "Process": { "Name": "totally-unknown-app.exe", "CommandLine": "totally-unknown-app.exe" },
+  "Exception": { "Code": "c0000409", "Address": "00007ffff0000000", "Bucket": "STATUS_STACK_BUFFER_OVERRUN_c0000409_unknown.dll!Unknown" },
+  "Faulting": {
+    "Module": "weirdvendor",
+    "Image": "weirdvendor.dll",
+    "Symbol": null,
+    "Stack": [
+      { "Frame": "weirdvendor+0x999", "Module": "weirdvendor", "Symbol": null }
+    ]
+  },
+  "__expect": { "rule": null }
+}

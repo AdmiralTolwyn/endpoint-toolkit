@@ -1,0 +1,15 @@
+{
+  "DumpKind": "UserMinidump",
+  "DumpPath": "synthetic://outlook",
+  "Process": { "Name": "OUTLOOK.EXE", "CommandLine": "OUTLOOK.EXE" },
+  "Exception": { "Code": "c0000005", "Address": "00007fff00000000", "Bucket": "APPLICATION_FAULT_INVALID_POINTER_READ_c0000005_mso30win32client.dll!Unknown" },
+  "Faulting": {
+    "Module": "mso30win32client",
+    "Image": "mso30win32client.dll",
+    "Symbol": "mso30win32client+99",
+    "Stack": [
+      { "Frame": "mso30win32client+0x99", "Module": "mso30win32client", "Symbol": null }
+    ]
+  },
+  "__expect": { "rule": "outlook-mso-av" }
+}

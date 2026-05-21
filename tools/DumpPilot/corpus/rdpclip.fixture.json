@@ -1,0 +1,15 @@
+{
+  "DumpKind": "UserMinidump",
+  "DumpPath": "synthetic://rdpclip",
+  "Process": { "Name": "rdpclip.exe", "CommandLine": "rdpclip.exe" },
+  "Exception": { "Code": "c0000005", "Address": "00007fff00000000", "Bucket": "APPLICATION_FAULT_INVALID_POINTER_READ_c0000005_rdpclip.exe!Unknown" },
+  "Faulting": {
+    "Module": "rdpclip",
+    "Image": "rdpclip.exe",
+    "Symbol": "rdpclip+abcd",
+    "Stack": [
+      { "Frame": "rdpclip+0xabcd", "Module": "rdpclip", "Symbol": null }
+    ]
+  },
+  "__expect": { "rule": "rdpclip-clipboard-av" }
+}
