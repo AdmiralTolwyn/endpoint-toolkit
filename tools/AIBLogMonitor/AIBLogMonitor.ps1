@@ -123,6 +123,22 @@ $Global:SyncHash = [Hashtable]::Synchronized(@{
 # Background job tracker — polled by the DispatcherTimer to avoid UI-thread hangs
 $Global:BgJobs = [System.Collections.ArrayList]::Synchronized([System.Collections.ArrayList]::new())
 
+# Dispatcher tick reads these on every fire (every 50ms). Under StrictMode any
+# unset $Global:* read throws, so initialize them up-front instead of relying
+# on `if (-not $Global:Foo)` guards that themselves can't run.
+$Global:LastPanelRender    = [DateTime]::MinValue
+$Global:LastETAUpdate      = [DateTime]::MinValue
+$Global:LastMinimapRender  = [DateTime]::MinValue
+$Global:LastBuildScan      = [DateTime]::MinValue
+$Global:StreamStallWarned  = $false
+$Global:StreamAutoRestarted = $false
+$Global:IsFollowing        = $true
+$Global:ParagraphCount     = 0
+$Global:WorkerPS           = $null
+$Global:WorkerHandle       = $null
+$Global:BuildScanActive    = $false
+$Global:SuppressThemeHandler = $false
+
 function Start-BackgroundWork {
     <#
     .SYNOPSIS
