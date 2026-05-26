@@ -21,11 +21,12 @@
     <Window.Resources>
         <!-- THEME BRUSHES (Dark defaults, mutated at runtime for Light Mode) -->
         <SolidColorBrush x:Key="ThemeAppBg"           Color="#111111" PresentationOptions:Freeze="False"/>
-        <SolidColorBrush x:Key="ThemePanelBg"         Color="#1A1A1A" PresentationOptions:Freeze="False"/>
+        <!-- Translucent panel/sidebar/deep backgrounds so the dot grid + accent gradient leak through (matches TraceAnalyzer/AvdAssessor look). -->
+        <SolidColorBrush x:Key="ThemePanelBg"         Color="#ED1A1A1A" PresentationOptions:Freeze="False"/>
         <SolidColorBrush x:Key="ThemeCardBg"          Color="#222222" PresentationOptions:Freeze="False"/>
         <SolidColorBrush x:Key="ThemeCardAltBg"       Color="#252528" PresentationOptions:Freeze="False"/>
         <SolidColorBrush x:Key="ThemeInputBg"         Color="#141414" PresentationOptions:Freeze="False"/>
-        <SolidColorBrush x:Key="ThemeDeepBg"          Color="#0D0D0D" PresentationOptions:Freeze="False"/>
+        <SolidColorBrush x:Key="ThemeDeepBg"          Color="#ED0D0D0D" PresentationOptions:Freeze="False"/>
         <SolidColorBrush x:Key="ThemeOutputBg"        Color="#080808" PresentationOptions:Freeze="False"/>
         <SolidColorBrush x:Key="ThemeSurfaceBg"       Color="#2A2A2A" PresentationOptions:Freeze="False"/>
         <SolidColorBrush x:Key="ThemeHoverBg"         Color="#333333" PresentationOptions:Freeze="False"/>
@@ -51,7 +52,7 @@
         <SolidColorBrush x:Key="ThemeSuccess"         Color="#00C853" PresentationOptions:Freeze="False"/>
         <SolidColorBrush x:Key="ThemeWarning"         Color="#FFB900" PresentationOptions:Freeze="False"/>
         <SolidColorBrush x:Key="ThemeError"           Color="#D13438" PresentationOptions:Freeze="False"/>
-        <SolidColorBrush x:Key="ThemeSidebarBg"       Color="#0D0D0D" PresentationOptions:Freeze="False"/>
+        <SolidColorBrush x:Key="ThemeSidebarBg"       Color="#ED0D0D0D" PresentationOptions:Freeze="False"/>
         <SolidColorBrush x:Key="ThemeSidebarBorder"   Color="#222222" PresentationOptions:Freeze="False"/>
 
         <!-- DOT GRID PATTERN (tiled DrawingBrush, theme-aware via runtime rebuild) -->

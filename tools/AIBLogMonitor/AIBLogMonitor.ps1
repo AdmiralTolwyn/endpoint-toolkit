@@ -138,6 +138,7 @@ $Global:WorkerPS           = $null
 $Global:WorkerHandle       = $null
 $Global:BuildScanActive    = $false
 $Global:SuppressThemeHandler = $false
+$Global:LastProgressPara   = $null
 
 function Start-BackgroundWork {
     <#
@@ -466,9 +467,12 @@ $Global:SuppressThemeHandler = $false
 $Global:IsAuthenticated = $false
 
 $Global:ThemeDark = @{
-    ThemeAppBg         = "#111111"; ThemePanelBg       = "#1A1A1A"
+    # Sidebar/Panel/Deep colors carry an alpha prefix (ED ≈ 93%) so the dot
+    # grid + accent gradient at ZIndex=-2/-1 leak through, matching the look
+    # of TraceAnalyzer/AvdAssessor. Log RichTextBox keeps full opacity.
+    ThemeAppBg         = "#111111"; ThemePanelBg       = "#ED1A1A1A"
     ThemeCardBg        = "#222222"; ThemeCardAltBg     = "#252528"
-    ThemeInputBg       = "#141414"; ThemeDeepBg        = "#0D0D0D"
+    ThemeInputBg       = "#141414"; ThemeDeepBg        = "#ED0D0D0D"
     ThemeOutputBg      = "#080808"; ThemeSurfaceBg     = "#2A2A2A"
     ThemeHoverBg       = "#333333"; ThemeSelectedBg    = "#2E2E32"
     ThemePressedBg     = "#181818"
@@ -483,14 +487,14 @@ $Global:ThemeDark = @{
     ThemeBorderElevated = "#3E3E3E"; ThemeBorderHover   = "#505050"
     ThemeScrollThumb   = "#383838"
     ThemeSuccess       = "#00C853"; ThemeWarning       = "#FFB900"
-    ThemeError         = "#D13438"; ThemeSidebarBg     = "#0D0D0D"
+    ThemeError         = "#D13438"; ThemeSidebarBg     = "#ED0D0D0D"
     ThemeSidebarBorder = "#222222"
 }
 
 $Global:ThemeLight = @{
-    ThemeAppBg         = "#F3F3F3"; ThemePanelBg       = "#FAFAFA"
+    ThemeAppBg         = "#F3F3F3"; ThemePanelBg       = "#EDFAFAFA"
     ThemeCardBg        = "#FFFFFF"; ThemeCardAltBg     = "#F5F5F5"
-    ThemeInputBg       = "#FFFFFF"; ThemeDeepBg        = "#EEEEEE"
+    ThemeInputBg       = "#FFFFFF"; ThemeDeepBg        = "#EDEEEEEE"
     ThemeOutputBg      = "#FAFAFA"; ThemeSurfaceBg     = "#E8E8E8"
     ThemeHoverBg       = "#E0E0E0"; ThemeSelectedBg    = "#D8D8D8"
     ThemePressedBg     = "#CCCCCC"
@@ -505,7 +509,7 @@ $Global:ThemeLight = @{
     ThemeBorderElevated = "#C8C8C8"; ThemeBorderHover   = "#B0B0B0"
     ThemeScrollThumb   = "#C0C0C0"
     ThemeSuccess       = "#0B6A0B"; ThemeWarning       = "#9E6B00"
-    ThemeError         = "#A80000"; ThemeSidebarBg     = "#EBEBEB"
+    ThemeError         = "#A80000"; ThemeSidebarBg     = "#EDEBEBEB"
     ThemeSidebarBorder = "#D8D8D8"
 }
 
@@ -1895,6 +1899,17 @@ $Global:PkgPatterns = @{
     ChocoFailed    = 'The install of .+ was NOT successful|ERROR'
 }
 
+# Pre-compile package patterns once (eliminates per-line regex re-compilation
+# in the dispatcher hot path). Update-PackageTracker uses $Global:PkgRx.
+$Global:PkgRx = @{}
+foreach ($K in @($Global:PkgPatterns.Keys)) {
+    $Global:PkgRx[$K] = [regex]::new($Global:PkgPatterns[$K], 'Compiled, IgnoreCase')
+}
+# Inline regexes that used to be plain strings via -match in Update-PackageTracker.
+$Global:PkgRxStartingInstall = [regex]::new('Starting package install', 'Compiled, IgnoreCase')
+$Global:PkgRxInstalling      = [regex]::new('Installing', 'Compiled, IgnoreCase')
+$Global:PkgRxInstallingPkg   = [regex]::new('->\s*Installing Package:', 'Compiled, IgnoreCase')
+
 function Update-PackageTracker {
     <# Parses a log line to track package install status #>
     param([string]$Line)
@@ -3021,6 +3036,16 @@ $Global:DetectedVMSku = $null
 $Global:EstimatedCostPerHr = $Global:VMCostTable['_default']
 
 $Global:DetectedVMSkuRx = [regex]::new('(Standard_[A-Za-z0-9_]+)', 'Compiled')
+
+# WinGet ASCII progress bar lines like "  ████▒▒   126 MB /  145 MB" (or the same
+# bytes mojibake'd as 'a­...') flood the log at 1-3 lines/MB. We collapse
+# them into a single rolling line per download — if the previous emitted
+# paragraph was also a progress line, the dispatcher mutates its Run text
+# in place instead of adding a new paragraph.
+$Global:WinGetProgressBarRx = [regex]::new('\d+\s*MB\s*/\s*\d+\s*MB\s*$', 'Compiled')
+# Strip the block-char art (proper UTF-8 forms + the common Win-1252 mojibake
+# bytes) so the rolling line is readable.
+$Global:WinGetProgressBarStripRx = [regex]::new('[\u2588\u2592\u2591\u2593\u00E2\u20AC\u00C2\u2013\u2014]+', 'Compiled')
 
 function Detect-VMSku {
     <# Attempts to detect VM SKU from packer log output #>
@@ -4182,6 +4207,46 @@ $Timer.Add_Tick({
         # Strip ANSI escape codes
         $CleanText = Strip-AnsiCodes $Item.Text
 
+        # Drop Packer single-char spinner ticks (`==> azure-arm:   |` / `/` /
+        # `-` / `\` and the block-char variants). They add no info and only
+        # appear when Packer is idle between provisioners. RxSpinner already
+        # exists for color routing; just suppress the line entirely instead.
+        if ($Item.Color -eq "__AUTO__" -and $Global:RxSpinner.IsMatch($CleanText)) {
+            $BatchCount--   # don't count suppressed lines against the batch cap
+            continue
+        }
+
+        # WinGet progress-bar coalesce. Detect "NN MB / NN MB" lines and
+        # collapse a burst into a single rolling paragraph.
+        $IsProgress = $Global:WinGetProgressBarRx.IsMatch($CleanText)
+        if ($IsProgress) {
+            # Strip block-char art + collapse whitespace into a compact form.
+            $Cleaned = $Global:WinGetProgressBarStripRx.Replace($CleanText, '')
+            $Cleaned = ($Cleaned -replace '\s+', ' ').Trim()
+            # If the previous paragraph we added was also a progress line and
+            # it's still the last block, mutate its last Run's text in place.
+            $LastBlock = $null
+            if ($RTB.Document.Blocks.Count -gt 0) {
+                $LastBlock = $RTB.Document.Blocks.LastBlock
+            }
+            if ($Global:LastProgressPara -and ($LastBlock -eq $Global:LastProgressPara)) {
+                try {
+                    $LastInline = $Global:LastProgressPara.Inlines.LastInline
+                    if ($LastInline -is [System.Windows.Documents.Run]) {
+                        $LastInline.Text = $Cleaned
+                    }
+                } catch { $Global:LastProgressPara = $null }
+                $BatchCount-- # don't count the suppressed line against the batch cap
+                continue
+            }
+            # First progress line in a burst — fall through, but with the
+            # cleaned text so the user sees a tidy form, not block-char soup.
+            $CleanText = $Cleaned
+        } else {
+            # Non-progress line resets the coalesce anchor.
+            $Global:LastProgressPara = $null
+        }
+
         # Apply color rules
         $Color = $Item.Color
         $Bold = $Item.Bold
@@ -4318,8 +4383,23 @@ $Timer.Add_Tick({
         $RTB.Document.Blocks.Add($Para)
         $Global:ParagraphCount++
         $ContentAdded = $true
+        # If this was the first progress line in a burst, remember the para
+        # so subsequent progress lines mutate it in place.
+        if ($IsProgress) { $Global:LastProgressPara = $Para }
       } catch {
-        Write-DebugLog "Tick: line processing error: $($_.Exception.Message)"
+        # Log once per distinct error (with InvocationInfo + stack) to find the
+        # offending call. Without this we just see "method on null" for every
+        # line and have no idea what to fix.
+        if (-not $Global:TickErrSeen) { $Global:TickErrSeen = @{} }
+        $Key = "$($_.Exception.Message)|$($_.InvocationInfo.ScriptLineNumber)"
+        if (-not $Global:TickErrSeen.ContainsKey($Key)) {
+            $Global:TickErrSeen[$Key] = 1
+            Write-DebugLog "Tick: line processing error at L$($_.InvocationInfo.ScriptLineNumber): $($_.Exception.Message)" -Level 'ERROR'
+            Write-DebugLog "Tick: offending line text: $(if ($CleanText) { $CleanText.Substring(0, [Math]::Min(180, $CleanText.Length)) } else { '<null>' })" -Level 'ERROR'
+            Write-DebugLog "Tick: stack: $($_.ScriptStackTrace)" -Level 'ERROR'
+        } else {
+            $Global:TickErrSeen[$Key]++
+        }
       }
     }
 
