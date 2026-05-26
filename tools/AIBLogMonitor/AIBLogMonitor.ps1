@@ -3037,15 +3037,30 @@ $Global:EstimatedCostPerHr = $Global:VMCostTable['_default']
 
 $Global:DetectedVMSkuRx = [regex]::new('(Standard_[A-Za-z0-9_]+)', 'Compiled')
 
-# WinGet ASCII progress bar lines like "  ████▒▒   126 MB /  145 MB" (or the same
-# bytes mojibake'd as 'a­...') flood the log at 1-3 lines/MB. We collapse
-# them into a single rolling line per download — if the previous emitted
-# paragraph was also a progress line, the dispatcher mutates its Run text
-# in place instead of adding a new paragraph.
-$Global:WinGetProgressBarRx = [regex]::new('\d+\s*MB\s*/\s*\d+\s*MB\s*$', 'Compiled')
+# WinGet ASCII progress bar lines like "  ████▒▒   126 MB /  145 MB",
+# "1024 KB / 2.96 MB", or "▒▒▒▒▒▒  0%" flood the log at 1-3 lines per MB.
+# We collapse them into a single rolling line per download — if the previous
+# emitted paragraph was also a progress line, the dispatcher mutates its Run
+# text in place instead of adding a new paragraph.
+#
+# Match either of:
+#   1. <bytes> <unit> / <bytes> <unit>  (KB/MB/GB on either side, decimals OK)
+#   2. <percent>%                       (the separator/percent line that sits
+#                                        between byte-count and final progress)
+# Both must be the end of the line (after optional whitespace). The regex
+# matches the bare ACI form and the AIB-blob-normalized form equally.
+$Global:WinGetProgressBarRx = [regex]::new('(?:[\d.]+\s*(?:KB|MB|GB|TB)\s*/\s*[\d.]+\s*(?:KB|MB|GB|TB)|[\d.]+\s*%)\s*$', 'Compiled')
 # Strip the block-char art (proper UTF-8 forms + the common Win-1252 mojibake
 # bytes) so the rolling line is readable.
-$Global:WinGetProgressBarStripRx = [regex]::new('[\u2588\u2592\u2591\u2593\u00E2\u20AC\u00C2\u2013\u2014]+', 'Compiled')
+$Global:WinGetProgressBarStripRx = [regex]::new('[\u2588\u2592\u2591\u2593\u00E2\u20AC\u00C2\u2013\u2014\u02C6\u2018\u2019]+', 'Compiled')
+# Truncated progress-bar fragments without a size/percent suffix \u2014 happens
+# when AIB writes the blob mid-line, leaving lines like
+#   "==> azure-arm:   \u2588\u2588\u2588\u2588\u2592\u2592\u2592\u2592"   or just
+#   "==> azure-arm:   \u2588"
+# These are pure progress art with no payload, so we drop them entirely
+# (same as spinner ticks). Matches the standard ACI prefix + only block-char
+# art (UTF-8 forms + Win-1252 mojibake bytes) + optional trailing whitespace.
+$Global:WinGetProgressFragmentRx = [regex]::new('^(?:==>|\s{3,})\s+[a-zA-Z_-]+:\s*[\u2588\u2592\u2591\u2593\u00E2\u20AC\u00C2\u2013\u2014\u02C6\u2018\u2019\s]+$', 'Compiled')
 
 function Detect-VMSku {
     <# Attempts to detect VM SKU from packer log output #>
@@ -3831,14 +3846,15 @@ function Start-LogStreaming {
             Bold  = $false
         })
 
-        # === BLOB SOURCE DISCOVERY ===
-        # AIB writes the complete customization.log to a storage account in the
-        # staging resource group. ACI stdout is capped at ~4 MB, so on long
-        # builds the ACI buffer ROLLS OVER (returned line count shrinks),
-        # which silently breaks any naive "TotalLines - Previous" delta. We
-        # therefore treat the blob as the authoritative source, use ACI as the
-        # low-latency live tail, and fall back to a blob re-read whenever ACI
-        # rolls over or stops producing data.
+        # === BLOB SOURCE DISCOVERY (one-shot, best-effort) ===
+        # AIB writes the complete customization.log to a storage account in
+        # the staging resource group — BUT typically only after the
+        # customizer finishes (sometimes only at full build cleanup). During
+        # a running build, ACI stdout is the authoritative live source.
+        # Blob is here purely as RECOVERY material for ACI buffer rollovers
+        # (the ~4 MB cap that wraps on multi-hour Windows-update phases).
+        # If discovery fails now, we DON'T retry — doing so caused infinite
+        # __RESET__ loops and duplicate emissions.
         $BlobCtx       = $null
         $BlobName      = $null
         $BlobContainer = 'packerlogs'
@@ -3847,17 +3863,31 @@ function Start-LogStreaming {
                   Select-Object -First 1
             if ($SA) {
                 $BlobCtx = $SA.Context
-                # AIB places logs under   packerlogs/<run-guid>/customization.log
+                # Permissive match — AIB versions write under various names:
+                # '<guid>/customization.log', '<guid>.log', 'image-customization.log'.
                 $LogBlob = Get-AzStorageBlob -Container $BlobContainer -Context $BlobCtx -ErrorAction SilentlyContinue |
-                           Where-Object { $_.Name -like '*/customization.log' } |
+                           Where-Object { $_.Name -like '*.log' -or $_.Name -like '*.txt' } |
                            Sort-Object -Property LastModified -Descending |
                            Select-Object -First 1
-                if ($LogBlob) { $BlobName = $LogBlob.Name }
+                if ($LogBlob) {
+                    $BlobName = $LogBlob.Name
+                    $SyncHash.LogQueue.Enqueue(@{
+                        Text  = "[META] Blob recovery source available: $BlobName ($([Math]::Round($LogBlob.Length/1KB,1)) KB). Will be used if ACI buffer rolls over."
+                        Color = "#888888"
+                        Bold  = $false
+                    })
+                } else {
+                    $SyncHash.LogQueue.Enqueue(@{
+                        Text  = "[META] No blob recovery source yet (normal during early build). Streaming live from ACI."
+                        Color = "#888888"
+                        Bold  = $false
+                    })
+                }
             }
         } catch {
             $SyncHash.LogQueue.Enqueue(@{
-                Text  = "[BACKFILL] Could not discover blob log: $($_.Exception.Message)"
-                Color = "#FFB900"
+                Text  = "[META] Blob discovery failed: $($_.Exception.Message). Streaming live from ACI only."
+                Color = "#888888"
                 Bold  = $false
             })
         }
@@ -3865,6 +3895,16 @@ function Start-LogStreaming {
         # Reusable blob-delta reader. Downloads the current blob to a temp file
         # and enqueues any lines past $SyncHash.LastEmittedTotal. Returns the
         # number of lines emitted.
+        #
+        # AIB's customization.log blob wraps every line in
+        #     [<guid>] PACKER YYYY/MM/DD HH:MM:SS ui: ==> azure-arm: <payload>
+        # whereas ACI stdout gives us the bare "==> azure-arm: <payload>".
+        # We normalize blob lines to the ACI shape so RxSpinner / progress
+        # coalesce / color rules all behave identically across both sources.
+        # We also drop pure plugin-internal noise (RPC, plugin process, bytes
+        # written, GET/POST/PUT/DELETE traces) that ACI never shows.
+        $BlobNormalizeRx = [regex]::new('^\[[^\]]+\]\s+PACKER\s+\d{4}/\d{2}/\d{2}\s+\d{2}:\d{2}:\d{2}\s+(?:ui(?:\s+error)?:\s*)?(.*)$', 'Compiled')
+        $BlobNoiseRx     = [regex]::new('packer-plugin-(azure|windows-update|file)|packer-provisioner-(powershell|file) plugin:|\[INFO\] (\d+) bytes written for|\[DEBUG\] (GET|POST|PUT|DELETE) https?://|Uploading (env vars to|file to|elevated shell wrapper|the Windows update)|Building elevated command wrapper|RPC (endpoint|client): Communicator ended|plugin process exited|Writing PowerShell script to file:|Opening /tmp/powershell-provisioner|Found command:|waiting for all plugin processes|exited with code: \d+|Command \[.+\] converted to|Done exporting Packer logs', 'Compiled')
         $ReadBlobDelta = {
             param([string]$Tag)
             if (-not $BlobCtx -or -not $BlobName) { return 0 }
@@ -3887,6 +3927,14 @@ function Start-LogStreaming {
                     for ($i = $Start; $i -lt $Total; $i++) {
                         $Trimmed = $BlobLines[$i].TrimEnd("`r")
                         if ([string]::IsNullOrWhiteSpace($Trimmed)) {
+                            $SyncHash.LastEmittedTotal = $i + 1
+                            continue
+                        }
+                        # Strip the AIB wrapper prefix so blob lines match ACI shape.
+                        $M = $BlobNormalizeRx.Match($Trimmed)
+                        if ($M.Success) { $Trimmed = $M.Groups[1].Value }
+                        # Drop plugin-internal noise that ACI never surfaces.
+                        if ([string]::IsNullOrWhiteSpace($Trimmed) -or $BlobNoiseRx.IsMatch($Trimmed)) {
                             $SyncHash.LastEmittedTotal = $i + 1
                             continue
                         }
@@ -4085,7 +4133,8 @@ function Start-LogStreaming {
             # Periodic blob safety-net: if ACI hasn't produced new lines in a
             # while (long Windows-update phase, packer provisioner restart,
             # buffer stalled on a single huge line, etc.), re-read the blob
-            # to confirm we're not silently behind.
+            # to confirm we're not silently behind. Only fires when we have
+            # a blob source from the initial discovery.
             if ($BlobName -and ($PolledAt - $LastBlobSafetyAt).TotalSeconds -ge $BlobSafetyIntervalSec) {
                 $LastBlobSafetyAt = $PolledAt
                 if ($EmittedThis -eq 0) {
@@ -4203,6 +4252,42 @@ $Timer.Add_Tick({
         $Item = $Global:SyncHash.LogQueue.Dequeue()
         $BatchCount++
         if (-not $Item -or -not $Item.Text) { continue }
+
+        # __RESET__ marker from worker (late blob discovery / re-attach):
+        # clear the FlowDocument + all analytics state, then process the
+        # subsequent queue items as if from a fresh stream.
+        if ($Item.Color -eq '__RESET__') {
+            try {
+                $RTB.Document.Blocks.Clear()
+                $Global:ParagraphCount     = 0
+                $Global:LastProgressPara   = $null
+                $Global:LastTimestamp      = $null
+                # Analytics state
+                Reset-LogStats
+                if ($Global:PackageTracker) { $Global:PackageTracker.Clear() }
+                if ($Global:ScriptProfiler) { $Global:ScriptProfiler.Clear() }
+                if ($Global:ErrorClusters)  { $Global:ErrorClusters.Clear() }
+                if ($Global:TaggedIssues)   { $Global:TaggedIssues.Clear() }
+                if ($Global:MinimapDots)    { $Global:MinimapDots.Clear() }
+                if ($Global:HeatmapData)    { $Global:HeatmapData.Clear() }
+                Reset-PhaseTracker
+                $LineIndex = 0
+                $Global:CurrentProfilerScript = $null
+                # Re-render the (now empty) right-rail panels
+                Render-PackageTracker
+                Render-ErrorClusters
+                Render-KnownIssues
+                Render-ScriptProfiler
+                Render-Heatmap
+                Render-Minimap
+                Write-DebugLog "Dispatcher: __RESET__ processed (late blob discovery)" -Level 'WARN'
+            } catch {
+                Write-DebugLog "Dispatcher: __RESET__ failed: $($_.Exception.Message)" -Level 'ERROR'
+            }
+            $BatchCount--
+            continue
+        }
+
       try {
         # Strip ANSI escape codes
         $CleanText = Strip-AnsiCodes $Item.Text
@@ -4213,6 +4298,14 @@ $Timer.Add_Tick({
         # exists for color routing; just suppress the line entirely instead.
         if ($Item.Color -eq "__AUTO__" -and $Global:RxSpinner.IsMatch($CleanText)) {
             $BatchCount--   # don't count suppressed lines against the batch cap
+            continue
+        }
+
+        # Drop truncated progress-bar fragments without a size/percent suffix
+        # (AIB writes the blob mid-line during fast downloads, leaving an
+        # orphan run of block-char art). Same suppression as spinner ticks.
+        if ($Item.Color -eq "__AUTO__" -and $Global:WinGetProgressFragmentRx.IsMatch($CleanText)) {
+            $BatchCount--
             continue
         }
 
