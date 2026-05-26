@@ -30,7 +30,7 @@ windows/
 ├── dot3svc/        # Wired AutoConfig (dot3svc) migration reset
 ├── rdp/            # Per-user RDP file signing (no admin required)
 ├── security/       # Hardware speculation mitigations, Secure Boot remediation
-├── servicing/      # Pre-upgrade disk-space cleanup (cleanmgr + DISM)
+├── servicing/      # Pre-upgrade disk-space cleanup (cleanmgr + DISM), WinRE partition resize
 └── w365/           # Windows 365 Cloud PC utilities (disk resize, keyboard layout)
 ```
 
@@ -63,7 +63,7 @@ windows/
 | [windows/dot3svc/](windows/dot3svc/) | Reset 802.1X / wired-AutoConfig profiles after migration |
 | [windows/rdp/](windows/rdp/) | Sign `.rdp` files in user context (no admin required) |
 | [windows/security/](windows/security/) | Hardware speculation mitigations + Secure Boot UEFI CA 2023 remediation (Intune PR pair) |
-| [windows/servicing/](windows/servicing/) | `Invoke-PreUpgradeCleanup.ps1` — reclaim disk space via cleanmgr + DISM before a feature update or after image bake |
+| [windows/servicing/](windows/servicing/) | `Invoke-PreUpgradeCleanup.ps1` — reclaim disk space via cleanmgr + DISM before a feature update or after image bake. `Resize-RecoveryPartition.ps1` — resize the WinRE recovery partition (KB5034441 / CVE-2024-20666 remediation) |
 | [windows/w365/](windows/w365/) | Windows 365 Cloud PC utilities — disk resize, keyboard layout configuration |
 
 ## Getting Started
