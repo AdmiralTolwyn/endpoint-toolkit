@@ -92,7 +92,7 @@ function Get-RemediationCommand {
         Generates a copy-pasteable Install-Module command for all missing modules.
     #>
     param([array]$ModuleResults)
-    $Missing = $ModuleResults | Where-Object { -not $_.Available }
+    $Missing = @($ModuleResults | Where-Object { -not $_.Available })
     if ($Missing.Count -eq 0) { return "" }
     $Names = ($Missing | ForEach-Object { $_.Name }) -join "', '"
     return "Install-Module -Name '$Names' -Scope CurrentUser -Force -AllowClobber"
@@ -3920,15 +3920,46 @@ function Start-LogStreaming {
                     $AciTotal  = $Lines.Count
 
                     if ($AciBaseline -lt 0) {
-                        # First successful ACI poll. Blob backfill already
-                        # shipped the historical content, so just set the
-                        # baseline without re-emitting the overlap.
+                        # First successful ACI poll. Two cases:
+                        #  a) Blob backfill emitted lines already — ACI buffer
+                        #     overlaps with what we already shipped; just set
+                        #     the baseline so future deltas ship from here.
+                        #  b) Blob discovery failed or blob is empty (fresh
+                        #     build, AIB hasn't written customization.log yet)
+                        #     — LastEmittedTotal is 0, so the ACI buffer IS
+                        #     our only source of historical lines. Emit them
+                        #     all, otherwise the UI looks empty until the next
+                        #     ACI growth tick.
+                        if ([int]$SyncHash.LastEmittedTotal -eq 0 -and $AciTotal -gt 0) {
+                            foreach ($Line in $Lines) {
+                                $Trimmed = $Line.TrimEnd("`r")
+                                if ([string]::IsNullOrWhiteSpace($Trimmed)) {
+                                    $SyncHash.LastEmittedTotal = [int]$SyncHash.LastEmittedTotal + 1
+                                    continue
+                                }
+                                $SyncHash.LogQueue.Enqueue(@{
+                                    Text  = $Trimmed
+                                    Color = "__AUTO__"
+                                    Bold  = $false
+                                })
+                                $SyncHash.LastEmittedTotal = [int]$SyncHash.LastEmittedTotal + 1
+                                $EmittedThis++
+                            }
+                            $SyncHash.TotalLines = [int]$SyncHash.LastEmittedTotal
+                            $SyncHash.LastDataAt = [DateTime]::UtcNow
+                            $SyncHash.LogQueue.Enqueue(@{
+                                Text  = "[LIVE] ACI tail attached: streamed $AciTotal initial line(s) (no blob backfill)."
+                                Color = "#888888"
+                                Bold  = $false
+                            })
+                        } else {
+                            $SyncHash.LogQueue.Enqueue(@{
+                                Text  = "[LIVE] ACI tail attached at $AciTotal lines (blob-synced offset $($SyncHash.LastEmittedTotal))."
+                                Color = "#888888"
+                                Bold  = $false
+                            })
+                        }
                         $AciBaseline = $AciTotal
-                        $SyncHash.LogQueue.Enqueue(@{
-                            Text  = "[LIVE] ACI tail attached at $AciTotal lines (blob-synced offset $($SyncHash.LastEmittedTotal))."
-                            Color = "#888888"
-                            Bold  = $false
-                        })
                     } elseif ($AciTotal -lt $AciBaseline) {
                         # ACI buffer rolled over (Azure trimmed the head).
                         $SyncHash.AciRolloverCount = [int]$SyncHash.AciRolloverCount + 1
