@@ -741,6 +741,11 @@
                                             <CheckBox x:Name="chkForce" DockPanel.Dock="Left" Style="{StaticResource ToggleSwitch}" Content="Force re-export" Margin="0,0,12,0"/>
                                             <TextBlock Text="Re-run dump extraction and matching even if artifacts already exist in .dump-facts." Foreground="{DynamicResource ThemeTextMuted}" FontSize="10.5" TextWrapping="Wrap" VerticalAlignment="Center"/>
                                         </DockPanel>
+                                        <DockPanel Margin="0,10,0,0">
+                                            <Button x:Name="btnBrowsePml" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Content="Browse..." Margin="8,0,0,0" ToolTip="Select a ProcMon .pml or .csv file"/>
+                                            <TextBlock DockPanel.Dock="Left" Text="ProcMon (optional)" Foreground="{DynamicResource ThemeTextMuted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                            <TextBox x:Name="txtProcMon" ToolTip="Optional: path to a ProcMon .pml or .csv captured during the crash. Used to correlate registry/file failures with the dump."/>
+                                        </DockPanel>
                                     </StackPanel>
                                 </Grid>
                             </Border>
@@ -1499,20 +1504,162 @@
                                     <ColumnDefinition Width="*"/>
                                     <ColumnDefinition Width="Auto"/>
                                     <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
                                 </Grid.ColumnDefinitions>
                                 <TextBlock Grid.Column="0" Text="Endpoint" Foreground="{DynamicResource ThemeTextMuted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,12,0"/>
                                 <TextBlock Grid.Column="1" x:Name="lblAiEndpoint" Text="(not detected)" Foreground="{DynamicResource ThemeTextBody}" FontFamily="Cascadia Mono, Consolas" FontSize="11" VerticalAlignment="Center"/>
-                                <Button Grid.Column="2" x:Name="btnAiCopyPrompt" Style="{StaticResource GhostButton}" Content="Copy prompt" Margin="0,0,8,0" ToolTip="Copy the LLM prompt to the clipboard (paste into Copilot Chat / Claude / Gemini / GPT-4)."/>
-                                <Button Grid.Column="3" x:Name="btnAiRun"        Style="{StaticResource AccentButton}" Content="Run review"/>
+                                <Button Grid.Column="2" x:Name="btnAiRun"            Style="{StaticResource GhostButton}"  Content="Run review"       Margin="0,0,8,0" ToolTip="Send the LLM prompt to the configured OpenAI-compatible endpoint (Ollama / LM Studio / etc.)."/>
+                                <Button Grid.Column="3" x:Name="btnAiCopyPromptFull" Style="{StaticResource GhostButton}"  Content="Copy full prompt" Margin="0,0,8,0" ToolTip="Copy the FULL prompt — every ProcMon failure, every thread stack, full module list. Typically &gt;500 KB on busy dumps; requires a 1M-context window. Smaller models will reject the paste or silently truncate."/>
+                                <Button Grid.Column="4" x:Name="btnAiCopyPrompt"     Style="{StaticResource AccentButton}" Content="Copy prompt"      ToolTip="Copy the trimmed prompt (~40 KB / ~10K tokens). ProcMon collapsed to top 25 + sibling files folded; thread stacks grouped by signature; only stack-touching modules. Default choice — pastes into any modern chat UI (Copilot, Claude, Gemini, etc.)."/>
                             </Grid>
                         </Border>
                         <!-- Contextual info banner — populated by PS1 based on detected hardware -->
-                        <Border Grid.Row="2" x:Name="pnlAiBanner" Background="{DynamicResource ThemeDeepBg}" CornerRadius="8" Padding="14,10" Margin="0,10,0,10">
-                            <DockPanel>
-                                <TextBlock DockPanel.Dock="Left" x:Name="lblAiBannerIcon" Text="&#xE946;" FontFamily="Segoe MDL2 Assets" Foreground="{DynamicResource ThemeAccentLight}" FontSize="14" VerticalAlignment="Top" Margin="0,1,10,0"/>
-                                <TextBlock x:Name="lblAiBannerText" Foreground="{DynamicResource ThemeTextMuted}" FontSize="11" TextWrapping="Wrap"
-                                           Text="Analyze a trace first, then use Copy prompt to paste into Copilot Chat / Claude / Gemini for an instant second opinion — or Run review to send to the local model configured in Settings."/>
-                            </DockPanel>
+                        <!-- Padding=0 horizontally so the 3 cards align edge-to-edge with the
+                             analyzer-verdict / AI-second-opinion cards in the row below. The
+                             status row gets its own horizontal padding via its DockPanel margin. -->
+                        <Border Grid.Row="2" x:Name="pnlAiBanner" Background="{DynamicResource ThemeDeepBg}" CornerRadius="8" Padding="0,12" Margin="0,10,0,10">
+                            <StackPanel>
+                                <!-- Row 1: dynamic endpoint status (PS1 sets lblAiBannerText) -->
+                                <DockPanel Margin="14,0,14,12">
+                                    <TextBlock DockPanel.Dock="Left" x:Name="lblAiBannerIcon" Text="&#xE946;" FontFamily="Segoe MDL2 Assets" Foreground="{DynamicResource ThemeAccentLight}" FontSize="14" VerticalAlignment="Top" Margin="0,1,10,0"/>
+                                    <TextBlock x:Name="lblAiBannerText" Foreground="{DynamicResource ThemeTextBody}" FontSize="11" TextWrapping="Wrap"
+                                               Text="Analyze a dump first to populate the prompts."/>
+                                </DockPanel>
+
+                                <!-- Row 2: static 3-card prompt comparison -->
+                                <!-- Each card uses an internal Grid with FIXED row heights so the
+                                     title / size / description / models rows line up across cards
+                                     regardless of glyph metric or badge text width. Avoids the
+                                     DockPanel auto-sizing variance that caused the first card to
+                                     drift down by ~2 px in earlier revisions. -->
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="10"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="10"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+
+                                    <!-- Card: Copy prompt (default) -->
+                                    <Border Grid.Column="0" Background="{DynamicResource ThemeCardBg}" BorderBrush="{DynamicResource ThemeBorderSubtle}" BorderThickness="1" CornerRadius="6" Padding="11,9">
+                                        <Grid>
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="22"/>
+                                                <RowDefinition Height="22"/>
+                                                <RowDefinition Height="*"/>
+                                                <RowDefinition Height="Auto"/>
+                                            </Grid.RowDefinitions>
+                                            <!-- Title row -->
+                                            <Grid Grid.Row="0">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="20"/>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Grid.Column="0" Text="&#xE8C8;" FontFamily="Segoe MDL2 Assets" FontSize="12" Foreground="{DynamicResource ThemeAccent}" VerticalAlignment="Center"/>
+                                                <TextBlock Grid.Column="1" Text="Copy prompt" Foreground="{DynamicResource ThemeTextBody}" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                                                <Border  Grid.Column="2" Background="{DynamicResource ThemeAccent}" CornerRadius="3" Padding="6,1" VerticalAlignment="Center">
+                                                    <TextBlock Text="DEFAULT" Foreground="White" FontSize="9" FontWeight="Bold"/>
+                                                </Border>
+                                            </Grid>
+                                            <!-- Size pill row -->
+                                            <Grid Grid.Row="1">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                    <ColumnDefinition Width="*"/>
+                                                </Grid.ColumnDefinitions>
+                                                <Border Grid.Column="0" Background="#22FFFFFF" CornerRadius="3" Padding="5,1" Margin="0,0,6,0" VerticalAlignment="Center">
+                                                    <TextBlock x:Name="lblPromptTrimmedSize" Text="~40 KB" Foreground="{DynamicResource ThemeTextBody}" FontSize="10" FontFamily="Cascadia Mono, Consolas"/>
+                                                </Border>
+                                                <TextBlock Grid.Column="1" Text="trimmed" Foreground="{DynamicResource ThemeTextMuted}" FontSize="11" VerticalAlignment="Center"/>
+                                            </Grid>
+                                            <!-- Description -->
+                                            <TextBlock Grid.Row="2" Foreground="{DynamicResource ThemeTextMuted}" FontSize="11" TextWrapping="Wrap" Margin="0,4,0,0"
+                                                       Text="ProcMon top-25 with sibling-folder folding · threads grouped by stack signature · only stack-touching modules."/>
+                                            <!-- Recommended targets -->
+                                            <TextBlock Grid.Row="3" Foreground="{DynamicResource ThemeAccentLight}" FontSize="10" FontWeight="SemiBold" Margin="0,7,0,0"
+                                                       Text="Copilot · Claude · Gemini"/>
+                                        </Grid>
+                                    </Border>
+
+                                    <!-- Card: Copy full prompt -->
+                                    <Border Grid.Column="2" Background="{DynamicResource ThemeCardBg}" BorderBrush="{DynamicResource ThemeBorderSubtle}" BorderThickness="1" CornerRadius="6" Padding="11,9">
+                                        <Grid>
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="22"/>
+                                                <RowDefinition Height="22"/>
+                                                <RowDefinition Height="*"/>
+                                                <RowDefinition Height="Auto"/>
+                                            </Grid.RowDefinitions>
+                                            <Grid Grid.Row="0">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="20"/>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Grid.Column="0" Text="&#xE7C3;" FontFamily="Segoe MDL2 Assets" FontSize="12" Foreground="{DynamicResource ThemeWarning}" VerticalAlignment="Center"/>
+                                                <TextBlock Grid.Column="1" Text="Copy full prompt" Foreground="{DynamicResource ThemeTextBody}" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                                                <Border  Grid.Column="2" Background="{DynamicResource ThemeWarning}" CornerRadius="3" Padding="6,1" VerticalAlignment="Center">
+                                                    <TextBlock Text="1M CTX" Foreground="White" FontSize="9" FontWeight="Bold"/>
+                                                </Border>
+                                            </Grid>
+                                            <Grid Grid.Row="1">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                    <ColumnDefinition Width="*"/>
+                                                </Grid.ColumnDefinitions>
+                                                <Border Grid.Column="0" Background="#22FFFFFF" CornerRadius="3" Padding="5,1" Margin="0,0,6,0" VerticalAlignment="Center">
+                                                    <TextBlock x:Name="lblPromptFullSize" Text="&gt;500 KB" Foreground="{DynamicResource ThemeTextBody}" FontSize="10" FontFamily="Cascadia Mono, Consolas"/>
+                                                </Border>
+                                                <TextBlock Grid.Column="1" Text="everything" Foreground="{DynamicResource ThemeTextMuted}" FontSize="11" VerticalAlignment="Center"/>
+                                            </Grid>
+                                            <TextBlock Grid.Row="2" Foreground="{DynamicResource ThemeTextMuted}" FontSize="11" TextWrapping="Wrap" Margin="0,4,0,0"
+                                                       Text="Every ProcMon failure · every thread stack · full module list. Smaller models reject the paste or silently truncate."/>
+                                            <TextBlock Grid.Row="3" Foreground="{DynamicResource ThemeWarning}" FontSize="10" FontWeight="SemiBold" Margin="0,7,0,0"
+                                                       Text="Requires 1M context window"/>
+                                        </Grid>
+                                    </Border>
+
+                                    <!-- Card: Run review -->
+                                    <Border Grid.Column="4" Background="{DynamicResource ThemeCardBg}" BorderBrush="{DynamicResource ThemeBorderSubtle}" BorderThickness="1" CornerRadius="6" Padding="11,9">
+                                        <Grid>
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="22"/>
+                                                <RowDefinition Height="22"/>
+                                                <RowDefinition Height="*"/>
+                                                <RowDefinition Height="Auto"/>
+                                            </Grid.RowDefinitions>
+                                            <Grid Grid.Row="0">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="20"/>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Grid.Column="0" Text="&#xE768;" FontFamily="Segoe MDL2 Assets" FontSize="12" Foreground="{DynamicResource ThemeSuccess}" VerticalAlignment="Center"/>
+                                                <TextBlock Grid.Column="1" Text="Run review" Foreground="{DynamicResource ThemeTextBody}" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                                                <Border  Grid.Column="2" Background="{DynamicResource ThemeSuccess}" CornerRadius="3" Padding="6,1" VerticalAlignment="Center">
+                                                    <TextBlock Text="LOCAL" Foreground="White" FontSize="9" FontWeight="Bold"/>
+                                                </Border>
+                                            </Grid>
+                                            <Grid Grid.Row="1">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                    <ColumnDefinition Width="*"/>
+                                                </Grid.ColumnDefinitions>
+                                                <Border Grid.Column="0" Background="#22FFFFFF" CornerRadius="3" Padding="5,1" Margin="0,0,6,0" VerticalAlignment="Center">
+                                                    <TextBlock Text="POST" Foreground="{DynamicResource ThemeTextBody}" FontSize="10" FontFamily="Cascadia Mono, Consolas"/>
+                                                </Border>
+                                                <TextBlock Grid.Column="1" Text="OpenAI-compatible" Foreground="{DynamicResource ThemeTextMuted}" FontSize="11" VerticalAlignment="Center"/>
+                                            </Grid>
+                                            <TextBlock Grid.Row="2" Foreground="{DynamicResource ThemeTextMuted}" FontSize="11" TextWrapping="Wrap" Margin="0,4,0,0"
+                                                       Text="Send the trimmed prompt to the endpoint configured in Settings. Renders the response below."/>
+                                            <TextBlock Grid.Row="3" Foreground="{DynamicResource ThemeSuccess}" FontSize="10" FontWeight="SemiBold" Margin="0,7,0,0"
+                                                       Text="Ollama · LM Studio · vLLM · LiteLLM"/>
+                                        </Grid>
+                                    </Border>
+                                </Grid>
+                            </StackPanel>
                         </Border>
                         <Grid Grid.Row="3">
                             <Grid.ColumnDefinitions>
@@ -1585,7 +1732,8 @@
                             <Border Width="3" Height="14" Background="{DynamicResource ThemeAccent}" CornerRadius="1.5" Margin="0,0,10,0" VerticalAlignment="Center"/>
                             <TextBlock Text="SETTINGS" FontSize="11" FontWeight="Bold" Foreground="{DynamicResource ThemeTextMuted}" VerticalAlignment="Center"/>
                         </StackPanel>
-                        <Border Grid.Row="1" Background="{DynamicResource ThemeCardBg}" BorderBrush="{DynamicResource ThemeBorderCard}" BorderThickness="1" CornerRadius="10" Padding="16" Margin="0,12,0,0" VerticalAlignment="Top" Effect="{StaticResource CardShadow}">
+                        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Margin="0,12,0,0">
+                        <Border Background="{DynamicResource ThemeCardBg}" BorderBrush="{DynamicResource ThemeBorderCard}" BorderThickness="1" CornerRadius="10" Padding="16" VerticalAlignment="Top" Effect="{StaticResource CardShadow}">
                             <StackPanel>
                                 <TextBlock Text="Appearance" Foreground="{DynamicResource ThemeTextPrimary}" FontWeight="SemiBold" Margin="0,0,0,10"/>
                                 <CheckBox x:Name="chkLightMode"     Style="{StaticResource ToggleSwitch}" Content="Light theme"                                              Margin="0,0,0,10"/>
@@ -1618,6 +1766,16 @@
                                 <TextBlock Text="Symbol path override" Foreground="{DynamicResource ThemeTextPrimary}" FontSize="11.5" FontWeight="SemiBold" Margin="0,0,0,2"/>
                                 <TextBlock Text="Override _NT_SYMBOL_PATH for DumpPilot. Leave empty to use the environment variable or the default Microsoft public symbol server. Format: srv*C:\Symbols*https://msdl.microsoft.com/download/symbols" Foreground="{DynamicResource ThemeTextMuted}" FontSize="10.5" TextWrapping="Wrap" Margin="0,0,0,4"/>
                                 <TextBox x:Name="txtSymbolPath" Margin="0,0,0,18" ToolTip="Leave empty for default public symbols. Example: srv*C:\Symbols*https://msdl.microsoft.com/download/symbols"/>
+                                <TextBlock Text="ProcMon path override" Foreground="{DynamicResource ThemeTextPrimary}" FontSize="11.5" FontWeight="SemiBold" Margin="0,0,0,2"/>
+                                <TextBlock Text="Path to Procmon.exe (Sysinternals Process Monitor). Needed to convert .pml files to CSV for correlation. Leave empty to auto-discover from common locations or PATH." Foreground="{DynamicResource ThemeTextMuted}" FontSize="10.5" TextWrapping="Wrap" Margin="0,0,0,4"/>
+                                <DockPanel Margin="0,0,0,4">
+                                    <Button x:Name="btnBrowseProcmon" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Content="Browse..." Margin="8,0,0,0" ToolTip="Select Procmon.exe"/>
+                                    <TextBox x:Name="txtProcMonExe" ToolTip="Leave empty for auto-discover. Example: C:\Tools\Procmon.exe"/>
+                                </DockPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,18">
+                                    <Button x:Name="btnInstallProcmon" Style="{StaticResource GhostButton}" Content="Install via winget" Margin="0,0,8,0" ToolTip="winget install Sysinternals.ProcessMonitor"/>
+                                    <TextBlock x:Name="lblProcmonStatus" Text="" Foreground="{DynamicResource ThemeTextMuted}" FontSize="11" VerticalAlignment="Center"/>
+                                </StackPanel>
                                 <TextBlock Text="Quick start — local AI review" Foreground="{DynamicResource ThemeTextPrimary}" FontWeight="SemiBold" Margin="0,0,0,6"/>
                                 <TextBlock Foreground="{DynamicResource ThemeTextMuted}" FontSize="11" TextWrapping="Wrap" Margin="0,0,0,4" Text="No local model yet?  Install Ollama and pull a model:"/>
                                 <Border Background="{DynamicResource ThemeDeepBg}" CornerRadius="6" Padding="12,8" Margin="0,0,0,4">
@@ -1631,6 +1789,7 @@
                                            Text="Then click Auto-detect above. Or just use Copy prompt on the AI page and paste into Copilot Chat / Claude / Gemini."/>
                             </StackPanel>
                         </Border>
+                        </ScrollViewer>
                     </Grid>
 
                     <!-- LOG CONSOLE (grid row below page content — pushes pages up instead of overlaying) -->

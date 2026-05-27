@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 7.0
 <#
 .SYNOPSIS
     Stage 1 of DumpPilot. Run cdb.exe against a Windows crash dump and capture
@@ -71,14 +71,28 @@ function Resolve-SymbolPath {
 
 function Get-DumpKind {
     param([string]$Cdb, [string]$Dump, [string]$SymPath)
+    # cdb's `||` (list dump targets) emits one of:
+    #   "Kernel Summary Dump File: ..."         (kernel)
+    #   "Kernel Complete Dump File: ..."        (kernel)
+    #   "Kernel Bitmap Dump File: ..."          (kernel)
+    #   "Kernel Minidump File: ..."             (kernel)
+    #   "User Mini Dump File with Full Memory: only application data is available"
+    #       -> procdump -ma  OR  WER LocalDumps DumpType=2
+    #   "User Mini Dump File: only registers, stack and portions of memory ..."
+    #       -> procdump (default / -mm)  OR  WER DumpType=1
+    # Order matters: "User Mini Dump" is a PREFIX of the full-memory variant,
+    # so check the "Full Memory" suffix FIRST or the full dump gets misclassified
+    # as a stacks-only minidump and downstream UX (and the LLM prompt) lies about
+    # what data is actually in the file.
     $tmp = [System.IO.Path]::GetTempFileName()
     try {
         $env:_NT_SYMBOL_PATH = $SymPath
         & $Cdb -z $Dump -c '||; q' > $tmp 2>&1
         $txt = Get-Content -LiteralPath $tmp -Raw
-        if     ($txt -match 'Kernel (Summary|Complete|Bitmap|Minidump)') { return 'KernelDump' }
-        elseif ($txt -match 'Mini User Dump' -or $txt -match 'User Mini Dump')         { return 'UserMinidump' }
-        elseif ($txt -match 'User Dump')                                  { return 'UserFullDump' }
+        if     ($txt -match 'Kernel (Summary|Complete|Bitmap|Minidump)')            { return 'KernelDump' }
+        elseif ($txt -match 'User Mini Dump File with Full Memory')                 { return 'UserFullDump' }
+        elseif ($txt -match 'Mini User Dump' -or $txt -match 'User Mini Dump')      { return 'UserMinidump' }
+        elseif ($txt -match 'User Dump')                                            { return 'UserFullDump' }
         else { return 'Unknown' }
     } finally {
         Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
@@ -133,6 +147,7 @@ function Get-CommandBundle {
             'kv 60',
             'kb 100',
             '~* kb 8',
+            'dps @rsp L20',
             '!thread',
             '!teb',
             '!peb',
@@ -220,10 +235,12 @@ $kind = Get-DumpKind -Cdb $cdb -Dump $DumpPath -SymPath $symPath
 Write-Verbose "kind    : $kind"
 
 $bundle = Get-CommandBundle -Kind $kind
+Write-Verbose "pass 1  : $($bundle.Count) commands"
 $cmdStr = ($bundle -join '; ') + '; q'
 
 $sw    = [System.Diagnostics.Stopwatch]::StartNew()
 $tmp   = [System.IO.Path]::GetTempFileName()
+Write-Verbose "pass 1  : running cdb (this may take 1-5 min with symbol downloads)..."
 try {
     & $cdb -z $DumpPath -c $cmdStr > $tmp 2>&1
     $raw = Get-Content -LiteralPath $tmp -Raw
@@ -233,6 +250,7 @@ try {
 $sw.Stop()
 
 Save-RawOutput -Raw $raw -Root $OutputDirectory
+Write-Verbose "pass 1  : complete ($([Math]::Round($sw.Elapsed.TotalSeconds,1))s, $([Math]::Round($raw.Length/1KB,0)) KB raw output)"
 
 # --- pass 2: dynamic lmv for faulting module (if not already in hardcoded list) ---
 $faultModFromRaw = $null
@@ -251,6 +269,7 @@ if ($faultModFromRaw -and -not $stackMods.Contains($faultModFromRaw.ToLowerInvar
 $hardcoded = @('ntdll','kernel32','user32','gdi32full','opengl32','clr','coreclr','mscorlib_ni','system_ni')
 $dynamicMods = @($stackMods | Where-Object { $_ -notin $hardcoded } | Select-Object -First 6)
 if ($dynamicMods.Count -gt 0) {
+    Write-Verbose "pass 2  : dynamic lmv for $($dynamicMods -join ', ')"
     $pass2Cmds = @('.symfix', '.symopt+0x40', '.reload /f')
     foreach ($dm in $dynamicMods) { $pass2Cmds += "lmv m $dm" }
     $pass2Cmds += 'q'

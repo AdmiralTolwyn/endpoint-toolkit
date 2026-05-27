@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 7.0
 <#
 .SYNOPSIS
     Validate scripts/DumpPilot/pattern_db.json structurally. Cheap guardrail

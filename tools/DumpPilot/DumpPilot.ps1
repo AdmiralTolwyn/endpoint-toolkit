@@ -1,4 +1,4 @@
-﻿#requires -Version 5.1
+﻿#requires -Version 7.0
 <#
 .SYNOPSIS
     DumpPilot GUI (Phase 2). WPF host that wraps the Phase 1b CLI helpers.
@@ -115,6 +115,7 @@ $Script:State = @{
         LlmApiKey=''                            # only needed for hosted endpoints
         LlmTimeout=600                          # seconds; increase for large prompts on slow models
         SymbolPath=''                           # empty = use _NT_SYMBOL_PATH or public MS symbols
+        ProcMonExe=''                           # empty = auto-discover from common paths
     }
     PatternList = @()
     LastAiResponse = $null
@@ -135,6 +136,7 @@ if (Test-Path -LiteralPath $Script:PrefsPath) {
             if ($null -ne $p.defaults.PSObject.Properties['llmApiKey'])     { $Script:State.Prefs.LlmApiKey     = [string]$p.defaults.llmApiKey }
             if ($null -ne $p.defaults.PSObject.Properties['llmTimeout'])    { $Script:State.Prefs.LlmTimeout    = [int]$p.defaults.llmTimeout }
             if ($null -ne $p.defaults.PSObject.Properties['symbolPath'])    { $Script:State.Prefs.SymbolPath    = [string]$p.defaults.symbolPath }
+            if ($null -ne $p.defaults.PSObject.Properties['procMonExe'])    { $Script:State.Prefs.ProcMonExe    = [string]$p.defaults.procMonExe }
         }
     } catch { }
 }
@@ -346,6 +348,7 @@ function Save-Prefs {
             llmApiKey    = $Script:State.Prefs.LlmApiKey
             llmTimeout   = $Script:State.Prefs.LlmTimeout
             symbolPath   = $Script:State.Prefs.SymbolPath
+            procMonExe   = $Script:State.Prefs.ProcMonExe
         }
     }
     try {
@@ -389,13 +392,22 @@ function Start-BackgroundJob {
     $timer.Add_Tick({
         $job = $Script:State.Job
         if (-not $job)            { return }
+        # Stream verbose/warning/info to log console in real-time
+        if ($job.PS.Streams.Verbose.Count -gt 0) {
+            foreach ($s in @($job.PS.Streams.Verbose)) { Write-DebugLog $s.Message 'DEBUG' }
+            $job.PS.Streams.Verbose.Clear()
+        }
+        if ($job.PS.Streams.Information.Count -gt 0) {
+            foreach ($s in @($job.PS.Streams.Information)) { Write-DebugLog ([string]$s.MessageData) 'INFO' }
+            $job.PS.Streams.Information.Clear()
+        }
+        if ($job.PS.Streams.Warning.Count -gt 0) {
+            foreach ($s in @($job.PS.Streams.Warning)) { Write-DebugLog $s.Message 'WARN' }
+            $job.PS.Streams.Warning.Clear()
+        }
         if (-not $job.Async.IsCompleted) { return }
         $job.Timer.Stop()
         try {
-            # Drain output, verbose/warning streams BEFORE EndInvoke disposes them
-            foreach ($s in @($job.PS.Streams.Verbose))     { Write-DebugLog $s.Message 'DEBUG' }
-            foreach ($s in @($job.PS.Streams.Information)) { Write-DebugLog ([string]$s.MessageData) 'INFO' }
-            foreach ($s in @($job.PS.Streams.Warning))     { Write-DebugLog $s.Message 'WARN' }
             $result = $null
             try { $result = $job.PS.EndInvoke($job.Async) | Select-Object -Last 1 } catch {
                 Write-DebugLog "Job EndInvoke failed: $($_.Exception.Message)" 'ERROR'
@@ -686,13 +698,21 @@ function Set-AiResponseText {
 }
 
 function Get-CurrentPromptText {
-    # The Phase 1b pipeline emits <base>.llm-prompt.md alongside the report,
-    # where <base> is the ETL basename without the trailing '.report' segment
-    # (e.g. trace.etl -> trace.report.json + trace.llm-prompt.md).
+    # Stage 3 emits two prompts next to the report:
+    #   <base>.llm-prompt.md       — trimmed (default), ProcMon top-25,
+    #                                threads collapsed, ~40 KB
+    #   <base>.llm-prompt.full.md  — un-trimmed, ProcMon all + every thread,
+    #                                can exceed 1 MB on busy dumps. Use only
+    #                                with 1M-context-window models.
+    param(
+        [ValidateSet('Trimmed','Full')]
+        [string]$Variant = 'Trimmed'
+    )
     if (-not $Script:State.ReportPath) { return $null }
     $dir  = [IO.Path]::GetDirectoryName($Script:State.ReportPath)
     $base = [IO.Path]::GetFileNameWithoutExtension($Script:State.ReportPath) -replace '\.report$',''
-    $p = Join-Path $dir ($base + '.llm-prompt.md')
+    $name = if ($Variant -eq 'Full') { $base + '.llm-prompt.full.md' } else { $base + '.llm-prompt.md' }
+    $p = Join-Path $dir $name
     if (Test-Path -LiteralPath $p) { return [System.IO.File]::ReadAllText($p) }
     return $null
 }
@@ -2247,7 +2267,7 @@ $ui.NavOverview.Add_Click({ Show-Page 'Overview' })
 $ui.NavCompare.Add_Click( { Show-Page 'Compare' })
 $ui.NavPatterns.Add_Click({ Show-Page 'Patterns' })
 $ui.NavHistory.Add_Click( { Show-Page 'History'; Refresh-History })
-$ui.NavAI.Add_Click(      { Show-Page 'AI'; Update-AiBanner })
+$ui.NavAI.Add_Click(      { Show-Page 'AI'; Update-AiBanner; Update-AiPromptSizePills })
 $ui.NavSettings.Add_Click({ Show-Page 'Settings' })
 
 # Treemap mode switches
@@ -2296,6 +2316,12 @@ $ui.btnBrowseCandidate.Add_Click({
     $f = Show-FilePicker -Title 'Select candidate dump'
     if ($f) { $ui.txtCandidate.Text = $f }
 })
+if ($ui.btnBrowsePml) {
+    $ui.btnBrowsePml.Add_Click({
+        $f = Show-FilePicker -Title 'Select ProcMon file' -Filter 'ProcMon files (*.pml;*.csv)|*.pml;*.csv|All files (*.*)|*.*'
+        if ($f) { $ui.txtProcMon.Text = $f }
+    })
+}
 
 # Analyze (DumpPilot pipeline)
 $ui.btnAnalyze.Add_Click({
@@ -2312,12 +2338,14 @@ $ui.btnAnalyze.Add_Click({
     Start-BackgroundJob `
         -Kind 'Analyze' `
         -Body {
-            param($Invoke, $Dmp, $ForceFlag, $SymPath)
+            param($Invoke, $Dmp, $ForceFlag, $SymPath, $PmlPath)
             $ErrorActionPreference = 'Stop'
+            $VerbosePreference = 'Continue'
             try {
                 $pArgs = @{ DumpPath = $Dmp; Force = $ForceFlag }
                 if ($SymPath) { $pArgs['SymbolPath'] = $SymPath }
-                $r = & $Invoke @pArgs -Verbose 4>&1 |
+                if ($PmlPath) { $pArgs['ProcMonPath'] = $PmlPath }
+                $r = & $Invoke @pArgs -Verbose |
                      Where-Object { $_ -is [pscustomobject] -and $_.PSObject.Properties['ReportJson'] } |
                      Select-Object -Last 1
                 if (-not $r) { throw 'Pipeline produced no result object.' }
@@ -2337,7 +2365,7 @@ $ui.btnAnalyze.Add_Click({
                 [pscustomobject]@{ Success = $false; Error = $_.Exception.Message; Stack = $_.ScriptStackTrace }
             }
         } `
-        -Arguments @($invokePath, $dmp, [bool]$ui.chkForce.IsChecked, [string]$Script:State.Prefs.SymbolPath) `
+        -Arguments @($invokePath, $dmp, [bool]$ui.chkForce.IsChecked, [string]$Script:State.Prefs.SymbolPath, [string]$ui.txtProcMon.Text) `
         -OnDone {
             param($r)
             if (-not $r) { Write-DebugLog 'Analysis returned no result' 'ERROR'; return }
@@ -2435,12 +2463,11 @@ $ui.btnExportHtml.Add_Click({
     }
 })
 
-# Root-cause card -> AI Review shortcut
+# Root-cause card -> AI Review shortcut. Just navigates to the AI page;
+# the user decides whether to Copy prompt or Run review from there.
 $ui.btnAiReview.Add_Click({
     if (-not $Script:State.ReportPath) { Write-DebugLog 'No report loaded yet' 'WARN'; return }
     Show-Page 'AI'
-    # Kick off the review immediately so the user sees progress without an extra click
-    $ui.btnAiRun.RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Button]::ClickEvent))
 })
 
 # ---- AI Review page ----
@@ -2449,33 +2476,65 @@ function Update-AiEndpointLabel {
     $mdl  = $Script:State.Prefs.LlmModel
     $ui.lblAiEndpoint.Text = "$base  /  $mdl"
 }
+function Update-AiPromptSizePills {
+    # Reflect the real on-disk size of the two prompt artifacts in the
+    # 3-card explainer pills. Falls back to the static "~40 KB" / ">500 KB"
+    # placeholders when no report is loaded yet.
+    if (-not $Script:State.ReportPath) {
+        $ui.lblPromptTrimmedSize.Text = '~40 KB'
+        $ui.lblPromptFullSize.Text    = '>500 KB'
+        return
+    }
+    $dir  = [IO.Path]::GetDirectoryName($Script:State.ReportPath)
+    $base = [IO.Path]::GetFileNameWithoutExtension($Script:State.ReportPath) -replace '\.report$',''
+    $pTrim = Join-Path $dir ($base + '.llm-prompt.md')
+    $pFull = Join-Path $dir ($base + '.llm-prompt.full.md')
+    if (Test-Path -LiteralPath $pTrim) {
+        $kb = [Math]::Round((Get-Item -LiteralPath $pTrim).Length / 1KB, 1)
+        $ui.lblPromptTrimmedSize.Text = "$kb KB"
+    } else {
+        $ui.lblPromptTrimmedSize.Text = '(missing)'
+    }
+    if (Test-Path -LiteralPath $pFull) {
+        $kbF = (Get-Item -LiteralPath $pFull).Length / 1KB
+        $ui.lblPromptFullSize.Text = if ($kbF -ge 1024) {
+            "{0:N1} MB" -f ($kbF / 1024)
+        } else {
+            "{0:N1} KB" -f $kbF
+        }
+    } else {
+        $ui.lblPromptFullSize.Text = '(missing)'
+    }
+}
 function Update-AiBanner {
     # Contextual banner on the AI page. Probes Ollama if local; shows
     # appropriate guidance based on what we actually detect.
+    # The trimmed-vs-full prompt explainer is rendered as a static
+    # 3-card grid in the XAML below this status line, so the dynamic
+    # text here only needs to communicate the *endpoint* situation.
     $base = $Script:State.Prefs.LlmBaseUrl
     $isLocal = $base -match 'localhost|127\.0\.0\.1'
     if (-not $isLocal) {
         $ui.lblAiBannerIcon.Foreground = $Window.TryFindResource('ThemeAccentLight')
-        $ui.lblAiBannerText.Text = "Hosted endpoint configured. Copy prompt pastes the structured findings; Run review sends them directly to the API."
+        $ui.lblAiBannerText.Text = "Hosted endpoint configured — Run review sends the trimmed prompt directly to the API."
         return
     }
     # Probe Ollama
     $hit = Detect-LlmRuntime
     if (-not $hit) {
         $ui.lblAiBannerIcon.Foreground = $Window.TryFindResource('ThemeWarning')
-        $ui.lblAiBannerText.Text = "No local LLM endpoint detected. Install Ollama (winget install Ollama.Ollama) and pull a model, or use Copy prompt to paste into Copilot Chat / Claude / Gemini."
+        $ui.lblAiBannerText.Text = "No local LLM endpoint detected — install Ollama (winget install Ollama.Ollama) and pull a model, or paste a prompt into a hosted UI."
         return
     }
     if ($hit.CpuOnly) {
         $ui.lblAiBannerIcon.Foreground = $Window.TryFindResource('ThemeWarning')
-        $ui.lblAiBannerText.Text = "Local model running on CPU only — inference will be slow (5–10 min). For instant results, use Copy prompt and paste into Copilot Chat / Claude / Gemini. To check GPU offload: ollama ps"
+        $ui.lblAiBannerText.Text = "Local model running on CPU only — inference will be slow (5–10 min). For instant results, paste a prompt into a hosted UI. Check GPU offload: ollama ps"
     } elseif ($hit.Processor -eq 'GPU') {
         $ui.lblAiBannerIcon.Foreground = $Window.TryFindResource('ThemeSuccess')
-        $ui.lblAiBannerText.Text = "Local model detected with GPU acceleration. Run review should complete in 30–90s."
+        $ui.lblAiBannerText.Text = "Local model detected with GPU acceleration — Run review should complete in 30–90s."
     } else {
-        # Ollama is running but no model loaded yet — neutral guidance
         $ui.lblAiBannerIcon.Foreground = $Window.TryFindResource('ThemeAccentLight')
-        $ui.lblAiBannerText.Text = "Ollama detected. Run review sends the prompt to the local model. If inference is slow (no GPU), use Copy prompt instead."
+        $ui.lblAiBannerText.Text = "Ollama detected — Run review sends the trimmed prompt to the local model."
     }
 }
 $ui.btnAiCopyPrompt.Add_Click({
@@ -2507,9 +2566,45 @@ $ui.btnAiCopyPrompt.Add_Click({
             [System.Windows.Clipboard]::SetDataObject($do, $true)
         }
         $kb = [Math]::Round($prompt.Length / 1KB, 1)
-        $ui.lblAiMeta.Text = "Prompt copied to clipboard ($kb KB) — paste into Copilot Chat / Claude / Gemini / GPT-4."
+        $ui.lblAiMeta.Text = "Prompt copied to clipboard ($kb KB) - paste into any modern chat UI (Copilot / Claude / Gemini)."
         Set-Status -Text 'Prompt copied to clipboard' -Tone 'Success' -Detail "$kb KB"
         Write-DebugLog "Copy prompt: $kb KB copied to clipboard" 'SUCCESS'
+    } catch {
+        $msg = $_.Exception.Message
+        $ui.lblAiMeta.Text = "Clipboard copy failed: $msg"
+        Set-Status -Text 'Clipboard copy failed' -Tone 'Error' -Detail $msg
+        Write-DebugLog "Clipboard copy failed: $msg" 'ERROR'
+    }
+})
+$ui.btnAiCopyPromptFull.Add_Click({
+    if (-not $Script:State.ReportPath) {
+        $ui.lblAiMeta.Text = 'No report loaded yet — run an analysis first.'
+        Set-AiResponseText 'Run an analysis first; the prompt is built from the report.' -Plain
+        Set-Status -Text 'Copy full prompt: no report' -Tone 'Error' -Detail ''
+        return
+    }
+    $prompt = Get-CurrentPromptText -Variant Full
+    if (-not $prompt) {
+        $dir  = [IO.Path]::GetDirectoryName($Script:State.ReportPath)
+        $base = [IO.Path]::GetFileNameWithoutExtension($Script:State.ReportPath) -replace '\.report$',''
+        $p    = Join-Path $dir ($base + '.llm-prompt.full.md')
+        $ui.lblAiMeta.Text = "llm-prompt.full.md not found"
+        Set-AiResponseText "Expected: $p`r`n`r`nRe-run analysis to regenerate the full prompt artifact." -Plain
+        Set-Status -Text 'Copy full prompt: file missing' -Tone 'Error' -Detail $p
+        Write-DebugLog "Copy full prompt: $p not found" 'WARN'
+        return
+    }
+    try {
+        try { [System.Windows.Clipboard]::SetText($prompt) } catch {
+            $do = New-Object System.Windows.DataObject
+            $do.SetText($prompt, [System.Windows.TextDataFormat]::UnicodeText)
+            [System.Windows.Clipboard]::SetDataObject($do, $true)
+        }
+        $kb = [Math]::Round($prompt.Length / 1KB, 1)
+        $warn = if ($prompt.Length -gt 500KB) { ' (large - requires a 1M context window)' } else { '' }
+        $ui.lblAiMeta.Text = "Full prompt copied to clipboard ($kb KB)$warn."
+        Set-Status -Text 'Full prompt copied to clipboard' -Tone 'Success' -Detail "$kb KB"
+        Write-DebugLog "Copy full prompt: $kb KB copied to clipboard" 'SUCCESS'
     } catch {
         $msg = $_.Exception.Message
         $ui.lblAiMeta.Text = "Clipboard copy failed: $msg"
@@ -2668,6 +2763,32 @@ if ($ui.btnCopyQuickStart) {
         Write-DebugLog 'Quick-start commands copied to clipboard' 'INFO'
     })
 }
+if ($ui.btnBrowseProcmon) {
+    $ui.btnBrowseProcmon.Add_Click({
+        $f = Show-FilePicker -Title 'Select Procmon.exe' -Filter 'Procmon (Procmon.exe;Procmon64.exe)|Procmon.exe;Procmon64.exe|All files (*.*)|*.*'
+        if ($f) { $ui.txtProcMonExe.Text = $f; $Script:State.Prefs.ProcMonExe = $f; Save-Prefs }
+    })
+}
+if ($ui.txtProcMonExe) {
+    $ui.txtProcMonExe.Add_LostFocus({
+        $Script:State.Prefs.ProcMonExe = [string]$ui.txtProcMonExe.Text
+        Save-Prefs
+    })
+}
+if ($ui.btnInstallProcmon) {
+    $ui.btnInstallProcmon.Add_Click({
+        $ui.lblProcmonStatus.Text = 'Installing via winget...'
+        Write-DebugLog 'Installing ProcMon via winget' 'STEP'
+        try {
+            Start-Process -FilePath 'winget' -ArgumentList 'install Sysinternals.ProcessMonitor --accept-source-agreements --accept-package-agreements' -Wait -NoNewWindow
+            $ui.lblProcmonStatus.Text = 'Installed. Restart DumpPilot to auto-detect.'
+            Write-DebugLog 'ProcMon installed via winget' 'SUCCESS'
+        } catch {
+            $ui.lblProcmonStatus.Text = "Install failed: $($_.Exception.Message)"
+            Write-DebugLog "ProcMon winget install failed: $($_.Exception.Message)" 'ERROR'
+        }
+    })
+}
 $ui.btnLlmDetect.Add_Click({
     $ui.lblLlmDetect.Text = 'probing localhost...'
     $hit = Detect-LlmRuntime
@@ -2683,7 +2804,7 @@ $ui.btnLlmDetect.Add_Click({
         if ($hit.Processor) {
             $label += " — running on $($hit.Processor)"
             if ($hit.CpuOnly) {
-                $label += ". CPU-only inference is slow (5-10 min for a review). Recommendation: use Copy prompt and paste into Copilot Chat / Gemini / Claude for instant results."
+                $label += ". CPU-only inference is slow (5-10 min for a review). Recommendation: use Copy prompt and paste into any modern chat UI (Copilot / Claude / Gemini) for instant results."
             }
         } else {
             $label += ' (no model loaded yet — run ollama pull gemma4:e2b)'
@@ -2692,6 +2813,7 @@ $ui.btnLlmDetect.Add_Click({
         Save-Prefs
         Update-AiEndpointLabel
         Update-AiBanner
+        Update-AiPromptSizePills
         Refresh-OllamaModels
     } else {
         $ui.lblLlmDetect.Text = 'no local OpenAI-compatible endpoint found on 11434 / 1234 / 8080 / 5273'
@@ -2728,7 +2850,9 @@ $ui.cboLlmModel.Text            = $Script:State.Prefs.LlmModel
 $ui.txtLlmApiKey.Password       = $Script:State.Prefs.LlmApiKey
 if ($ui.txtLlmTimeout) { $ui.txtLlmTimeout.Text = [string]$Script:State.Prefs.LlmTimeout }
 if ($ui.txtSymbolPath) { $ui.txtSymbolPath.Text = $Script:State.Prefs.SymbolPath }
+if ($ui.txtProcMonExe) { $ui.txtProcMonExe.Text = $Script:State.Prefs.ProcMonExe }
 Update-AiEndpointLabel
+Update-AiPromptSizePills
 Refresh-OllamaModels
 $ui.LogConsole.Visibility       = if ($Script:State.Prefs.ShowLog) { 'Visible' } else { 'Collapsed' }
 $ui.lblVersion.Text             = "v$Script:AppVersion"
@@ -2760,6 +2884,24 @@ $ui.lblAdkInfo.Text = if ($adk) {
     "cdb.exe: $adk`nSymbol path: $symPathDisplay"
 } else {
     'cdb.exe NOT FOUND. Install Debugging Tools for Windows from the Windows SDK.'
+}
+
+# ProcMon auto-discover
+$procmonExe = if ($ui.txtProcMonExe -and $ui.txtProcMonExe.Text) {
+    $ui.txtProcMonExe.Text
+} else {
+    @(
+        'C:\Tools\Procmon.exe',
+        'C:\SysinternalsSuite\Procmon.exe',
+        'C:\Sysinternals\Procmon.exe',
+        (Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps\Procmon.exe')
+    ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
+}
+if (-not $procmonExe) {
+    $procmonExe = (Get-Command Procmon.exe -ErrorAction SilentlyContinue).Source
+}
+if ($ui.lblProcmonStatus) {
+    $ui.lblProcmonStatus.Text = if ($procmonExe) { "Found: $procmonExe" } else { 'Not found (optional — needed only for PML conversion)' }
 }
 
 Refresh-History

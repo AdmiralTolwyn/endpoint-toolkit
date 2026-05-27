@@ -15,8 +15,10 @@ and builds an escalation-grade LLM prompt for AI-assisted root cause analysis.
    VAS/heap/handle stats, timing, PEB, disassembly at crash point, NTSTATUS
    code decode, and more.
 3. **Stage 3 — Analyze** (`helpers/Invoke-DumpAnalysis.ps1`): builds
-   `report.json` + `report.md` + `llm-prompt.md` with an escalation-grade
-   system prompt (v2.4) containing 10+ reasoning rules.
+   `report.json` + `report.md` + `llm-prompt.md` (trimmed, ~40 KB) +
+   `llm-prompt.full.md` (un-trimmed, often >500 KB) with an escalation-grade
+   system prompt (v2.5) containing 10+ reasoning rules, pattern-DB matching,
+   ProcMon sibling-folder consolidation, and OS-chatter denylist.
 4. **Stage 4 — HTML** (`helpers/Export-DumpHtmlReport.ps1`): dark/light
    themed single-file report with stat cards, color-coded stack, deduplicated
    thread table, collapsible sections.
@@ -34,18 +36,21 @@ and builds an escalation-grade LLM prompt for AI-assisted root cause analysis.
 
 ## LLM triage quality
 
-The v2.4 prompt produces near-escalation-grade triage when used with capable models.
-Tested on the same Java/Intel OpenGL crash dump:
+The v2.5 prompt produces near-escalation-grade triage when used with capable
+models. Tested on a Java/Intel OpenGL crash dump:
 
 | Model | Quality | Notes |
 |-------|---------|-------|
-| **Gemini 2.5 Pro** | Excellent | Used disassembly to prove `r14=0` NULL deref, identified `DumpRegistryKeyDefinitions` symbol name as registry operation, spotted concurrent UI thread, correctly rated Medium confidence |
-| **Claude Opus 4** | Excellent | Similar quality to Gemini, strong causality-vs-locality distinction, good hypothesis validation steps |
-| **ChatGPT (GPT-4o)** | Weak | Ignored the `Disassembly[]` field entirely (claimed "no disassembly captured"), hallucinated thread count (said 108, actual 54), produced free-form essay instead of required 6-section format, never classified module vendor |
+| **Claude Opus 4.7** | Excellent | Uses `Disassembly[]` to prove the NULL deref (e.g. `cmp dword ptr [r8+31E18h],0` paired with `r8=0`), reads `DumpRegistryKeyDefinitions` symbol name as a registry-read operation, spots concurrent UI threads via the collapsed `ThreadStacks` groups, correctly rates Medium confidence when symbol coverage is incomplete |
+| **Gemini 3.1 Pro** | Excellent | Equivalent quality to Claude; strong causality-vs-locality distinction, good hypothesis-validation steps, reliably follows the 6-section output format |
+| **Copilot** (M365 / GitHub) | Good–Excellent | Follows the structured prompt reliably, cites JSON fields, respects the 6-section format. Quality scales with the picked backing model — strongest when "Claude Opus 4.7" or "Gemini 3.1 Pro" is selected from the M365 / GitHub Copilot model picker |
+| **ChatGPT** (GPT-5 / GPT-4o) | Weak | Ignored the `Disassembly[]` field entirely (claimed "no disassembly captured"), hallucinated thread count (said 108, actual 54), produced a free-form essay instead of the required 6-section format, never classified module vendor. **Not recommended** for this workflow |
 
-**Recommendation:** Use Gemini or Claude for the LLM triage step. ChatGPT tends to
-ignore structured data fields and doesn't follow strict output format instructions
-reliably for this use case.
+**Recommendation:** Use Claude, Gemini, or Copilot for the LLM triage step.
+ChatGPT (OpenAI's consumer/Plus product) tends to ignore structured data
+fields and doesn't reliably follow the strict 6-section output format
+required by the prompt — this is specifically about the ChatGPT chat UI, not
+Copilot, which works fine even though it can be backed by OpenAI models.
 
 ## Quick start
 

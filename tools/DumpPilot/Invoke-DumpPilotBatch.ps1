@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 7.0
 <#
 .SYNOPSIS
     Run DumpPilot over every .dmp / .mdmp in a folder and emit a CSV index of

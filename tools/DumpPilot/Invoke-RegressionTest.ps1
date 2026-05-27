@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 7.0
 <#
 .SYNOPSIS
     Regression test for DumpPilot's pattern matcher. Runs every fixture in

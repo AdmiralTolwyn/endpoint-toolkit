@@ -1,4 +1,4 @@
-#requires -Version 5.1
+#requires -Version 7.0
 <#
 .SYNOPSIS
     DumpPilot top-level entry. Runs Export-DumpFacts -> ConvertTo-DumpSummary
@@ -20,6 +20,7 @@
 param(
     [Parameter(Mandatory = $true)][string]$DumpPath,
     [string]$SymbolPath,
+    [string]$ProcMonPath,
     [switch]$Force
 )
 
@@ -36,7 +37,18 @@ Write-Verbose ("  kind       : {0}" -f $exp.DumpKind)
 Write-Verbose 'Stage 2: ConvertTo-DumpSummary'
 $sum = & (Join-Path $here 'ConvertTo-DumpSummary.ps1') -FactsRoot $exp.FactsRoot
 Write-Verbose ("  summary    : {0}" -f $sum.OutputPath)
-
+# Optional: ProcMon correlation
+$procCorr = $null
+if ($ProcMonPath) {
+    Write-Verbose 'Stage 2b: ProcMon correlation'
+    $procCorr = & (Join-Path $here 'helpers\Import-ProcMonCorrelation.ps1') -ProcMonPath $ProcMonPath -SummaryPath $sum.OutputPath
+    Write-Verbose ("  events     : {0}, failures: {1}, fault-related: {2}" -f $procCorr.EventCount, $procCorr.FailureCount, $procCorr.FaultRelated)
+    # Merge correlation into summary JSON so stage 3 sees it
+    $sumJson = Get-Content -LiteralPath $sum.OutputPath -Raw | ConvertFrom-Json
+    $corrData = Get-Content -LiteralPath $procCorr.CorrelationPath -Raw | ConvertFrom-Json
+    $sumJson | Add-Member -NotePropertyName 'ProcMonCorrelation' -NotePropertyValue $corrData -Force
+    [System.IO.File]::WriteAllText($sum.OutputPath, ($sumJson | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($true))
+}
 Write-Verbose 'Stage 3: Build facts-only report + LLM prompt'
 $rep = & (Join-Path $here 'helpers\Invoke-DumpAnalysis.ps1') -SummaryPath $sum.OutputPath
 Write-Verbose ("  report.md  : {0}" -f $rep.ReportMd)

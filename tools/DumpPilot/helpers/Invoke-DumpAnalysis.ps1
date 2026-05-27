@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 7.0
 <#
 .SYNOPSIS
     Stage 3 of DumpPilot. Build a facts-only report + llm prompt from
@@ -9,12 +9,14 @@
         debugger facts through to:
             - <base>.report.json
             - <base>.report.md
-            - <base>.llm-prompt.md
+            - <base>.llm-prompt.md           (trimmed for paste into Gemini/ChatGPT)
+            - <base>.llm-prompt.full.md      (full ProcMon/threads, for 1M-ctx models)
 #>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$SummaryPath,
-    [string]$OutputBasePath  # default: same folder + same basename as summary
+    [string]$OutputBasePath,    # default: same folder + same basename as summary
+    [string]$PatternDbPath      # default: ../pattern_db.json next to this helper
 )
 
 $ErrorActionPreference = 'Stop'
@@ -31,13 +33,99 @@ if (-not $OutputBasePath) {
 $reportJson = "$OutputBasePath.report.json"
 $reportMd   = "$OutputBasePath.report.md"
 $promptMd   = "$OutputBasePath.llm-prompt.md"
+$promptFull = "$OutputBasePath.llm-prompt.full.md"
+
+# --- pattern DB matching -----------------------------------------------------
+# Schema (per DESIGN.md §5):
+#   { rules: [ { id, match:{ProcessImage,FaultingModule,ExceptionCode,StackRegex}, severity, title } ] }
+# All present `match.*` regexes must hit; missing fields are wildcards.
+# Reports ALL matching rules (highest severity first), not just the first.
+$patternHits = New-Object System.Collections.Generic.List[object]
+if (-not $PatternDbPath) {
+    $PatternDbPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'pattern_db.json'
+}
+if (Test-Path -LiteralPath $PatternDbPath) {
+    try {
+        $db = Get-Content -LiteralPath $PatternDbPath -Raw | ConvertFrom-Json
+        $proc  = [string]$summary.Process.Name
+        $fmod  = [string]$summary.Faulting.Module
+        # FaultingModule patterns in the DB include the extension (.dll/.sys/.exe);
+        # the summary's Faulting.Module does not. Try the bare name AND each
+        # likely-extension variant so a `.sys` driver pattern matches a kernel
+        # dump whose MODULE_NAME is the bare driver name.
+        $fmodVariants = New-Object System.Collections.Generic.List[string]
+        if ($fmod) {
+            [void]$fmodVariants.Add($fmod)
+            if ($fmod -notmatch '\.(dll|sys|exe)$') {
+                [void]$fmodVariants.Add($fmod + '.dll')
+                [void]$fmodVariants.Add($fmod + '.sys')
+                [void]$fmodVariants.Add($fmod + '.exe')
+            }
+        }
+        $ecode = [string]$summary.Exception.Code
+        $stackJoined = ''
+        if ($summary.Faulting.Stack) {
+            $stackJoined = (@($summary.Faulting.Stack | ForEach-Object { [string]$_.Frame }) -join "`n")
+        }
+        $sevRank = @{ 'Critical' = 4; 'High' = 3; 'Medium' = 2; 'Low' = 1 }
+        foreach ($rule in @($db.rules)) {
+            if (-not $rule -or -not $rule.match) { continue }
+            $m = $rule.match
+            $ok = $true
+            if ($ok -and $m.ProcessImage) {
+                $ok = ($proc -and [regex]::IsMatch($proc, [string]$m.ProcessImage, 'IgnoreCase'))
+            }
+            if ($ok -and $m.FaultingModule) {
+                $rx = [string]$m.FaultingModule
+                $ok = $false
+                foreach ($v in $fmodVariants) {
+                    if ($v -and [regex]::IsMatch($v, $rx, 'IgnoreCase')) { $ok = $true; break }
+                }
+            }
+            if ($ok -and $m.ExceptionCode) {
+                $ok = ($ecode -and [regex]::IsMatch(($ecode -replace '^0x',''), [string]$m.ExceptionCode, 'IgnoreCase'))
+            }
+            if ($ok -and $m.StackRegex) {
+                $ok = ($stackJoined -and [regex]::IsMatch($stackJoined, [string]$m.StackRegex, 'IgnoreCase'))
+            }
+            if ($ok) {
+                $sev = [string]$rule.severity
+                $rank = 0
+                if ($sevRank.ContainsKey($sev)) { $rank = [int]$sevRank[$sev] }
+                [void]$patternHits.Add([pscustomobject]@{
+                    Id       = [string]$rule.id
+                    Title    = [string]$rule.title
+                    Severity = $sev
+                    SeverityRank = $rank
+                })
+            }
+        }
+        # Sort by severity desc (Critical first), preserve DB order on ties.
+        if ($patternHits.Count -gt 1) {
+            $sorted = $patternHits | Sort-Object -Property SeverityRank -Descending -Stable
+            $patternHits = New-Object System.Collections.Generic.List[object]
+            foreach ($h in $sorted) { [void]$patternHits.Add($h) }
+        }
+    } catch {
+        Write-Verbose "pattern_db match failed: $($_.Exception.Message)"
+    }
+}
 
 # --- report.json -------------------------------------------------------------
+
+$analysisMode = if ($patternHits.Count -gt 0) { 'pattern+facts' } else { 'facts-only' }
+# Materialize to a plain object[] to avoid PSEnumerableBinder edge cases
+# when a `System.Collections.Generic.List[object]` is embedded directly
+# inside an `[ordered]@{}` initializer alongside other typed properties.
+$patternHitsArr = [object[]]@()
+if ($patternHits.Count -gt 0) {
+    $patternHitsArr = [object[]]@($patternHits.ToArray())
+}
 
 $report = [ordered]@{
     SchemaVersion  = '0.1'
     SummarySource  = $SummaryPath
-    AnalysisMode   = 'facts-only'
+    AnalysisMode   = $analysisMode
     GeneratedAt    = (Get-Date).ToString('o')
     Dump           = [ordered]@{
         Path     = $summary.DumpPath
@@ -68,6 +156,9 @@ $report = [ordered]@{
     LastError      = $summary.LastError
     ProcessInfo    = $summary.ProcessInfo
     ThreadCount    = $summary.ThreadCount
+    ThreadCountReported = $summary.ThreadCountReported
+    ThreadCountCaptured = $summary.ThreadCountCaptured
+    ThreadCaptureTruncated = $summary.ThreadCaptureTruncated
     HandleTypes    = $summary.HandleTypes
     HeapCorrupt    = $summary.HeapCorrupt
     ThreadStacks   = $summary.ThreadStacks
@@ -82,8 +173,9 @@ $report = [ordered]@{
     AppVerifier    = $summary.AppVerifier
     StackPointerDump = $summary.StackPointerDump
     Disassembly      = $summary.Disassembly
-    PatternHits    = @()
-    HitCount       = 0
+    ProcMonCorrelation = $summary.ProcMonCorrelation
+    PatternHits    = $patternHitsArr
+    HitCount       = $patternHits.Count
 }
 [System.IO.File]::WriteAllText($reportJson, ($report | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($true))
 
@@ -103,6 +195,18 @@ $codeLine += ' at ' + $summary.Exception.Address
 [void]$md.AppendLine('**Faulting module:** ' + $summary.Faulting.Module + '  (`' + $summary.Faulting.Symbol + '`)')
 [void]$md.AppendLine('**Capture commands:** ' + [string]$summary.Capture.CommandCount)
 [void]$md.AppendLine()
+if ($patternHits.Count -gt 0) {
+    [void]$md.AppendLine('## Pattern DB hits (' + $patternHits.Count + ')')
+    [void]$md.AppendLine()
+    [void]$md.AppendLine('| # | Severity | Id | Title |')
+    [void]$md.AppendLine('|---|---|---|---|')
+    $idx = 0
+    foreach ($h in $patternHits) {
+        $idx++
+        [void]$md.AppendLine('| ' + $idx + ' | ' + [string]$h.Severity + ' | `' + [string]$h.Id + '` | ' + [string]$h.Title + ' |')
+    }
+    [void]$md.AppendLine()
+}
 [void]$md.AppendLine('## Command line')
 [void]$md.AppendLine()
 [void]$md.AppendLine('```')
@@ -128,6 +232,13 @@ foreach ($f in $summary.Faulting.Stack) {
 [void]$md.AppendLine('- Thread: ' + [string]$summary.Thread.Address + '  Cid: ' + [string]$summary.Thread.Cid + '  Teb: ' + [string]$summary.Thread.Teb)
 [void]$md.AppendLine('- State: ' + [string]$summary.Thread.State + '  WaitReason: ' + [string]$summary.Thread.WaitReason)
 [void]$md.AppendLine('- ThreadCount: ' + [string]$summary.ThreadCount)
+if ($summary.ThreadCaptureTruncated) {
+    [void]$md.AppendLine('- **WARNING:** thread-stack capture truncated ' +
+        '(reported=' + [string]$summary.ThreadCountReported +
+        ', captured=' + [string]$summary.ThreadCountCaptured + ').' +
+        ' cdb output buffer overflow; re-run with `cdb -lines -srcpath` ' +
+        'or split `~* kb 8` into smaller batches.')
+}
 [void]$md.AppendLine()
 [void]$md.AppendLine('## Symbol quality')
 [void]$md.AppendLine()
@@ -322,7 +433,12 @@ $prompt = New-Object System.Text.StringBuilder
 [void]$prompt.AppendLine('## System')
 [void]$prompt.AppendLine()
 [void]$prompt.AppendLine('You are a senior Windows escalation engineer performing crash triage.')
-[void]$prompt.AppendLine('Use ONLY the extracted dump facts in the JSON below. No signature database was used.')
+if ($patternHits.Count -gt 0) {
+    [void]$prompt.AppendLine('Use the extracted dump facts in the JSON below. A pattern-DB lookup ran first and the matched rules are listed in `PatternHits` (sorted by severity).')
+    [void]$prompt.AppendLine('Treat the top pattern hit as a STRONG prior, but still confirm it against the stack/registers/modules before locking in the root cause. Do not invent details that aren''t in the JSON.')
+} else {
+    [void]$prompt.AppendLine('Use ONLY the extracted dump facts in the JSON below. No signature database was used.')
+}
 [void]$prompt.AppendLine('Do not invent module names, HRESULTs, versions, or known issues.')
 [void]$prompt.AppendLine('If a fact is missing, say so explicitly and explain why it matters.')
 [void]$prompt.AppendLine()
@@ -381,6 +497,12 @@ $prompt = New-Object System.Text.StringBuilder
 [void]$prompt.AppendLine('modules from CrowdStrike, SentinelOne, Carbon Black, Symantec, McAfee, Trend Micro, Sophos, ESET, Palo Alto, Cybereason.')
 [void]$prompt.AppendLine('If such modules are loaded and the crash involves a callback exception or hook-susceptible API, hypothesize whether security hooking could be intercepting or blocking the faulting operation.')
 [void]$prompt.AppendLine()
+[void]$prompt.AppendLine('### ProcMon correlation')
+[void]$prompt.AppendLine('If ProcMonCorrelation is present in the facts, it contains registry/file/network failures from Process Monitor captured around the crash time.')
+[void]$prompt.AppendLine('The FaultRelated array lists failures whose paths match the faulting module vendor or graphics/driver registry keys.')
+[void]$prompt.AppendLine('Use these to confirm or refute hypotheses about missing configuration, denied access, or absent registry keys.')
+[void]$prompt.AppendLine('This is external evidence — treat it as high-value corroboration. If NAME NOT FOUND or ACCESS DENIED appears for driver config keys, it likely explains a NULL pointer in the driver.')
+[void]$prompt.AppendLine()
 [void]$prompt.AppendLine('### Confidence grading')
 [void]$prompt.AppendLine('- **High**: Direct evidence in stack + consistent register/thread context + minimal ambiguity')
 [void]$prompt.AppendLine('- **Medium**: Plausible cause but alternative explanations exist or key data is missing')
@@ -401,7 +523,337 @@ $prompt = New-Object System.Text.StringBuilder
 [void]$prompt.AppendLine('## Facts (JSON)')
 [void]$prompt.AppendLine()
 [void]$prompt.AppendLine('```json')
-[void]$prompt.AppendLine(($report | ConvertTo-Json -Depth 10))
+# Snapshot the prologue (everything up to and including the opening ```json
+# fence) so we can rebuild a `.llm-prompt.full.md` with the SAME prologue
+# but the un-trimmed report JSON. Avoids drift between the two prompts.
+$promptPrologue = $prompt.ToString()
+
+# Build a trimmed clone of $report just for the LLM prompt. The full
+# version stays in *.report.json (tooling, UI, regression tests). Aim
+# is to fit Gemini / ChatGPT paste limits (~64-100 KB) without losing
+# signal. ProcMon dominates raw size; everything else is small but
+# we still drop empty/noise fields to keep the JSON readable.
+#
+# Trims:
+#   1. ProcMonCorrelation.FaultRelated -> top 25 by Count, summary stub
+#   2. ProcMonCorrelation.OtherFailures -> dropped entirely
+#   3. ThreadStacks -> collapse identical stacks into groups
+#   4. Modules -> only those that appear in faulting stack OR ModuleDetails
+#   5. Empty optional blocks -> dropped (CLR/SEHChain/Token/AppVerifier/...)
+#   6. Capture.Commands/CdbPath/SymbolPath -> dropped (noise for LLM)
+
+$promptReport = [ordered]@{}
+foreach ($k in $report.Keys) { $promptReport[$k] = $report[$k] }
+
+# (1)(2) ProcMon trim
+if ($promptReport.ProcMonCorrelation) {
+    try {
+        $pmc = $promptReport.ProcMonCorrelation
+    $faultCount = if ($pmc.FaultRelated) { @($pmc.FaultRelated).Count } else { 0 }
+
+    # (1pre) OS-chatter denylist. Some paths sneak into FaultRelated because
+    # of incidental substring matches in the parser's relevance regex (most
+    # notoriously `d3d` matching GUIDs like 02F815B5-…-D3D8 in the OS Power
+    # Manager keys). Those rows are never the cause of a graphics-driver
+    # crash and they swamp the top-25 with hundreds of NAME NOT FOUND probes
+    # that mislead the LLM. Drop them up front so they don't even compete
+    # for the consolidation slots.
+    $denyPatterns = @(
+        '\\Control\\Power\\PowerSettings\\',
+        '\\Control\\Power\\User\\PowerSchemes\\',
+        '\\Windows\\OneSettings\b',
+        '\\Microsoft\\Windows\\WER\\Temp\b',
+        '\\Microsoft\\Windows\\WER\\ReportArchive\b',
+        '\\Microsoft\\Windows\\WER\\ReportQueue\b',
+        '\\AppRepository\\StateRepository-',
+        '\\Windows\\AppRepository\\Packages\\Microsoft\\.UI\\.Xaml',
+        '\\Windows Defender\\Scans\\History\\',
+        '\\Windows Defender Advanced Threat Protection\\Cache\\',
+        '\\IntuneManagementExtension\\Logs\\',
+        '\\WinSxS\\amd64_microsoft-windows-hotpatches_'
+    )
+    $denyRx = ($denyPatterns -join '|')
+    $faultRelatedFiltered = @()
+    $denyCount = 0
+    if ($faultCount -gt 0) {
+        foreach ($r in @($pmc.FaultRelated)) {
+            if (([string]$r.Path) -match $denyRx) { $denyCount++; continue }
+            $faultRelatedFiltered += $r
+        }
+    }
+    # registry key. Without this, a single noisy poll loop (e.g. Intel
+    # ipfsrv probes 8 sibling files in one folder, or Power-Manager
+    # enumerates dozens of leaf values under one GUID-keyed parent)
+    # eats the top-25. Threshold = 3 leaves: 2 siblings often carries
+    # distinct signal; 3+ is virtually always the same loop.
+    $folded = New-Object System.Collections.Generic.List[object]
+    if ($faultRelatedFiltered.Count -gt 0) {
+        $byParent = @{}
+        foreach ($r in $faultRelatedFiltered) {
+            $rawPath = [string]$r.NormPath
+            if (-not $rawPath) { $rawPath = [string]$r.Path }
+            # Split on \ or /; drop leaf segment. Skip if no separator
+            # (e.g. bare HKLM root, or single-segment path) — pass through.
+            $sep = [Math]::Max($rawPath.LastIndexOf('\'), $rawPath.LastIndexOf('/'))
+            $parent = if ($sep -gt 0) { $rawPath.Substring(0, $sep) } else { $rawPath }
+            $leaf   = if ($sep -gt 0 -and $sep -lt ($rawPath.Length - 1)) { $rawPath.Substring($sep + 1) } else { '' }
+            $key = "$($r.Operation)|$parent|$($r.Result)"
+            if (-not $byParent.ContainsKey($key)) {
+                $byParent[$key] = [pscustomobject]@{
+                    Operation = $r.Operation
+                    Parent    = $parent
+                    Result    = $r.Result
+                    Count     = 0
+                    LeafCount = 0
+                    Examples  = New-Object System.Collections.Generic.List[string]
+                    Rows      = New-Object System.Collections.Generic.List[object]
+                }
+            }
+            $entry = $byParent[$key]
+            $entry.Count += [int]$r.Count
+            $entry.LeafCount++
+            if ($leaf -and $entry.Examples.Count -lt 3 -and -not $entry.Examples.Contains($leaf)) {
+                [void]$entry.Examples.Add($leaf)
+            }
+            [void]$entry.Rows.Add($r)
+        }
+        foreach ($key in $byParent.Keys) {
+            $g = $byParent[$key]
+            if ($g.LeafCount -ge 3) {
+                # Synthetic consolidated row. No NormPath: the consolidated
+                # path already contains the parent + `* (N files)` summary.
+                [void]$folded.Add([pscustomobject]@{
+                    Operation = $g.Operation
+                    Path      = "$($g.Parent)\* ($($g.LeafCount) files)"
+                    Result    = $g.Result
+                    Count     = $g.Count
+                    LeafCount = $g.LeafCount
+                    Examples  = [object[]]$g.Examples.ToArray()
+                })
+            } else {
+                # Keep originals as-is. Use .ToArray() to dodge the
+                # PSEnumerableBinder edge case where iterating a
+                # List[object] stored inside a PSCustomObject NoteProperty
+                # throws "Argument types do not match".
+                # Drop NormPath (redundant with Path) and RelevantToFault
+                # (always true for everything in FaultRelated).
+                foreach ($r in $g.Rows.ToArray()) {
+                    [void]$folded.Add([pscustomobject]@{
+                        Operation = $r.Operation
+                        Path      = $r.Path
+                        Result    = $r.Result
+                        Count     = $r.Count
+                    })
+                }
+            }
+        }
+    }
+    $foldedAll = @($folded | Sort-Object -Property Count -Descending)
+    $top = @($foldedAll | Select-Object -First 25)
+
+    $pmcTrim = [ordered]@{
+        WindowSeconds                  = $pmc.WindowSeconds
+        FailureCount                   = $pmc.FailureCount
+        UniqueFailures                 = $pmc.UniqueFailures
+        FaultRelated                   = $top
+        FaultRelatedTruncatedFrom      = $faultCount
+        FaultRelatedAfterConsolidation = $foldedAll.Count
+        FaultRelatedDroppedAsOsChatter = $denyCount
+        OtherFailuresDropped      = if ($pmc.OtherFailures) { @($pmc.OtherFailures).Count } else { 0 }
+    }
+    $promptReport.ProcMonCorrelation = $pmcTrim
+    } catch {
+        Write-Warning "ProcMon trim failed; passing through un-trimmed payload. $($_.Exception.Message)"
+    }
+}
+
+# (3) ThreadStacks collapse: group by joined-frames signature.
+if ($promptReport.ThreadStacks) {
+    $groups = @{}
+    $order  = New-Object System.Collections.Generic.List[string]
+    foreach ($ts in @($promptReport.ThreadStacks)) {
+        $frames = @($ts.Frames)
+        $sig = ($frames -join ' > ')
+        if (-not $groups.ContainsKey($sig)) {
+            $groups[$sig] = [ordered]@{
+                Count     = 0
+                ThreadIds = New-Object System.Collections.Generic.List[string]
+                Frames    = $frames
+            }
+            [void]$order.Add($sig)
+        }
+        $groups[$sig].Count++
+        [void]$groups[$sig].ThreadIds.Add([string]$ts.ThreadId)
+    }
+    $collapsed = New-Object System.Collections.Generic.List[object]
+    foreach ($sig in $order) {
+        $g = $groups[$sig]
+        # Cap ThreadIds list at 8 to avoid spamming the prompt when one
+        # signature has 50+ threads (jvm wait loop).
+        $tids = @($g.ThreadIds)
+        if ($tids.Count -gt 8) {
+            $tids = (@($tids[0..7]) + @("...+$($tids.Count - 8) more"))
+        }
+        [void]$collapsed.Add([pscustomobject]@{
+            Count     = $g.Count
+            ThreadIds = $tids
+            Frames    = $g.Frames
+        })
+    }
+    # Sort by descending Count so the most common waiter sigs appear first.
+    $promptReport.ThreadStacks = @($collapsed | Sort-Object -Property Count -Descending)
+}
+
+# (4) Modules trim: keep only modules that touch the stack or have details.
+if ($promptReport.Modules) {
+    $keep = @{}
+    if ($promptReport.Faulting -and $promptReport.Faulting.FullStack) {
+        foreach ($f in @($promptReport.Faulting.FullStack)) {
+            if ($f.Module) { $keep[[string]$f.Module] = $true }
+        }
+    }
+    if ($promptReport.ModuleDetails) {
+        foreach ($md in @($promptReport.ModuleDetails)) {
+            if ($md.Name) { $keep[[string]$md.Name] = $true }
+        }
+    }
+    if ($keep.Count -gt 0) {
+        $modsAll = @($promptReport.Modules)
+        $modsKept = @($modsAll | Where-Object { $_.Name -and $keep.ContainsKey([string]$_.Name) })
+        $promptReport.Modules = $modsKept
+        $promptReport.ModulesDroppedCount = $modsAll.Count - $modsKept.Count
+    }
+}
+
+# (5) Drop empty optional blocks (don't list as missing — just omit).
+$emptyOptionals = @(
+    'CLR','SEHChain','Token','Wow64Stack',
+    'CriticalSections','StackPointerDump','Comparison'
+)
+foreach ($k in $emptyOptionals) {
+    if ($promptReport.Contains($k)) {
+        $v = $promptReport[$k]
+        $isEmpty = $false
+        if ($null -eq $v) { $isEmpty = $true }
+        elseif ($v -is [System.Collections.IDictionary]) {
+            $isEmpty = ($v.Count -eq 0)
+            if (-not $isEmpty) {
+                $hasVal = $false
+                foreach ($pv in $v.Values) {
+                    if ($null -ne $pv -and -not ($pv -is [array] -and $pv.Count -eq 0)) { $hasVal = $true; break }
+                }
+                $isEmpty = -not $hasVal
+            }
+        }
+        elseif ($v -is [pscustomobject]) {
+            $hasVal = $false
+            foreach ($p in $v.PSObject.Properties) {
+                if ($null -ne $p.Value -and -not ($p.Value -is [array] -and $p.Value.Count -eq 0)) { $hasVal = $true; break }
+            }
+            $isEmpty = -not $hasVal
+        }
+        elseif ($v -is [array] -or $v -is [System.Collections.IEnumerable]) {
+            $isEmpty = (@($v).Count -eq 0)
+        }
+        if ($isEmpty) { $promptReport.Remove($k) }
+    }
+}
+
+# AppVerifier: special case — drop when Active=false (the entire block is
+# meaningful only when verifier was actually running).
+if ($promptReport.AppVerifier -and -not $promptReport.AppVerifier.Active) {
+    $promptReport.Remove('AppVerifier')
+}
+
+# (6) Strip Capture noise. Drop entirely from the prompt -- duration and
+# command count carry no LLM signal; full data still lives in report.json.
+if ($promptReport.Contains('Capture')) { $promptReport.Remove('Capture') | Out-Null }
+
+# (7) PatternHits hygiene: drop the internal SeverityRank sort key.
+if ($promptReport.PatternHits) {
+    $cleanHits = New-Object System.Collections.Generic.List[object]
+    foreach ($h in @($promptReport.PatternHits)) {
+        [void]$cleanHits.Add([pscustomobject]@{
+            Id       = $h.Id
+            Title    = $h.Title
+            Severity = $h.Severity
+        })
+    }
+    $promptReport.PatternHits = [object[]]$cleanHits.ToArray()
+}
+
+# (8) SymbolQuality.ModuleCoverage: drop entries with Frames=0. These are
+# stub rows produced by `lmv m clr / coreclr / mscorlib_ni / System_ni`
+# unconditionally issued by the capture bundle even on non-.NET dumps.
+if ($promptReport.SymbolQuality -and $promptReport.SymbolQuality.ModuleCoverage) {
+    $coverageKept = New-Object System.Collections.Generic.List[object]
+    foreach ($mc in @($promptReport.SymbolQuality.ModuleCoverage)) {
+        if ([int]$mc.Frames -gt 0) { [void]$coverageKept.Add($mc) }
+    }
+    # Rebuild SymbolQuality so the consumer-facing JSON has the filtered list.
+    $sqOld = $promptReport.SymbolQuality
+    $promptReport.SymbolQuality = [ordered]@{
+        StackFramesTotal      = $sqOld.StackFramesTotal
+        StackFramesResolved   = $sqOld.StackFramesResolved
+        StackFramesUnresolved = $sqOld.StackFramesUnresolved
+        ModuleCoverage        = [object[]]$coverageKept.ToArray()
+    }
+}
+
+# (9) ExceptionChain dedup. cdb's .exr -1 reports the same exception twice
+# (chance-1 + chance-2) on user-mode AVs. Collapse runs of identical
+# (Address, Code) and drop the field entirely if only one unique record
+# remains -- the Exception block already carries it.
+if ($promptReport.ExceptionChain) {
+    $unique = New-Object System.Collections.Generic.List[object]
+    $lastKey = $null
+    foreach ($ec in @($promptReport.ExceptionChain)) {
+        $key = "$($ec.Address)|$($ec.Code)|$($ec.Flags)|$($ec.NumParams)"
+        if ($key -ne $lastKey) { [void]$unique.Add($ec); $lastKey = $key }
+    }
+    if ($unique.Count -le 1) {
+        $promptReport.Remove('ExceptionChain') | Out-Null
+    } else {
+        $promptReport.ExceptionChain = [object[]]$unique.ToArray()
+    }
+}
+
+# (10) ModuleDetails: only keep entries for modules that actually appear in
+# the faulting stack. The capture bundle does `lmv m kernel32 / clr / ...`
+# unconditionally; the parser then promotes them into ModuleDetails even
+# when they contributed zero frames. Surfacing kernel32's version when no
+# kernel32 frame faulted just gives the LLM an extra detail to over-fit to.
+if ($promptReport.ModuleDetails -and $promptReport.Faulting -and $promptReport.Faulting.FullStack) {
+    $stackMods = @{}
+    foreach ($f in @($promptReport.Faulting.FullStack)) {
+        if ($f.Module) { $stackMods[[string]$f.Module] = $true }
+    }
+    if ($stackMods.Count -gt 0) {
+        $mdKept = @($promptReport.ModuleDetails | Where-Object {
+            $_.Name -and $stackMods.ContainsKey([string]$_.Name)
+        })
+        $promptReport.ModuleDetails = [object[]]$mdKept
+    }
+}
+
+# (11) ThreadCount cleanup. Keep only the two fields that actually mean
+# something in user-mode dumps; drop the cdb-kernel-mode "Reported" field
+# which is virtually always 0 here and just confuses readers.
+if ($promptReport.Contains('ThreadCountReported')) { $promptReport.Remove('ThreadCountReported') | Out-Null }
+
+# (12) Provenance / housekeeping fields the LLM never uses.
+foreach ($k in @('SchemaVersion','SummarySource','GeneratedAt')) {
+    if ($promptReport.Contains($k)) { $promptReport.Remove($k) | Out-Null }
+}
+# Drop the disk paths from the Dump block -- LLM can't use them.
+if ($promptReport.Dump) {
+    $promptReport.Dump = [ordered]@{
+        Kind   = $promptReport.Dump.Kind
+        Sha256 = $promptReport.Dump.Sha256
+    }
+}
+
+[void]$prompt.AppendLine(($promptReport | ConvertTo-Json -Depth 10))
 [void]$prompt.AppendLine('```')
 [void]$prompt.AppendLine()
 [void]$prompt.AppendLine('## Task')
@@ -436,10 +888,28 @@ $prompt = New-Object System.Text.StringBuilder
 [void]$prompt.AppendLine('- Include a validation step (how to prove or disprove it)')
 [System.IO.File]::WriteAllText($promptMd, $prompt.ToString(), [System.Text.UTF8Encoding]::new($true))
 
+# .llm-prompt.full.md — same prologue + Task block, but with the un-trimmed
+# report JSON. Use this when the trimmed prompt loses signal needed for a
+# specific investigation (e.g. you actually want to inspect every ProcMon
+# failure, or every thread's wait stack). Same path / same model context
+# requirements as the trimmed one, just larger; expect >1 MB on dumps with
+# heavy ProcMon correlation.
+$promptSuffix = $prompt.ToString().Substring($promptPrologue.Length)
+# $promptSuffix starts with the trimmed JSON; find where the JSON block ends
+# (the closing ``` fence after our ConvertTo-Json output) and replace
+# the trimmed JSON with the full report.
+$jsonEndIdx = $promptSuffix.IndexOf('```')
+if ($jsonEndIdx -ge 0) {
+    $taskBlock = $promptSuffix.Substring($jsonEndIdx)   # "```\n\n## Task\n..."
+    $fullPrompt = $promptPrologue + ($report | ConvertTo-Json -Depth 10) + [Environment]::NewLine + $taskBlock
+    [System.IO.File]::WriteAllText($promptFull, $fullPrompt, [System.Text.UTF8Encoding]::new($true))
+}
+
 [pscustomobject]@{
-    ReportJson = $reportJson
-    ReportMd   = $reportMd
-    PromptMd   = $promptMd
-    HitCount   = 0
-    TopHit     = $null
+    ReportJson    = $reportJson
+    ReportMd      = $reportMd
+    PromptMd      = $promptMd
+    PromptFullMd  = $promptFull
+    HitCount      = $patternHits.Count
+    TopHit        = if ($patternHits.Count -gt 0) { [string]$patternHits[0].Id } else { $null }
 }

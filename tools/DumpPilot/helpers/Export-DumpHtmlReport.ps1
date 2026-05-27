@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 7.0
 <#
 .SYNOPSIS
     Render a DumpPilot report.json as a rich, single-file HTML page.
@@ -305,6 +305,26 @@ if ($report.Token -and $report.Token.User) {
 if ($report.AppVerifier -and $report.AppVerifier.Active) {
     _SecOpen 'App Verifier' '' $true
     [void]$html.Append("<p style=`"padding:14px`">Stop: <b style=`"color:var(--red)`">$(_H ([string]$report.AppVerifier.StopCode))</b> &mdash; $(_H ([string]$report.AppVerifier.Description))</p>")
+    _SecClose
+}
+
+# --- ProcMon correlation (if available) ----------------------------------------
+if ($report.ProcMonCorrelation -and $report.ProcMonCorrelation.FaultRelated -and @($report.ProcMonCorrelation.FaultRelated).Count -gt 0) {
+    $faultCount = @($report.ProcMonCorrelation.FaultRelated).Count
+    _SecOpen "ProcMon correlation" "$faultCount fault-related failures" $true
+    [void]$html.Append('<table><tr><th>Operation</th><th>Path</th><th>Result</th><th>Count</th></tr>')
+    foreach ($f in $report.ProcMonCorrelation.FaultRelated) {
+        [void]$html.Append("<tr><td>$(_H ([string]$f.Operation))</td><td class=`"mono`" style=`"font-size:10px`">$(_H ([string]$f.Path))</td><td><span class=`"badge-sm badge-none`">$(_H ([string]$f.Result))</span></td><td>$([string]$f.Count)</td></tr>")
+    }
+    [void]$html.Append('</table>')
+    if ($report.ProcMonCorrelation.OtherFailures -and @($report.ProcMonCorrelation.OtherFailures).Count -gt 0) {
+        [void]$html.Append('<h4 style="padding:14px 14px 0;color:var(--muted)">Other failures (top 20)</h4>')
+        [void]$html.Append('<table><tr><th>Operation</th><th>Path</th><th>Result</th><th>Count</th></tr>')
+        foreach ($f in ($report.ProcMonCorrelation.OtherFailures | Select-Object -First 20)) {
+            [void]$html.Append("<tr><td>$(_H ([string]$f.Operation))</td><td class=`"mono`" style=`"font-size:10px`">$(_H ([string]$f.Path))</td><td>$(_H ([string]$f.Result))</td><td>$([string]$f.Count)</td></tr>")
+        }
+        [void]$html.Append('</table>')
+    }
     _SecClose
 }
 

@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 7.0
 <#
 .SYNOPSIS
     Stage 2 of DumpPilot. Parse the per-dump folder produced by
@@ -139,6 +139,40 @@ foreach ($line in ($stackTxt -split "`r?`n")) {
         }
     }
     if ($stack.Count -ge 100) { break }
+}
+
+# Dedup back-to-back duplicate stack runs. The cdb command bundle issues
+# BOTH `kv 60` and `kb 100` against the faulting thread; both emit the same
+# frame format and our line-by-line collector picks them all up. Result: the
+# crashing stack appears twice. Detect this and keep only the first copy.
+# Algorithm: find the SECOND occurrence of $stack[0].Frame; if the run
+# [0..N-2nd) matches [2nd..end), it's a confirmed duplicate emission.
+# Compare on a normalised form (strip kv-only `(TrapFrame @ ADDR)` and
+# `WARNING:` annotations) so kv and kb frames compare equal.
+function _NormFrame([string]$Frame) {
+    $s = $Frame
+    $s = [regex]::Replace($s, '\s*\(TrapFrame @ [0-9a-fA-F`]+\)', '')
+    $s = [regex]::Replace($s, '\s*\(CONTEXT @ [0-9a-fA-F`]+\)', '')
+    $s = [regex]::Replace($s, '\s*WARNING:.*$', '')
+    return $s.Trim()
+}
+if ($stack.Count -ge 4) {
+    $firstFrame = _NormFrame $stack[0].Frame
+    $second = -1
+    for ($i = 1; $i -lt $stack.Count; $i++) {
+        if ((_NormFrame $stack[$i].Frame) -eq $firstFrame) { $second = $i; break }
+    }
+    if ($second -gt 0 -and ($second * 2) -le $stack.Count) {
+        $isDup = $true
+        for ($i = 0; $i -lt $second; $i++) {
+            if ((_NormFrame $stack[$i].Frame) -ne (_NormFrame $stack[$i + $second].Frame)) {
+                $isDup = $false; break
+            }
+        }
+        if ($isDup) {
+            while ($stack.Count -gt $second) { $stack.RemoveAt($stack.Count - 1) }
+        }
+    }
 }
 
 # --- normalized stack signature (for diffing runs) ---------------------------
@@ -335,14 +369,39 @@ foreach ($m in (_MatchAll $raw '(?m)^([0-9a-fA-F`]+)\s+([0-9a-fA-F`]+)\s+(\S+!\S
 #   igxelpgicd64+0x87cde:
 #   00007fff`71837cde 4183be381e030000 cmp  dword ptr [r14+31E38h],0
 # Also try from u @rip output if available.
+#
+# Be aggressive about rejecting noise:
+#   * heap-summary rows ("!heap -s") have hex columns separated by many
+#     spaces and end with literal "LFH" / "NoLFH" / a flag bitmap;
+#   * `lm` output has hex base, hex end, module name, then `(export symbols)`
+#     etc. -- the "mnemonic-shaped" field is actually a module name;
+#   * thread table rows have similar shape.
+# Real disassembly lines are: addr + opcode_bytes + short_mnemonic + operands.
+# We tighten the regex so the mnemonic must be alphabetic, 2-10 chars (x86/x64
+# mnemonics are short: mov, cmp, lea, callq, repne, etc.) and followed by
+# either a comma, register, bracket, or whitespace then more text. We also
+# drop duplicates (cdb emits the same `cmp` line via kv, kb, .ecxr, and u).
 
 $disassembly = New-Object System.Collections.Generic.List[string]
-# Pattern: hex_addr hex_opcode mnemonic (must NOT be "Building memory map")
-foreach ($m in (_MatchAll $raw '(?m)^([0-9a-fA-F`]+)\s+([0-9a-fA-F]{4,})\s+(\w+\s+.+)$')) {
-    $line = $m.Value.Trim()
-    if ($line -match 'Building memory map|Reading initial command|Symbol options') { continue }
+$disassemblySeen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+# Pattern breakdown:
+#   ^(addr) (opcode 8-32 hex chars, no spaces) (mnemonic 2-10 alphabetic chars)
+#   followed by whitespace then operands OR end-of-line.
+foreach ($m in (_MatchAll $raw '(?m)^([0-9a-fA-F`]+)\s+([0-9a-fA-F]{8,32})\s+([a-zA-Z]{2,10})(?:\s+(.+))?$')) {
+    $line     = $m.Value.Trim()
+    $mnemonic = $m.Groups[3].Value
+    $tail     = if ($m.Groups[4].Success) { $m.Groups[4].Value } else { '' }
+    # Reject lines whose `mnemonic` field is actually a module name (e.g.
+    # `swt_awt_win32_4427` followed by `(export symbols)`).
+    if ($tail -match '^\(') { continue }
+    # Reject heap-summary noise (ends with LFH / NoLFH).
+    if ($line -match '\b(?:No)?LFH\s*$') { continue }
+    # Mnemonic length sanity check (already enforced by regex, but defensive).
+    if ($mnemonic.Length -lt 2 -or $mnemonic.Length -gt 10) { continue }
+    # Dedup — cdb emits the same faulting instruction repeatedly.
+    if (-not $disassemblySeen.Add($line)) { continue }
     [void]$disassembly.Add($line)
-    if ($disassembly.Count -ge 8) { break }
+    if ($disassembly.Count -ge 5) { break }
 }
 
 # --- thread context (!thread / !teb) ----------------------------------------
@@ -359,17 +418,53 @@ $threadState = _Match1 $raw 'THREAD\s+[0-9a-fA-F`]+\s+\S+\s+([A-Za-z]+)'
 $waitReason = _Match1 $raw 'WAIT:\s*\(([^\)]+)\)'
 
 # --- handle / heap quick stats ----------------------------------------------
+# !handle 0 3 (user mode) emits a single-line total "1032 Handles" followed by
+# a two-column "Type / Count" table:
+#     1032 Handles
+#     Type                     Count
+#     None                     175
+#     Event                    461
+#     ...
+# Older kernel-style "Handle table at <addr> with N entries" never appears in
+# a user-mode dump, so don't bother matching it.
 
-$handleCount = _Match1 $raw 'Handle table at\s+[0-9a-fA-F`]+\s+with\s+(\d+)\s+entries'
-$heapReserved  = _Match1 $raw 'Reserved\s*=\s*([0-9,]+)\s*K'
-$heapCommitted = _Match1 $raw 'Committed\s*=\s*([0-9,]+)\s*K'
-$heapCorrupt   = ($raw -match 'HEAP_ENTRY corrupt|heap corruption detected')
+$handleCount = _Match1 $raw '(?m)^\s*(\d+)\s+Handles\s*$'
 
-# handle type breakdown from !handle 0 3
 $handleTypes = @{}
-foreach ($m in (_MatchAll $raw 'Type\s+(\w+)\s+Count\s+(\d+)')) {
-    $handleTypes[$m.Groups[1].Value] = [int]$m.Groups[2].Value
+$ht = [regex]::Match($raw, '(?ms)^Type\s+Count\s*\r?\n((?:[A-Za-z][\w\s\(\)\-]*?\s+\d+\s*\r?\n)+)')
+if ($ht.Success) {
+    foreach ($line in ($ht.Groups[1].Value -split "`r?`n")) {
+        $row = [regex]::Match($line, '^\s*(.+?)\s+(\d+)\s*$')
+        if ($row.Success) {
+            $handleTypes[$row.Groups[1].Value.Trim()] = [int]$row.Groups[2].Value
+        }
+    }
 }
+
+# !heap -s (NT heap stats) is column-based in KB units:
+#   Heap     Flags   Reserv  Commit  Virt   Free  List   UCR  Virt  Lock  Fast
+#                     (k)     (k)    (k)     (k) length      blocks cont. heap
+#   ---------------------------------------------------------------------------
+#   00000237226b0000 00000002  146260 124724 145868  71830  1444    32   39    3de   LFH
+# Sum the Reserv (col 3) and Commit (col 4) across all data rows. There's no
+# "Reserved = N K" line in user-mode output -- that's a different command.
+
+$heapReserved  = $null
+$heapCommitted = $null
+$heapRows = [regex]::Matches(
+    $raw,
+    '(?m)^[0-9a-fA-F`]{8,18}\s+[0-9a-fA-F]{8}\s+(\d+)\s+(\d+)\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+[0-9a-fA-F]+\s+(?:LFH|N/A)?'
+)
+if ($heapRows.Count -gt 0) {
+    $rSum = 0; $cSum = 0
+    foreach ($r in $heapRows) {
+        $rSum += [int]$r.Groups[1].Value
+        $cSum += [int]$r.Groups[2].Value
+    }
+    $heapReserved  = $rSum.ToString()
+    $heapCommitted = $cSum.ToString()
+}
+$heapCorrupt   = ($raw -match 'HEAP_ENTRY corrupt|heap corruption detected')
 
 # --- virtual address space (!address -summary) --------------------------------
 # cdb format: "Free    214    7ffe`45919000 ( 127.993 TB)   99.99%"
@@ -386,10 +481,25 @@ $vasStackSize   = _VasSize $raw 'Stack'
 $vasUnknownSize = _VasSize $raw '<unknown>'
 
 # --- virtual memory summary (!vm) -------------------------------------------
-# cdb format: "Working Set: <count> pages"  or similar; capture any numeric after the label
-$vmWorkingSet   = _Match1 $raw '(?i)Working Set\s*[:\s]+(\d[\d,.]*\s*(?:kB|MB|GB|pages|K)?)'
-$vmPagefileUsed = _Match1 $raw '(?i)PageFile\s+Usage[^\n]*?(\d[\d,.]*\s*(?:kB|MB|GB|K)?)'
-$vmPeakWS       = _Match1 $raw '(?i)Peak Working Set[^\n]*?(\d[\d,.]*\s*(?:kB|MB|GB|K)?)'
+# cdb's !vm output varies between Windows versions. On Win11 26100 the
+# labels in a USER dump are:
+#   Process Working Set:    NNNN
+#   Peak Working Set Size:  NNNN  ( pages | KB )
+#   Page File Usage:        NNNN  ( pages | KB )
+# Older cdb / kernel-mode !vm uses `Working Set:` / `PageFile Usage:`. Try
+# the modern user-mode labels first, then the legacy ones, then a generic
+# fallback that just grabs the number after any of these label variants.
+function _VmField([string]$Text, [string[]]$Labels) {
+    foreach ($lbl in $Labels) {
+        $pat = '(?im)^\s*' + [regex]::Escape($lbl) + '\s*:?\s+(\d[\d,.]*\s*(?:pages|kB|KB|MB|GB|K)?)'
+        $m = [regex]::Match($Text, $pat)
+        if ($m.Success) { return $m.Groups[1].Value.Trim() }
+    }
+    return $null
+}
+$vmWorkingSet   = _VmField $raw @('Process Working Set','Working Set Size','Working Set')
+$vmPeakWS       = _VmField $raw @('Peak Working Set Size','Peak Working Set')
+$vmPagefileUsed = _VmField $raw @('Page File Usage','PageFile Usage','Pagefile Usage','Commit Charge')
 
 # --- timing (.time) ---------------------------------------------------------
 
@@ -429,11 +539,25 @@ if (-not $currentDir)  { $currentDir  = _Match1 $pebTxt 'CurrentDirectory:\s*(.+
 $dllPath        = _Match1 $pebTxt "DllPath:\s*'([^']*)'"
 
 # --- thread count (distinct THREAD blocks in *~* kb 8 / !thread output) ----
+# Two distinct sources, kept separately so consumers can detect capture
+# truncation. cdb's default output buffer is small; on processes with
+# 100+ threads, `~* kb 8` can stream off the end of the buffer and the
+# per-thread block parser then yields fewer entries than !thread reports.
 
-$threadCount = ([regex]::Matches($raw, '(?m)^THREAD\s+[0-9a-fA-F`]+')).Count
-if ($threadCount -eq 0) {
-    # fallback: count "   N  Id " lines from ~* kb
-    $threadCount = ([regex]::Matches($raw, '(?m)^\s+\d+\s+Id:\s+[0-9a-fA-F]+\.[0-9a-fA-F]+')).Count
+# (a) From !thread (kernel-mode pattern + user-mode !thread `THREAD <addr>`)
+$threadCountReported = ([regex]::Matches($raw, '(?m)^THREAD\s+[0-9a-fA-F`]+')).Count
+# (b) From `~* kb` thread-block headers (user-mode authoritative source)
+$threadCountFromKb   = ([regex]::Matches($raw, '(?m)^\s+\d+\s+Id:\s+[0-9a-fA-F]+\.[0-9a-fA-F]+')).Count
+
+# Pick the larger of (reported, kb-headers) as the canonical count.
+$threadCount = [Math]::Max($threadCountReported, $threadCountFromKb)
+if ($threadCount -eq 0) { $threadCount = $threadStacks.Count }
+
+# Flag a mismatch >5 threads between what !thread reported and what
+# `~* kb` actually emitted into the buffer (= the data we have stacks for).
+$threadCaptureTruncated = $false
+if ($threadCount -gt 0 -and ($threadCount - $threadStacks.Count) -gt 5) {
+    $threadCaptureTruncated = $true
 }
 
 # --- loaded modules (lm) ------------------------------------------------------
@@ -484,15 +608,44 @@ $moduleDetails = New-Object System.Collections.Generic.List[object]
 $topMods = @($stack | Select-Object -First 12 | ForEach-Object { $_.Module } | Where-Object { $_ } | Select-Object -Unique)
 # Also include faulting module if not in top stack
 if ($faultMod -and $faultMod -notin $topMods) { $topMods = @($faultMod) + $topMods }
+# Also include every module that an `lmv m <name>` was issued for. The
+# faulting-stack heuristic alone misses modules whose first hit in the stack
+# is unresolved (e.g. ntdll!KiUserCallbackDispatcherContinue is in the stack
+# as `ntdll!Ki...` but ntdll wasn't always in $topMods because of a
+# resolution gap); pulling from Capture.Commands makes coverage explicit.
+if ($meta -and $meta.Commands) {
+    foreach ($cmd in @($meta.Commands)) {
+        $cmdStr = [string]$cmd
+        $mm = [regex]::Match($cmdStr, '^lmv\s+m\s+(\S+)\s*$')
+        if ($mm.Success) {
+            $mn = $mm.Groups[1].Value
+            if ($topMods -notcontains $mn) { $topMods = @($topMods) + $mn }
+        }
+    }
+}
 foreach ($mn in $topMods) {
-    # Try "start ... end ... modulename" block first (standard lmv header)
-    $pattern = '(?ms)^start\s+[0-9a-fA-F`]+\s+[0-9a-fA-F`]+\s+' + [regex]::Escape($mn) + '\b.*?(?=^start\s+[0-9a-fA-F`]+\s+[0-9a-fA-F`]+\s+\S+|\z)'
+    # cdb's lmv emits a 1-line "Browse all global symbols ..." preamble then
+    # `start  end  module ...` then the detail block. Module name match must
+    # be case-insensitive (cdb normalises filenames inconsistently across
+    # versions and the stack-frame module name may differ in case).
+    $reMod = '(?i)' + [regex]::Escape($mn)
+    # 1) standard `start ... end ... modulename` header
+    $pattern = '(?ms)^start\s+[0-9a-fA-F`]+\s+[0-9a-fA-F`]+\s+' + $reMod + '\b.*?(?=^start\s+[0-9a-fA-F`]+\s+[0-9a-fA-F`]+\s+\S+|\z)'
     $blk = [regex]::Match($raw, $pattern).Value
-    # Fallback: match block that has Image path containing the module DLL name
+    # 2) `Loaded symbol image file:` anchor (always present in lmv, survives
+    #    even when the `start  end  name` header is mangled by a long path)
     if (-not $blk) {
-        $dllName = $mn + '.dll'
-        $altPattern = '(?ms)Image path:\s*[^\n]*' + [regex]::Escape($dllName) + '.*?(?=^start\s+|^quit:|### DumpPilot|\z)'
+        $altPattern = '(?ms)(?:Loaded symbol image file|Image path|Image name):\s*[^\n]*\b' + $reMod + '(?:\.(?:dll|sys|exe))?\b.*?(?=^start\s+|^quit:|### DumpPilot|\z)'
         $blk = [regex]::Match($raw, $altPattern).Value
+    }
+    # 3) Image path containing the module DLL/SYS (most permissive)
+    if (-not $blk) {
+        foreach ($ext in @('.dll','.sys','.exe')) {
+            $imgName = $mn + $ext
+            $altPattern = '(?ms)Image path:\s*[^\n]*' + [regex]::Escape($imgName) + '.*?(?=^start\s+|^quit:|### DumpPilot|\z)'
+            $blk = [regex]::Match($raw, $altPattern).Value
+            if ($blk) { break }
+        }
     }
     if (-not $blk) { continue }
     $symStatus = $null
@@ -548,6 +701,22 @@ foreach ($mname in ($topMods | Select-Object -First 12)) {
         Frames       = $frames.Count
         Resolved     = $resolved
         Unresolved   = ($frames.Count - $resolved)
+    })
+}
+# Synthetic <unmapped> bucket: frames where the "module name" is actually a
+# raw hex address (JIT-emitted code, Java heap pointers, etc). Without this,
+# the totals don't reconcile (ModuleCoverage sums to 34 but $stack has 58)
+# and the LLM blames the real modules' unresolved counts for symbol-quality
+# problems that are actually just non-PE code addresses.
+$unmappedFrames = @($stack | Where-Object {
+    $_.Module -and ($_.Module -match '^0x[0-9a-fA-F`]+$' -or $_.Module -match '^[0-9a-fA-F]+`[0-9a-fA-F]+$')
+})
+if ($unmappedFrames.Count -gt 0) {
+    [void]$moduleCoverage.Add([pscustomobject]@{
+        Module     = '<unmapped>'
+        Frames     = $unmappedFrames.Count
+        Resolved   = 0
+        Unresolved = $unmappedFrames.Count
     })
 }
 
@@ -677,6 +846,9 @@ $summary = [ordered]@{
             DllPath        = $dllPath
         }
         ThreadCount  = $threadCount
+        ThreadCountReported = $threadCountReported
+        ThreadCountCaptured = $threadStacks.Count
+        ThreadCaptureTruncated = $threadCaptureTruncated
         HandleTypes  = $handleTypes
         HeapCorrupt  = $heapCorrupt
     ThreadStacks   = $threadStacks
