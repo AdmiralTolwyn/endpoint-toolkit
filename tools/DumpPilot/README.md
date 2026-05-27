@@ -105,6 +105,89 @@ set _NT_SYMBOL_PATH=srv*C:\Symbols*https://msdl.microsoft.com/download/symbols
 > once from Microsoft's server and reused on subsequent runs. First runs may
 > take 1–2 minutes longer while the cache populates.
 
+## ProcMon integration
+
+DumpPilot can optionally correlate a
+[Process Monitor](https://learn.microsoft.com/en-us/sysinternals/downloads/procmon)
+trace with the crash dump to surface file, registry, and network failures that
+occurred around the time of the crash. This is Stage 2b of the pipeline —
+handled by
+[helpers/Import-ProcMonCorrelation.ps1](helpers/Import-ProcMonCorrelation.ps1).
+
+### How it works
+
+1. **Input** — pass a `.pml` (native ProcMon binary) or `.csv` export via
+   `-ProcMonPath` on the CLI, or use the **Browse** button next to the ProcMon
+   field on the Analyze Dump tab in the GUI.
+2. **PML → CSV** — if a `.pml` is provided and `Procmon.exe` is available,
+   DumpPilot auto-converts it to CSV. If `Procmon.exe` is not on PATH, the
+   Settings tab has a one-click **Install** button
+   (`winget install Sysinternals.ProcessMonitor`) and a path override field.
+3. **C# fast parser** — a compiled-at-runtime C# CSV reader streams the trace
+   (~50× faster than `Import-Csv`), extracting Time of Day, Process Name, PID,
+   Operation, Path, and Result for every event.
+4. **Time-windowed filtering** — only failures within 60 s (configurable via
+   `-WindowSeconds`) before the last target-process event are kept. SUCCESS,
+   BUFFER OVERFLOW, REPARSE, and other benign results are excluded.
+5. **GPU-crash expansion** — if the faulting module matches a GPU/graphics
+   driver regex (`igxel|igc|nvoglv|nvd3d|amdxx|atiux|d3d|opengl`), vendor
+   service failures (RaCEF, igfxEM, nvcontainer, AMDRSServ, …) are included
+   regardless of PID.
+6. **Output** — `procmon-correlation.json` is written alongside
+   `dump-summary.json` and merged into it as a `ProcMonCorrelation` property
+   with `FaultRelated` and `OtherFailures` arrays.
+
+### LLM prompt trimming
+
+Before the correlation data reaches the LLM prompt, Stage 3 applies three
+reduction passes:
+
+| Pass | What it does |
+|------|--------------|
+| **OS-chatter denylist** | Strips noise paths: Power settings, WER temp, AppRepository, Defender cache, IntuneManagementExtension, WinSxS hotpatches, etc. |
+| **Sibling-file consolidation** | Groups failures by Operation \| Parent path \| Result. When ≥ 3 sibling files in the same folder fail the same way, they collapse into a single `\Parent\* (N files)` row with examples. |
+| **Top-25 cap** | After consolidation, keeps only the 25 highest-count failure patterns. Original counts are preserved in metadata (`FaultRelatedTruncatedFrom`, `FaultRelatedDroppedAsOsChatter`). |
+
+The **trimmed** prompt (`llm-prompt.md`, ~40 KB) contains the top-25
+ProcMon failures; the **full** prompt (`llm-prompt.full.md`, often >500 KB)
+retains every failure. Both variants instruct the LLM:
+
+> *The FaultRelated array lists failures whose paths match the faulting module
+> vendor or graphics/driver registry keys. Use these to confirm or refute
+> hypotheses about missing configuration, denied access, or absent registry
+> keys.*
+
+### CLI usage
+
+```powershell
+.\Invoke-DumpPilotPipeline.ps1 -DumpPath 'C:\Dumps\app.dmp' `
+                                -ProcMonPath 'C:\Dumps\trace.pml' -Verbose
+```
+
+### GUI usage
+
+1. On the **Analyze Dump** tab, click **Browse** next to the ProcMon field and
+   select a `.pml` or `.csv` file.
+2. Click **Analyze**. The pipeline runs Stages 1 → 2a → 2b → 3 → 4
+   automatically.
+3. ProcMon failures appear in the HTML report (fault-related table +
+   other-failures subsection) and in both LLM prompt variants.
+
+### Installing Procmon
+
+`Procmon.exe` is only needed when providing `.pml` files (native binary
+traces). If you export to CSV from ProcMon yourself, the executable is not
+required.
+
+- **Settings tab** — click **Install** to run
+  `winget install Sysinternals.ProcessMonitor`.
+- **Manual** — download from the
+  [Sysinternals site](https://learn.microsoft.com/en-us/sysinternals/downloads/procmon)
+  and place `Procmon.exe` on PATH or set its location in Settings.
+- **Auto-discovery** — DumpPilot checks `C:\Tools\Procmon.exe`,
+  `C:\SysinternalsSuite\Procmon.exe`, the winget install path, and finally
+  `Get-Command Procmon.exe`.
+
 ## Key files
 
 | File | Purpose |
@@ -113,7 +196,8 @@ set _NT_SYMBOL_PATH=srv*C:\Symbols*https://msdl.microsoft.com/download/symbols
 | [DumpPilot_UI.xaml](DumpPilot_UI.xaml) | XAML layout |
 | [Invoke-DumpPilotPipeline.ps1](Invoke-DumpPilotPipeline.ps1) | CLI pipeline orchestrator |
 | [Export-DumpFacts.ps1](Export-DumpFacts.ps1) | Stage 1 — cdb wrapper (two-pass) |
-| [ConvertTo-DumpSummary.ps1](ConvertTo-DumpSummary.ps1) | Stage 2 — parser (40+ fields) |
+| [ConvertTo-DumpSummary.ps1](ConvertTo-DumpSummary.ps1) | Stage 2a — parser (40+ fields) |
+| [helpers/Import-ProcMonCorrelation.ps1](helpers/Import-ProcMonCorrelation.ps1) | Stage 2b — ProcMon correlation |
 | [helpers/Invoke-DumpAnalysis.ps1](helpers/Invoke-DumpAnalysis.ps1) | Stage 3 — report + LLM prompt |
 | [helpers/Export-DumpHtmlReport.ps1](helpers/Export-DumpHtmlReport.ps1) | Stage 4 — rich HTML report |
 | [ntstatus_codes.json](ntstatus_codes.json) | 505 NTSTATUS codes from MS-ERREF |
