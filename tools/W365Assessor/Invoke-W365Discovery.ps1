@@ -473,7 +473,7 @@ try {
 # ─── AUDIT EVENTS (last 30 days) ──────────────────────────────────────────
 Write-Status "Audit Events (last 30 days)" -Level 'SECTION'
 try {
-    $since = (Get-Date).AddDays(-30).ToString('o')
+    $since = (Get-Date).AddDays(-30).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
     $auditUri = "$GraphBase/auditEvents?`$filter=activityDateTime ge $since&`$top=200"
     $audits = @(Invoke-GraphPaged -Uri $auditUri)
     Write-Status "Found $($audits.Count) audit event(s)" -Level 'SUCCESS'
