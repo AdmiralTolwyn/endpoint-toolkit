@@ -28,6 +28,7 @@ tools/              # Standalone PowerShell/WPF utilities
 windows/
 ├── applications/   # Generic MSI uninstaller by name pattern / publisher / GUID
 ├── dot3svc/        # Wired AutoConfig (dot3svc) migration reset
+├── print/          # Windows Protected Print (WPP) readiness — flag third-party v3/v4 drivers
 ├── rdp/            # Per-user RDP file signing (no admin required)
 ├── security/       # Hardware speculation mitigations, Secure Boot remediation
 ├── servicing/      # Pre-upgrade disk-space cleanup, WinRE partition resize, ESP free-space reporter
@@ -61,6 +62,7 @@ windows/
 | [macos/servicing/](macos/servicing/) | `macos_dev_cleanup.sh` — semi-interactive developer-storage cleanup (Xcode, VS Code/Cursor/Windsurf, .NET, Gradle, Android, Flutter, JetBrains, Homebrew, Docker, Time Machine) |
 | [windows/applications/](windows/applications/UninstallMsiProduct/README.md) | `Uninstall-MsiProduct.ps1` — generic MSI uninstaller by DisplayName / Publisher / Version / ProductCode wildcards. Registry-driven (no `Win32_Product` side effects); built for vendor agents whose GUID changes per release (e.g. Quest / KACE Agent) |
 | [windows/dot3svc/](windows/dot3svc/) | Reset 802.1X / wired-AutoConfig profiles after migration |
+| [windows/print/](windows/print/) | `Get-PrintDriverWppReadiness.ps1` — flag machines with third-party v3/v4 print drivers (not yet Windows Protected Print ready) ahead of WPP enforcement. Intune Proactive Remediation detection script (exit 0/1) + standalone CSV/JSON fleet inventory; maps drivers to printers actually using them. Read-only |
 | [windows/rdp/](windows/rdp/) | Sign `.rdp` files in user context (no admin required) |
 | [windows/security/](windows/security/) | Hardware speculation mitigations + Secure Boot UEFI CA 2023 remediation (Intune PR pair) |
 | [windows/servicing/](windows/servicing/) | `Invoke-PreUpgradeCleanup.ps1` — reclaim disk space via cleanmgr + DISM before a feature update or after image bake. `Resize-RecoveryPartition.ps1` — resize the WinRE recovery partition (KB5034441 / CVE-2024-20666 remediation). `Get-EspPartitionStatus.ps1` — EFI System Partition size/free reporter as JSON for Grafana/Loki/Telegraf (KB5089549 / 0x800f0922 monitoring) |
