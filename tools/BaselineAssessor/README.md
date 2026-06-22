@@ -189,13 +189,8 @@ BaselineAssessor/
 ├── csp_metadata.json              # CSP metadata (descriptions, allowed values)
 ├── admx_metadata.json             # ADMX policy metadata
 ├── Launch_BaselinePilot.bat       # Batch launcher
-├── PLAN.md                        # Detailed design document
 ├── README.md                      # This file
 ├── assessments/                   # Saved assessment JSON files
 ├── reports/                       # Generated HTML reports
 └── templates/                     # Report templates
 ```
-
-## Design Document
-
-See [PLAN.md](PLAN.md) for the full design document covering architecture, check schema, scoring model, enrichment sources, event collection design, and implementation phases.
