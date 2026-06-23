@@ -2,7 +2,7 @@
 
 **Assess Azure Virtual Desktop environments against CAF, Well-Architected Framework, and Landing Zone Accelerator best practices.**
 
-AVD Assessor is a PowerShell/WPF desktop application that combines automated Azure subscription discovery with a workshop-friendly manual checklist — 145 checks across 10 categories — to produce scored readiness reports with maturity dimensions, category breakdowns, and exportable HTML/CSV/JSON deliverables.
+AVD Assessor is a PowerShell/WPF desktop application that combines automated Azure subscription discovery with a workshop-friendly manual checklist — 173 checks across 11 categories — to produce scored readiness reports with maturity dimensions, category breakdowns, and exportable HTML/CSV/JSON deliverables.
 
 ![PowerShell](https://img.shields.io/badge/PowerShell-5.1%2B-blue)
 ![WPF](https://img.shields.io/badge/GUI-WPF-blueviolet)
@@ -14,8 +14,8 @@ AVD Assessor is a PowerShell/WPF desktop application that combines automated Azu
 
 Running an AVD readiness review typically involves spreadsheets, tribal knowledge, and hours of manual Azure portal checks. Findings are inconsistent between assessors, scoring is subjective, and reports are created from scratch each time. AVD Assessor solves this by:
 
-- **Standardizing the framework**: 145 checks derived from Microsoft CAF, WAF, and LZA guidance, each with severity, weight, effort estimate, and documentation reference
-- **Automating what can be automated**: A standalone discovery script scans Azure subscriptions and evaluates 90+ checks automatically — networking rules, VM configurations, scaling plans, storage security, monitoring, and more
+- **Standardizing the framework**: 173 checks derived from Microsoft CAF, WAF, and LZA guidance, each with severity, weight, effort estimate, and documentation reference
+- **Automating what can be automated**: A standalone discovery script scans Azure subscriptions and evaluates 82 checks automatically — networking rules, VM configurations, scaling plans, storage security, monitoring, and more
 - **Supporting the workshop**: A WPF GUI for interactive walkthroughs where the assessor and customer review checks together, add notes, and set statuses in real time
 - **Scoring objectively**: Weighted category scores, an overall score, and a six-dimension maturity model (Initial → Optimized) provide a clear picture of readiness
 - **Producing deliverables**: One-click export to dark/light HTML reports, CSV data dumps, or JSON snapshots for programmatic consumption
@@ -25,14 +25,14 @@ Running an AVD readiness review typically involves spreadsheets, tribal knowledg
 ## Features
 
 ### Assessment Framework
-- **145 checks** across 10 categories: Identity & Access, Networking, Session Hosts, FSLogix & Profiles, Security, Monitoring, BCDR, Governance & Cost, Application Delivery, Landing Zone
+- **173 checks** across 11 categories: Identity & Access, Networking, Session Hosts, FSLogix & Profiles, Security, Monitoring, BCDR, Governance & Cost, Application Delivery, Operations, Landing Zone
 - Each check carries severity (Critical/High/Medium/Low), weight (1–5), effort estimate (Quick Win/Some Effort/Major Effort), and a Microsoft documentation URL
 - Checks are defined in `checks.json` — extensible without code changes
-- Check types: ~60 automated (discovery-backed) + ~80 manual (workshop review)
+- Check types: 82 automated (discovery-backed) + 91 manual (workshop review)
 
 ### Automated Discovery
 - Standalone `Invoke-AvdDiscovery.ps1` script runs against one or more Azure subscriptions
-- Evaluates 90+ checks automatically via Azure PowerShell modules
+- Evaluates 82 checks automatically via Azure PowerShell modules
 - Discovers host pools, session hosts (VM metadata, boot diagnostics, disk encryption, agent versions), application groups, workspaces, scaling plans, VNets, NSGs, storage accounts, Key Vaults, policies, alerts, quotas, budgets, reserved instances, orphaned resources
 - Outputs a structured JSON that can be imported into the GUI for hybrid assessment
 - Supports multi-subscription scanning, custom output paths, and `‑SkipLogin` for existing Az contexts
@@ -178,16 +178,17 @@ Install-Module Az.Accounts, Az.Compute, Az.DesktopVirtualization, Az.Storage, Az
 
 | Category | Checks | ID Prefix | Sources | Key Areas |
 |---|---|---|---|---|
-| Session Hosts | 20 | SH | WAF, CAF | VM sizing, images, agents, boot diag, disk encryption, power states |
-| Networking | 14 | NET | WAF, LZA | DNS, NSG rules, UDR, NAT Gateway, peering, subnet capacity |
-| Monitoring | 14 | MON | WAF, CAF | Diagnostic settings, alerts, Log Analytics, Connection Monitor |
-| Security | 12 | SEC | SEC, WAF | MFA, conditional access, endpoint protection, TLS, clipboard policy |
-| Identity & Access | 9 | IAM | AVD, WAF | RBAC, Entra ID Join, SSO, service principals, admin isolation |
+| Session Hosts | 26 | SH | WAF, CAF | VM sizing, images, agents, boot diag, disk encryption, power states |
+| FSLogix & Profiles | 25 | PROF | WAF, FSL | Profile containers, VHD locations, exclusions, Azure Files SMB |
+| Security | 24 | SEC | SEC, WAF | MFA, conditional access, endpoint protection, TLS, clipboard policy |
+| Networking | 21 | NET | WAF, LZA | DNS, NSG rules, UDR, NAT Gateway, peering, subnet capacity |
+| Governance & Cost | 17 | GOV | CAF, WAF | Scaling plans, cost tagging, budgets, reserved instances, quotas |
+| Monitoring | 15 | MON | WAF, CAF | Diagnostic settings, alerts, Log Analytics, Connection Monitor |
+| BCDR | 12 | BCDR | WAF | Multi-region, backup, scaling plan schedules, disaster recovery |
+| Identity & Access | 10 | IAM | AVD, WAF | RBAC, Entra ID Join, SSO, service principals, admin isolation |
+| Landing Zone | 10 | LZ | LZA | Resource organization, naming, tagging, policy, hub-spoke |
 | Application Delivery | 9 | APP | WAF | MSIX, RemoteApp, App Attach, app layering, updates |
-| Governance & Cost | 8 | GOV | CAF, WAF | Scaling plans, cost tagging, budgets, reserved instances, quotas |
-| FSLogix & Profiles | 7 | PROF | WAF, FSL | Profile containers, VHD locations, exclusions, Azure Files SMB |
-| BCDR | 7 | BCDR | WAF | Multi-region, backup, scaling plan schedules, disaster recovery |
-| Landing Zone | 5 | LZ | LZA | Resource organization, naming, tagging, policy, hub-spoke |
+| Operations | 4 | OPS | CAF, WAF | Operational readiness, run-books, day-2 processes |
 
 ### Check Metadata
 
@@ -208,12 +209,12 @@ Each check definition in `checks.json` includes:
 
 ### Severity Distribution
 
-| Severity | Approximate Count | Weight Range |
+| Severity | Count | Weight Range |
 |---|---|---|
-| Critical | ~4 | 5 |
-| High | ~50 | 4–5 |
-| Medium | ~70 | 2–4 |
-| Low | ~16 | 1–2 |
+| Critical | 4 | 5 |
+| High | 52 | 4–5 |
+| Medium | 93 | 2–4 |
+| Low | 24 | 1–2 |
 
 ---
 
@@ -283,7 +284,7 @@ Pre-workshop         Workshop                Assessment            Deliverable
 
 ### Offline Assessment
 
-The GUI works fully offline for manual-only assessments — no Azure connection required. All 145 checks can be evaluated manually based on customer documentation and interview.
+The GUI works fully offline for manual-only assessments — no Azure connection required. All 173 checks can be evaluated manually based on customer documentation and interview.
 
 ### Hybrid Mode
 
@@ -297,7 +298,7 @@ Import discovery results to pre-populate automated check statuses, then overlay 
 Overall score, maturity level, per-category breakdown bars, dimension scores, and assessment progress. Refreshes in real time as checks are evaluated.
 
 ### Assessment
-Full checklist of 145 checks grouped by category. Each check row shows severity badge, status dropdown, notes field, weight, and reference link. Supports filtering by category, status, severity, and text search.
+Full checklist of 173 checks grouped by category. Each check row shows severity badge, status dropdown, notes field, weight, and reference link. Supports filtering by category, status, severity, and text search.
 
 ### Findings
 Filtered view of Fail, Warning, and Error checks only. Grouped by category with severity indicators and inline recommendations. 
@@ -392,9 +393,9 @@ The script scans these resource types and generates automated check results:
 AvdAssessor/
 ├── AvdAssessor.ps1              # Main GUI application (41 functions, ~4900 lines)
 ├── AvdAssessor_UI.xaml          # WPF layout, styles, and resource dictionaries
-├── Invoke-AvdDiscovery.ps1     # Standalone discovery script (90+ automated checks)
+├── Invoke-AvdDiscovery.ps1     # Standalone discovery script (82 automated checks)
 ├── Launch_AvdAssessor.bat      # Launcher (auto-detects PS7, falls back to PS5.1)
-├── checks.json                 # 145 check definitions with metadata
+├── checks.json                 # 173 check definitions with metadata
 ├── assessments/                # Saved assessment and discovery JSON files
 │   └── discovery_*.json        # Discovery scan outputs
 ├── reports/                    # Exported HTML/CSV reports
@@ -443,7 +444,7 @@ Invoke-AvdDiscovery.ps1 ─────────▶│  Import      │
   ├─ Scaling Plans                       ▼
   ├─ VNets, NSGs, Storage       ┌────────────────┐
   ├─ Key Vaults, Monitoring     │  Sync Check    │
-  └─ Policies, Budgets, Quotas  │  Definitions   │──▶ 145 checks loaded
+  └─ Policies, Budgets, Quotas  │  Definitions   │──▶ 173 checks loaded
                                 └────────┬───────┘
                                          │
                      ┌───────────────────┼───────────────────┐

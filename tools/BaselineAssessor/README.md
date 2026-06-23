@@ -9,7 +9,7 @@ Customer Machine                        Assessor Workstation
 ┌─────────────────────────┐             ┌──────────────────────────────┐
 │ Invoke-BaselineCollection│  JSON file  │ BaselinePilot.ps1 (WPF GUI) │
 │ .ps1                     │ ──────────► │ + BaselinePilot_UI.xaml      │
-│ (headless, admin, no     │  transfer   │ + checks.json (263 checks)  │
+│ (headless, admin, no     │  transfer   │ + checks.json (308 checks)  │
 │  external modules)       │             │ + csp_metadata.json         │
 └─────────────────────────┘             └──────────────────────────────┘
 ```
@@ -105,18 +105,19 @@ The collector auto-detects the device join type and adjusts behavior:
 | **Report** | Executive summary preview with RTF clipboard copy, HTML/CSV export |
 | **Settings** | Theme, preferences, assessor name, baseline version |
 
-## Check Categories (263 checks)
+## Check Categories (308 checks)
 
 | Category | Prefix | Count | Scope |
 |----------|--------|-------|-------|
 | Security Configuration | SEC | 87 | Security options, services, user rights, SmartScreen, RDP, WinRM, PowerShell |
-| Defender & Endpoint Security | DEF | 42 | Defender settings, ASR rules, VBS, Credential Guard |
-| Authentication & Credentials | AUTH | 32 | Password policy, lockout, Kerberos, LAPS, NTLM |
 | Monitoring & Audit | MON | 50 | Audit policy, event log sizing, audit gap detection |
-| Network Security | NET | 35 | Firewall, SMB, TLS/SCHANNEL, LLMNR/NetBIOS |
-| Data Protection | DATA | 24 | BitLocker, encryption, privacy, removable media |
-| User Account Control | UAC | 11 | UAC settings, elevation prompts, admin approval |
-| Operations & Health | OPS | 20 | Updates, drivers, services, tasks |
+| Defender & Endpoint Security | DEF | 38 | Defender settings, ASR rules, VBS, Credential Guard |
+| Network Security | NET | 34 | Firewall, SMB, TLS/SCHANNEL, LLMNR/NetBIOS |
+| Authentication & Credentials | AUTH | 31 | Password policy, lockout, Kerberos, LAPS, NTLM |
+| Operations & Health | OPS | 31 | Updates, drivers, services, tasks |
+| Data Protection | DATA | 22 | BitLocker, encryption, privacy, removable media |
+| User Account Control | UAC | 10 | UAC settings, elevation prompts, admin approval |
+| Performance & Stability | PERF | 5 | Boot performance, reliability events |
 
 ## Scoring Model
 
@@ -185,7 +186,7 @@ BaselineAssessor/
 ├── BaselinePilot.ps1              # WPF GUI application (~4500 lines)
 ├── BaselinePilot_UI.xaml          # WPF XAML layout
 ├── Invoke-BaselineCollection.ps1  # Headless data collector (22 areas)
-├── checks.json                    # 263 check definitions
+├── checks.json                    # 308 check definitions
 ├── csp_metadata.json              # CSP metadata (descriptions, allowed values)
 ├── admx_metadata.json             # ADMX policy metadata
 ├── Launch_BaselinePilot.bat       # Batch launcher
