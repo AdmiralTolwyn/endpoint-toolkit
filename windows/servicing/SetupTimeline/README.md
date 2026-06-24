@@ -13,10 +13,20 @@ Built for the most common feature-update post-mortem question:
 
 - **Online vs offline phase split** — by default only the **offline** phases
   (Finalize, Safe OS, First Boot, OOBE…) count toward "active upgrade time".
-  The **online** phases (Downlevel, Pre-Finalize) run inside the source OS
-  while the user can still work, so they are excluded by default but visible
-  as `online` in the `Mode` column. Use `-IncludeDownlevel` to fold them
-  into the total.
+  The **online** phases (Pre-Downlevel lead-in, Downlevel, Pre-Finalize) run
+  inside the source OS while the user can still work, so they are excluded by
+  default but visible as `online` in the `Mode` column. Use `-IncludeDownlevel`
+  to fold them into the total.
+- **Whole-experience anchoring** — a synthetic **`Pre-Downlevel`** lead-in
+  segment runs from the log's first timestamp to the first phase marker,
+  capturing the SetupHost / compatibility-scan / dynamic-update download window
+  that precedes formal phase tracking. It is tagged `online` and gated behind
+  `-IncludeDownlevel`, so the default "lockout time" view is unchanged.
+- **Dynamic Update download breakdown** (`-ShowDownloads`) — parses the DCAT
+  transfer markers to answer "was it the download or the apply that took so
+  long?". Reports file count, largest payload sizes (LCU / FODs / language
+  packs), download span, instantaneous throughput (avg / peak / min) and how
+  long the transfer ran below 2 Mbps — all in the same single pass.
 - **Compiled C# scanner** (StreamReader + precompiled regex) — multi-GB
   `setupact.log` files parse at ~30 MB/s.
 - **Idle-gap detection** — gaps between consecutive log timestamps that exceed
@@ -43,8 +53,11 @@ Built for the most common feature-update post-mortem question:
 # Analyse a captured Panther archive:
 .\Get-SetupTimeline.ps1 -LogPath C:\Cases\Device42\Panther
 
-# Include the online phases (Downlevel, Pre-Finalize - excluded by default):
+# Include the online phases (Pre-Downlevel, Downlevel, Pre-Finalize - excluded by default):
 .\Get-SetupTimeline.ps1 -LogPath C:\Windows\Panther -IncludeDownlevel
+
+# Break down the Dynamic Update download (size, throughput, slow-link time):
+.\Get-SetupTimeline.ps1 -LogPath C:\Windows\Panther -IncludeDownlevel -ShowDownloads
 
 # Just the rounded minute count (CI / telemetry):
 $mins = .\Get-SetupTimeline.ps1 -LogPath C:\Windows\Panther -TotalActiveMinutes
@@ -56,7 +69,7 @@ Windows in-place upgrade phases fall into two buckets:
 
 | Mode | Phases | What's happening | User experience |
 |------|--------|------------------|-----------------|
-| **online**  | `Downlevel`, `Pre-Finalize` | Setup runs inside the old / source OS — staging the image, copying files, applying drivers. | Device is up, desktop available, **user can keep working**. |
+| **online**  | `Pre-Downlevel` (synthetic lead-in), `Downlevel`, `Pre-Finalize` | SetupHost initialization, compatibility scan, dynamic update / ESD download, then Setup staging the image, copying files, applying drivers — all inside the old / source OS. | Device is up, desktop available, **user can keep working**. |
 | **offline** | `Finalize`, `Safe OS`, `Pre First Boot`, `Pre SysPrep`, `Post SysPrep`, `Post First Boot`, `Pre OOBE Boot`, `Pre OOBE`, `Post OOBE`, `Post OOBE Boot`, `End` (and synthetic `WinDeploy/OOBE`) | Finalize shows the full-screen "restarting" UI; everything after has rebooted into WinRE / Safe OS or the first boot of the new OS. | Desktop gone / OOBE screen — **user is locked out**. |
 
 By default the script reports **only offline time** — the "how long was the
@@ -69,10 +82,11 @@ the online phases back into the total.
 | Parameter | Default | Purpose |
 |---|---|---|
 | `-LogPath` | auto-discover | File or folder containing `setupact.log`. Folder may be a Panther root or its `UnattendGC` subfolder. If omitted, the script probes `C:\Windows\Panther` and then `C:\$WINDOWS.~BT\Sources\Panther`. |
-| `-IncludeDownlevel` | off | Include the **online** phases (Downlevel, Pre-Finalize). Excluded by default because the user is still productive while they run in the source OS. Name kept for backward compat — the switch covers both online phases, not just Downlevel. |
+| `-IncludeDownlevel` | off | Include the **online** phases (Pre-Downlevel lead-in, Downlevel, Pre-Finalize). Excluded by default because the user is still productive while they run in the source OS. Name kept for backward compat — the switch covers all online phases, not just Downlevel. |
 | `-IdleGapSeconds` | `600` | Threshold above which a gap between consecutive log timestamps is treated as the device being off / asleep. Empirically 600 s avoids false positives from legitimate Setup pauses (driver install, dynamic update download, BCD writes). |
 | `-AsObject` | off | Emit the timeline as `PSCustomObject`s (`Phase`, `Mode`, `Start`, `End`, `Duration`, `Idle`, `Gap`, `Wall`, `HResult`). |
 | `-Csv` | off | Emit the timeline as a semicolon-separated CSV on stdout. |
+| `-ShowDownloads` | off | Append a Dynamic Update / download breakdown beneath the timeline (file count, largest payload sizes, download span, throughput, slow-link time). Parses DCAT transfer markers in the same pass. Applies to the default report only (ignored with `-AsObject` / `-Csv` / `-TotalActiveMinutes`). |
 | `-TotalActiveMinutes` | off | Suppress the table and emit only the rounded total active upgrade time in minutes. |
 
 ## Sample output — default (offline phases only)
@@ -116,22 +130,64 @@ background while you keep working" time.
 ```text
   Setup Timeline
   Log:        C:\Windows\Panther\setupact.log
-  Online:     INCLUDED (Downlevel, Pre-Finalize)
+  Online:     INCLUDED (Pre-Downlevel, Downlevel, Pre-Finalize)
   Idle gap:   > 600s treated as off / standby / sleep
 
   Phase            Mode             Start            End      Active        Idle       Gap  HRESULT
 ----------------------------------------------------------------------------------------------------
-  Downlevel        online  04-13 11:53:56       12:05:46     12m 50s           -         -  -
+  Pre-Downlevel    online  04-13 09:41:40       11:53:56  1h 49m 17s     22m 59s         -  -
+  Downlevel        online        11:53:56       12:05:46     12m 50s           -         -  -
   Pre-Finalize     online        12:05:46       12:49:32     44m 46s           -         -  -
   Finalize         offline       12:49:32       12:54:29      5m 57s           -         -  -
   Safe OS          offline       12:54:29       13:11:40     17m 11s           -         -  0x00000000
   ...
 ----------------------------------------------------------------------------------------------------
-  Active upgrade time : 1h 23m 04s      (83 min)
-  Excluded idle time  : 0s
+  Active upgrade time : 3h 12m 21s      (192 min)
+  Excluded idle time  : 22m 59s
   Inter-phase gaps    : 3m 11s          (reboots and phase handoffs)
-  Wall-clock span     : 1h 26m 15s      (2026-04-13 11:53 -> 2026-04-13 13:20)
+  Wall-clock span     : 3h 38m 31s      (2026-04-13 09:41 -> 2026-04-13 13:20)
 ```
+
+The `Pre-Downlevel` row is the lead-in window — the log's first timestamp
+through the first formal phase marker — where SetupHost runs the compatibility
+scan and downloads the upgrade payload. It is `online` (the user keeps working)
+and its own idle gaps are subtracted, so it reflects active prep work, not the
+full wall-clock window.
+
+## Sample output — `-ShowDownloads`
+
+Appended beneath the timeline. Use it to tell a slow **download** apart from a
+slow **apply** — the DCAT transfer markers carry the payload size and the
+instantaneous byte rate, so a long `Pre-Downlevel` can be attributed precisely.
+
+```text
+  Dynamic Update / Downloads
+----------------------------------------------------------------------------------------------------
+  DU media version    : 10.0.26100.8037, 10.0.26200.8037
+  Files transferred   : 54
+  Measured payload    : 5.43 GB   (largest single 4.50 GB)
+  Download span       : 09:41:55 -> 11:26:15   (1h 44m 20s wall, 1h 44m 20s active)
+  Throughput (inst)   : avg 9.7 Mbps   peak 58.4 Mbps   min 21 Kbps
+  Slow-link (<2 Mbps) : 15m 07s of the transfer ran below 2 Mbps
+
+  Largest payloads                                           Size    Duration     Avg rate
+  Windows11.0-KB5083769-x64.msu                           4.50 GB  1h 13m 59s     8.7 Mbps
+  Windows11.0-KB5043080-x64.msu                          509.0 MB      4m 52s    14.6 Mbps
+  Windows11.0-KB5083826-x64.cab                          120.4 MB      1m 30s    11.2 Mbps
+  Microsoft-Windows-NetFx3-OnDemand-Package~31bf385...    68.0 MB         43s    13.3 Mbps
+  Microsoft-Windows-Client-LanguagePack-Package~31b...    24.4 MB         12s    17.1 Mbps
+```
+
+In this example the 4.5 GB checkpoint cumulative update (`KB5083769`) alone took
+**74 minutes** at ~8.7 Mbps — the single biggest contributor to the upgrade.
+A low **peak** rate or a large **slow-link** figure points at the network /
+Delivery Optimization / proxy path rather than at Setup itself. For the actual
+transfer source (CDN vs. peer) and any throttling, pull the Delivery
+Optimization log separately with `Get-DeliveryOptimizationLog`.
+
+> The download breakdown is independent of `-IncludeDownlevel` — it still
+> renders in the default (offline-only) view, since the download happens during
+> the online lead-in regardless of which phases the table shows.
 
 ## Sample output — `-Csv`
 
@@ -152,12 +208,12 @@ background while you keep working" time.
 ## Sample output — `-Verbose`
 
 ```text
-VERBOSE: Get-SetupTimeline v1.2.0
+VERBOSE: Get-SetupTimeline v1.3.0
 VERBOSE: PowerShell 5.1.26100.8115 on Microsoft Windows NT 10.0.26200.0
 VERBOSE: Main log     : C:\Windows\Panther\setupact.log (710.3 MB)
 VERBOSE: UnattendGC   : C:\Windows\Panther\UnattendGC\setupact.log (0.1 MB)
 VERBOSE: Idle gap     : > 600 seconds treated as off / standby
-VERBOSE: Online phases: excluded (Downlevel, Pre-Finalize)
+VERBOSE: Online phases: excluded (Pre-Downlevel, Downlevel, Pre-Finalize)
 VERBOSE: Scanned setupact.log in 23.9s (29.7 MB/s) - 20 phase markers, 6 idle gaps
 VERBOSE: Scanned setupact.log in 0.0s - 2 markers, 7 idle gaps
 ```
@@ -200,14 +256,17 @@ subsequent runs in the same session skip the compilation step entirely.
 4. **Build segments** by walking markers in order; each `Start` opens a phase
    and the next `Exit` (or the next `Start` of a different phase) closes it.
    Same-phase repeats (e.g. Downlevel restart) are coalesced.
-5. **Compute Active = Wall − overlapping idle gaps** for every segment.
-6. **Render** the table, optionally suppressed by `-AsObject`, `-Csv`, or
+5. **Prepend the synthetic `Pre-Downlevel` lead-in** from the log's first
+   timestamp to the first phase marker (only shown with `-IncludeDownlevel`).
+6. **Compute Active = Wall − overlapping idle gaps** for every segment.
+7. **Render** the table, optionally suppressed by `-AsObject`, `-Csv`, or
    `-TotalActiveMinutes`.
 
 ## Phase reference
 
 | Phase | Mode | Notes |
 |---|---|---|
+| `Pre-Downlevel` | online | Synthetic lead-in — log's first timestamp to the first phase marker. SetupHost init, compatibility scan, dynamic update / ESD download. User productive. Shown only with `-IncludeDownlevel`. |
 | `Downlevel` | online | Old OS still running. Image staging starts. User productive. |
 | `Pre-Finalize` | online | Bulk of the offline work pre-staged online — typically the largest phase. Image copy, driver staging. User productive. |
 | `Finalize` | offline | Last step before the SafeOS reboot. Setup shows its full-screen "restarting" UI — user is locked out of the desktop. |

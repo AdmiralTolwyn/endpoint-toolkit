@@ -8,12 +8,20 @@
     long each upgrade phase actually took. Uses a compiled C# helper (StreamReader
     + regex) so multi-GB setupact.log files are processed in seconds.
 
-    By default the ONLINE phases (Downlevel, Pre-Finalize) are excluded
-    because they run inside the still-booted source OS - the user can keep
-    working during them. Pass -IncludeDownlevel to keep them. The remaining
+    By default the ONLINE phases (Pre-Downlevel, Downlevel, Pre-Finalize) are
+    excluded because they run inside the still-booted source OS - the user can
+    keep working during them. Pass -IncludeDownlevel to keep them. The remaining
     (OFFLINE) phases - including Finalize, which shows the full-screen
     "restarting" UI - run after the user is locked out of the desktop.
     Every row is tagged 'online' or 'offline' in the Mode column.
+
+    A synthetic 'Pre-Downlevel' lead-in segment is added from the log's first
+    timestamp to the first OPERATIONTRACK marker. setupact.log begins logging at
+    SetupHost launch (compatibility scan, dynamic update / ESD download, WinRE
+    servicing) well before the first formal phase marker, so anchoring here lets
+    the timeline reflect the whole upgrade experience rather than just the
+    phase-bracketed window. It is tagged 'online' and follows the same
+    -IncludeDownlevel gating as the other online phases.
 
     If a setupact_unattendGC.log sits next to setupact.log, its WinDeploy/
     OOBE timestamps are used to extend the timeline through the OOBE phase.
@@ -32,10 +40,10 @@
     If omitted, the local machine's Panther folder is auto-discovered.
 
 .PARAMETER IncludeDownlevel
-    Include the online phases (Downlevel, Pre-Finalize) in the timeline.
-    Off by default - these phases run in the source OS while the user is
-    still productive, so excluding them gives the "lockout time" number
-    that IT typically wants to quote. Name kept for backward compat.
+    Include the online phases (Pre-Downlevel lead-in, Downlevel, Pre-Finalize)
+    in the timeline. Off by default - these phases run in the source OS while
+    the user is still productive, so excluding them gives the "lockout time"
+    number that IT typically wants to quote. Name kept for backward compat.
 
 .PARAMETER AsObject
     Emit the timeline as PSCustomObjects instead of writing the formatted report.
@@ -57,6 +65,17 @@
     Emit the timeline as CSV (semicolon-separated) instead of the formatted
     table. Implies -AsObject style data without the human-friendly rendering.
 
+.PARAMETER ShowDownloads
+    Append a Dynamic Update / download breakdown beneath the timeline. Parses
+    the DCAT transfer markers in setupact.log (Transferring file / Transfer
+    progress) to report how many files were fetched, the size of the largest
+    payloads (LCU, FODs, language packs), the download span, and the
+    instantaneous throughput (avg / peak / min) - plus how long the transfer
+    spent below 2 Mbps. The download window is almost always the bulk of the
+    online 'Pre-Downlevel' lead-in, so this answers "was it the download or the
+    apply that took so long?". Applies to the default report only (ignored with
+    -AsObject / -Csv / -TotalActiveMinutes).
+
 .EXAMPLE
     .\Get-SetupTimeline.ps1 -LogPath C:\temp\TK\setupact_MX-PF5041LA
 
@@ -68,11 +87,15 @@
     .\Get-SetupTimeline.ps1 -LogPath C:\Windows\Panther -IncludeDownlevel
 
 .EXAMPLE
+    # Break down the Dynamic Update download (size, throughput, slow-link time):
+    .\Get-SetupTimeline.ps1 -LogPath C:\Windows\Panther -IncludeDownlevel -ShowDownloads
+
+.EXAMPLE
     $mins = .\Get-SetupTimeline.ps1 -LogPath C:\temp\setupact.log -TotalActiveMinutes
 
 .NOTES
     Author     : Anton Romanyuk
-    Version    : 1.2.0
+    Version    : 1.3.0
     Requires   : Windows PowerShell 5.1 or PowerShell 7+
     License    : MIT
 
@@ -99,9 +122,9 @@ param(
     [Parameter(Mandatory = $false, Position = 0)]
     [string]$LogPath,
 
-    # Include the online phases (Downlevel, Pre-Finalize). Off by default -
-    # they run in the source OS while the user is still productive. Name
-    # kept (rather than -IncludeOnlinePhases) for backward compat.
+    # Include the online phases (Pre-Downlevel lead-in, Downlevel, Pre-Finalize).
+    # Off by default - they run in the source OS while the user is still
+    # productive. Name kept (rather than -IncludeOnlinePhases) for backward compat.
     [switch]$IncludeDownlevel,
 
     # Return PSCustomObjects instead of the formatted report.
@@ -116,13 +139,18 @@ param(
     [switch]$TotalActiveMinutes,
 
     # Emit the timeline as semicolon-separated CSV.
-    [switch]$Csv
+    [switch]$Csv,
+
+    # Append a Dynamic Update / download breakdown (file count, payload sizes,
+    # throughput, slow-link time) beneath the timeline. Parses DCAT transfer
+    # markers; applies to the default report only.
+    [switch]$ShowDownloads
 )
 
 $ErrorActionPreference = 'Stop'
 
 # Bump $ScriptVersion when behaviour or output format changes.
-$ScriptVersion = '1.2.0'
+$ScriptVersion = '1.3.0'
 $ScriptAuthor  = 'Anton Romanyuk'
 
 Write-Verbose ("Get-SetupTimeline v{0}" -f $ScriptVersion)
@@ -277,22 +305,26 @@ if ($unattendLog -and (Test-Path -LiteralPath $unattendLog)) {
     Write-Verbose 'UnattendGC   : (not present - OOBE timeline will be skipped)'
 }
 Write-Verbose ("Idle gap     : > {0} seconds treated as off / standby" -f $IdleGapSeconds)
-Write-Verbose ("Online phases: {0} (Downlevel, Pre-Finalize)" -f ($(if ($IncludeDownlevel) { 'INCLUDED' } else { 'excluded' })))
+Write-Verbose ("Online phases: {0} (Pre-Downlevel, Downlevel, Pre-Finalize)" -f ($(if ($IncludeDownlevel) { 'INCLUDED' } else { 'excluded' })))
 
 # =============================================================================
 # STEP 2 - Compile the C# scanner once per AppDomain.
 # =============================================================================
 # A pure-PS parser is 50-100x slower on multi-hundred-MB setupact.log files.
 # The 'as [type]' guard avoids re-compilation on subsequent invocations.
+# NB: the namespace carries a version suffix (…V4). Bump it whenever the C#
+# shape changes - Add-Type cannot replace an already-loaded type in a
+# long-lived session (e.g. PS 5.1 console), so a new namespace forces the
+# updated class to load instead of silently reusing the stale one.
 # -----------------------------------------------------------------------------
-if (-not ('SetupTimelineV2.Scanner' -as [type])) {
+if (-not ('SetupTimelineV4.Scanner' -as [type])) {
     Add-Type -TypeDefinition @'
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text.RegularExpressions;
 
-namespace SetupTimelineV2 {
+namespace SetupTimelineV4 {
     // One OPERATIONTRACK / phase-exit / WinDeploy event extracted from a log line.
     public class Marker {
         public DateTime Time;
@@ -313,13 +345,38 @@ namespace SetupTimelineV2 {
         public TimeSpan Duration;
     }
 
+    // One Dynamic Update file transfer start ("Transferring file from url ... to ...").
+    public class Transfer {
+        public DateTime Time;
+        public string   Name;   // destination leaf
+        public string   Url;
+    }
+
+    // One DCAT transfer progress sample ("Transfer: [done / total] [pct%] [inst][avg]").
+    public class Progress {
+        public DateTime Time;
+        public long     Done;
+        public long     Total;
+        public int      Pct;
+        public long     Inst;   // instantaneous bytes/s
+        public long     Avg;    // reported average bytes/s
+    }
+
     public class ScanResult {
         public List<Marker>  Markers  = new List<Marker>();
         public List<GapInfo> Gaps     = new List<GapInfo>();
+        // First timestamped line - anchors the synthetic 'Pre-Downlevel' lead-in
+        // (SetupHost / compat scan / download) that precedes the first phase marker.
+        public DateTime      FirstTime = DateTime.MinValue;
         // Last timestamped line - used to close trailing open phases on
         // in-flight upgrades (no "exiting with HRESULT" written yet).
         public DateTime      LastTime = DateTime.MinValue;
         public int           LineCount;
+        // Dynamic Update download activity (populated only when captureDownloads=true).
+        public List<Transfer>  Transfers       = new List<Transfer>();
+        public List<Progress>  Progress        = new List<Progress>();
+        public HashSet<string> MediaVersions   = new HashSet<string>();
+        public long            DuCategoryBytes = 0;
     }
 
     public static class Scanner {
@@ -339,9 +396,22 @@ namespace SetupTimelineV2 {
         private static readonly Regex _ts = new Regex(
             @"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),",
             RegexOptions.Compiled);
+        // Dynamic Update download markers (only matched when captureDownloads=true).
+        private static readonly Regex _xferStart = new Regex(
+            @"FCDCATHelper: Transferring file from url \[(.*?)\] to \[(.*?)\]",
+            RegexOptions.Compiled);
+        private static readonly Regex _xferProg = new Regex(
+            @"FCDCATHelper: Transfer: \[0x([0-9A-Fa-f]+) / 0x([0-9A-Fa-f]+)\] \[(\d+)%\] \[(\d+) bytes/s\] \[(\d+) Avg bytes/s\]",
+            RegexOptions.Compiled);
+        private static readonly Regex _duReq = new Regex(
+            @"FCAcquirerDCAT: Given DU Category requires \[(\d+)\] bytes",
+            RegexOptions.Compiled);
+        private static readonly Regex _media = new Regex(
+            @"""MediaVersion""\s*:\s*""([^""]+)""",
+            RegexOptions.Compiled);
 
         // Single-pass scan. unattendGc=true captures only WinDeploy markers.
-        public static ScanResult Scan(string path, bool unattendGc, int idleGapSeconds) {
+        public static ScanResult Scan(string path, bool unattendGc, int idleGapSeconds, bool captureDownloads) {
             var result       = new ScanResult();
             var gapThreshold = TimeSpan.FromSeconds(idleGapSeconds);
             DateTime prevTs  = DateTime.MinValue;
@@ -361,6 +431,7 @@ namespace SetupTimelineV2 {
                     DateTime ts;
                     if (!DateTime.TryParse(tm.Groups[1].Value, out ts)) continue;
                     result.LineCount++;
+                    if (result.FirstTime == DateTime.MinValue) result.FirstTime = ts;
                     result.LastTime = ts;
 
                     // Idle gap detection - Setup itself never pauses for more
@@ -373,6 +444,40 @@ namespace SetupTimelineV2 {
                         // delta < 0 (clock jumped back, e.g. VM time-sync) is silently ignored.
                     }
                     prevTs = ts;
+
+                    // Dynamic Update download capture - cheap substring prefilter first
+                    // so the per-line regex cost is only paid on DCAT / session lines.
+                    if (captureDownloads &&
+                        (line.IndexOf("DCAT", StringComparison.Ordinal) >= 0 ||
+                         line.IndexOf("MediaVersion", StringComparison.Ordinal) >= 0)) {
+                        var xpr = _xferProg.Match(line);
+                        if (xpr.Success) {
+                            result.Progress.Add(new Progress {
+                                Time  = ts,
+                                Done  = Convert.ToInt64(xpr.Groups[1].Value, 16),
+                                Total = Convert.ToInt64(xpr.Groups[2].Value, 16),
+                                Pct   = int.Parse(xpr.Groups[3].Value),
+                                Inst  = long.Parse(xpr.Groups[4].Value),
+                                Avg   = long.Parse(xpr.Groups[5].Value)
+                            });
+                        } else {
+                            var xst = _xferStart.Match(line);
+                            if (xst.Success) {
+                                result.Transfers.Add(new Transfer {
+                                    Time = ts, Url = xst.Groups[1].Value,
+                                    Name = System.IO.Path.GetFileName(xst.Groups[2].Value)
+                                });
+                            } else {
+                                var dq = _duReq.Match(line);
+                                if (dq.Success) {
+                                    long b; if (long.TryParse(dq.Groups[1].Value, out b)) result.DuCategoryBytes += b;
+                                } else {
+                                    var mv = _media.Match(line);
+                                    if (mv.Success) result.MediaVersions.Add(mv.Groups[1].Value);
+                                }
+                            }
+                        }
+                    }
 
                     if (!unattendGc) {
                         var m = _start.Match(line);
@@ -419,21 +524,25 @@ namespace SetupTimelineV2 {
 # STEP 3 - Run the scanner (main log + optional OOBE log).
 # =============================================================================
 $sw      = [System.Diagnostics.Stopwatch]::StartNew()
-$scan    = [SetupTimelineV2.Scanner]::Scan($mainLog, $false, $IdleGapSeconds)
+$scan    = [SetupTimelineV4.Scanner]::Scan($mainLog, $false, $IdleGapSeconds, $ShowDownloads.IsPresent)
 # Strongly-typed list lets us .Add() / [-1] index across PS 5.1 and PS 7.
 $markers = [System.Collections.Generic.List[object]]::new()
 foreach ($m in $scan.Markers) { [void]$markers.Add($m) }
 $gaps        = $scan.Gaps
-$lastLogTime = $scan.LastTime  # used to close trailing in-flight phases
+$lastLogTime = $scan.LastTime   # used to close trailing in-flight phases
+$firstLogTime = $scan.FirstTime # anchors the synthetic Pre-Downlevel lead-in
 $sw.Stop()
 $mbPerSec = if ($sw.Elapsed.TotalSeconds -gt 0) { ($mainSize / 1MB) / $sw.Elapsed.TotalSeconds } else { 0 }
 Write-Verbose ("Scanned setupact.log in {0:N1}s ({1:N1} MB/s) - {2} phase markers, {3} idle gaps" -f `
     $sw.Elapsed.TotalSeconds, $mbPerSec, $markers.Count, $gaps.Count)
+if ($ShowDownloads) {
+    Write-Verbose ("Download capture: {0} file transfers, {1} progress samples" -f $scan.Transfers.Count, $scan.Progress.Count)
+}
 
 # Merge OOBE log into the same marker/gap pools so segment-builder sees one stream.
 if ($unattendLog -and (Test-Path -LiteralPath $unattendLog)) {
     $sw2 = [System.Diagnostics.Stopwatch]::StartNew()
-    $wd  = [SetupTimelineV2.Scanner]::Scan($unattendLog, $true, $IdleGapSeconds)
+    $wd  = [SetupTimelineV4.Scanner]::Scan($unattendLog, $true, $IdleGapSeconds, $false)
     $sw2.Stop()
     foreach ($m in $wd.Markers) { [void]$markers.Add($m) }
     foreach ($g in $wd.Gaps)    { $gaps += $g }
@@ -514,6 +623,23 @@ foreach ($s in $segments) {
     }
 }
 
+# Synthetic 'Pre-Downlevel' lead-in: the window from the log's first timestamp
+# to the first OPERATIONTRACK marker. setupact.log starts logging at SetupHost
+# launch (compat scan, dynamic update / ESD download, WinRE servicing) well
+# before the first formal phase marker is written. Anchoring here lets the
+# report reflect the whole upgrade experience, not just the phase-bracketed
+# window. Tagged 'online' (runs in the source OS, user still productive) so it
+# follows the same -IncludeDownlevel gating as the other online phases; its
+# internal idle gaps are clipped/subtracted by the per-segment loop below.
+if ($coalesced.Count -gt 0 -and $firstLogTime -gt [datetime]::MinValue -and $firstLogTime -lt $coalesced[0].Start) {
+    $coalesced.Insert(0, [pscustomobject]@{
+        Phase   = 'Pre-Downlevel'
+        Start   = $firstLogTime
+        End     = $coalesced[0].Start
+        HResult = $null
+    })
+}
+
 # =============================================================================
 # STEP 5 - Per-segment Active = Wall - sum(idle gaps inside it).
 # =============================================================================
@@ -526,7 +652,7 @@ $prevEnd  = $null
 # Everything else runs in WinRE / Safe OS / first boot / OOBE - user locked out.
 # Finalize is offline because Setup shows its full-screen "restarting" UI
 # and the user can no longer interact with the desktop.
-$onlinePhases = @('Downlevel','Pre-Finalize')
+$onlinePhases = @('Pre-Downlevel','Downlevel','Pre-Finalize')
 foreach ($s in $coalesced) {
     if (-not $IncludeDownlevel -and $onlinePhases -contains $s.Phase) { continue }
     $wall = $s.End - $s.Start
@@ -630,7 +756,7 @@ $sep = '-' * 100
 Write-Host ''
 Write-Host ('  Setup Timeline')                                    -ForegroundColor Cyan
 Write-Host ('  Log:        {0}' -f $mainLog)                       -ForegroundColor DarkGray
-Write-Host ('  Online:     {0}' -f ($(if ($IncludeDownlevel) { 'INCLUDED (Downlevel, Pre-Finalize)' } else { 'excluded (Downlevel, Pre-Finalize - user productive)' }))) -ForegroundColor DarkGray
+Write-Host ('  Online:     {0}' -f ($(if ($IncludeDownlevel) { 'INCLUDED (Pre-Downlevel, Downlevel, Pre-Finalize)' } else { 'excluded (Pre-Downlevel, Downlevel, Pre-Finalize - user productive)' }))) -ForegroundColor DarkGray
 Write-Host ('  Idle gap:   > {0}s treated as off / standby / sleep' -f $IdleGapSeconds) -ForegroundColor DarkGray
 Write-Host ''
 Write-Host ($fmt -f 'Phase','Mode','Start','End','Active','Idle','Gap','HRESULT') -ForegroundColor Yellow
@@ -656,3 +782,138 @@ if ($timeline.Count -gt 0) {
         (Format-Duration ($last - $first)), $first, $last) -ForegroundColor DarkGray
 }
 Write-Host ''
+
+# =============================================================================
+# STEP 7 - Optional Dynamic Update / download breakdown (-ShowDownloads).
+# =============================================================================
+# The DCAT transfer markers tell us whether the (usually dominant) online
+# lead-in was spent DOWNLOADING the DU payload or APPLYING it. Progress lines
+# carry the payload size + instantaneous/avg byte rate; transfer-start lines
+# name each file. Grouping progress samples by their Total size separates the
+# big payloads (LCU, ESD) from the many tiny FOD / language-pack cabs.
+# -----------------------------------------------------------------------------
+if ($ShowDownloads) {
+    $dlTransfers = $scan.Transfers
+    $dlProgress  = $scan.Progress
+    $dlMedia     = @($scan.MediaVersions)
+    $dlCatBytes  = [double]$scan.DuCategoryBytes
+
+    Write-Host ('  Dynamic Update / Downloads') -ForegroundColor Cyan
+    Write-Host $sep -ForegroundColor DarkGray
+
+    if (($dlTransfers.Count -eq 0) -and ($dlProgress.Count -eq 0)) {
+        Write-Host '  No Dynamic Update download activity found.' -ForegroundColor DarkGray
+        Write-Host '  (DU may be disabled / pre-staged, or this is not a downlevel setupact.log.)' -ForegroundColor DarkGray
+        Write-Host ''
+    } else {
+        # bytes -> human; bytes/s -> Mbps (decimal megabits, the link-speed convention).
+        function Format-Bytes([double]$b) {
+            if ($b -ge 1GB) { return ('{0:N2} GB' -f ($b / 1GB)) }
+            if ($b -ge 1MB) { return ('{0:N1} MB' -f ($b / 1MB)) }
+            if ($b -ge 1KB) { return ('{0:N0} KB' -f ($b / 1KB)) }
+            return ('{0:N0} B' -f $b)
+        }
+        # bytes/s -> link-speed string. Drops to Kbps below 1 Mbps so a stalled
+        # transfer (e.g. 2.6 KB/s) shows '21 Kbps', not a misleading '0.0 Mbps'.
+        function Format-Rate([double]$bps) {
+            $mbps = $bps * 8 / 1e6
+            if ($mbps -ge 1)    { return ('{0:N1} Mbps' -f $mbps) }
+            if ($bps  -ge 125)  { return ('{0:N0} Kbps' -f ($bps * 8 / 1e3)) }
+            return ('{0:N0} bps' -f ($bps * 8))
+        }
+
+        # Group progress samples into payloads: a change in Total size = new file.
+        $payloads = New-Object System.Collections.Generic.List[object]
+        $curTotal = -1; $grp = $null
+        foreach ($p in $dlProgress) {
+            if ([long]$p.Total -ne [long]$curTotal) {
+                if ($grp) { $payloads.Add($grp) }
+                $curTotal = [long]$p.Total
+                $grp = [pscustomobject]@{ Total = [long]$p.Total; Start = $p.Time; End = $p.Time; Name = '(unknown)' }
+            }
+            $grp.End = $p.Time
+        }
+        if ($grp) { $payloads.Add($grp) }
+
+        # Attach the nearest preceding transfer filename + true start time.
+        foreach ($pl in $payloads) {
+            $src = $dlTransfers | Where-Object { $_.Time -le $pl.Start } | Select-Object -Last 1
+            if ($src) {
+                $pl.Name = $src.Name
+                if ($src.Time -lt $pl.Start) { $pl.Start = $src.Time }
+            }
+        }
+
+        $allInst    = @($dlProgress | Where-Object { $_.Inst -gt 0 } | ForEach-Object { [double]$_.Inst })
+        $sumPayload = ($payloads | Measure-Object Total -Sum).Sum
+        $largest    = $payloads | Sort-Object Total -Descending | Select-Object -First 1
+
+        # Download span = first transfer start -> last progress sample.
+        $dlStart = if ($dlTransfers.Count -gt 0) { ($dlTransfers | Select-Object -First 1).Time }
+                   elseif ($payloads.Count -gt 0) { $payloads[0].Start } else { $null }
+        $dlEnd   = if ($dlProgress.Count -gt 0) { ($dlProgress | Select-Object -Last 1).Time }
+                   elseif ($dlTransfers.Count -gt 0) { ($dlTransfers | Select-Object -Last 1).Time } else { $null }
+
+        # Idle inside the download span (device asleep mid-download).
+        $dlIdle = [TimeSpan]::Zero
+        if ($dlStart -and $dlEnd) {
+            foreach ($g in $gaps) {
+                if ($g.From -lt $dlEnd -and $g.To -gt $dlStart) {
+                    $cf = if ($g.From -gt $dlStart) { $g.From } else { $dlStart }
+                    $ct = if ($g.To   -lt $dlEnd)   { $g.To   } else { $dlEnd }
+                    $dlIdle += ($ct - $cf)
+                }
+            }
+        }
+
+        if ($dlMedia.Count -gt 0) {
+            Write-Host ('  DU media version    : {0}' -f ($dlMedia -join ', '))
+        }
+        Write-Host ('  Files transferred   : {0}' -f $dlTransfers.Count)
+        if ($sumPayload -gt 0) {
+            Write-Host ('  Measured payload    : {0}   (largest single {1})' -f (Format-Bytes $sumPayload), (Format-Bytes $largest.Total))
+        } elseif ($dlCatBytes -gt 0) {
+            Write-Host ('  DU category size    : {0}' -f (Format-Bytes $dlCatBytes))
+        }
+        if ($dlStart -and $dlEnd) {
+            $wall = $dlEnd - $dlStart
+            $act  = $wall - $dlIdle; if ($act.Ticks -lt 0) { $act = [TimeSpan]::Zero }
+            Write-Host ('  Download span       : {0:HH:mm:ss} -> {1:HH:mm:ss}   ({2} wall, {3} active)' -f `
+                $dlStart, $dlEnd, (Format-Duration $wall), (Format-Duration $act))
+        }
+        if ($allInst.Count -gt 0) {
+            $mn = ($allInst | Measure-Object -Minimum).Minimum
+            $av = ($allInst | Measure-Object -Average).Average
+            $mx = ($allInst | Measure-Object -Maximum).Maximum
+            Write-Host ('  Throughput (inst)   : avg {0}   peak {1}   min {2}' -f (Format-Rate $av), (Format-Rate $mx), (Format-Rate $mn))
+        }
+
+        # Slow-link diagnostic: wall time the transfer spent below ~2 Mbps.
+        $slowThresh = 250000.0  # bytes/s ~= 2 Mbps
+        $slow = [TimeSpan]::Zero
+        for ($i = 1; $i -lt $dlProgress.Count; $i++) {
+            $a = $dlProgress[$i - 1]; $b = $dlProgress[$i]
+            if ([long]$a.Total -eq [long]$b.Total -and $b.Inst -gt 0 -and $b.Inst -lt $slowThresh) {
+                $d = $b.Time - $a.Time
+                if ($d.TotalSeconds -ge 0 -and $d.TotalSeconds -le 600) { $slow += $d }
+            }
+        }
+        if ($slow.TotalSeconds -ge 30) {
+            Write-Host ('  Slow-link (<2 Mbps) : {0} of the transfer ran below 2 Mbps' -f (Format-Duration $slow)) -ForegroundColor Yellow
+        }
+
+        # Largest payloads table (size / duration / avg rate).
+        $topN = $payloads | Sort-Object Total -Descending | Select-Object -First 6
+        if ($topN.Count -gt 0) {
+            Write-Host ''
+            Write-Host ('  {0,-52} {1,10} {2,11} {3,12}' -f 'Largest payloads', 'Size', 'Duration', 'Avg rate') -ForegroundColor Yellow
+            foreach ($pl in $topN) {
+                $dur = $pl.End - $pl.Start
+                $avg = if ($dur.TotalSeconds -gt 0) { $pl.Total / $dur.TotalSeconds } else { 0 }
+                $nm  = if ($pl.Name.Length -gt 52) { $pl.Name.Substring(0, 49) + '...' } else { $pl.Name }
+                Write-Host ('  {0,-52} {1,10} {2,11} {3,12}' -f $nm, (Format-Bytes $pl.Total), (Format-Duration $dur), (Format-Rate $avg))
+            }
+        }
+        Write-Host ''
+    }
+}
