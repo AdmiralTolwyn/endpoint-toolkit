@@ -167,12 +167,21 @@ function Get-FeatureSettingsDecoding {
 function Get-SpeculationStatus {
     Write-ColorLog -Message "Querying CPU speculation control flags (ntdll class 201)..." -Level "Info"
 
+    # Speculation-control flags (ntdll class 201). See ADV180002 / KB4073119.
+    # SsbdRequired is the STATIC hardware-vulnerability flag (never clears); SsbdSystemWide is
+    # the flag that flips once SSBD is actually active (registry + reboot + CPU microcode).
     $scfMdsHardwareProtected = 0x1000000
-    $scfSsbdRequired         = 0x1000
+    $scfSsbdAvailable        = 0x100     # OS support for SSBD present
+    $scfSsbdSupported        = 0x200     # CPU microcode supports SSBD
+    $scfSsbdSystemWide       = 0x400     # SSBD ENABLED system-wide
+    $scfSsbdRequired         = 0x1000    # hardware is VULNERABLE / requires SSBD (STATIC)
 
     $results = @{
         MdsVulnerable    = $false
         SsbVulnerable    = $false
+        SsbdSystemWide   = $false
+        SsbdAvailable    = $false
+        SsbdSupported    = $false
         Success          = $false
         RawFlags         = $null
         CpuManufacturer  = $null
@@ -215,8 +224,15 @@ function Get-SpeculationStatus {
         }
         $results.MdsVulnerable = (-not $mdsProtected)
 
-        # SSB (ADV180012): SSBD required => currently vulnerable / not yet mitigated.
-        $results.SsbVulnerable = (($flags -band $scfSsbdRequired) -ne 0)
+        # SSB (ADV180012): vulnerable ONLY if the hardware requires SSBD AND it is not enabled
+        # system-wide. SsbdRequired alone is the static silicon flag - it stays TRUE after the
+        # mitigation is enabled, so using it by itself reports a remediated device as vulnerable.
+        $ssbdRequired   = (($flags -band $scfSsbdRequired)   -ne 0)
+        $ssbdSystemWide = (($flags -band $scfSsbdSystemWide) -ne 0)
+        $results.SsbdSystemWide = $ssbdSystemWide
+        $results.SsbdAvailable  = (($flags -band $scfSsbdAvailable) -ne 0)
+        $results.SsbdSupported  = (($flags -band $scfSsbdSupported) -ne 0)
+        $results.SsbVulnerable  = ($ssbdRequired -and -not $ssbdSystemWide)
 
         $results.Success = $true
     }
@@ -413,7 +429,19 @@ if ($status.Success) {
     $mdsClr = if ($status.MdsVulnerable) { 'Warning' } else { 'Success' }
     $ssbClr = if ($status.SsbVulnerable) { 'Warning' } else { 'Success' }
     Write-ColorLog -Message ("MDS (ADV190013)  : {0}" -f $(if ($status.MdsVulnerable) { 'VULNERABLE' } else { 'Protected' })) -Level $mdsClr
-    Write-ColorLog -Message ("SSB (ADV180012)  : {0}" -f $(if ($status.SsbVulnerable) { 'VULNERABLE (SSBD required)' } else { 'Protected' })) -Level $ssbClr
+    Write-ColorLog -Message ("SSB (ADV180012)  : {0}" -f $(if ($status.SsbVulnerable) { 'VULNERABLE (SSBD required, not active)' } else { 'Protected' })) -Level $ssbClr
+    Write-ColorLog -Message ("  SSBD runtime    : SystemWide={0} Available(OS)={1} Supported(microcode)={2}" -f $status.SsbdSystemWide, $status.SsbdAvailable, $status.SsbdSupported) -Level "Verbose"
+    if ($status.SsbVulnerable) {
+        # Explain WHY it is still vulnerable so "ran remediation + rebooted, still flagged" is actionable.
+        if (-not $status.SsbdSupported) {
+            Write-ColorLog -Message "  SSB reason      : CPU microcode does NOT support SSBD - a firmware/BIOS update is required (ADV180002). Registry alone cannot activate it." -Level "Warning"
+        } elseif (-not $status.SsbdAvailable) {
+            Write-ColorLog -Message "  SSB reason      : OS support for SSBD absent - install the latest cumulative update, then reboot." -Level "Warning"
+        } else {
+            Write-ColorLog -Message "  SSB reason      : microcode + OS support present but SSBD not active - set FeatureSettingsOverride and REBOOT (KB4073119)." -Level "Warning"
+        }
+    }
+
 }
 else {
     Write-ColorLog -Message "Speculation query FAILED - state unknown." -Level "Error"

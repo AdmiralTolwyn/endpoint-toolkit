@@ -40,7 +40,26 @@ These two Qualys QIDs are **registry-configuration checks**, not runtime hardwar
 
    Because QID 91537 requires an *exact* value, it is **mutually exclusive** with preserving extra mitigation bits set by other advisories (e.g. BHI `0x800000` for CVE-2022-0001). You cannot satisfy QID 91537 *and* keep BHI in the same value. The script defaults to **additive (do-no-harm)** and offers `-ForceExactValue` for the trade-off — see [Additive vs exact](#additive-vs-exact-avoiding-regression).
 
-## Usage
+### Runtime SSB detection: `SsbdRequired` vs `SsbdSystemWide` (ADV180002)
+
+The `ntdll` speculation-control flags carry **two different SSBD bits**, and confusing them makes a fully-remediated device report "vulnerable" forever:
+
+| Flag | Bit | Meaning | Behaviour |
+|------|-----|---------|-----------|
+| `SsbdRequired` | `0x1000` | The **silicon is inherently vulnerable** to SSB and requires SSBD to mitigate | **Static** — stays `True` even after the mitigation is fully enabled |
+| `SsbdSystemWide` | `0x400` | SSBD is **actually enabled** system-wide | Flips `True` only after registry + reboot **and** CPU microcode support |
+
+The detection scripts therefore report SSB as vulnerable **only** when `SsbdRequired` is set **AND** `SsbdSystemWide` is clear (mirroring Microsoft's `Get-SpeculationControlSettings`, which exposes these as `SSBDHardwareVulnerable` vs `SSBDWindowsSupportEnabledSystemWide`). Using `SsbdRequired` alone — as a naive check does — means a remediated, rebooted device is flagged forever.
+
+If SSB is still vulnerable after running the remediation **and** rebooting, the scripts now print the cause:
+
+- **CPU microcode does not support SSBD** (`SsbdSupported`/`0x200` clear) → a firmware/BIOS update is required. Registry settings alone cannot activate the mitigation (per ADV180002 — *"firmware (microcode) and software updates are required"*).
+- **OS support absent** (`SsbdAvailable`/`0x100` clear) → install the latest cumulative update.
+- **Both present but not active** → the `FeatureSettingsOverride` value is missing/wrong, or the device has not been rebooted since it was set (KB4073119).
+
+> Note the asymmetry with the scanners: **Qualys QID 91462 passes as soon as the registry value is correct** (config check), but this **runtime** detection only clears once SSBD is genuinely active. On a CPU lacking SSBD microcode, Qualys can report "remediated" while the device is still runtime-vulnerable.
+
+
 
 ```powershell
 # Check both MDS and SSB (default)
@@ -176,6 +195,8 @@ reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Virtualization" /v Mi
 ## References
 
 - [KB4073119 - Windows client guidance for IT Pros to protect against silicon-based microarchitectural and speculative execution side-channel vulnerabilities](https://support.microsoft.com/en-us/topic/kb4073119-windows-client-guidance-for-it-pros-to-protect-against-silicon-based-microarchitectural-and-speculative-execution-side-channel-vulnerabilities-35820a8a-ae13-1299-88cc-357f104f5b11)
+- [ADV180002 - Guidance to mitigate speculative execution side-channel vulnerabilities](https://msrc.microsoft.com/update-guide/vulnerability/ADV180002) (microcode + reboot required; explains the `SsbdRequired` vs `SsbdSystemWide` distinction)
 - [ADV180012 - Microsoft Guidance for Speculative Store Bypass](https://msrc.microsoft.com/update-guide/vulnerability/ADV180012) (Qualys QID 91462)
 - [ADV190013 - Microsoft Guidance to mitigate Microarchitectural Data Sampling vulnerabilities](https://msrc.microsoft.com/update-guide/vulnerability/ADV190013) (Qualys QID 91537)
+- [Understanding the output of Get-SpeculationControlSettings](https://support.microsoft.com/en-us/help/4074629)
 - [Microsoft SpeculationControl PowerShell module](https://www.powershellgallery.com/packages/SpeculationControl)

@@ -43,9 +43,17 @@ function Get-HardwareSpeculationStatus {
         Write-Host " [DEBUG] Scope: Both/Default" -ForegroundColor Yellow 
     }
 
-    # Define flags from speculation control information
+    # Define flags from speculation control information.
+    # NOTE (ADV180002 / KB4073119): SsbdRequired is a STATIC hardware-vulnerability
+    # flag - it stays TRUE even after SSBD is fully mitigated. The flag that flips
+    # once the mitigation is actually active (registry + reboot + CPU microcode) is
+    # SsbdSystemWide. Detecting "still vulnerable" on SsbdRequired alone is wrong and
+    # makes a remediated, rebooted device report vulnerable forever.
     $scfMdsHardwareProtected = 0x1000000
-    $scfSsbdRequired = 0x1000
+    $scfSsbdAvailable        = 0x100     # OS support for SSBD present
+    $scfSsbdSupported        = 0x200     # CPU microcode supports SSBD
+    $scfSsbdSystemWide       = 0x400     # SSBD ENABLED system-wide (flips after reg+reboot+microcode)
+    $scfSsbdRequired         = 0x1000    # hardware is VULNERABLE / requires SSBD (STATIC - never clears)
 
     Write-Host " [DEBUG] Defining native ntdll methods..." -ForegroundColor Yellow
     
@@ -110,8 +118,26 @@ function Get-HardwareSpeculationStatus {
         # --- SSB Logic (ADV180012) ---
         if ($CheckSsb) {
             $results.ScanScope += "SSB"
-            $results.SsbVulnerable = (($flags -band $scfSsbdRequired) -ne 0)
-            Write-Host " [DEBUG] SSB Vulnerability (SSBD Required): $($results.SsbVulnerable)" -ForegroundColor Yellow
+            $ssbdRequired   = (($flags -band $scfSsbdRequired)   -ne 0)
+            $ssbdSystemWide = (($flags -band $scfSsbdSystemWide) -ne 0)
+            $ssbdAvailable  = (($flags -band $scfSsbdAvailable)  -ne 0)
+            $ssbdSupported  = (($flags -band $scfSsbdSupported)  -ne 0)
+            # Vulnerable ONLY if the hardware requires SSBD AND it is not enabled system-wide.
+            # SsbdRequired alone is the static silicon flag and must NOT, by itself, mean vulnerable.
+            $results.SsbVulnerable = ($ssbdRequired -and -not $ssbdSystemWide)
+            $results.SsbdSystemWide = $ssbdSystemWide
+            $results.SsbdAvailable  = $ssbdAvailable
+            $results.SsbdSupported  = $ssbdSupported
+            Write-Host " [DEBUG] SSB: Required=$ssbdRequired SystemWide=$ssbdSystemWide Available=$ssbdAvailable Supported=$ssbdSupported -> Vulnerable=$($results.SsbVulnerable)" -ForegroundColor Yellow
+            if ($ssbdRequired -and -not $ssbdSystemWide) {
+                if (-not $ssbdSupported) {
+                    Write-Host " [DEBUG] SSB: SSBD not enabled - CPU microcode does not support SSBD. A firmware/BIOS update is required (ADV180002)." -ForegroundColor Red
+                } elseif (-not $ssbdAvailable) {
+                    Write-Host " [DEBUG] SSB: SSBD not enabled - OS support absent. Install the latest cumulative update." -ForegroundColor Red
+                } else {
+                    Write-Host " [DEBUG] SSB: microcode + OS support present but SSBD not active - set FeatureSettingsOverride and REBOOT (KB4073119)." -ForegroundColor Red
+                }
+            }
         }
 
         $results.Success = $true
@@ -134,8 +160,8 @@ function Get-HardwareSpeculationStatus {
 # Default Execution - Change to -MdsOnly or -SsbOnly as needed
 $Status = Get-HardwareSpeculationStatus -Both
 
-$ExpectedString = "HardwareProtected=True;SsbRequired=False"
-$FoundString = "MdsVulnerable=$($Status.MdsVulnerable);SsbVulnerable=$($Status.SsbVulnerable)"
+$ExpectedString = "MdsProtected=True;SsbMitigated=True (SSBD not required OR enabled system-wide)"
+$FoundString = "MdsVulnerable=$($Status.MdsVulnerable);SsbVulnerable=$($Status.SsbVulnerable);SsbdSystemWide=$($Status.SsbdSystemWide)"
 
 if ($Status.Success -eq $false) {
     Write-Host "detected = false" -ForegroundColor Gray
