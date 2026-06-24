@@ -1,8 +1,8 @@
-# Hardware Speculation Vulnerability Detection
+# Hardware Speculation Vulnerability Detection & Remediation
 
 ## Overview
 
-Detects CPU hardware vulnerabilities (MDS and SSB) using low-level `ntdll.dll` queries against the Windows speculation control information interface. Designed for use as an **Ivanti Custom Vulnerability Detection** script.
+Detects **and remediates** CPU hardware speculation vulnerabilities (MDS and SSB). Detection uses low-level `ntdll.dll` queries against the Windows speculation control information interface; remediation writes the `FeatureSettingsOverride` registry values that clear Qualys QID 91462 (SSB) and QID 91537 (MDS/TAA). Designed for use as an **Ivanti Custom Vulnerability Detection** / Proactive Remediation script.
 
 Based on the official [Microsoft SpeculationControl PowerShell module](https://www.powershellgallery.com/packages/SpeculationControl).
 
