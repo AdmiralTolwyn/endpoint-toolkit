@@ -18,7 +18,8 @@ devops/
 └── aib-task-v1-patched/   # Patched Azure Image Builder DevOps task (v2)
 
 intune/
-└── bitlocker/      # BitLocker detection & remediation scripts for Intune
+├── bitlocker/        # BitLocker detection & remediation scripts for Intune
+└── mdm-enrollment/   # Repair expired Intune MDM device cert (omadmclient high-CPU)
 
 macos/
 └── servicing/      # Developer-storage cleanup and reclaim helpers for macOS
@@ -59,6 +60,7 @@ windows/
 | [avd/pipelines/](avd/pipelines/) | Azure DevOps YAML pipelines for AVD activation, host-pool updates, image bakes |
 | [avd/bicep/](avd/bicep/) | Bicep templates for AVD session-host deployment (Entra ID + AD-joined variants) |
 | [intune/bitlocker/](intune/bitlocker/) | Intune Proactive Remediation pair — ensure BitLocker recovery key escrow to Entra ID; MBAM client uninstall |
+| [intune/mdm-enrollment/](intune/mdm-enrollment/) | `Repair-IntuneMdmCert.ps1` — audit (read-only) or repair hosts whose expired Intune MDM device cert wedges `omadmclient.exe` at high CPU. Repair tears down the enrollment + re-enrolls via device credential. Built for cloned AVD fleets that expire together |
 | [macos/servicing/](macos/servicing/) | `macos_dev_cleanup.sh` — semi-interactive developer-storage cleanup (Xcode, VS Code/Cursor/Windsurf, .NET, Gradle, Android, Flutter, JetBrains, Homebrew, Docker, Time Machine) |
 | [windows/applications/](windows/applications/UninstallMsiProduct/README.md) | `Uninstall-MsiProduct.ps1` — generic MSI uninstaller by DisplayName / Publisher / Version / ProductCode wildcards. Registry-driven (no `Win32_Product` side effects); built for vendor agents whose GUID changes per release (e.g. Quest / KACE Agent) |
 | [windows/dot3svc/](windows/dot3svc/) | Reset 802.1X / wired-AutoConfig profiles after migration |
