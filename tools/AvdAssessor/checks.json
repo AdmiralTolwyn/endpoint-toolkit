@@ -354,7 +354,7 @@
       "id": "SH-011",
       "category": "Session Hosts",
       "name": "RDP Properties Security",
-      "description": "Custom RDP properties should explicitly restrict device redirection (drives, clipboard, USB, printers, cameras) based on security requirements. Default settings allow most redirections, increasing data exfiltration risk",
+      "description": "Custom RDP properties should be reviewed to explicitly configure device redirection (drives, clipboard, USB, printers, cameras) to match security requirements. Drives, clipboard, printer, and USB redirection are disabled by default in an AVD session, so confirm any redirections that were deliberately enabled align with the data-classification of the workload",
       "severity": "Medium",
       "type": "Auto",
       "weight": 3,
