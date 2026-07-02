@@ -459,38 +459,37 @@ foreach ($SubId in $SubscriptionId) {
                 }
             }
 
-            # Drive redirection
+            # Drive redirection (default when unset: Empty = no drives redirected)
             $DriveVal = $ParsedRdp['drivestoredirect']
-            $DrivesRestricted = ($null -ne $DriveVal -and $DriveVal -ne '*')
             [void]$AllChecks.Add((New-CheckResult -Id "SEC-DRIVE-$($HP.Name)" `
                 -Category 'Security' -Name 'RDP Drive Redirection' `
                 -Description 'Drive/disk redirection should be restricted to prevent data exfiltration' `
-                -Status $(if ($DriveVal -eq '') { 'Pass' } elseif ($DrivesRestricted) { 'Warning' } else { 'Warning' }) `
+                -Status $(if ($null -eq $DriveVal -or $DriveVal -eq '') { 'Pass' } else { 'Warning' }) `
                 -Severity 'Medium' `
-                -Details "drivestoredirect: $(if ($null -eq $DriveVal) { '(not set - default: all drives)' } else { "'$DriveVal'" })" `
-                -Recommendation 'Set drivestoredirect:s: (empty) to block all drive redirection, or restrict to specific drives.' `
+                -Details "drivestoredirect: $(if ($null -eq $DriveVal) { '(not set - default: no drives redirected)' } else { "'$DriveVal'" })" `
+                -Recommendation 'Leave drivestoredirect unset or empty to block drive redirection; restrict to specific drives only if required.' `
                 -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/rdp-properties#device-redirection'))
 
-            # Clipboard redirection
+            # Clipboard redirection (default when unset: 0 = disabled)
             $ClipVal = $ParsedRdp['redirectclipboard']
             [void]$AllChecks.Add((New-CheckResult -Id "SEC-CLIP-$($HP.Name)" `
                 -Category 'Security' -Name 'RDP Clipboard Redirection' `
                 -Description 'Clipboard redirection should be restricted for sensitive environments' `
-                -Status $(if ($ClipVal -eq '0') { 'Pass' } else { 'Warning' }) `
+                -Status $(if ($null -eq $ClipVal -or $ClipVal -eq '0') { 'Pass' } else { 'Warning' }) `
                 -Severity 'Medium' `
-                -Details "redirectclipboard: $(if ($null -eq $ClipVal) { '(not set - default: enabled)' } else { $ClipVal })" `
-                -Recommendation 'Set redirectclipboard:i:0 to disable, or use clipboard transfer direction policies for granular control.' `
+                -Details "redirectclipboard: $(if ($null -eq $ClipVal) { '(not set - default: disabled)' } else { $ClipVal })" `
+                -Recommendation 'Keep redirectclipboard at 0 (disabled) for sensitive workloads, or use clipboard transfer direction policies for granular control.' `
                 -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/rdp-properties#device-redirection'))
 
-            # Printer redirection
+            # Printer redirection (default when unset: 0 = disabled)
             $PrintVal = $ParsedRdp['redirectprinters']
             [void]$AllChecks.Add((New-CheckResult -Id "SEC-PRINT-$($HP.Name)" `
                 -Category 'Security' -Name 'RDP Printer Redirection' `
                 -Description 'Printer redirection should be evaluated - disable if not required' `
-                -Status $(if ($PrintVal -eq '0') { 'Pass' } else { 'Warning' }) `
+                -Status $(if ($null -eq $PrintVal -or $PrintVal -eq '0') { 'Pass' } else { 'Warning' }) `
                 -Severity 'Low' `
-                -Details "redirectprinters: $(if ($null -eq $PrintVal) { '(not set - default: enabled)' } else { $PrintVal })" `
-                -Recommendation 'Set redirectprinters:i:0 if printer redirection is not needed.' `
+                -Details "redirectprinters: $(if ($null -eq $PrintVal) { '(not set - default: disabled)' } else { $PrintVal })" `
+                -Recommendation 'Enable redirectprinters:i:1 only if printer redirection is required; otherwise leave disabled.' `
                 -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/rdp-properties#device-redirection'))
 
             # USB redirection
@@ -537,9 +536,11 @@ foreach ($SubId in $SubscriptionId) {
 
             # RDP property summary for evidence
             $RdpSecurityIssues = @()
-            if ($null -eq $ParsedRdp['drivestoredirect'] -or $ParsedRdp['drivestoredirect'] -eq '*') { $RdpSecurityIssues += 'Drives:Open' }
-            if ($null -eq $ParsedRdp['redirectclipboard'] -or $ParsedRdp['redirectclipboard'] -ne '0') { $RdpSecurityIssues += 'Clipboard:Open' }
-            if ($null -eq $ParsedRdp['redirectprinters'] -or $ParsedRdp['redirectprinters'] -ne '0') { $RdpSecurityIssues += 'Printers:Open' }
+            # Defaults when a property is unset are secure (drives Empty, clipboard 0, printers 0);
+            # only flag redirection that has been explicitly enabled.
+            if ($ParsedRdp['drivestoredirect'] -and $ParsedRdp['drivestoredirect'] -ne '') { $RdpSecurityIssues += 'Drives:Open' }
+            if ($ParsedRdp['redirectclipboard'] -eq '1') { $RdpSecurityIssues += 'Clipboard:Open' }
+            if ($ParsedRdp['redirectprinters'] -eq '1') { $RdpSecurityIssues += 'Printers:Open' }
             if ($ParsedRdp['usbdevicestoredirect'] -and $ParsedRdp['usbdevicestoredirect'] -ne '') { $RdpSecurityIssues += 'USB:Open' }
             if ($ParsedRdp['redirectcomports'] -eq '1') { $RdpSecurityIssues += 'COM:Open' }
             [void]$AllChecks.Add((New-CheckResult -Id "SEC-RDP-$($HP.Name)" `
