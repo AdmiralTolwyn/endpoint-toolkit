@@ -33,6 +33,7 @@ The script inspects, in one pass, every known vector that controls the location 
 | 5b | DeviceAccess capability-broker gate (HKLM + HKCU) | `...\DeviceAccess\Global\{BFA794E4-F964-4FDB-90F6-51056BFE4B44}\Value` |
 | 6 | Settings page hide | `HKLM\...\Policies\Explorer\SettingsPageVisibility` |
 | 7 | Geolocation service | `lfsvc` (Start value + running state) |
+| 7b | Location master switch | `lfsvc\Service\Configuration\Status` (1 = on, 0 = off) — the actual "Location services" toggle state |
 
 For MDM `AllowLocation` the value meanings are: **0** = Force Off (greyed off), **1** = User Control (default — *does not turn it on*), **2** = Force On (greyed on). `LetAppsAccessLocation`: **0** = user in control, **1** = force allow, **2** = force deny.
 

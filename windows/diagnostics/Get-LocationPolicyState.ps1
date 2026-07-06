@@ -22,6 +22,7 @@
       5b. DeviceAccess capability gate   ...\DeviceAccess\Global\{BFA794E4-F964-4FDB-90F6-51056BFE4B44}\Value (HKLM/HKCU)
       6.  Settings page hide             ...\Policies\Explorer\SettingsPageVisibility
       7.  Geolocation service            lfsvc (Start value + running state)
+      7b. Location master switch         lfsvc\Service\Configuration\Status (1 = on, 0 = off)
 
 .NOTES
     Author: Anton Romanyuk
@@ -232,6 +233,17 @@ Add-Result -Area 'Geolocation service (lfsvc)' -Path $svcStartPath -Name 'Start'
     -Present $svcStart.Found -Value $svcStart.Value `
     -Meaning "$startMeaning; current state: $svcState"
 
+# ── 7b. Location Services MASTER SWITCH (lfsvc Service\Configuration\Status) ─
+# This is the actual "Location services" on/off toggle backing value, distinct
+# from the service Start type above. 1 = On, 0 = Off. If it is 0 the toggle
+# shows off even when no policy is forcing it.
+$masterPath = 'HKLM:\SYSTEM\CurrentControlSet\Services\lfsvc\Service\Configuration'
+$master = Get-RegValue -Path $masterPath -Name 'Status'
+$masterOff = $master.Found -and [int]$master.Value -eq 0
+Add-Result -Area 'Location master switch (Status)' -Path $masterPath -Name 'Status' `
+    -Present $master.Found -Value $master.Value `
+    -Meaning $(if ($master.Found) { if ([int]$master.Value -eq 1) { '1 = Location Services ON' } elseif ([int]$master.Value -eq 0) { '0 = Location Services OFF (master toggle is off)' } else { "$($master.Value)" } } else { 'Not set (defaults apply)' })
+
 # ── Verdict ────────────────────────────────────────────────────────────────
 $verdict = New-Object System.Collections.Generic.List[string]
 
@@ -250,7 +262,8 @@ if ($daBlock) { $verdict.Add('DeviceAccess\Global location capability = Deny - t
 if ($aclDenyHits.Count -gt 0) { $verdict.Add('A registry ACL DENY was found on a location key (' + ($aclDenyHits -join ' | ') + '). A write-deny lets the toggle appear but silently reverts the value - a non-GP/non-MDM hardening lock. Inspect and remove the Deny ACE.') }
 if ($spvHidesLoc) { $verdict.Add('SettingsPageVisibility hides the Location page entirely.') }
 if ($svcDisabled) { $verdict.Add('lfsvc is DISABLED (Start=4) - the master switch cannot turn on until the service is enabled.') }
-if ($verdict.Count -eq 0) { $verdict.Add('No forcing/locking policy detected in the queried vectors. If the toggle is still greyed, re-run with -Collect to gather a full artifact bundle (recursive reg exports + ACLs of ConsentStore\location and the entire DeviceAccess\Global tree, both hives) for offline analysis, and consider arming registry auditing to catch the writer (see the bundle README).') }
+if ($masterOff -and -not $forcedOff) { $verdict.Add('Location Services MASTER SWITCH is OFF (lfsvc Service\Configuration\Status=0) and NOTHING is forcing it off. Location is simply turned off, not locked - turn it on in Settings, set Status=1, or enforce via AllowLocation=2. Because no policy is fighting it, the change will stick.') }
+if ($verdict.Count -eq 0) { $verdict.Add('No forcing/locking policy detected and the master switch is on. If the toggle still looks greyed, re-run with -Collect and confirm the state is current (earlier screenshots may predate a change); check the exported lfsvc Service\Configuration\Status and the per-user ConsentStore for a Deny.') }
 
 # ── Deep collection bundle (read-only; writes only to the output folder) ───
 function Invoke-DeepCollect {
@@ -281,7 +294,8 @@ function Invoke-DeepCollect {
         @{ n='HKLM_AppPrivacy_pol';         k='HKLM\SOFTWARE\Policies\Microsoft\Windows\AppPrivacy' },
         @{ n='HKLM_PolicyManager_System';   k='HKLM\SOFTWARE\Microsoft\PolicyManager\current\device\System' },
         @{ n='HKLM_PolicyManager_Privacy';  k='HKLM\SOFTWARE\Microsoft\PolicyManager\current\device\Privacy' },
-        @{ n='HKLM_lfsvc';                  k='HKLM\SYSTEM\CurrentControlSet\Services\lfsvc' }
+        @{ n='HKLM_lfsvc';                  k='HKLM\SYSTEM\CurrentControlSet\Services\lfsvc' },
+        @{ n='HKLM_lfsvc_Configuration';    k='HKLM\SYSTEM\CurrentControlSet\Services\lfsvc\Service\Configuration' }
     )
     foreach ($e in $exports) {
         $file = Join-Path $OutDir ("$($e.n).reg")
