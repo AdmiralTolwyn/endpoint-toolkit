@@ -45,7 +45,24 @@ The verdict specifically flags the two situations that are easy to misdiagnose:
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `AsObject` | `switch` | Off | Emit the result as a structured object (`Checks`, `Providers`, `Verdict`) instead of the formatted console report. Useful for piping to `Export-Csv`, `ConvertTo-Json`, or a remediation wrapper. |
+| `AsObject` | `switch` | Off | Emit the result as a structured object (`Checks`, `Providers`, `Verdict`, `ZipPath`) instead of the formatted console report. Useful for piping to `Export-Csv`, `ConvertTo-Json`, or a remediation wrapper. |
+| `Collect` | `switch` | Off | Gather a **deep artifact bundle** into a timestamped folder and zip it (see below). Use this when the standard vectors come back clean but the toggle is still greyed. |
+| `CollectPath` | `string` | `%TEMP%\LocationDiag_<host>_<stamp>` | Optional output folder for the `-Collect` bundle. |
+
+### The `-Collect` bundle
+
+When the summary shows *"No forcing/locking policy detected"* but Location is still greyed out, the gate is something the point-in-time checks can't classify (a novel key, a per-user consent seed, or an ACL write-deny). `-Collect` automates the evidence-gathering so you don't have to hand-run `reg export` and eyeball ACLs. The bundle contains:
+
+| File | What it captures |
+|---|---|
+| `LocationState.txt` | The full summary table + verdict from this run. |
+| `*.reg` | Recursive exports of every relevant key: `ConsentStore\location` and the **entire** `DeviceAccess\Global` tree (HKLM + HKCU), the LocationAndSensors / AppPrivacy policy keys, `PolicyManager\current` System + Privacy, and `lfsvc`. |
+| `ACLs.txt` | Full access-control lists (incl. any **Deny** ACEs / owner) on the consent-store and capability keys — this is where a non-GP/non-MDM "user can't write it" hardening lock shows up. |
+| `DeviceAccess_Global_map.txt` | Every capability GUID under `DeviceAccess\Global` with its `Value`, both hives — so a location gate hiding under a different GUID is visible. |
+| `MDMDiagReport.zip` | `MdmDiagnosticsTool.exe -area DeviceProvisioning` output — shows what Intune actually delivered (search it for `AllowLocation` / `LetAppsAccessLocation`). Requires elevation; a `MDMDiagReport_SKIPPED.txt` is written instead if it couldn't run. |
+| `LocationState.txt` | The run's table + verdict. |
+
+The script itself makes **no changes to the system** — `-Collect` only writes into its own output folder. The bundle is zipped so the customer can send back one file for offline analysis.
 
 ## Usage
 
@@ -57,6 +74,13 @@ Run **as administrator** (some MDM/consent-store paths and ACLs need elevation).
 .\Get-LocationPolicyState.ps1
 ```
 
+### Deep collection — when nothing standard is detected
+
+```powershell
+.\Get-LocationPolicyState.ps1 -Collect
+# -> creates %TEMP%\LocationDiag_<host>_<stamp>.zip; send that back
+```
+
 ### Structured object (for export / automation)
 
 ```powershell
@@ -65,7 +89,7 @@ $state.Verdict
 $state.Checks | Export-Csv .\location-state.csv -NoTypeInformation
 ```
 
-### Run on a client and send the output back
+### Run on a client and send the console output back
 
 ```powershell
 .\Get-LocationPolicyState.ps1 *> C:\Temp\LocationState.txt
@@ -77,7 +101,7 @@ $state.Checks | Export-Csv .\location-state.csv -NoTypeInformation
 - **`GP DisableLocation = 1`** or **`MDM AllowLocation = 0`** → something is forcing location off; the winning-provider row (or SCCM/GPO) tells you who.
 - **`DeviceAccess Global ... = Deny`** → the capability broker is the gate; Consent Store edits won't fix it.
 - **`lfsvc` disabled (Start=4)** → the master switch can't turn on until the service is re-enabled.
-- **No forcing policy detected but still greyed** → export `ConsentStore\location` and `DeviceAccess\Global` under both HKLM and HKCU and inspect the key ACLs for a user write-deny.
+- **No forcing policy detected but still greyed** → run `-Collect` to bundle recursive reg exports + ACLs + the full `DeviceAccess\Global` capability map (both hives), then analyse offline. An ACL **Deny** ACE on the consent/capability key is the usual non-GP/non-MDM culprit.
 
 ## When to reach for the MDM report / boot logging
 
