@@ -7,6 +7,7 @@ Registry and policy tweaks that adjust Windows behavior outside the scope of ser
 | Script | Purpose |
 |--------|---------|
 | [Set-StartupAppsDelay.ps1](Set-StartupAppsDelay.ps1) | Reverts the Windows 11 "wait-for-idle" startup-app delay (`WaitForIdleState=0`) so Outlook / Teams / Word / Excel launch promptly after sign-in on busy devices. |
+| [Set-ModernStandbyPowerPlan.ps1](Set-ModernStandbyPowerPlan.ps1) | Creates and activates a corporate power plan on Modern Standby (S0 Low Power Idle) devices. Configures power button, lid close, screen timeout, and sleep timers. |
 
 ---
 
@@ -146,3 +147,71 @@ If launch latency persists after `WaitForIdleState = 0`, then a real performance
 ## References
 
 - `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Serialize` - per-user startup ordering / delay key (legacy `StartupDelayInMSec`, modern `WaitForIdleState`).
+
+---
+
+# Set-ModernStandbyPowerPlan.ps1
+
+Creates and activates a corporate power plan on Modern Standby (S0 Low Power Idle) devices.
+
+## Background
+
+Modern Standby devices (S0 Low Power Idle) ship with only the Balanced plan and hide the power-button and lid-close settings from the Control Panel UI by default. This script creates a named plan with corporate defaults and unhides those settings so they are visible in **Settings > System > Power & battery**.
+
+## What It Configures
+
+| Setting | DC (Battery) | AC (Plugged in) |
+|---------|:------------:|:---------------:|
+| Power button press | Shut down | Shut down |
+| Lid close | Sleep | Sleep |
+| Turn off screen | 5 min | 5 min |
+| Sleep after | 15 min | 60 min |
+
+## How It Works
+
+1. Checks if a plan named `Modern Standby - Corporate` already exists. If so, updates it in place (idempotent).
+2. If not, duplicates the built-in Balanced plan (`381b4222-...`) and renames the copy.
+3. Unhides the power-button and lid-close settings with `powercfg -attributes ... -ATTRIB_HIDE` so they appear in the UI.
+4. Applies all settings via `powercfg /setdcvalueindex` and `/setacvalueindex` using GUIDs (locale-independent — works on en-US, de-DE, etc.).
+5. Activates the new plan.
+6. Verifies every setting by querying back and prints OK/MISMATCH for each.
+
+## Requirements
+
+- **Elevation required** (`#Requires -RunAsAdministrator`).
+- PowerShell 5.1 compatible.
+- Modern Standby device (S0 Low Power Idle). Works on S3/legacy too, but the `-ATTRIB_HIDE` step is only needed on Modern Standby.
+
+## Deployment via Intune
+
+| Setting | Value |
+|---------|-------|
+| Run this script using the logged-on credentials | No |
+| Run script in 64-bit PowerShell host | Yes |
+| Enforce script signature check | No (or sign the script) |
+
+The plan GUID is generated per-device at duplication time — this is expected and has no operational impact.
+
+## Customization
+
+Edit the values at the top of the script:
+
+- **`$PlanName`** — display name shown in `powercfg /list` and the Settings UI.
+- **Timeout values** — change the `300` / `900` / `3600` second values in the "Apply settings" section.
+- **Button/lid actions** — swap `$ShutDown` / `$Sleep` etc. using the documented action values:
+
+| Value | Action |
+|:-----:|--------|
+| 0 | Do nothing |
+| 1 | Sleep |
+| 2 | Hibernate |
+| 3 | Shut down |
+| 4 | Turn off the display |
+
+## References
+
+- [Power button and lid settings](https://learn.microsoft.com/en-us/windows-hardware/customize/power-settings/power-button-and-lid-settings)
+- [Power button action](https://learn.microsoft.com/en-us/windows-hardware/customize/power-settings/power-button-and-lid-settings-power-button-action)
+- [Lid switch close action](https://learn.microsoft.com/en-us/windows-hardware/customize/power-settings/power-button-and-lid-settings-lid-switch-close-action)
+- [Display idle timeout](https://learn.microsoft.com/en-us/windows-hardware/customize/power-settings/display-settings-display-idle-timeout)
+- [Sleep idle timeout](https://learn.microsoft.com/en-us/windows-hardware/customize/power-settings/sleep-settings-sleep-idle-timeout)
