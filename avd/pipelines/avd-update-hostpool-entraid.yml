@@ -284,13 +284,61 @@ stages:
                 }
                 $params | ConvertTo-Json -Depth 10 | Out-File "canary.json" -Encoding UTF8
                 
-                # 3. DEPLOY
+                # -------------------------------------------------------------------
+                # 3. ASYNC DEPLOY + DIAGNOSTIC POLL
+                # -------------------------------------------------------------------
+                # A blocking 'az deployment group create' prints nothing while ARM
+                # waits on the VM extension chain (AAD login -> GuestAttestation ->
+                # AVD DSC agent). Extensions install serially and can stall for a long
+                # time, so the VM shows 'Succeeded' in the portal while the deployment
+                # stays 'Running' - i.e. it looks hung with no clue why.
+                #
+                # Instead we submit with --no-wait and poll every 30s, logging the
+                # deployment state AND per-VM extension provisioning state so a stuck
+                # extension is named in the log. An internal 55-min deadline (below the
+                # task's timeoutInMinutes: 60) dumps the in-flight operations before the
+                # task is hard-killed; Failed/Canceled dumps the failing operations.
+                # -------------------------------------------------------------------
+                $deployName = "canary-$(Build.BuildId)"
+                Write-Host "Submitting deployment '$deployName' (async)..." -ForegroundColor Cyan
                 az deployment group create `
                   --resource-group "$(computeRg)" `
-                  --name "canary-$(Build.BuildId)" `
+                  --name $deployName `
                   --template-file "$(System.DefaultWorkingDirectory)/bicep/main-entraid.bicep" `
                   --parameters "@canary.json" `
-                  --verbose
+                  --no-wait
+                if ($LASTEXITCODE -ne 0) { Write-Error "Failed to submit deployment '$deployName'."; exit 1 }
+
+                # Poll until the deployment reaches a terminal state or the deadline hits.
+                $rg = "$(computeRg)"
+                $timeoutMinutes = 55                         # stay under the task's timeoutInMinutes: 60
+                $deadline = (Get-Date).AddMinutes($timeoutMinutes)
+                while ($true) {
+                    Start-Sleep -Seconds 30
+                    # Overall provisioning state of the ARM deployment.
+                    $state = az deployment group show --resource-group $rg --name $deployName --query "properties.provisioningState" -o tsv 2>$null
+                    $ts = (Get-Date).ToString("HH:mm:ss")
+                    Write-Host "[$ts] Deployment '$deployName' state: $state"
+                    # Per-VM extension status - reveals which extension (if any) is stuck.
+                    foreach ($vmName in $vmArray) {
+                        Write-Host "  Extensions on ${vmName}:"
+                        az vm extension list --resource-group $rg --vm-name $vmName --query "[].{Name:name, State:provisioningState}" -o table 2>$null
+                    }
+                    # Terminal success.
+                    if ($state -eq "Succeeded") { Write-Host "Deployment '$deployName' succeeded." -ForegroundColor Green; break }
+                    # Terminal failure - surface the specific failed resource(s) and fail the task.
+                    if ($state -eq "Failed" -or $state -eq "Canceled") {
+                        Write-Host "Deployment '$deployName' $state. Failed operations:" -ForegroundColor Red
+                        az deployment operation group list --resource-group $rg --name $deployName --query "[?properties.provisioningState=='Failed'].{Resource:properties.targetResource.resourceName, Type:properties.targetResource.resourceType, Status:properties.statusMessage}" -o json
+                        exit 1
+                    }
+                    # Safety net - dump whatever is still Running so the hang is diagnosable.
+                    if ((Get-Date) -gt $deadline) {
+                        Write-Host "TIMEOUT after $timeoutMinutes min; deployment still '$state'. In-flight operations:" -ForegroundColor Red
+                        az deployment operation group list --resource-group $rg --name $deployName --query "[?properties.provisioningState=='Running'].{Resource:properties.targetResource.resourceName, Type:properties.targetResource.resourceType}" -o json
+                        exit 1
+                    }
+                }
 
           # NEW: DRAIN MODE IMMEDIATELY
           - task: AzurePowerShell@5
@@ -433,13 +481,53 @@ stages:
                 }
                 $params | ConvertTo-Json -Depth 10 | Out-File "blast.json" -Encoding UTF8
 
-                # Deploy
+                # -------------------------------------------------------------------
+                # ASYNC DEPLOY + DIAGNOSTIC POLL (see DeployCanary for full rationale)
+                # -------------------------------------------------------------------
+                # Submit --no-wait, then poll deployment + per-VM extension state so a
+                # stuck extension (AAD login / GuestAttestation / AVD DSC agent) is
+                # named in the log instead of the task silently blocking.
+                # -------------------------------------------------------------------
+                $deployName = "blast-$(Build.BuildId)"
+                Write-Host "Submitting deployment '$deployName' (async)..." -ForegroundColor Cyan
                 az deployment group create `
                   --resource-group "$(computeRg)" `
-                  --name "blast-$(Build.BuildId)" `
+                  --name $deployName `
                   --template-file "$(System.DefaultWorkingDirectory)/bicep/main-entraid.bicep" `
                   --parameters "@blast.json" `
-                  --verbose
+                  --no-wait
+                if ($LASTEXITCODE -ne 0) { Write-Error "Failed to submit deployment '$deployName'."; exit 1 }
+
+                # Poll until the deployment reaches a terminal state or the deadline hits.
+                $rg = "$(computeRg)"
+                $timeoutMinutes = 55                         # stay under the task's timeoutInMinutes: 60
+                $deadline = (Get-Date).AddMinutes($timeoutMinutes)
+                while ($true) {
+                    Start-Sleep -Seconds 30
+                    # Overall provisioning state of the ARM deployment.
+                    $state = az deployment group show --resource-group $rg --name $deployName --query "properties.provisioningState" -o tsv 2>$null
+                    $ts = (Get-Date).ToString("HH:mm:ss")
+                    Write-Host "[$ts] Deployment '$deployName' state: $state"
+                    # Per-VM extension status - reveals which extension (if any) is stuck.
+                    foreach ($vmName in $vmArray) {
+                        Write-Host "  Extensions on ${vmName}:"
+                        az vm extension list --resource-group $rg --vm-name $vmName --query "[].{Name:name, State:provisioningState}" -o table 2>$null
+                    }
+                    # Terminal success.
+                    if ($state -eq "Succeeded") { Write-Host "Deployment '$deployName' succeeded." -ForegroundColor Green; break }
+                    # Terminal failure - surface the specific failed resource(s) and fail the task.
+                    if ($state -eq "Failed" -or $state -eq "Canceled") {
+                        Write-Host "Deployment '$deployName' $state. Failed operations:" -ForegroundColor Red
+                        az deployment operation group list --resource-group $rg --name $deployName --query "[?properties.provisioningState=='Failed'].{Resource:properties.targetResource.resourceName, Type:properties.targetResource.resourceType, Status:properties.statusMessage}" -o json
+                        exit 1
+                    }
+                    # Safety net - dump whatever is still Running so the hang is diagnosable.
+                    if ((Get-Date) -gt $deadline) {
+                        Write-Host "TIMEOUT after $timeoutMinutes min; deployment still '$state'. In-flight operations:" -ForegroundColor Red
+                        az deployment operation group list --resource-group $rg --name $deployName --query "[?properties.provisioningState=='Running'].{Resource:properties.targetResource.resourceName, Type:properties.targetResource.resourceType}" -o json
+                        exit 1
+                    }
+                }
 
           # 5. DRAIN MODE IMMEDIATELY
           # Use existing script to drain, passing blastList as the target list

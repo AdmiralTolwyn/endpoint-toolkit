@@ -113,6 +113,33 @@ Notes:
 - The legacy pipeline never undrains hosts on its own; for hybrid pools the
   activation step is owned by `avd-activator.yml` (see below).
 
+#### Deployment diagnostics — async submit + poll
+
+The `DeployCanary` / `DeployBlast` stages do **not** run a blocking
+`az deployment group create`. A blocking call prints nothing while ARM waits on
+the VM extension chain (domain join / AAD login → `GuestAttestation` →
+`Microsoft.PowerShell.DSC` AVD agent). Extensions install **serially** and can
+stall for a long time, so the VM reaches `Succeeded` while the deployment stays
+`Running` — the run *looks* hung with no indication of the cause.
+
+Instead each deploy step:
+
+1. Submits the deployment with `--no-wait` and fails immediately if the submit
+   itself is rejected (`$LASTEXITCODE`).
+2. Polls every 30 s, logging a timestamped **deployment provisioning state** plus
+   the **per-VM extension provisioning state** (`az vm extension list`) — so a
+   stuck extension is named in the log.
+3. On `Failed` / `Canceled`, dumps the failing operations
+   (`az deployment operation group list`) and fails the task.
+4. Enforces an internal **55-minute deadline** (under the task's
+   `timeoutInMinutes: 60`) that dumps the still-`Running` operations before the
+   agent hard-kills the task, so a genuine hang is still diagnosable.
+
+Typical signature of the "VM replaced then hangs" symptom: the deployment sits at
+`Running` with the VM's `GuestAttestation` or DSC extension stuck in
+`Creating` / `Transitioning` — usually restricted outbound access from the
+session-host subnet to the attestation or AVD registration endpoints.
+
 ### `avd-activator.yml` — Hybrid join activator (scheduled, every 15 min)
 
 Lightweight scheduled pipeline that runs `Invoke-HybridActivator.ps1` on a
