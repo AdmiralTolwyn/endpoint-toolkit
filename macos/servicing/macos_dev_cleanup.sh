@@ -5,16 +5,20 @@
 #
 # Scans common large, re-creatable data buckets produced by Xcode, simulators,
 # VS Code / Cursor / Windsurf, .NET, Gradle, Android SDK, Flutter, JetBrains,
-# Docker, and Homebrew. Shows size and impact for each item before asking.
+# Docker, and Homebrew — plus system-level simulator runtimes, leftover
+# code-sign clones, and per-repo build artifacts (node_modules, build, Pods…).
+# Shows size and impact for each item before asking.
 #
 # Usage:
-#   ./macos_dev_cleanup.sh [--analyze] [--dry-run] [--yes]
+#   ./macos_dev_cleanup.sh [--analyze] [--dry-run] [--yes] [--code-root PATH]
 #
-#   --analyze   Report sizes and impact only — nothing deleted
-#   --dry-run   Show every rm command that would run — nothing deleted
-#   --yes       Non-interactive: auto-confirm all prompts (dangerous)
+#   --analyze          Report sizes and impact only — nothing deleted
+#   --dry-run          Show every rm command that would run — nothing deleted
+#   --yes              Non-interactive: auto-confirm all prompts (dangerous)
+#   --code-root PATH   Directory containing your git repos, scanned for
+#                      re-creatable build artifacts (default: ~/Documents/Git)
 #
-# Requirements: bash 3.2+, macOS 11+, python3 (for stale workspace pruning)
+# Requirements: bash 3.2+, macOS 11+, python3 (workspace pruning, repo scan)
 # =============================================================================
 
 set -uo pipefail
@@ -22,17 +26,21 @@ set -uo pipefail
 DRY_RUN=0
 ASSUME_YES=0
 ANALYZE_ONLY=0
+CODE_ROOT="${CODE_ROOT:-$HOME/Documents/Git}"
 
-for arg in "$@"; do
-  case "$arg" in
-    --dry-run)   DRY_RUN=1 ;;
-    --yes)       ASSUME_YES=1 ;;
-    --analyze)   ANALYZE_ONLY=1 ;;
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dry-run)   DRY_RUN=1; shift ;;
+    --yes)       ASSUME_YES=1; shift ;;
+    --analyze)   ANALYZE_ONLY=1; shift ;;
+    --code-root)
+      [[ $# -ge 2 ]] || { echo "--code-root requires a path argument" >&2; exit 1; }
+      CODE_ROOT="$2"; shift 2 ;;
     -h|--help)
-      sed -n '3,14p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '3,19p' "$0" | sed 's/^# \{0,1\}//'
       exit 0 ;;
     *)
-      echo "Unknown option: $arg  (use --help)" >&2; exit 1 ;;
+      echo "Unknown option: $1  (use --help)" >&2; exit 1 ;;
   esac
 done
 
@@ -109,7 +117,9 @@ _prefork_all_known() {
     "$HOME/Library/Caches"
     "$HOME/Library/Logs"
     "$HOME/.Trash"
+    "$HOME/.cache"
     "$HOME/.npm"
+    "/Library/Developer/CoreSimulator/Caches"
     "$HOME/Library/Caches/pip"
     "$HOME/Library/Caches/Yarn"
     "$HOME/.homebrew"
@@ -159,16 +169,26 @@ path_kb() {
 confirm() {
   [[ "$ASSUME_YES" -eq 1 ]] && return 0
   local ans
-  read -r -p "  $1 [y/N] " ans
+  # Read from the terminal, not stdin: several callers sit inside
+  # 'while ... done < <(...)' loops whose redirected stdin would otherwise
+  # be consumed as the answer. Without a tty, default to No.
+  read -r -p "  $1 [y/N] " ans < /dev/tty || return 1
   [[ "$ans" =~ ^[Yy]$ ]]
 }
 
+# Escalate to sudo only when the user lacks write permission on the
+# relevant directory (e.g. root-owned /Library/Developer/CoreSimulator).
 do_remove_contents() {
   if [[ "$DRY_RUN" -eq 1 ]]; then
     echo "  DRY RUN: rm -rf ${1}/*"
     return
   fi
-  find "$1" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
+  if [[ -w "$1" ]]; then
+    find "$1" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
+  else
+    echo "  (needs admin rights)"
+    sudo find "$1" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
+  fi
 }
 
 do_remove_path() {
@@ -176,7 +196,12 @@ do_remove_path() {
     echo "  DRY RUN: rm -rf $1"
     return
   fi
-  rm -rf "$1"
+  if [[ -w "$(dirname "$1")" ]]; then
+    rm -rf "$1"
+  else
+    echo "  (needs admin rights)"
+    sudo rm -rf "$1"
+  fi
 }
 
 # item LABEL  MODE(path|contents)  PATH  WHAT  IMPACT
@@ -337,6 +362,77 @@ active_flutter_sdk() {
   dirname "$(dirname "$flutter_bin")"
 }
 
+# ── Simulator runtime enumeration ────────────────────────────────────────────
+# Emits one line per installed simulator runtime disk image:
+#   UUID|NAME|SIZE_KB|STATE
+# These live at system level (/Library/Developer/CoreSimulator) and are the
+# single largest hidden dev cost on many machines (~5-7 GB per platform).
+list_simulator_runtimes() {
+  command -v xcrun >/dev/null 2>&1 || return 0
+  local py_script="$SCAN_DIR/list_runtimes.py"
+  printf '%s\n' \
+    'import json, subprocess, sys' \
+    'try:' \
+    '    out = subprocess.run(["xcrun", "simctl", "runtime", "list", "-j"],' \
+    '                         capture_output=True, timeout=30).stdout' \
+    '    data = json.loads(out or b"{}")' \
+    'except Exception:' \
+    '    sys.exit(0)' \
+    'for uuid, r in sorted(data.items(), key=lambda kv: -int(kv[1].get("sizeBytes") or 0)):' \
+    '    name = r.get("name") or "{} {}".format(' \
+    '        r.get("platformIdentifier", "runtime").rsplit(".", 1)[-1], r.get("version", ""))' \
+    '    size_kb = int(r.get("sizeBytes") or 0) // 1024' \
+    '    print("{}|{}|{}|{}".format(uuid, name, size_kb, r.get("state", "")))' \
+    > "$py_script"
+  python3 "$py_script" 2>/dev/null
+}
+
+# ── Repo build-artifact scan ──────────────────────────────────────────────────
+# Walks CODE_ROOT and emits paths of re-creatable build output. Directory
+# names that are only artifacts in context (build, target, Pods, .build) are
+# matched only when the expected manifest sits next to them, so a source
+# folder that happens to be called "build" is never touched.
+scan_build_artifacts() {
+  local root="$1"
+  local py_script="$SCAN_DIR/find_artifacts.py"
+  printf '%s\n' \
+    'import os, sys' \
+    'root = sys.argv[1]' \
+    'ALWAYS = {"node_modules", ".dart_tool", "DerivedData"}' \
+    'COND = {' \
+    '    "build":  ("pubspec.yaml", "build.gradle", "build.gradle.kts",' \
+    '               "settings.gradle", "settings.gradle.kts", "gradlew"),' \
+    '    "target": ("Cargo.toml",),' \
+    '    "Pods":   ("Podfile",),' \
+    '    ".build": ("Package.swift",),' \
+    '}' \
+    'def scan(d, depth):' \
+    '    try:' \
+    '        entries = list(os.scandir(d))' \
+    '    except OSError:' \
+    '        return' \
+    '    names = {e.name for e in entries}' \
+    '    for e in entries:' \
+    '        if not e.is_dir(follow_symlinks=False):' \
+    '            continue' \
+    '        n = e.name' \
+    '        if n == ".git":' \
+    '            continue' \
+    '        if n in ALWAYS or (n in COND and any(m in names for m in COND[n])):' \
+    '            print(e.path)' \
+    '            continue' \
+    '        if depth < 6 and not n.startswith("."):' \
+    '            scan(e.path, depth + 1)' \
+    'scan(root, 0)' \
+    > "$py_script"
+  python3 "$py_script" "$root" 2>/dev/null
+}
+
+# Free space (KB) on the data volume — used for the end-of-run summary.
+_free_kb() {
+  df -k /System/Volumes/Data 2>/dev/null | awk 'NR==2 {print $4+0}'
+}
+
 # =============================================================================
 # MAIN
 # =============================================================================
@@ -345,6 +441,8 @@ active_flutter_sdk() {
 # while the header and early sections are being processed/read.
 _init_scan_cache
 _prefork_all_known
+
+START_FREE_KB="$(_free_kb)"
 
 echo ""
 echo "macOS Developer Storage Cleanup  ($(date '+%Y-%m-%d'))"
@@ -391,6 +489,41 @@ item "CoreSimulator Caches" contents \
   "$HOME/Library/Developer/CoreSimulator/Caches" \
   "Simulator disk image caches used to speed up device creation." \
   "SAFE. Rebuilt automatically on next simulator launch."
+
+item "CoreSimulator Caches (system-level)" contents \
+  "/Library/Developer/CoreSimulator/Caches" \
+  "System-wide simulator caches (per-runtime dyld caches). Root-owned — often 10+ GB and invisible to per-user scans." \
+  "SAFE. Rebuilt on next simulator boot. Removal may prompt for sudo."
+
+if command -v xcrun >/dev/null 2>&1; then
+  cmd_item "Simulator: orphaned devices" \
+    "xcrun simctl list devices unavailable 2>/dev/null | grep unavailable | head -8" \
+    "xcrun simctl delete unavailable" \
+    "Simulator devices whose runtime is no longer installed — they cannot boot." \
+    "SAFE. Removes only devices that are already unusable."
+
+  # System-level runtime disk images — offered individually since deleting
+  # a platform you still build for forces a multi-GB re-download in Xcode.
+  while IFS='|' read -r rt_uuid rt_name rt_kb rt_state; do
+    [[ -z "$rt_uuid" ]] && continue
+    echo ""
+    echo "  [Simulator runtime: $rt_name]"
+    echo "  UUID   : $rt_uuid  (${rt_state:-unknown})"
+    echo "  What   : Bootable simulator runtime disk image, stored system-wide."
+    echo "  Impact : SAFE if you do not build for this platform. Re-downloadable via Xcode > Settings > Components."
+    echo "  Size   : $(human_size "$rt_kb")"
+    [[ "$ANALYZE_ONLY" -eq 1 ]] && continue
+    if confirm "Delete this runtime?"; then
+      if [[ "$DRY_RUN" -eq 1 ]]; then
+        echo "  DRY RUN: xcrun simctl runtime delete $rt_uuid"
+      else
+        xcrun simctl runtime delete "$rt_uuid" && echo "  Done."
+      fi
+    else
+      echo "  Skipped."
+    fi
+  done < <(list_simulator_runtimes)
+fi
 
 # ── 2. VS Code / Cursor / Windsurf ───────────────────────────────────────────
 echo ""
@@ -579,6 +712,29 @@ item "yarn cache" path \
   "Yarn v1 package download cache." \
   "SAFE. Re-downloaded on next 'yarn install'."
 
+item "XDG cache (~/.cache)" contents \
+  "$HOME/.cache" \
+  "Shared cache directory used by many CLI tools (pip, Hugging Face, puppeteer, pre-commit, etc.)." \
+  "SAFE. Tools re-create their caches on next run."
+
+# Leftover code-sign clones (Microsoft Edge / Teams bug): the updater makes
+# an APFS clone of the app bundle for signature verification and fails to
+# remove it. Sizes are inflated — clones share blocks with the original app.
+# macOS clears these on reboot; deleting them early is harmless when the
+# owning app is not mid-update.
+DARWIN_TMP="$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null || true)"
+if [[ -n "$DARWIN_TMP" ]]; then
+  X_DIR="$(dirname "${DARWIN_TMP%/}")/X"
+  for clone in "$X_DIR"/*.code_sign_clone; do
+    [[ -d "$clone" ]] || continue
+    clone_app="$(basename "$clone" .code_sign_clone)"
+    item "Leftover code-sign clone: $clone_app" path \
+      "$clone" \
+      "APFS clone of the app bundle left behind by $clone_app's updater (known bug; also cleared on reboot)." \
+      "SAFE. Quit the app first if it is running. Reported size is partly shared blocks, so real space freed may be smaller."
+  done
+fi
+
 # ── 8. Homebrew / Docker / Time Machine ──────────────────────────────────────
 echo ""
 echo "── 8. BREW / DOCKER / TIME MACHINE ──────────────────────────────────"
@@ -609,6 +765,89 @@ if command -v tmutil >/dev/null 2>&1; then
     "SAFE if you have a working external Time Machine drive. Without it, these are your only local restore points."
 fi
 
+# ── 9. PROJECT BUILD ARTIFACTS ───────────────────────────────────────────────
+echo ""
+echo "── 9. PROJECT BUILD ARTIFACTS ───────────────────────────────────────"
+echo ""
+echo "  Code root : $CODE_ROOT  (override with --code-root PATH)"
+
+if [[ ! -d "$CODE_ROOT" ]]; then
+  echo "  Not found — skipping repo scan."
+else
+  echo "  Scanning repos for re-creatable build output"
+  echo "  (node_modules, build, .dart_tool, Pods, target, .build, DerivedData)..."
+
+  ART_LIST="$SCAN_DIR/artifacts.txt"
+  ART_SIZES="$SCAN_DIR/artifact_sizes.txt"
+  scan_build_artifacts "$CODE_ROOT" > "$ART_LIST"
+
+  if [[ ! -s "$ART_LIST" ]]; then
+    echo "  No build artifacts found."
+  else
+    # Size every artifact dir (4 parallel du jobs), then total per repo.
+    tr '\n' '\0' < "$ART_LIST" | xargs -0 -n 8 -P 4 du -sk 2>/dev/null > "$ART_SIZES"
+
+    REPO_TOTALS="$SCAN_DIR/repo_totals.txt"
+    awk -F'\t' -v rootlen="${#CODE_ROOT}" '{
+      repo = substr($2, rootlen + 2)
+      sub(/\/.*$/, "", repo)
+      kb[repo] += $1
+      total += $1
+    } END {
+      for (r in kb) printf "%d\t%s\n", kb[r], r
+      printf "%d\t__TOTAL__\n", total
+    }' "$ART_SIZES" | sort -rn > "$REPO_TOTALS"
+
+    TOTAL_KB="$(awk -F'\t' '$2 == "__TOTAL__" {print $1}' "$REPO_TOTALS")"
+    echo ""
+    echo "  Re-creatable build output per repo:"
+    while IFS=$'\t' read -r kb repo; do
+      [[ "$repo" == "__TOTAL__" ]] && continue
+      [[ "$kb" -lt 51200 ]] && continue   # hide repos under 50 MB
+      printf '    %10s  %s\n' "$(human_size "$kb")" "$repo"
+    done < "$REPO_TOTALS"
+    echo "    ----------"
+    printf '    %10s  TOTAL\n' "$(human_size "$TOTAL_KB")"
+    echo "  Impact : SAFE. Dependencies re-download and projects recompile on next build (takes time)."
+
+    if [[ "$ANALYZE_ONLY" -ne 1 ]]; then
+      delete_repo_artifacts() {
+        # $1 = repo name, or "" for all repos
+        local filter="$CODE_ROOT/${1:+$1/}"
+        while IFS=$'\t' read -r kb path; do
+          case "$path" in
+            "$filter"*)
+              if [[ "$DRY_RUN" -eq 1 ]]; then
+                echo "  DRY RUN: rm -rf $path"
+              else
+                rm -rf "$path"
+              fi
+              ;;
+          esac
+        done < "$ART_SIZES"
+      }
+
+      echo ""
+      if confirm "Delete build artifacts in ALL repos ($(human_size "$TOTAL_KB"))?"; then
+        delete_repo_artifacts ""
+        echo "  Done."
+      else
+        echo "  Asking per repo instead (repos under 50 MB skipped):"
+        while IFS=$'\t' read -r kb repo; do
+          [[ "$repo" == "__TOTAL__" ]] && continue
+          [[ "$kb" -lt 51200 ]] && continue
+          if confirm "Delete artifacts in '$repo' ($(human_size "$kb"))?"; then
+            delete_repo_artifacts "$repo"
+            echo "  Done."
+          else
+            echo "  Skipped."
+          fi
+        done < "$REPO_TOTALS"
+      fi
+    fi
+  fi
+fi
+
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "======================================================================"
@@ -616,4 +855,10 @@ if [[ "$ANALYZE_ONLY" -eq 1 || "$DRY_RUN" -eq 1 ]]; then
   echo "Finished (nothing deleted)."
 else
   echo "Finished."
+  END_FREE_KB="$(_free_kb)"
+  if [[ -n "$START_FREE_KB" && -n "$END_FREE_KB" && "$END_FREE_KB" -gt "$START_FREE_KB" ]]; then
+    echo "Space freed this run : $(human_size "$((END_FREE_KB - START_FREE_KB))")"
+  fi
 fi
+FINAL_FREE_KB="$(_free_kb)"
+[[ -n "$FINAL_FREE_KB" ]] && echo "Free space on data volume: $(human_size "$FINAL_FREE_KB")"
