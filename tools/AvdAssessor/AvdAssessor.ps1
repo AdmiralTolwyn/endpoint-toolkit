@@ -1403,6 +1403,32 @@ function Import-DiscoveryJson {
                 'SEC-SCORE-*'     { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SEC-005'; break }
                 'SEC-JIT-*'       { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SEC-021'; break }
                 'SEC-BASELINE-*'  { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SEC-013'; break }
+                # Phase 4 (0.6.0) — Log Analytics KQL (Tier 1), Intune Graph (Tier 2), in-guest FSLogix (Tier 3).
+                # Exact singletons (SH-BASELINE/SH-DRIFT/SH-PATCH, SEC-APPCTRL/CREDGUARD/VBS, PROF-KFM/AVEXCL)
+                # are placed after their broader SEC-*/SH-*/PROF-* wildcard families but cannot collide with
+                # them (e.g. SEC-CREDGUARD does not match SEC-CAM-*/SEC-CLIP-*/SEC-COM-*).
+                'MON-LATENCY-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'NET-008'; break }  # Tier 1 KQL
+                'MON-INSIGHTS-*'  { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'MON-002'; break }
+                'MON-PERF-*'      { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'MON-008'; break }
+                'MON-EVENTS-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'MON-009'; break }
+                'MON-STORIOPS-*'  { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'MON-010'; break }
+                'PROF-LOADTIME-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'PROF-010'; break }
+                'SH-BASELINE'     { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-028'; break }  # Tier 2 Intune
+                'SH-DRIFT'        { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-014'; break }
+                'SH-PATCH'        { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-005'; break }
+                'SEC-APPCTRL'     { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SEC-001'; break }
+                'SEC-CREDGUARD'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SEC-003'; break }
+                'SEC-VBS'         { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SEC-004'; break }
+                'SEC-TVM-*'       { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SEC-007'; break }
+                'PROF-KFM'        { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'PROF-007'; break }
+                'PROF-AVEXCL'     { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'PROF-019'; break }
+                'PROF-INSTALLED-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'PROF-001'; break }  # Tier 3 guest
+                'PROF-CCACHE-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'PROF-008'; break }
+                'PROF-ODFC-*'     { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'PROF-009'; break }
+                'PROF-VER-*'      { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'PROF-012'; break }
+                'PROF-VHDX-*'     { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'PROF-013'; break }
+                'PROF-FLIPFLOP-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'PROF-014'; break }
+                'PROF-DELLOCAL-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'PROF-015'; break }
                 # Removed arms (discovery no longer emits these / dead rules):
                 #   NET-SHORTPATH-*  (M-3 dead rule — never emitted)
                 #   SEC-WM-* / SEC-SCP-*  (no longer emitted; targets reclassified Manual)

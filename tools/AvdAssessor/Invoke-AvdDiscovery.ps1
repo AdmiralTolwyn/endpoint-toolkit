@@ -15,13 +15,21 @@
     AvdAssessor\assessments\discovery_<timestamp>.json
 .PARAMETER SkipLogin
     Skip interactive login and use existing Az context.
+.PARAMETER IncludeGuestChecks
+    Opt-in in-guest FSLogix inspection. When set, the script runs a single consolidated
+    PowerShell script (via Invoke-AzVMRunCommand) against up to 3 representative RUNNING
+    session hosts per host pool to read HKLM\SOFTWARE\FSLogix\Profiles and the FSLogix agent
+    version. Requires running VMs and the Microsoft.Compute/virtualMachines/runCommand action.
+    Skipped by default (adds runtime + needs elevated permissions); the guest-derived checks
+    (PROF-001/008/009/012/013/014/015) report N/A when this switch is absent.
 .EXAMPLE
     .\Invoke-AvdDiscovery.ps1
     .\Invoke-AvdDiscovery.ps1 -SubscriptionId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
     .\Invoke-AvdDiscovery.ps1 -SubscriptionId @("sub1","sub2") -OutputPath "C:\temp\discovery.json"
+    .\Invoke-AvdDiscovery.ps1 -IncludeGuestChecks
 .NOTES
     Author : Anton Romanyuk
-    Version: 0.5.0
+    Version: 0.6.0
     Date   : 2026-07-18
 #>
 
@@ -34,7 +42,10 @@ param(
     [string]$OutputPath,
 
     [Parameter(Mandatory = $false)]
-    [switch]$SkipLogin
+    [switch]$SkipLogin,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$IncludeGuestChecks
 )
 
 $ErrorActionPreference = 'Stop'
@@ -47,7 +58,7 @@ $env:PSModulePath = ($env:PSModulePath -split ';' |
 $ScriptRoot = $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($ScriptRoot)) { $ScriptRoot = $PWD.Path }
 
-$ScriptVersion = '0.5.0'
+$ScriptVersion = '0.6.0'
 
 # ═══════════════════════════════════════════════════════════════════════════
 # HELPERS
@@ -300,6 +311,44 @@ function Invoke-GraphGet {
     return $Results
 }
 
+<#
+.SYNOPSIS
+    Runs a Log Analytics KQL query against a workspace given by its ARM resource ID.
+.DESCRIPTION
+    Optional dependency: Az.OperationalInsights (Invoke-AzOperationalInsightsQuery expects the
+    workspace *customer ID* GUID, not the ARM resource ID, so the ARM ID from diagnostic settings
+    is first resolved to its CustomerId via Get-AzOperationalInsightsWorkspace). Never throws:
+    returns a hashtable @{ Ok=<bool>; Error=<string>; Rows=@(...) }. When the module is missing,
+    Ok is $false and Error is 'Az.OperationalInsights not installed' so callers emit Status 'Error'.
+.PARAMETER WorkspaceResourceId
+    ARM resource ID of the Log Analytics workspace (as harvested from diagnostic settings).
+.PARAMETER Query
+    The KQL query text.
+.PARAMETER TimespanDays
+    Query window in days (default 7).
+#>
+function Invoke-AvdLaQuery {
+    param([string]$WorkspaceResourceId, [string]$Query, [int]$TimespanDays = 7)
+    if (-not (Get-Module -ListAvailable -Name Az.OperationalInsights -ErrorAction SilentlyContinue)) {
+        return @{ Ok = $false; Error = 'Az.OperationalInsights not installed'; Rows = @() }
+    }
+    try {
+        $Parts = $WorkspaceResourceId -split '/'
+        $RgIdx = -1
+        for ($i = 0; $i -lt $Parts.Length; $i++) { if ($Parts[$i] -ieq 'resourceGroups') { $RgIdx = $i; break } }
+        if ($RgIdx -lt 0) { return @{ Ok = $false; Error = "Could not parse workspace resource ID: $WorkspaceResourceId"; Rows = @() } }
+        $WsRg   = $Parts[$RgIdx + 1]
+        $WsName = $Parts[-1]
+        $Ws = Get-AzOperationalInsightsWorkspace -ResourceGroupName $WsRg -Name $WsName -ErrorAction Stop
+        $CustId = if ($Ws.CustomerId -and $Ws.CustomerId.Guid) { $Ws.CustomerId.Guid } else { "$($Ws.CustomerId)" }
+        if (-not $CustId) { return @{ Ok = $false; Error = "Workspace $WsName has no CustomerId"; Rows = @() } }
+        $Res = Invoke-AzOperationalInsightsQuery -WorkspaceId $CustId -Query $Query -Timespan (New-TimeSpan -Days $TimespanDays) -ErrorAction Stop
+        return @{ Ok = $true; Error = $null; Rows = @($Res.Results) }
+    } catch {
+        return @{ Ok = $false; Error = $_.Exception.Message; Rows = @() }
+    }
+}
+
 # ═══════════════════════════════════════════════════════════════════════════
 # PREREQUISITE CHECK
 # ═══════════════════════════════════════════════════════════════════════════
@@ -362,6 +411,23 @@ if ($Missing.Count -gt 0) {
     Write-Host "  Install-Module -Name '$($Missing -join "', '")' -Scope CurrentUser -Force" -ForegroundColor Yellow
     Write-Host ""
     exit 1
+}
+
+# OPTIONAL module — Az.OperationalInsights powers the AVD Insights / Log Analytics KQL checks
+# (NET-008 latency, MON-002/008/009/010, PROF-010). Not a hard prerequisite: when absent, those
+# checks individually emit Status 'Error' ("Az.OperationalInsights not installed") instead of
+# blocking the whole run.
+$OptionalModules = @(
+    @{ Name = 'Az.OperationalInsights'; MinVersion = '3.0.0'; Reason = 'Log Analytics KQL checks (AVD Insights latency, Perf/Event, storage IOPS, profile load times)' }
+)
+foreach ($Opt in $OptionalModules) {
+    $OptInstalled = Get-Module -ListAvailable -Name $Opt.Name -ErrorAction SilentlyContinue |
+                    Sort-Object Version -Descending | Select-Object -First 1
+    if ($OptInstalled) {
+        Write-Status "$($Opt.Name) v$($OptInstalled.Version) (optional)" -Level 'SUCCESS'
+    } else {
+        Write-Status "$($Opt.Name) not installed (optional) - $($Opt.Reason) will report Error" -Level 'WARN'
+    }
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -3098,6 +3164,40 @@ try {
 } catch {
     Write-Status "  App Attach package error: $($_.Exception.Message)" -Level 'WARN'
 }
+
+# ─── DEFENDER FOR SERVERS / TVM (SEC-007) ──────────────────────────────
+# Threat & Vulnerability Management ships with Defender for Servers. Plan P2 (subPlan) includes
+# the integrated vulnerability assessment (MDVM); P1 is endpoint protection only.
+Write-Status "Defender for Servers (TVM)" -Level 'SECTION'
+try {
+    $ServersPricing = Get-AzSecurityPricing -Name 'VirtualMachines' -ErrorAction Stop
+    $Tier    = "$($ServersPricing.PricingTier)"
+    $SubPlan = "$($ServersPricing.SubPlan)"
+    if ($Tier -ne 'Standard') {
+        $TvmStatus = 'Fail'; $TvmDetail = "Defender for Servers is off (PricingTier: $Tier) - no threat & vulnerability management."
+    } elseif ($SubPlan -eq 'P2') {
+        $TvmStatus = 'Pass'; $TvmDetail = "Defender for Servers Plan 2 (P2) enabled - integrated vulnerability management (MDVM) active."
+    } elseif ($SubPlan -eq 'P1') {
+        $TvmStatus = 'Warning'; $TvmDetail = "Defender for Servers Plan 1 (P1) enabled - endpoint protection only; P2 adds integrated vulnerability assessment."
+    } else {
+        $TvmStatus = 'Warning'; $TvmDetail = "Defender for Servers enabled (PricingTier: $Tier, SubPlan: $(if ($SubPlan) { $SubPlan } else { 'unspecified' })). Confirm Plan 2 for vulnerability management."
+    }
+    [void]$AllChecks.Add((New-CheckResult -Id "SEC-TVM-$SubShort" `
+        -Category 'Security' -Name 'TVM Assessments Enabled' `
+        -Description 'Threat & Vulnerability Management via Defender for Servers Plan 2 should be enabled for session hosts' `
+        -Status $TvmStatus -Severity 'High' `
+        -Details $TvmDetail `
+        -Recommendation 'Enable Microsoft Defender for Servers Plan 2 to get integrated vulnerability management (MDVM) for AVD session hosts.' `
+        -Reference 'https://learn.microsoft.com/en-us/azure/defender-for-cloud/plan-defender-for-servers-select-plan' `
+        -Evidence @{ PricingTier = $Tier; SubPlan = $SubPlan }))
+} catch {
+    [void]$AllChecks.Add((New-CheckResult -Id "SEC-TVM-$SubShort" `
+        -Category 'Security' -Name 'TVM Assessments Enabled' `
+        -Description 'Threat & Vulnerability Management via Defender for Servers Plan 2 should be enabled for session hosts' `
+        -Status 'Error' -Severity 'High' `
+        -Details "Could not read Defender for Servers pricing (Az.Security missing or access denied): $($_.Exception.Message)" `
+        -Reference 'https://learn.microsoft.com/en-us/azure/defender-for-cloud/plan-defender-for-servers-select-plan'))
+}
 }  # end per-subscription sweep (A-1)
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -3279,6 +3379,235 @@ if (-not $GraphToken) {
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
+# MICROSOFT GRAPH — INTUNE / ENDPOINT MANAGER (tenant-level singleton checks)
+# SH-028 baselines, SH-014 compliance/drift, SH-005 patch, SEC-001 app control,
+# SEC-003 Credential Guard, SEC-004 VBS/HVCI, PROF-007 OneDrive KFM, PROF-019 AV exclusions.
+# Needs DeviceManagementConfiguration.Read.All / DeviceManagementManagedDevices.Read.All.
+# Each check degrades to Status 'Error' (never crashes) when its scope/token is missing.
+# ═══════════════════════════════════════════════════════════════════════════
+Write-Status "Microsoft Graph (Intune)" -Level 'SECTION'
+$IntuneScopeMsg = 'insufficient Graph permissions - grant DeviceManagementConfiguration.Read.All / DeviceManagementManagedDevices.Read.All for Intune checks'
+
+# Helper: emit an Error result for an Intune singleton check.
+function Add-IntuneError {
+    param([string]$Id, [string]$Name, [string]$Desc, [string]$Msg, [string]$Ref, [string]$Sev = 'Medium')
+    [void]$AllChecks.Add((New-CheckResult -Id $Id -Category $(if ($Id -like 'SEC-*') { 'Security' } elseif ($Id -like 'PROF-*') { 'FSLogix & Profiles' } else { 'Session Hosts' }) `
+        -Name $Name -Description $Desc -Status 'Error' -Severity $Sev -Details $Msg -Reference $Ref))
+}
+
+if (-not $GraphToken) {
+    $NoTok = 'Could not acquire a Microsoft Graph token from the current Az login.'
+    Add-IntuneError 'SH-BASELINE'   'OS Security Baselines'   'Intune security baselines should be assigned to session hosts' $NoTok 'https://learn.microsoft.com/en-us/mem/intune/protect/security-baselines' 'High'
+    Add-IntuneError 'SH-DRIFT'      'Configuration Drift Detection' 'Intune device compliance policies detect configuration drift' $NoTok 'https://learn.microsoft.com/en-us/mem/intune/protect/device-compliance-get-started' 'Medium'
+    Add-IntuneError 'SH-PATCH'      'Patch Management Strategy' 'Session host update compliance should be tracked in Intune' $NoTok 'https://learn.microsoft.com/en-us/mem/intune/protect/windows-update-for-business-configure' 'High'
+    Add-IntuneError 'SEC-APPCTRL'   'Application Control (WDAC/AppLocker)' 'AppLocker/WDAC application control policies should be deployed' $NoTok 'https://learn.microsoft.com/en-us/windows/security/application-security/application-control/windows-defender-application-control/wdac' 'High'
+    Add-IntuneError 'SEC-CREDGUARD' 'Credential Guard'        'Credential Guard should be enabled via device configuration' $NoTok 'https://learn.microsoft.com/en-us/windows/security/identity-protection/credential-guard/' 'High'
+    Add-IntuneError 'SEC-VBS'       'VBS/HVCI Enabled'        'Virtualization-based security / HVCI should be enabled' $NoTok 'https://learn.microsoft.com/en-us/windows-hardware/design/device-experiences/oem-vbs' 'High'
+    Add-IntuneError 'PROF-KFM'      'OneDrive KFM Enabled'    'OneDrive Known Folder Move should be silently enabled' $NoTok 'https://learn.microsoft.com/en-us/sharepoint/redirect-known-folders' 'Medium'
+    Add-IntuneError 'PROF-AVEXCL'   'AV Exclusions Complete (Full List)' 'Antivirus policies should exclude FSLogix container paths' $NoTok 'https://learn.microsoft.com/en-us/fslogix/overview-prerequisites#configure-antivirus-exclusions' 'Medium'
+    Write-Status "  Intune: $NoTok" -Level 'WARN'
+} else {
+    $GBeta = 'https://graph.microsoft.com/beta'
+    $GV1   = 'https://graph.microsoft.com/v1.0'
+
+    # --- SH-028: OS Security Baselines (deviceManagement/intents) ---
+    try {
+        $Intents = @(Invoke-GraphGet -Uri "$GBeta/deviceManagement/intents" -Token $GraphToken)
+        $Baselines = @($Intents | Where-Object { "$($_.displayName)$($_.templateId)" -match '(?i)baseline|mdm security|defender for endpoint|windows security' })
+        if ($Baselines.Count -eq 0) { $Baselines = $Intents }  # any intent is a managed configuration profile
+        if ($Baselines.Count -gt 0) {
+            $BlNames = @($Baselines | ForEach-Object { $_.displayName } | Where-Object { $_ } | Select-Object -First 8)
+            [void]$AllChecks.Add((New-CheckResult -Id 'SH-BASELINE' -Category 'Session Hosts' -Name 'OS Security Baselines' `
+                -Description 'Intune security baselines (or configuration intents) should be assigned to AVD session hosts' `
+                -Status 'Pass' -Severity 'High' `
+                -Details "Intune security baseline/intent profiles found: $($Baselines.Count) ($($BlNames -join ', ')). Verify each is assigned to the AVD device group." `
+                -Recommendation 'Assign a Windows security baseline (or hardening configuration profiles) to the AVD session-host device group in Intune.' `
+                -Reference 'https://learn.microsoft.com/en-us/mem/intune/protect/security-baselines' `
+                -Evidence @{ BaselineCount = $Baselines.Count; Names = $BlNames }))
+        } else {
+            [void]$AllChecks.Add((New-CheckResult -Id 'SH-BASELINE' -Category 'Session Hosts' -Name 'OS Security Baselines' `
+                -Description 'Intune security baselines (or configuration intents) should be assigned to AVD session hosts' `
+                -Status 'Warning' -Severity 'High' `
+                -Details 'No Intune security baselines or configuration intents found in the tenant.' `
+                -Recommendation 'Deploy a Windows security baseline to the AVD session-host device group in Intune.' `
+                -Reference 'https://learn.microsoft.com/en-us/mem/intune/protect/security-baselines'))
+        }
+    } catch {
+        Add-IntuneError 'SH-BASELINE' 'OS Security Baselines' 'Intune security baselines should be assigned to session hosts' "$IntuneScopeMsg ($($_.Exception.Message))" 'https://learn.microsoft.com/en-us/mem/intune/protect/security-baselines' 'High'
+    }
+
+    # --- SH-014: Configuration Drift (deviceCompliancePolicies + assignments) ---
+    try {
+        $CompPolicies = @(Invoke-GraphGet -Uri "$GV1/deviceManagement/deviceCompliancePolicies?`$expand=assignments" -Token $GraphToken)
+        $Assigned = @($CompPolicies | Where-Object { @($_.assignments).Count -gt 0 })
+        if ($Assigned.Count -gt 0) {
+            [void]$AllChecks.Add((New-CheckResult -Id 'SH-DRIFT' -Category 'Session Hosts' -Name 'Configuration Drift Detection' `
+                -Description 'Intune device compliance policies should be assigned to detect configuration drift' `
+                -Status 'Pass' -Severity 'Medium' `
+                -Details "Assigned device compliance policies: $($Assigned.Count) of $($CompPolicies.Count) total." `
+                -Recommendation 'Keep device compliance policies assigned to the AVD device group and pair with Conditional Access for drift enforcement.' `
+                -Reference 'https://learn.microsoft.com/en-us/mem/intune/protect/device-compliance-get-started' `
+                -Evidence @{ Total = $CompPolicies.Count; Assigned = $Assigned.Count }))
+        } elseif ($CompPolicies.Count -gt 0) {
+            [void]$AllChecks.Add((New-CheckResult -Id 'SH-DRIFT' -Category 'Session Hosts' -Name 'Configuration Drift Detection' `
+                -Description 'Intune device compliance policies should be assigned to detect configuration drift' `
+                -Status 'Warning' -Severity 'Medium' `
+                -Details "$($CompPolicies.Count) device compliance policy(ies) exist but none are assigned." `
+                -Recommendation 'Assign the device compliance policies to the AVD session-host device group.' `
+                -Reference 'https://learn.microsoft.com/en-us/mem/intune/protect/device-compliance-get-started'))
+        } else {
+            [void]$AllChecks.Add((New-CheckResult -Id 'SH-DRIFT' -Category 'Session Hosts' -Name 'Configuration Drift Detection' `
+                -Description 'Intune device compliance policies should be assigned to detect configuration drift' `
+                -Status 'Warning' -Severity 'Medium' `
+                -Details 'No Intune device compliance policies found in the tenant.' `
+                -Recommendation 'Create and assign device compliance policies for the AVD session hosts.' `
+                -Reference 'https://learn.microsoft.com/en-us/mem/intune/protect/device-compliance-get-started'))
+        }
+    } catch {
+        Add-IntuneError 'SH-DRIFT' 'Configuration Drift Detection' 'Intune device compliance policies detect configuration drift' "$IntuneScopeMsg ($($_.Exception.Message))" 'https://learn.microsoft.com/en-us/mem/intune/protect/device-compliance-get-started' 'Medium'
+    }
+
+    # --- SH-005: Patch Management (softwareUpdateStatusSummary) ---
+    try {
+        $UpdSummary = @(Invoke-GraphGet -Uri "$GBeta/deviceManagement/softwareUpdateStatusSummary" -Token $GraphToken)
+        $Sum = if ($UpdSummary.Count -gt 0) { $UpdSummary[0] } else { $null }
+        if ($Sum) {
+            $Compliant    = [int]$Sum.compliantDeviceCount
+            $NonCompliant = [int]$Sum.nonCompliantDeviceCount
+            $ErrorDev     = [int]$Sum.errorDeviceCount
+            $Unknown      = [int]$Sum.unknownDeviceCount
+            $ConflictDev  = [int]$Sum.conflictDeviceCount
+            $TotalDev = $Compliant + $NonCompliant + $ErrorDev + $Unknown + $ConflictDev
+            $Pct = if ($TotalDev -gt 0) { [math]::Round($Compliant / $TotalDev * 100, 0) } else { 0 }
+            $PatchStatus = if ($TotalDev -eq 0) { 'Warning' } elseif ($Pct -ge 90) { 'Pass' } elseif ($Pct -ge 70) { 'Warning' } else { 'Fail' }
+            [void]$AllChecks.Add((New-CheckResult -Id 'SH-PATCH' -Category 'Session Hosts' -Name 'Patch Management Strategy' `
+                -Description 'Session hosts should report high software-update compliance in Intune' `
+                -Status $PatchStatus -Severity 'High' `
+                -Details "$(if ($TotalDev -eq 0) { 'No update-status devices reported by Intune yet.' } else { "$Pct% update-compliant ($Compliant of $TotalDev devices; $NonCompliant non-compliant, $ErrorDev error, $Unknown unknown)." })" `
+                -Recommendation 'Drive update compliance to >=90% via Windows Update for Business / Update rings targeting the AVD device group.' `
+                -Reference 'https://learn.microsoft.com/en-us/mem/intune/protect/windows-update-for-business-configure' `
+                -Evidence @{ CompliantPct = $Pct; Total = $TotalDev; Compliant = $Compliant; NonCompliant = $NonCompliant }))
+        } else {
+            [void]$AllChecks.Add((New-CheckResult -Id 'SH-PATCH' -Category 'Session Hosts' -Name 'Patch Management Strategy' `
+                -Description 'Session hosts should report high software-update compliance in Intune' `
+                -Status 'Warning' -Severity 'High' `
+                -Details 'Intune returned no software update status summary.' `
+                -Recommendation 'Configure Windows Update for Business update rings for the AVD device group.' `
+                -Reference 'https://learn.microsoft.com/en-us/mem/intune/protect/windows-update-for-business-configure'))
+        }
+    } catch {
+        Add-IntuneError 'SH-PATCH' 'Patch Management Strategy' 'Session host update compliance should be tracked in Intune' "$IntuneScopeMsg ($($_.Exception.Message))" 'https://learn.microsoft.com/en-us/mem/intune/protect/windows-update-for-business-configure' 'High'
+    }
+
+    # --- Shared fetch: device configurations + settings-catalog policies (for SEC-001/003/004, PROF-007/019) ---
+    $CfgFetchError = $null
+    $DeviceConfigs = @(); $ConfigPolicies = @(); $GpConfigs = @()
+    try {
+        $DeviceConfigs = @(Invoke-GraphGet -Uri "$GBeta/deviceManagement/deviceConfigurations" -Token $GraphToken)
+    } catch { $CfgFetchError = "$IntuneScopeMsg ($($_.Exception.Message))" }
+    if (-not $CfgFetchError) {
+        try { $ConfigPolicies = @(Invoke-GraphGet -Uri "$GBeta/deviceManagement/configurationPolicies" -Token $GraphToken) } catch { }
+        try { $GpConfigs      = @(Invoke-GraphGet -Uri "$GBeta/deviceManagement/groupPolicyConfigurations" -Token $GraphToken) } catch { }
+    }
+    # Flatten a searchable text blob per profile (displayName + omaSettings + serialized settings).
+    $CfgBlobs = @()
+    if (-not $CfgFetchError) {
+        foreach ($DC in $DeviceConfigs) {
+            $Blob = "$($DC.'@odata.type') $($DC.displayName)"
+            if ($DC.omaSettings) { $Blob += ' ' + (@($DC.omaSettings | ForEach-Object { "$($_.displayName) $($_.omaUri)" }) -join ' ') }
+            try { $Blob += ' ' + ($DC | ConvertTo-Json -Depth 4 -Compress) } catch { }
+            $CfgBlobs += $Blob
+        }
+        foreach ($CP in $ConfigPolicies) { $CfgBlobs += "$($CP.name) $($CP.description)" }
+        foreach ($GP in $GpConfigs)      { $CfgBlobs += "$($GP.displayName)" }
+    }
+
+    # --- SEC-001: Application Control (AppLocker / WDAC) ---
+    if ($CfgFetchError) {
+        Add-IntuneError 'SEC-APPCTRL' 'Application Control (WDAC/AppLocker)' 'AppLocker/WDAC application control policies should be deployed' $CfgFetchError 'https://learn.microsoft.com/en-us/windows/security/application-security/application-control/windows-defender-application-control/wdac' 'High'
+    } else {
+        $AppCtl = @($CfgBlobs | Where-Object { $_ -match '(?i)applocker|applicationcontrol|\bwdac\b|application control|windowsDefenderApplicationControl' })
+        [void]$AllChecks.Add((New-CheckResult -Id 'SEC-APPCTRL' -Category 'Security' -Name 'Application Control (WDAC/AppLocker)' `
+            -Description 'AppLocker or WDAC application control should be deployed to AVD session hosts via Intune' `
+            -Status $(if ($AppCtl.Count -gt 0) { 'Pass' } else { 'Warning' }) -Severity 'High' `
+            -Details "$(if ($AppCtl.Count -gt 0) { "$($AppCtl.Count) profile(s) reference AppLocker/WDAC application control." } else { 'No AppLocker or WDAC application-control profiles found in Intune.' })" `
+            -Recommendation 'Deploy WDAC (App Control for Business) or AppLocker policies to restrict which applications run on session hosts.' `
+            -Reference 'https://learn.microsoft.com/en-us/windows/security/application-security/application-control/windows-defender-application-control/wdac' `
+            -Evidence @{ MatchingProfiles = $AppCtl.Count }))
+    }
+
+    # --- SEC-003: Credential Guard + SEC-004: VBS/HVCI (deviceGuard settings) ---
+    if ($CfgFetchError) {
+        Add-IntuneError 'SEC-CREDGUARD' 'Credential Guard' 'Credential Guard should be enabled via device configuration' $CfgFetchError 'https://learn.microsoft.com/en-us/windows/security/identity-protection/credential-guard/' 'High'
+        Add-IntuneError 'SEC-VBS' 'VBS/HVCI Enabled' 'Virtualization-based security / HVCI should be enabled' $CfgFetchError 'https://learn.microsoft.com/en-us/windows-hardware/design/device-experiences/oem-vbs' 'High'
+    } else {
+        $CredGuard = @($CfgBlobs | Where-Object { $_ -match '(?i)deviceGuardLocalSystemAuthorityCredentialGuard|credentialGuard|credential guard|lsaCfgFlags' })
+        [void]$AllChecks.Add((New-CheckResult -Id 'SEC-CREDGUARD' -Category 'Security' -Name 'Credential Guard' `
+            -Description 'Windows Defender Credential Guard should be enabled on session hosts via Intune device configuration' `
+            -Status $(if ($CredGuard.Count -gt 0) { 'Pass' } else { 'Warning' }) -Severity 'High' `
+            -Details "$(if ($CredGuard.Count -gt 0) { "$($CredGuard.Count) profile(s) configure Credential Guard." } else { 'No device configuration profile enabling Credential Guard was found.' })" `
+            -Recommendation 'Enable Credential Guard via an Endpoint Protection / device-guard configuration profile assigned to session hosts (note: not supported on all pooled/GPU SKUs).' `
+            -Reference 'https://learn.microsoft.com/en-us/windows/security/identity-protection/credential-guard/' `
+            -Evidence @{ MatchingProfiles = $CredGuard.Count }))
+        $Vbs = @($CfgBlobs | Where-Object { $_ -match '(?i)virtualizationBasedSecurity|virtualization based security|\bHVCI\b|hypervisorEnforcedCodeIntegrity|deviceGuardEnableVirtualizationBasedSecurity' })
+        [void]$AllChecks.Add((New-CheckResult -Id 'SEC-VBS' -Category 'Security' -Name 'VBS/HVCI Enabled' `
+            -Description 'Virtualization-based security (VBS) and HVCI should be enabled on session hosts via Intune' `
+            -Status $(if ($Vbs.Count -gt 0) { 'Pass' } else { 'Warning' }) -Severity 'High' `
+            -Details "$(if ($Vbs.Count -gt 0) { "$($Vbs.Count) profile(s) configure VBS/HVCI." } else { 'No device configuration profile enabling VBS/HVCI was found.' })" `
+            -Recommendation 'Enable VBS with HVCI (memory integrity) via a device-guard configuration profile (verify nested-virtualization-capable SKUs).' `
+            -Reference 'https://learn.microsoft.com/en-us/windows-hardware/design/device-experiences/oem-vbs' `
+            -Evidence @{ MatchingProfiles = $Vbs.Count }))
+    }
+
+    # --- PROF-007: OneDrive KFM (KFMSilentOptIn) ---
+    if ($CfgFetchError) {
+        Add-IntuneError 'PROF-KFM' 'OneDrive KFM Enabled' 'OneDrive Known Folder Move should be silently enabled' $CfgFetchError 'https://learn.microsoft.com/en-us/sharepoint/redirect-known-folders' 'Medium'
+    } else {
+        $Kfm = @($CfgBlobs | Where-Object { $_ -match '(?i)KFMSilentOptIn|KnownFolderMove|known folder move' })
+        [void]$AllChecks.Add((New-CheckResult -Id 'PROF-KFM' -Category 'FSLogix & Profiles' -Name 'OneDrive KFM Enabled' `
+            -Description 'OneDrive Known Folder Move (silent opt-in) should redirect Desktop/Documents/Pictures for AVD users' `
+            -Status $(if ($Kfm.Count -gt 0) { 'Pass' } else { 'Warning' }) -Severity 'Medium' `
+            -Details "$(if ($Kfm.Count -gt 0) { "$($Kfm.Count) profile(s) configure OneDrive Known Folder Move." } else { 'No policy configuring OneDrive KFM (KFMSilentOptIn) was found.' })" `
+            -Recommendation 'Configure OneDrive KFMSilentOptIn via an administrative-template / settings-catalog profile so known folders roam without bloating FSLogix profiles.' `
+            -Reference 'https://learn.microsoft.com/en-us/sharepoint/redirect-known-folders' `
+            -Evidence @{ MatchingProfiles = $Kfm.Count }))
+    }
+
+    # --- PROF-019: AV Exclusions for FSLogix (antivirus policies w/ FSLogix paths) ---
+    if ($CfgFetchError) {
+        Add-IntuneError 'PROF-AVEXCL' 'AV Exclusions Complete (Full List)' 'Antivirus policies should exclude FSLogix container paths' $CfgFetchError 'https://learn.microsoft.com/en-us/fslogix/overview-prerequisites#configure-antivirus-exclusions' 'Medium'
+    } else {
+        $AvProfiles  = @($CfgBlobs | Where-Object { $_ -match '(?i)antivirus|defender|windowsDefender|exclusion' })
+        $AvWithFsl   = @($CfgBlobs | Where-Object { $_ -match '(?i)exclusion' -and $_ -match '(?i)fslogix|\.vhdx?|profiles|\.VHD' })
+        if ($AvWithFsl.Count -gt 0) {
+            [void]$AllChecks.Add((New-CheckResult -Id 'PROF-AVEXCL' -Category 'FSLogix & Profiles' -Name 'AV Exclusions Complete (Full List)' `
+                -Description 'Antivirus policies should exclude FSLogix container paths (*.vhd(x), Profiles, ODFC)' `
+                -Status 'Pass' -Severity 'Medium' `
+                -Details "$($AvWithFsl.Count) antivirus profile(s) include FSLogix path exclusions." `
+                -Recommendation 'Keep the full FSLogix antivirus exclusion list current per Microsoft guidance.' `
+                -Reference 'https://learn.microsoft.com/en-us/fslogix/overview-prerequisites#configure-antivirus-exclusions' `
+                -Evidence @{ AvProfilesWithFslExclusions = $AvWithFsl.Count }))
+        } elseif ($AvProfiles.Count -gt 0) {
+            [void]$AllChecks.Add((New-CheckResult -Id 'PROF-AVEXCL' -Category 'FSLogix & Profiles' -Name 'AV Exclusions Complete (Full List)' `
+                -Description 'Antivirus policies should exclude FSLogix container paths (*.vhd(x), Profiles, ODFC)' `
+                -Status 'Warning' -Severity 'Medium' `
+                -Details "$($AvProfiles.Count) antivirus/Defender profile(s) found but none reference FSLogix path exclusions." `
+                -Recommendation 'Add the FSLogix container exclusions (*.vhd, *.vhdx, Profiles/ODFC paths) to the antivirus policy.' `
+                -Reference 'https://learn.microsoft.com/en-us/fslogix/overview-prerequisites#configure-antivirus-exclusions' `
+                -Evidence @{ AvProfiles = $AvProfiles.Count }))
+        } else {
+            [void]$AllChecks.Add((New-CheckResult -Id 'PROF-AVEXCL' -Category 'FSLogix & Profiles' -Name 'AV Exclusions Complete (Full List)' `
+                -Description 'Antivirus policies should exclude FSLogix container paths (*.vhd(x), Profiles, ODFC)' `
+                -Status 'Warning' -Severity 'Medium' `
+                -Details 'No antivirus/Defender configuration profiles found in Intune to verify FSLogix exclusions.' `
+                -Recommendation 'Deploy a Microsoft Defender Antivirus policy that includes the FSLogix container exclusions.' `
+                -Reference 'https://learn.microsoft.com/en-us/fslogix/overview-prerequisites#configure-antivirus-exclusions'))
+        }
+    }
+    Write-Status "  Intune: baselines/compliance/patch/appcontrol/credguard/vbs/kfm/av-exclusions assessed" -Level 'SUCCESS'
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
 # SIEM / SENTINEL ONBOARDING (MON-012) — per Log Analytics workspace from diag settings
 # ═══════════════════════════════════════════════════════════════════════════
 Write-Status "SIEM / Sentinel" -Level 'SECTION'
@@ -3325,6 +3654,164 @@ if ($WsIds.Count -eq 0) {
         }
     }
     Write-Status "  Log Analytics workspaces checked for Sentinel: $($WsIds.Count)" -Level 'SUCCESS'
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# AVD INSIGHTS / LOG ANALYTICS KQL (optional: Az.OperationalInsights)
+# NET-008 latency (MON-LATENCY-*), MON-002 Insights data (MON-INSIGHTS-*),
+# MON-008 Perf (MON-PERF-*), MON-009 Events (MON-EVENTS-*), MON-010 storage IOPS
+# (MON-STORIOPS-*), PROF-010 profile load times (PROF-LOADTIME-*).
+# Reuses the workspace resource IDs harvested from host-pool diagnostic settings.
+# ═══════════════════════════════════════════════════════════════════════════
+Write-Status "AVD Insights (Log Analytics KQL)" -Level 'SECTION'
+$KqlWsIds = @($LAWorkspaceIds.Keys)
+$OpInsightsPresent = [bool](Get-Module -ListAvailable -Name Az.OperationalInsights -ErrorAction SilentlyContinue)
+
+# Data Collection Rule facts (supplementary for MON-008/009). Best-effort in the current context.
+$DcrHasPerf = $false; $DcrHasEvent = $false
+try {
+    $DcrSubId = (Get-AzContext).Subscription.Id
+    foreach ($Dcr in @(Get-AzDataCollectionRule -SubscriptionId $DcrSubId -ErrorAction Stop)) {
+        $DcrJson = ''
+        try { $DcrJson = ($Dcr | ConvertTo-Json -Depth 8 -Compress) } catch { }
+        if ($DcrJson -match '(?i)performanceCounters|DataSourcePerformanceCounter') { $DcrHasPerf = $true }
+        if ($DcrJson -match '(?i)windowsEventLogs|DataSourceWindowsEventLog') { $DcrHasEvent = $true }
+    }
+} catch { }
+
+# FSLogix storage accounts (for MON-010 scoping).
+$FslStorage = @($Discovery.Inventory.StorageAccounts | Where-Object { $_.LikelyFSLogix })
+
+$LatRef  = 'https://learn.microsoft.com/en-us/azure/virtual-desktop/rdp-shortpath'
+$InsRef  = 'https://learn.microsoft.com/en-us/azure/virtual-desktop/insights'
+$PerfRef = 'https://learn.microsoft.com/en-us/azure/virtual-desktop/insights#session-host-data-settings'
+$EvtRef  = 'https://learn.microsoft.com/en-us/azure/azure-monitor/agents/data-collection-rule-azure-monitor-agent'
+$IopsRef = 'https://learn.microsoft.com/en-us/azure/storage/files/storage-files-monitoring'
+$LoadRef = 'https://learn.microsoft.com/en-us/fslogix/tutorial-configure-logging'
+
+if (-not $OpInsightsPresent) {
+    # Optional module missing → emit Error for each KQL-backed check (never hard prereq-fail).
+    $ModMsg = 'Az.OperationalInsights not installed - install it to run AVD Insights / Log Analytics KQL checks.'
+    [void]$AllChecks.Add((New-CheckResult -Id 'MON-LATENCY-NOMODULE' -Category 'Networking' -Name 'Network Latency Requirements' -Description 'Round-trip latency from AVD Insights should be within target' -Status 'Error' -Severity 'Medium' -Details $ModMsg -Reference $LatRef))
+    [void]$AllChecks.Add((New-CheckResult -Id 'MON-INSIGHTS-NOMODULE' -Category 'Monitoring' -Name 'AVD Insights Enabled' -Description 'AVD Insights connection data should be flowing to Log Analytics' -Status 'Error' -Severity 'Medium' -Details $ModMsg -Reference $InsRef))
+    [void]$AllChecks.Add((New-CheckResult -Id 'MON-PERF-NOMODULE' -Category 'Monitoring' -Name 'Performance Counters Configured' -Description 'Session-host performance counters should be collected' -Status 'Error' -Severity 'Medium' -Details $ModMsg -Reference $PerfRef))
+    [void]$AllChecks.Add((New-CheckResult -Id 'MON-EVENTS-NOMODULE' -Category 'Monitoring' -Name 'Windows Event Logs Collected' -Description 'Windows event logs should be collected from session hosts' -Status 'Error' -Severity 'Medium' -Details $ModMsg -Reference $EvtRef))
+    [void]$AllChecks.Add((New-CheckResult -Id 'MON-STORIOPS-NOMODULE' -Category 'Monitoring' -Name 'Storage IOPS Monitoring' -Description 'FSLogix storage throttling/IOPS should be monitored' -Status 'Error' -Severity 'Medium' -Details $ModMsg -Reference $IopsRef))
+    [void]$AllChecks.Add((New-CheckResult -Id 'PROF-LOADTIME-NOMODULE' -Category 'FSLogix & Profiles' -Name 'Profile Size Management' -Description 'FSLogix profile load times should be within target' -Status 'Error' -Severity 'Medium' -Details $ModMsg -Reference $LoadRef))
+    Write-Status "  $ModMsg" -Level 'WARN'
+} elseif ($KqlWsIds.Count -eq 0) {
+    # No workspace discovered via diagnostic settings → data cannot be flowing.
+    $NoWs = 'No Log Analytics workspace found via host-pool diagnostic settings - AVD Insights data is not flowing.'
+    [void]$AllChecks.Add((New-CheckResult -Id 'MON-LATENCY-NODATA' -Category 'Networking' -Name 'Network Latency Requirements' -Description 'Round-trip latency from AVD Insights should be within target' -Status 'Warning' -Severity 'Medium' -Details $NoWs -Recommendation 'Send AVD diagnostics to a Log Analytics workspace and enable AVD Insights.' -Reference $LatRef))
+    [void]$AllChecks.Add((New-CheckResult -Id 'MON-INSIGHTS-NODATA' -Category 'Monitoring' -Name 'AVD Insights Enabled' -Description 'AVD Insights connection data should be flowing to Log Analytics' -Status 'Warning' -Severity 'Medium' -Details $NoWs -Recommendation 'Configure AVD diagnostic settings to a Log Analytics workspace and enable AVD Insights.' -Reference $InsRef))
+    [void]$AllChecks.Add((New-CheckResult -Id 'MON-PERF-NODATA' -Category 'Monitoring' -Name 'Performance Counters Configured' -Description 'Session-host performance counters should be collected' -Status 'Warning' -Severity 'Medium' -Details $NoWs -Recommendation 'Deploy a Data Collection Rule with performance counters and send to Log Analytics.' -Reference $PerfRef))
+    [void]$AllChecks.Add((New-CheckResult -Id 'MON-EVENTS-NODATA' -Category 'Monitoring' -Name 'Windows Event Logs Collected' -Description 'Windows event logs should be collected from session hosts' -Status 'Warning' -Severity 'Medium' -Details $NoWs -Recommendation 'Deploy a Data Collection Rule with Windows event log data sources and send to Log Analytics.' -Reference $EvtRef))
+    if ($FslStorage.Count -eq 0) {
+        [void]$AllChecks.Add((New-CheckResult -Id 'MON-STORIOPS-NONE' -Category 'Monitoring' -Name 'Storage IOPS Monitoring' -Description 'FSLogix storage throttling/IOPS should be monitored' -Status 'N/A' -Severity 'Medium' -Details 'No FSLogix storage accounts classified - nothing to monitor for IOPS.' -Reference $IopsRef))
+    } else {
+        [void]$AllChecks.Add((New-CheckResult -Id 'MON-STORIOPS-NODATA' -Category 'Monitoring' -Name 'Storage IOPS Monitoring' -Description 'FSLogix storage throttling/IOPS should be monitored' -Status 'Warning' -Severity 'Medium' -Details "$($FslStorage.Count) FSLogix storage account(s) but no Log Analytics workspace to query StorageFileLogs throttling." -Recommendation 'Enable storage diagnostic logs and/or a metric alert on Transactions / Success E2E latency for FSLogix storage.' -Reference $IopsRef))
+    }
+    [void]$AllChecks.Add((New-CheckResult -Id 'PROF-LOADTIME-NODATA' -Category 'FSLogix & Profiles' -Name 'Profile Size Management' -Description 'FSLogix profile load times should be within target' -Status 'Warning' -Severity 'Medium' -Details "$NoWs Enable FSLogix event collection to measure profile load times." -Recommendation 'Collect FSLogix operational events / WVDCheckpoints in Log Analytics to measure profile load times (<30s target).' -Reference $LoadRef))
+    Write-Status "  $NoWs" -Level 'WARN'
+} else {
+    foreach ($WsId in $KqlWsIds) {
+        $WsName = ($WsId -split '/')[-1]
+
+        # --- NET-008: latency (WVDConnectionNetworkData) ---
+        $LatQ = 'WVDConnectionNetworkData | where TimeGenerated > ago(7d) | summarize AvgRtt = avg(EstRoundTripTimeInMs)'
+        $LatR = Invoke-AvdLaQuery -WorkspaceResourceId $WsId -Query $LatQ -TimespanDays 7
+        if (-not $LatR.Ok) {
+            [void]$AllChecks.Add((New-CheckResult -Id "MON-LATENCY-$WsName" -Category 'Networking' -Name 'Network Latency Requirements' -Description 'Round-trip latency from AVD Insights should be within target' -Status 'Error' -Severity 'Medium' -Details "KQL latency query failed for workspace ${WsName}: $($LatR.Error)" -Reference $LatRef))
+        } else {
+            $AvgRtt = $null
+            if ($LatR.Rows.Count -gt 0 -and $null -ne $LatR.Rows[0].AvgRtt -and "$($LatR.Rows[0].AvgRtt)" -ne '') { try { $AvgRtt = [double]$LatR.Rows[0].AvgRtt } catch { $AvgRtt = $null } }
+            if ($null -eq $AvgRtt) {
+                [void]$AllChecks.Add((New-CheckResult -Id "MON-LATENCY-$WsName" -Category 'Networking' -Name 'Network Latency Requirements' -Description 'Round-trip latency from AVD Insights should be within target' -Status 'Warning' -Severity 'Medium' -Details "Workspace ${WsName}: AVD Insights data not flowing (no WVDConnectionNetworkData in last 7d)." -Recommendation 'Enable AVD Insights so connection network data (round-trip time) is collected.' -Reference $LatRef))
+            } else {
+                $LatStatus = if ($AvgRtt -lt 100) { 'Pass' } elseif ($AvgRtt -le 150) { 'Warning' } else { 'Fail' }
+                [void]$AllChecks.Add((New-CheckResult -Id "MON-LATENCY-$WsName" -Category 'Networking' -Name 'Network Latency Requirements' -Description 'Round-trip latency from AVD Insights should be within target' -Status $LatStatus -Severity 'Medium' -Details "Workspace ${WsName}: avg round-trip time $([math]::Round($AvgRtt,1))ms over 7d (Pass<100, Warn 100-150, Fail>150)." -Recommendation 'Reduce latency with RDP Shortpath, region proximity, and network optimization; investigate gateways/regions above target.' -Reference $LatRef -Evidence @{ Workspace = $WsName; AvgRttMs = [math]::Round($AvgRtt,1) }))
+            }
+        }
+
+        # --- MON-002: AVD Insights data flowing (WVDConnections rows) ---
+        $InsQ = 'WVDConnections | where TimeGenerated > ago(7d) | summarize Rows = count()'
+        $InsR = Invoke-AvdLaQuery -WorkspaceResourceId $WsId -Query $InsQ -TimespanDays 7
+        if (-not $InsR.Ok) {
+            [void]$AllChecks.Add((New-CheckResult -Id "MON-INSIGHTS-$WsName" -Category 'Monitoring' -Name 'AVD Insights Enabled' -Description 'AVD Insights connection data should be flowing to Log Analytics' -Status 'Error' -Severity 'Medium' -Details "KQL WVDConnections query failed for workspace ${WsName}: $($InsR.Error)" -Reference $InsRef))
+        } else {
+            $InsRows = if ($InsR.Rows.Count -gt 0 -and $InsR.Rows[0].Rows) { [int64]$InsR.Rows[0].Rows } else { 0 }
+            [void]$AllChecks.Add((New-CheckResult -Id "MON-INSIGHTS-$WsName" -Category 'Monitoring' -Name 'AVD Insights Enabled' -Description 'AVD Insights connection data should be flowing to Log Analytics' -Status $(if ($InsRows -gt 0) { 'Pass' } else { 'Warning' }) -Severity 'Medium' -Details "Workspace ${WsName}: $InsRows WVDConnections row(s) in last 7d $(if ($InsRows -gt 0) { '(data flowing)' } else { '(no data - diagnostic settings may exist but Insights is not flowing)' })." -Recommendation 'Enable AVD Insights and verify the diagnostic settings actually send Connection data to this workspace.' -Reference $InsRef -Evidence @{ Workspace = $WsName; Rows = $InsRows }))
+        }
+
+        # --- MON-008: performance counters (Perf) ---
+        $PerfQ = 'Perf | where TimeGenerated > ago(7d) | where CounterName has "User Input Delay" or ObjectName has "User Input Delay per Session" | summarize Rows = count()'
+        $PerfR = Invoke-AvdLaQuery -WorkspaceResourceId $WsId -Query $PerfQ -TimespanDays 7
+        if (-not $PerfR.Ok) {
+            [void]$AllChecks.Add((New-CheckResult -Id "MON-PERF-$WsName" -Category 'Monitoring' -Name 'Performance Counters Configured' -Description 'Session-host performance counters should be collected' -Status 'Error' -Severity 'Medium' -Details "KQL Perf query failed for workspace ${WsName}: $($PerfR.Error)" -Reference $PerfRef))
+        } else {
+            $PerfRows = if ($PerfR.Rows.Count -gt 0 -and $PerfR.Rows[0].Rows) { [int64]$PerfR.Rows[0].Rows } else { 0 }
+            if ($PerfRows -gt 0) {
+                [void]$AllChecks.Add((New-CheckResult -Id "MON-PERF-$WsName" -Category 'Monitoring' -Name 'Performance Counters Configured' -Description 'Session-host performance counters should be collected' -Status 'Pass' -Severity 'Medium' -Details "Workspace ${WsName}: session-host performance counters (e.g. User Input Delay) present in Perf ($PerfRows rows/7d). DCR perf sources: $DcrHasPerf." -Recommendation 'Keep the session-host performance counter Data Collection Rule assigned.' -Reference $PerfRef -Evidence @{ Workspace = $WsName; PerfRows = $PerfRows; DcrHasPerf = $DcrHasPerf }))
+            } else {
+                [void]$AllChecks.Add((New-CheckResult -Id "MON-PERF-$WsName" -Category 'Monitoring' -Name 'Performance Counters Configured' -Description 'Session-host performance counters should be collected' -Status 'Warning' -Severity 'Medium' -Details "Workspace ${WsName}: no session-host performance counters in Perf (last 7d). $(if ($DcrHasPerf) { 'A Data Collection Rule with performance counters exists but no data is arriving.' } else { 'No Data Collection Rule with performance counters found.' })" -Recommendation 'Deploy/assign a Data Collection Rule collecting AVD performance counters (User Input Delay per Session, Processor, Memory) to session hosts.' -Reference $PerfRef -Evidence @{ Workspace = $WsName; DcrHasPerf = $DcrHasPerf }))
+            }
+        }
+
+        # --- MON-009: Windows event logs (Event) ---
+        $EvtQ = 'Event | where TimeGenerated > ago(7d) | summarize Rows = count()'
+        $EvtR = Invoke-AvdLaQuery -WorkspaceResourceId $WsId -Query $EvtQ -TimespanDays 7
+        if (-not $EvtR.Ok) {
+            [void]$AllChecks.Add((New-CheckResult -Id "MON-EVENTS-$WsName" -Category 'Monitoring' -Name 'Windows Event Logs Collected' -Description 'Windows event logs should be collected from session hosts' -Status 'Error' -Severity 'Medium' -Details "KQL Event query failed for workspace ${WsName}: $($EvtR.Error)" -Reference $EvtRef))
+        } else {
+            $EvtRows = if ($EvtR.Rows.Count -gt 0 -and $EvtR.Rows[0].Rows) { [int64]$EvtR.Rows[0].Rows } else { 0 }
+            if ($EvtRows -gt 0) {
+                [void]$AllChecks.Add((New-CheckResult -Id "MON-EVENTS-$WsName" -Category 'Monitoring' -Name 'Windows Event Logs Collected' -Description 'Windows event logs should be collected from session hosts' -Status 'Pass' -Severity 'Medium' -Details "Workspace ${WsName}: Windows event log data present in Event table ($EvtRows rows/7d). DCR event sources: $DcrHasEvent." -Recommendation 'Keep the Windows event log Data Collection Rule assigned to session hosts.' -Reference $EvtRef -Evidence @{ Workspace = $WsName; EventRows = $EvtRows; DcrHasEvent = $DcrHasEvent }))
+            } else {
+                [void]$AllChecks.Add((New-CheckResult -Id "MON-EVENTS-$WsName" -Category 'Monitoring' -Name 'Windows Event Logs Collected' -Description 'Windows event logs should be collected from session hosts' -Status 'Warning' -Severity 'Medium' -Details "Workspace ${WsName}: no Windows event log data in Event table (last 7d). $(if ($DcrHasEvent) { 'A Data Collection Rule with Windows event logs exists but no data is arriving.' } else { 'No Data Collection Rule with Windows event log sources found.' })" -Recommendation 'Deploy/assign a Data Collection Rule with Windows event log data sources to session hosts.' -Reference $EvtRef -Evidence @{ Workspace = $WsName; DcrHasEvent = $DcrHasEvent }))
+            }
+        }
+
+        # --- MON-010: storage IOPS / throttling (StorageFileLogs) ---
+        if ($FslStorage.Count -eq 0) {
+            [void]$AllChecks.Add((New-CheckResult -Id "MON-STORIOPS-$WsName" -Category 'Monitoring' -Name 'Storage IOPS Monitoring' -Description 'FSLogix storage throttling/IOPS should be monitored' -Status 'N/A' -Severity 'Medium' -Details "Workspace ${WsName}: no FSLogix storage accounts classified - nothing to monitor for IOPS." -Reference $IopsRef))
+        } else {
+            $FslIds = @($FslStorage | ForEach-Object { "$($_.Id)".ToLower() })
+            $IopsAlerts = @($Discovery.Inventory.AlertRules | Where-Object { $_.TargetResource -and ("$($_.TargetResource)".ToLower() -in $FslIds) })
+            if ($IopsAlerts.Count -gt 0) {
+                [void]$AllChecks.Add((New-CheckResult -Id "MON-STORIOPS-$WsName" -Category 'Monitoring' -Name 'Storage IOPS Monitoring' -Description 'FSLogix storage throttling/IOPS should be monitored' -Status 'Pass' -Severity 'Medium' -Details "$($IopsAlerts.Count) metric/log alert(s) target FSLogix storage account(s) (Transactions / E2E latency monitoring in place)." -Recommendation 'Keep alerts on FSLogix storage Transactions and Success E2E latency to catch throttling early.' -Reference $IopsRef -Evidence @{ Workspace = $WsName; AlertCount = $IopsAlerts.Count }))
+            } else {
+                $ThrQ = 'StorageFileLogs | where TimeGenerated > ago(7d) | where StatusCode == 429 or StatusText has "Throttl" or StatusText has "ServerBusy" | summarize Rows = count()'
+                $ThrR = Invoke-AvdLaQuery -WorkspaceResourceId $WsId -Query $ThrQ -TimespanDays 7
+                if (-not $ThrR.Ok) {
+                    [void]$AllChecks.Add((New-CheckResult -Id "MON-STORIOPS-$WsName" -Category 'Monitoring' -Name 'Storage IOPS Monitoring' -Description 'FSLogix storage throttling/IOPS should be monitored' -Status 'Warning' -Severity 'Medium' -Details "Workspace ${WsName}: no metric alert on FSLogix storage and StorageFileLogs not queryable ($($ThrR.Error))." -Recommendation 'Add a metric alert on FSLogix storage Transactions / Success E2E latency, or enable StorageFileLogs diagnostics.' -Reference $IopsRef))
+                } else {
+                    $ThrRows = if ($ThrR.Rows.Count -gt 0 -and $ThrR.Rows[0].Rows) { [int64]$ThrR.Rows[0].Rows } else { 0 }
+                    [void]$AllChecks.Add((New-CheckResult -Id "MON-STORIOPS-$WsName" -Category 'Monitoring' -Name 'Storage IOPS Monitoring' -Description 'FSLogix storage throttling/IOPS should be monitored' -Status 'Warning' -Severity 'Medium' -Details "Workspace ${WsName}: no metric alert on FSLogix storage. StorageFileLogs throttling events in last 7d: $ThrRows$(if ($ThrRows -gt 0) { ' (throttling observed - storage is undersized)' } else { '' })." -Recommendation 'Create a metric alert on FSLogix storage Transactions and Success E2E latency; upsize storage if throttling (429) is observed.' -Reference $IopsRef -Evidence @{ Workspace = $WsName; ThrottleRows = $ThrRows }))
+                }
+            }
+        }
+
+        # --- PROF-010: profile load times (WVDCheckpoints) ---
+        $LoadQ = 'WVDCheckpoints | where TimeGenerated > ago(7d) | where Name has "Fslogix" or Name has "Profile" | extend Dur = todouble(column_ifexists("DurationMs", 0)) | summarize AvgSec = avg(Dur)/1000.0, Samples = count()'
+        $LoadR = Invoke-AvdLaQuery -WorkspaceResourceId $WsId -Query $LoadQ -TimespanDays 7
+        if (-not $LoadR.Ok) {
+            # Degrade to Warning (enable FSLogix event collection) rather than a hard Error - the checkpoint
+            # schema for FSLogix phases is not always present.
+            [void]$AllChecks.Add((New-CheckResult -Id "PROF-LOADTIME-$WsName" -Category 'FSLogix & Profiles' -Name 'Profile Size Management' -Description 'FSLogix profile load times should be within target' -Status 'Warning' -Severity 'Medium' -Details "Workspace ${WsName}: could not measure profile load times ($($LoadR.Error)). Enable FSLogix event collection." -Recommendation 'Enable FSLogix operational event / WVDCheckpoints collection to measure profile load times (<30s target).' -Reference $LoadRef))
+        } else {
+            $AvgSec = $null; $Samples = 0
+            if ($LoadR.Rows.Count -gt 0) {
+                if ($LoadR.Rows[0].Samples) { $Samples = [int64]$LoadR.Rows[0].Samples }
+                if ($null -ne $LoadR.Rows[0].AvgSec -and "$($LoadR.Rows[0].AvgSec)" -ne '') { try { $AvgSec = [double]$LoadR.Rows[0].AvgSec } catch { $AvgSec = $null } }
+            }
+            if ($Samples -eq 0 -or $null -eq $AvgSec) {
+                [void]$AllChecks.Add((New-CheckResult -Id "PROF-LOADTIME-$WsName" -Category 'FSLogix & Profiles' -Name 'Profile Size Management' -Description 'FSLogix profile load times should be within target' -Status 'Warning' -Severity 'Medium' -Details "Workspace ${WsName}: no FSLogix profile load-time checkpoints in last 7d. Enable FSLogix event collection." -Recommendation 'Enable FSLogix operational event / WVDCheckpoints collection to measure profile load times (<30s target).' -Reference $LoadRef))
+            } else {
+                [void]$AllChecks.Add((New-CheckResult -Id "PROF-LOADTIME-$WsName" -Category 'FSLogix & Profiles' -Name 'Profile Size Management' -Description 'FSLogix profile load times should be within target' -Status $(if ($AvgSec -lt 30) { 'Pass' } else { 'Warning' }) -Severity 'Medium' -Details "Workspace ${WsName}: avg FSLogix profile load $([math]::Round($AvgSec,1))s over $Samples checkpoint(s) (target <30s)." -Recommendation 'If profile loads exceed 30s, reduce profile size, use Premium storage, and enable profile trimming / redirections.' -Reference $LoadRef -Evidence @{ Workspace = $WsName; AvgLoadSec = [math]::Round($AvgSec,1); Samples = $Samples }))
+            }
+        }
+    }
+    Write-Status "  KQL checks run across $($KqlWsIds.Count) workspace(s)" -Level 'SUCCESS'
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -3515,6 +4002,203 @@ try {
         -Evidence @{ ResourceCount = $TagScores.Count; AvgScore = $AvgScore; PoorlyTagged = $PoorlyTagged }))
 } catch {
     Write-Status "  Tag compliance error: $($_.Exception.Message)" -Level 'WARN'
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# IN-GUEST FSLOGIX CHECKS (opt-in: -IncludeGuestChecks)
+# PROF-001 (PROF-INSTALLED-*), PROF-008 (PROF-CCACHE-*), PROF-009 (PROF-ODFC-*),
+# PROF-012 (PROF-VER-*), PROF-013 (PROF-VHDX-*), PROF-014 (PROF-FLIPFLOP-*),
+# PROF-015 (PROF-DELLOCAL-*). Runs Invoke-AzVMRunCommand on up to 3 running hosts/pool.
+# When the switch is absent these emit N/A (honest "not enabled") so they are never silent.
+# ═══════════════════════════════════════════════════════════════════════════
+Write-Status "In-Guest FSLogix (Run Command)" -Level 'SECTION'
+$FslMinVersion = [Version]'2.9.8612.60056'  # UPDATE PERIODICALLY: 2024-era FSLogix agent floor.
+
+# Emits the seven guest-derived checks as N/A with a shared reason (switch off / no eligible hosts).
+function Add-GuestNA {
+    param([string]$Suffix, [string]$Reason)
+    $Defs = @(
+        @{ Id = "PROF-INSTALLED-$Suffix"; Cat = 'FSLogix & Profiles'; Name = 'FSLogix Installed'; Desc = 'FSLogix agent should be installed on session hosts'; Ref = 'https://learn.microsoft.com/en-us/fslogix/install-ht' }
+        @{ Id = "PROF-CCACHE-$Suffix";    Cat = 'FSLogix & Profiles'; Name = 'Cloud Cache Configuration'; Desc = 'FSLogix Cloud Cache configuration (CCDLocations) for resilient profiles'; Ref = 'https://learn.microsoft.com/en-us/fslogix/tutorial-cloud-cache-containers' }
+        @{ Id = "PROF-ODFC-$Suffix";      Cat = 'FSLogix & Profiles'; Name = 'ODFC Container Separation'; Desc = 'Office data should use a separate ODFC container'; Ref = 'https://learn.microsoft.com/en-us/fslogix/concepts-office-container' }
+        @{ Id = "PROF-VER-$Suffix";       Cat = 'FSLogix & Profiles'; Name = 'FSLogix Version Current'; Desc = 'FSLogix agent should be a current supported version'; Ref = 'https://learn.microsoft.com/en-us/fslogix/whats-new' }
+        @{ Id = "PROF-VHDX-$Suffix";      Cat = 'FSLogix & Profiles'; Name = 'Container Type VHDX'; Desc = 'Profile containers should use the VHDX format'; Ref = 'https://learn.microsoft.com/en-us/fslogix/reference-configuration-settings' }
+        @{ Id = "PROF-FLIPFLOP-$Suffix";  Cat = 'FSLogix & Profiles'; Name = 'FlipFlopProfileDirectoryName'; Desc = 'FlipFlopProfileDirectoryName should be enabled for readable profile folders'; Ref = 'https://learn.microsoft.com/en-us/fslogix/reference-configuration-settings' }
+        @{ Id = "PROF-DELLOCAL-$Suffix";  Cat = 'FSLogix & Profiles'; Name = 'DeleteLocalProfileWhenVHDShouldApply'; Desc = 'DeleteLocalProfileWhenVHDShouldApply should be enabled to avoid local/roaming conflicts'; Ref = 'https://learn.microsoft.com/en-us/fslogix/reference-configuration-settings' }
+    )
+    foreach ($D in $Defs) {
+        [void]$AllChecks.Add((New-CheckResult -Id $D.Id -Category $D.Cat -Name $D.Name -Description $D.Desc `
+            -Status 'N/A' -Severity 'Medium' -Details $Reason -Reference $D.Ref))
+    }
+}
+
+if (-not $IncludeGuestChecks) {
+    Add-GuestNA -Suffix 'DISABLED' -Reason 'Guest checks not enabled (-IncludeGuestChecks). Re-run with -IncludeGuestChecks to inspect in-guest FSLogix configuration.'
+    Write-Status "  Skipped (run with -IncludeGuestChecks to enable in-guest FSLogix inspection)" -Level 'INFO'
+} else {
+    # Consolidated in-guest script (single Run Command per host). Emits one JSON line.
+    $GuestScript = @'
+$ErrorActionPreference = 'SilentlyContinue'
+$p = Get-ItemProperty -Path 'HKLM:\SOFTWARE\FSLogix\Profiles'
+$o = Get-ItemProperty -Path 'HKLM:\SOFTWARE\FSLogix\ODFC'
+$ver = $null
+foreach ($cand in @('C:\Program Files\FSLogix\Apps\frxsvc.exe','C:\Program Files\FSLogix\Apps\frx.exe')) {
+    if (Test-Path $cand) { $ver = (Get-Item $cand).VersionInfo.FileVersion; break }
+}
+$installed = ($null -ne $ver) -or (Test-Path 'HKLM:\SOFTWARE\FSLogix\Profiles')
+$res = [ordered]@{
+    Installed          = [bool]$installed
+    AgentVersion       = $ver
+    Enabled            = $p.Enabled
+    VHDLocations       = ($p.VHDLocations -join ';')
+    VolumeType         = "$($p.VolumeType)"
+    FlipFlop           = $p.FlipFlopProfileDirectoryName
+    DeleteLocalProfile = $p.DeleteLocalProfileWhenVHDShouldApply
+    SizeInMBs          = $p.SizeInMBs
+    CCDLocations       = ($p.CCDLocations -join ';')
+    ODFCEnabled        = $o.Enabled
+    ODFCVHDLocations   = ($o.VHDLocations -join ';')
+}
+'FSLOGIXJSON:' + ($res | ConvertTo-Json -Compress)
+'@
+    $GuestTmp = Join-Path $env:TEMP "avd_fslogix_guest_$(Get-Date -Format 'yyyyMMddHHmmss').ps1"
+    Set-Content -Path $GuestTmp -Value $GuestScript -Encoding UTF8 -Force
+
+    # Select up to 3 RUNNING hosts per host pool.
+    $Sampled = @()
+    foreach ($HP in $Discovery.Inventory.HostPools) {
+        $Running = @($Discovery.Inventory.SessionHosts | Where-Object {
+            $_.HostPoolName -eq $HP.Name -and "$($_.PowerState)" -match '(?i)running'
+        } | Select-Object -First 3)
+        foreach ($R in $Running) { $Sampled += $R }
+    }
+
+    if ($Sampled.Count -eq 0) {
+        Add-GuestNA -Suffix 'NORUNNING' -Reason 'Guest checks enabled but no running session hosts were available to sample (Run Command requires a running VM).'
+        Write-Status "  No running session hosts to sample" -Level 'WARN'
+    } else {
+        $CurrentGuestSub = $null
+        foreach ($SH in $Sampled) {
+            $VMName = ($SH.ResourceId -split '/')[-1]
+            $VMRG   = $SH.ResourceGroup
+            $VMSub  = ($SH.ResourceId -split '/')[2]
+            $HostTag = ($SH.Name -split '/')[-1]
+            if (-not $HostTag) { $HostTag = $VMName }
+            $SafeTag = ($HostTag -replace '[^A-Za-z0-9]', '_')
+
+            if ($VMSub -and $VMSub -ne $CurrentGuestSub) {
+                try { Set-AzContext -SubscriptionId $VMSub -ErrorAction Stop -WarningAction SilentlyContinue | Out-Null; $CurrentGuestSub = $VMSub }
+                catch { Write-Status "    Could not switch context to $VMSub for $VMName" -Level 'WARN' }
+            }
+
+            $Parsed = $null; $RunError = $null
+            try {
+                $RunResult = Invoke-AzVMRunCommand -ResourceGroupName $VMRG -VMName $VMName -CommandId 'RunPowerShellScript' -ScriptPath $GuestTmp -ErrorAction Stop
+                $OutText = ''
+                if ($RunResult -and $RunResult.Value) { $OutText = ($RunResult.Value | ForEach-Object { $_.Message }) -join "`n" }
+                $JsonLine = @($OutText -split "`n" | Where-Object { $_ -match 'FSLOGIXJSON:' } | Select-Object -First 1)
+                if ($JsonLine.Count -gt 0) {
+                    $JsonText = ($JsonLine[0] -replace '^.*FSLOGIXJSON:', '').Trim()
+                    $Parsed = $JsonText | ConvertFrom-Json -ErrorAction Stop
+                } else {
+                    $RunError = 'Run Command returned no FSLogix JSON payload.'
+                }
+            } catch {
+                $RunError = $_.Exception.Message
+            }
+
+            if (-not $Parsed) {
+                # Whole-host failure → Error on the seven checks for this host (never crash).
+                foreach ($Def in @(
+                    @{ Id = "PROF-INSTALLED-$SafeTag"; Name = 'FSLogix Installed'; Cat = 'FSLogix & Profiles' }
+                    @{ Id = "PROF-CCACHE-$SafeTag";    Name = 'Cloud Cache Configuration'; Cat = 'FSLogix & Profiles' }
+                    @{ Id = "PROF-ODFC-$SafeTag";      Name = 'ODFC Container Separation'; Cat = 'FSLogix & Profiles' }
+                    @{ Id = "PROF-VER-$SafeTag";       Name = 'FSLogix Version Current'; Cat = 'FSLogix & Profiles' }
+                    @{ Id = "PROF-VHDX-$SafeTag";      Name = 'Container Type VHDX'; Cat = 'FSLogix & Profiles' }
+                    @{ Id = "PROF-FLIPFLOP-$SafeTag";  Name = 'FlipFlopProfileDirectoryName'; Cat = 'FSLogix & Profiles' }
+                    @{ Id = "PROF-DELLOCAL-$SafeTag";  Name = 'DeleteLocalProfileWhenVHDShouldApply'; Cat = 'FSLogix & Profiles' }
+                )) {
+                    [void]$AllChecks.Add((New-CheckResult -Id $Def.Id -Category $Def.Cat -Name $Def.Name `
+                        -Description 'In-guest FSLogix configuration (Run Command)' -Status 'Error' -Severity 'Medium' `
+                        -Details "Run Command failed on ${HostTag}: $RunError" `
+                        -Reference 'https://learn.microsoft.com/en-us/fslogix/reference-configuration-settings'))
+                }
+                Write-Status "    ${HostTag}: Run Command failed - $RunError" -Level 'WARN'
+                continue
+            }
+
+            $Ev = @{ Host = $HostTag; VM = $VMName }
+
+            # PROF-001 Installed
+            [void]$AllChecks.Add((New-CheckResult -Id "PROF-INSTALLED-$SafeTag" -Category 'FSLogix & Profiles' -Name 'FSLogix Installed' `
+                -Description 'FSLogix agent should be installed on session hosts' `
+                -Status $(if ($Parsed.Installed) { 'Pass' } else { 'Fail' }) -Severity 'High' `
+                -Details "${HostTag}: FSLogix $(if ($Parsed.Installed) { "installed (agent $($Parsed.AgentVersion))" } else { 'NOT installed' })" `
+                -Recommendation 'Install the FSLogix agent on all session hosts (bake into the golden image).' `
+                -Reference 'https://learn.microsoft.com/en-us/fslogix/install-ht' -Evidence $Ev))
+
+            # PROF-008 Cloud Cache (optional → N/A when unused)
+            $CcSet = -not [string]::IsNullOrWhiteSpace("$($Parsed.CCDLocations)")
+            [void]$AllChecks.Add((New-CheckResult -Id "PROF-CCACHE-$SafeTag" -Category 'FSLogix & Profiles' -Name 'Cloud Cache Configuration' `
+                -Description 'FSLogix Cloud Cache (CCDLocations) for resilient/multi-region profiles' `
+                -Status $(if ($CcSet) { 'Pass' } else { 'N/A' }) -Severity 'Medium' `
+                -Details "${HostTag}: $(if ($CcSet) { "Cloud Cache configured (CCDLocations: $($Parsed.CCDLocations))" } else { 'Cloud Cache not configured (single-location VHD - optional feature)' })" `
+                -Recommendation 'Use Cloud Cache (CCDLocations) only when profile resilience across multiple storage providers/regions is required.' `
+                -Reference 'https://learn.microsoft.com/en-us/fslogix/tutorial-cloud-cache-containers' -Evidence $Ev))
+
+            # PROF-009 ODFC separation
+            $OdfcOn = ("$($Parsed.ODFCEnabled)" -eq '1') -and -not [string]::IsNullOrWhiteSpace("$($Parsed.ODFCVHDLocations)")
+            [void]$AllChecks.Add((New-CheckResult -Id "PROF-ODFC-$SafeTag" -Category 'FSLogix & Profiles' -Name 'ODFC Container Separation' `
+                -Description 'Office data should use a separate ODFC container' `
+                -Status $(if ($OdfcOn) { 'Pass' } else { 'Warning' }) -Severity 'Medium' `
+                -Details "${HostTag}: ODFC Enabled=$($Parsed.ODFCEnabled), VHDLocations=$(if ($Parsed.ODFCVHDLocations) { $Parsed.ODFCVHDLocations } else { '(none)' })" `
+                -Recommendation 'Separate the Office cache into an ODFC container to reduce profile size and improve reliability.' `
+                -Reference 'https://learn.microsoft.com/en-us/fslogix/concepts-office-container' -Evidence $Ev))
+
+            # PROF-012 version
+            $VerOk = $false; $VerDetail = 'agent version unknown'
+            if ($Parsed.AgentVersion) {
+                try { $VerOk = ([Version]$Parsed.AgentVersion -ge $FslMinVersion); $VerDetail = "agent $($Parsed.AgentVersion) (floor $FslMinVersion)" }
+                catch { $VerDetail = "agent $($Parsed.AgentVersion) (unparseable)" }
+            }
+            [void]$AllChecks.Add((New-CheckResult -Id "PROF-VER-$SafeTag" -Category 'FSLogix & Profiles' -Name 'FSLogix Version Current' `
+                -Description 'FSLogix agent should be a current supported version' `
+                -Status $(if ($Parsed.AgentVersion -and $VerOk) { 'Pass' } else { 'Warning' }) -Severity 'Medium' `
+                -Details "${HostTag}: $VerDetail" `
+                -Recommendation 'Keep the FSLogix agent current (bake the latest supported release into the image).' `
+                -Reference 'https://learn.microsoft.com/en-us/fslogix/whats-new' -Evidence $Ev))
+
+            # PROF-013 VHDX
+            $IsVhdx = ("$($Parsed.VolumeType)" -match '(?i)vhdx')
+            [void]$AllChecks.Add((New-CheckResult -Id "PROF-VHDX-$SafeTag" -Category 'FSLogix & Profiles' -Name 'Container Type VHDX' `
+                -Description 'Profile containers should use the VHDX format' `
+                -Status $(if ($IsVhdx) { 'Pass' } else { 'Warning' }) -Severity 'Medium' `
+                -Details "${HostTag}: VolumeType=$(if ($Parsed.VolumeType) { $Parsed.VolumeType } else { '(not set - defaults to VHD)' })" `
+                -Recommendation 'Set VolumeType=vhdx (dynamic VHDX) for FSLogix profile containers.' `
+                -Reference 'https://learn.microsoft.com/en-us/fslogix/reference-configuration-settings' -Evidence $Ev))
+
+            # PROF-014 FlipFlop
+            $FlipOn = ("$($Parsed.FlipFlop)" -eq '1')
+            [void]$AllChecks.Add((New-CheckResult -Id "PROF-FLIPFLOP-$SafeTag" -Category 'FSLogix & Profiles' -Name 'FlipFlopProfileDirectoryName' `
+                -Description 'FlipFlopProfileDirectoryName should be enabled for readable profile folder names' `
+                -Status $(if ($FlipOn) { 'Pass' } else { 'Warning' }) -Severity 'Low' `
+                -Details "${HostTag}: FlipFlopProfileDirectoryName=$(if ($null -ne $Parsed.FlipFlop) { $Parsed.FlipFlop } else { '(not set)' })" `
+                -Recommendation 'Enable FlipFlopProfileDirectoryName=1 so profile folders are named %username%%sid% (easier to manage).' `
+                -Reference 'https://learn.microsoft.com/en-us/fslogix/reference-configuration-settings' -Evidence $Ev))
+
+            # PROF-015 DeleteLocalProfileWhenVHDShouldApply
+            $DelOn = ("$($Parsed.DeleteLocalProfile)" -eq '1')
+            [void]$AllChecks.Add((New-CheckResult -Id "PROF-DELLOCAL-$SafeTag" -Category 'FSLogix & Profiles' -Name 'DeleteLocalProfileWhenVHDShouldApply' `
+                -Description 'DeleteLocalProfileWhenVHDShouldApply should be enabled to prevent local/roaming profile conflicts' `
+                -Status $(if ($DelOn) { 'Pass' } else { 'Warning' }) -Severity 'Medium' `
+                -Details "${HostTag}: DeleteLocalProfileWhenVHDShouldApply=$(if ($null -ne $Parsed.DeleteLocalProfile) { $Parsed.DeleteLocalProfile } else { '(not set)' })" `
+                -Recommendation 'Enable DeleteLocalProfileWhenVHDShouldApply=1 to remove stale local profiles that block container mount.' `
+                -Reference 'https://learn.microsoft.com/en-us/fslogix/reference-configuration-settings' -Evidence $Ev))
+
+            Write-Status "    ${HostTag}: FSLogix installed=$($Parsed.Installed), ver=$($Parsed.AgentVersion), volumeType=$($Parsed.VolumeType)" -Level 'SUCCESS'
+        }
+    }
+    Remove-Item -Path $GuestTmp -Force -ErrorAction SilentlyContinue
 }
 
 # ═══════════════════════════════════════════════════════════════════════════

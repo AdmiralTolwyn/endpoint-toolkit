@@ -15,7 +15,7 @@ AVD Assessor is a PowerShell/WPF desktop application that combines automated Azu
 Running an AVD readiness review typically involves spreadsheets, tribal knowledge, and hours of manual Azure portal checks. Findings are inconsistent between assessors, scoring is subjective, and reports are created from scratch each time. AVD Assessor solves this by:
 
 - **Standardizing the framework**: 183 checks derived from Microsoft CAF, WAF, and LZA guidance, each with severity, weight, effort estimate, and documentation reference
-- **Automating what can be automated**: A standalone discovery script scans Azure subscriptions and evaluates 99 checks automatically — networking rules, VM configurations, scaling plans, storage security, monitoring, Conditional Access / MFA (via Microsoft Graph), and more
+- **Automating what can be automated**: A standalone discovery script scans Azure subscriptions and evaluates 121 checks automatically — networking rules, VM configurations, scaling plans, storage security, monitoring, Conditional Access / MFA (via Microsoft Graph), AVD Insights latency and telemetry (via Log Analytics KQL), Intune baselines / Credential Guard / VBS (via Intune Graph), optional in-guest FSLogix inspection, and more
 - **Supporting the workshop**: A WPF GUI for interactive walkthroughs where the assessor and customer review checks together, add notes, and set statuses in real time
 - **Scoring objectively**: Weighted category scores, an overall score, and a six-dimension maturity model (Initial → Optimized) provide a clear picture of readiness
 - **Producing deliverables**: One-click export to dark/light HTML reports, CSV data dumps, or JSON snapshots for programmatic consumption
@@ -28,11 +28,11 @@ Running an AVD readiness review typically involves spreadsheets, tribal knowledg
 - **183 checks** across 11 categories: Identity & Access, Networking, Session Hosts, FSLogix & Profiles, Security, Monitoring, BCDR, Governance & Cost, Application Delivery, Operations, Landing Zone
 - Each check carries severity (Critical/High/Medium/Low), weight (1–5), effort estimate (Quick Win/Some Effort/Major Effort), and a Microsoft documentation URL
 - Checks are defined in `checks.json` — extensible without code changes
-- Check types: 99 automated (discovery-backed) + 84 manual (workshop review)
+- Check types: 121 automated (discovery-backed) + 62 manual (workshop review)
 
 ### Automated Discovery
 - Standalone `Invoke-AvdDiscovery.ps1` script runs against one or more Azure subscriptions
-- Evaluates 99 checks automatically via Azure PowerShell modules (including Conditional Access / MFA / passwordless via Microsoft Graph)
+- Evaluates 121 checks automatically via Azure PowerShell modules (including Conditional Access / MFA / passwordless via Microsoft Graph, AVD Insights KQL via Log Analytics, and Intune configuration via Intune Graph)
 - Discovers host pools, session hosts (VM metadata, boot diagnostics, disk encryption, agent versions), application groups, workspaces, scaling plans, VNets, NSGs, storage accounts, Key Vaults, policies, alerts, quotas, budgets, reserved instances, orphaned resources
 - Outputs a structured JSON that can be imported into the GUI for hybrid assessment
 - Supports multi-subscription scanning, custom output paths, and `‑SkipLogin` for existing Az contexts
@@ -138,6 +138,9 @@ The launcher auto-detects PowerShell 7 and falls back to Windows PowerShell 5.1.
 
 # Reuse existing Az context (no login prompt)
 .\Invoke-AvdDiscovery.ps1 -SkipLogin
+
+# Include opt-in in-guest FSLogix inspection (Run Command on up to 3 running hosts per pool)
+.\Invoke-AvdDiscovery.ps1 -IncludeGuestChecks
 ```
 
 Then import the discovery JSON into the GUI via **Import Discovery / Assessment**.
@@ -169,15 +172,28 @@ Then import the discovery JSON into the GUI via **Import Discovery / Assessment*
 | Az.Monitor | Diagnostic settings, alerts, and monitoring checks |
 | Az.Storage | Storage account security and configuration checks |
 | Az.KeyVault | Key Vault existence and private endpoint checks |
-| Az.Security | Defender for Cloud, secure score, JIT, regulatory compliance checks |
-| Azure RBAC | **Reader** role on target subscription(s) |
-| Microsoft Graph | **Policy.Read.All** (Conditional Access / MFA / token-protection checks) and, optionally, **AuditLog.Read.All** (passwordless registration). The Graph token is acquired from the existing Az login — no extra module is required. Identity checks degrade to `Error` (not a crash) when these permissions are absent |
+| Az.Security | Defender for Cloud, secure score, JIT, regulatory compliance, Defender for Servers plan (TVM) checks |
+| Az.OperationalInsights | **Optional** — Log Analytics KQL checks (AVD Insights latency, Perf/Event collection, storage IOPS, profile load times). When absent, those six checks report `Error` instead of blocking the run |
+| Azure RBAC | **Reader** role on target subscription(s). For the optional Log Analytics KQL checks, **Log Analytics Reader** on the workspace(s) receiving AVD diagnostics. For `-IncludeGuestChecks`, the **Microsoft.Compute/virtualMachines/runCommand/action** permission (e.g. Virtual Machine Contributor) on the session-host VMs |
+| Microsoft Graph (Identity) | **Policy.Read.All** (Conditional Access / MFA / token-protection checks) and, optionally, **AuditLog.Read.All** (passwordless registration). The Graph token is acquired from the existing Az login — no extra module is required. Identity checks degrade to `Error` (not a crash) when these permissions are absent |
+| Microsoft Graph (Intune) | **Optional** — `DeviceManagementConfiguration.Read.All` and `DeviceManagementManagedDevices.Read.All` for the Intune checks (security baselines, compliance/drift, patch posture, application control, Credential Guard, VBS/HVCI, OneDrive KFM, FSLogix AV exclusions). Each Intune check degrades to `Error` listing the missing scope when absent |
 
 ```powershell
+# Required modules
 Install-Module Az.Accounts, Az.DesktopVirtualization, Az.Resources, Az.Compute, Az.Network, Az.PrivateDns, Az.Monitor, Az.Storage, Az.KeyVault, Az.Security -Scope CurrentUser
+
+# Optional module for the Log Analytics KQL checks
+Install-Module Az.OperationalInsights -Scope CurrentUser
 ```
 
+> **Two optional permission tiers.** Beyond the base `Reader` + `Policy.Read.All`, Phase 4 adds two opt-in signal sources that never hard-fail the run:
+>
+> - **Log Analytics Reader** on the workspace(s) that receive AVD diagnostics — powers the AVD Insights KQL checks (NET-008 latency, MON-002 Insights data flow, MON-008 Perf, MON-009 Events, MON-010 storage IOPS, PROF-010 profile load times). The workspace IDs are reused from the diagnostic settings already discovered. Requires the optional `Az.OperationalInsights` module; when the module or data is missing, these checks report `Error`/`Warning` rather than blocking.
+> - **Intune Graph scopes** (`DeviceManagementConfiguration.Read.All`, `DeviceManagementManagedDevices.Read.All`) on the same Az-login token — powers SH-028 (baselines), SH-014 (drift), SH-005 (patch), SEC-001 (application control), SEC-003 (Credential Guard), SEC-004 (VBS/HVCI), PROF-007 (OneDrive KFM), and PROF-019 (FSLogix AV exclusions). Each degrades to a per-check `Error` naming the missing scope.
+
 > **Graph permissions**: the discovery script calls Microsoft Graph (Conditional Access policies, authentication method registration) using a token from your Az login. Grant the signed-in account `Policy.Read.All` for the MFA / Conditional Access / Windows Cloud Login / token-protection checks (IAM-002/003/010/011), and `AuditLog.Read.All` (plus an Entra ID P1/P2 license) for the passwordless-registration check (IAM-009). Without them, those identity checks report `Error` rather than failing the run.
+
+> **`-IncludeGuestChecks` (opt-in, skipped by default)**: adds in-guest FSLogix inspection. When set, the script runs a single consolidated PowerShell script via `Invoke-AzVMRunCommand` against **up to 3 representative running session hosts per host pool** (a sampling cap to keep runtime bounded) to read `HKLM\SOFTWARE\FSLogix\Profiles` / `ODFC` (Enabled, VHDLocations, VolumeType, FlipFlopProfileDirectoryName, DeleteLocalProfileWhenVHDShouldApply, SizeInMBs, CCDLocations, ODFCEnabled) and the FSLogix agent version. This converts PROF-001 (installed), PROF-008 (Cloud Cache), PROF-009 (ODFC), PROF-012 (version), PROF-013 (VHDX), PROF-014 (FlipFlop), and PROF-015 (DeleteLocalProfileWhenVHDShouldApply) to automated. It is opt-in because it needs running VMs and the `runCommand` action, and adds runtime; when the switch is absent these seven checks honestly report `N/A` ("guest checks not enabled") rather than nothing.
 
 ---
 
@@ -321,7 +337,7 @@ Auto-save interval, backup management, cache purge, debug overlay toggle, animat
 
 ## Discovery Script Details
 
-`Invoke-AvdDiscovery.ps1` (v0.5.0) runs as a standalone script that scans Azure subscriptions and produces a structured JSON file.
+`Invoke-AvdDiscovery.ps1` (v0.6.0) runs as a standalone script that scans Azure subscriptions and produces a structured JSON file.
 
 ### Parameters
 
@@ -356,7 +372,7 @@ The script scans these resource types and generates automated check results:
 {
   "Metadata": {
     "Timestamp": "2026-03-27T14:30:00Z",
-    "ScriptVersion": "0.5.0",
+    "ScriptVersion": "0.6.0",
     "Subscriptions": ["sub-id-1"],
     "Duration": "00:02:45"
   },
@@ -401,7 +417,7 @@ The script scans these resource types and generates automated check results:
 AvdAssessor/
 ├── AvdAssessor.ps1              # Main GUI application (~6k lines)
 ├── AvdAssessor_UI.xaml          # WPF layout, styles, and resource dictionaries
-├── Invoke-AvdDiscovery.ps1     # Standalone discovery script (99 automated checks)
+├── Invoke-AvdDiscovery.ps1     # Standalone discovery script (121 automated checks)
 ├── Launch_AvdAssessor.bat      # Launcher (auto-detects PS7, falls back to PS5.1)
 ├── checks.json                 # 183 check definitions with metadata
 ├── assessments/                # Saved assessment and discovery JSON files
@@ -508,7 +524,7 @@ Install-Module Az.DesktopVirtualization -Scope CurrentUser -Force
 
 ### Discovery Import Shows No Automated Checks
 
-Ensure the discovery JSON was generated by `Invoke-AvdDiscovery.ps1` v0.5.0+. Older formats may not include the `Checks` array. Re-run the discovery script.
+Ensure the discovery JSON was generated by `Invoke-AvdDiscovery.ps1` v0.6.0+. Older formats may not include the `Checks` array. Re-run the discovery script.
 
 ### GUI Appears Blank or Frozen
 
@@ -544,6 +560,8 @@ Levels: INFO, DEBUG, WARN, ERROR, SUCCESS
 ---
 
 ## Changelog
+
+**0.6.0** — Phase 4 automation tier: 22 Manual→Auto conversions across three optional signal sources (catalog v1.3, now 121 Auto / 62 Manual). **Tier 1 — Log Analytics KQL** (optional `Az.OperationalInsights`, reusing workspace IDs from diagnostic settings): NET-008 latency (`MON-LATENCY-*`), MON-002 AVD Insights data flow (`MON-INSIGHTS-*`), MON-008 performance counters (`MON-PERF-*`), MON-009 event logs (`MON-EVENTS-*`), MON-010 storage IOPS (`MON-STORIOPS-*`), PROF-010 profile load times (`PROF-LOADTIME-*`); checks report `Error` when the module is missing and `Warning` when no data is flowing. **Tier 2 — Intune Graph** (reusing the Az-login Graph token; needs `DeviceManagementConfiguration.Read.All` / `DeviceManagementManagedDevices.Read.All`): SH-028 baselines (`SH-BASELINE`), SH-014 drift (`SH-DRIFT`), SH-005 patch (`SH-PATCH`), SEC-001 application control (`SEC-APPCTRL`), SEC-003 Credential Guard (`SEC-CREDGUARD`), SEC-004 VBS/HVCI (`SEC-VBS`), SEC-007 TVM via Defender for Servers plan (`SEC-TVM-*`), PROF-007 OneDrive KFM (`PROF-KFM`), PROF-019 FSLogix AV exclusions (`PROF-AVEXCL`); each degrades to a per-check `Error` naming the missing scope. **Tier 3 — opt-in `-IncludeGuestChecks`**: `Invoke-AzVMRunCommand` on up to 3 running hosts per pool reads FSLogix registry + agent version, converting PROF-001/008/009/012/013/014/015 (`PROF-INSTALLED/CCACHE/ODFC/VER/VHDX/FLIPFLOP/DELLOCAL-*`); these report `N/A` when the switch is absent. Every new external call is wrapped in try/catch → `Error` emit (never crashes).
 
 **0.5.0** — Graph identity collection, 16 Manual→Auto conversions, 6 new checks. Added a Microsoft Graph section to discovery (Conditional Access / MFA / Windows Cloud Login / token protection / passwordless registration; degrades to `Error` when Graph permissions are missing), converted 16 ARM/Defender-discoverable checks from Manual to Auto (IAM-002/003/009/010, BCDR-006/011, GOV-007, SH-020, APP-002/004, MON-003/012, NET-005, SEC-005/013/021), implemented the orphaned SH-018 (region proximity), reclassified NET-011 to Manual (not ARM-discoverable), and added new Auto checks IAM-011 (Windows Cloud Login CA coverage), IAM-012 (Entra Kerberos), SH-029 (OS end-of-support), SH-030 (GPU config), SH-031 (personal-pool autoscale), and MON-017 (scaling-plan diagnostics). Also corrected 15 per-subscription mapping arms whose singleton IDs (suffixed with the sub short-id by the A-1 fix) no longer matched their exact-string arm patterns.
 
