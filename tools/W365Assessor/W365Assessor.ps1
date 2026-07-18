@@ -3778,7 +3778,7 @@ tr.filter-hidden{display:none}
 <div class="field-note-title">Field Notes — Inventory & Topology</div>
 <p>Cloud PCs are licensed per-user, not per-VM. The single most expensive mistake is leaving Cloud PCs in <code>failed</code> or <code>inGracePeriod</code> state — both consume a full license while delivering zero value. Audit the inventory weekly until you have a closed-loop offboarding process.</p>
 <ul>
-<li><strong>Edition selection</strong> — <em>Enterprise</em> = dedicated 1:1 PCs with full Intune/CA. <em>Frontline</em> = shared (1:3 dedicated, higher in shared mode) for shift workers. <em>Business</em> = SMB-only, no Intune, no custom images, no ANC. Avoid mixing editions in the same persona.</li>
+<li><strong>Edition selection</strong> — <em>Enterprise</em> = dedicated 1:1 PCs with full Intune/CA. <em>Flex (formerly Frontline)</em> = shared (1:3 dedicated, higher in shared mode) for shift workers. <em>Business</em> = SMB-only, no Intune, no custom images, no ANC. Avoid mixing editions in the same persona.</li>
 <li><strong>Sizing personas</strong> — Microsoft's published recommendations: 2 vCPU / 4 GB (task), 4 vCPU / 16 GB (knowledge), 8 vCPU / 32 GB (developer/engineer). Validate with Endpoint Analytics resource performance reports — over-sizing is the most common waste.</li>
 <li><strong>Region alignment</strong> — Latency directly drives perceived quality. Target &lt;150 ms RTT, ideally &lt;100 ms for real-time work. If a user's nearest region is unsupported, peer to a supported region rather than provisioning far away.</li>
 <li><strong>Status semantics</strong> — <code>provisioned</code> is the only "good" state. <code>provisionedWithWarnings</code> usually means a soft post-provision step failed (Intune sync delay, language pack). <code>inGracePeriod</code> means the license was removed and the data window is closing — act fast.</li>
@@ -3797,7 +3797,7 @@ tr.filter-hidden{display:none}
 <li><strong>Grace period</strong> — Defaults to 7 hours. For HR offboarding workflows that can take days, increase to 168 hours (7 days). The grace period is the only time window in which user data is recoverable after license removal.</li>
 <li><strong>Domain join</strong> — Microsoft strongly recommends <strong>Entra ID Join</strong>. Hybrid Join requires AD DS DCs reachable from the ANC subnet, DNS configured to resolve the AD domain, and adds Azure AD Connect dependency. For new deployments, choose Entra Join unless on-prem AD is non-negotiable.</li>
 <li><strong>Autopatch</strong> — Built-in option that hands monthly patch orchestration to the Windows Autopatch service (Test → First → Fast → Broad rings, automatic pause on issues). Removes the need to hand-manage Intune update rings for Cloud PCs.</li>
-<li><strong>Frontline</strong> — <code>provisioningType=shared</code> for shared mode (high concurrency); <code>dedicated</code> for 1:3 license sharing where each user keeps the same PC. Shift schedules must not exceed concurrency or users get blocked at sign-in.</li>
+<li><strong>Flex</strong> — <code>provisioningType=shared</code> for shared mode (high concurrency); <code>dedicated</code> for 1:3 license sharing where each user keeps the same PC. Shift schedules must not exceed concurrency or users get blocked at sign-in.</li>
 </ul>
 </div>
 "@
@@ -3812,7 +3812,7 @@ tr.filter-hidden{display:none}
 <li><strong>Restore points</strong> — Default frequency is 12 hours, configurable to 4 / 6 / 12. Up to 10 retained. Enable <code>userRestoreEnabled</code> to let users self-serve restore from the Windows 365 portal — typically halves restore-related helpdesk tickets.</li>
 <li><strong>Cross-Region DR</strong> — <strong>Add-on license required per user</strong>. RPO &lt;4 h, RTO &lt;4 h for up to 50 K licensed PCs per backup region. <em>This is for emergency failover only</em> — Microsoft auto-fails-back after 7 days. For permanent moves, use the <em>Move Cloud PC</em> feature instead.</li>
 <li><strong>Self-service reset</strong> — Powerful but dangerous: a reset wipes everything not in OneDrive. <strong>Never enable reset without first verifying KFM is configured and syncing.</strong></li>
-<li><strong>Frontline reserve</strong> — In shared mode, peak-concurrency spikes block users from signing in. Size license count to 120% of observed peak from Endpoint Analytics, then re-evaluate quarterly.</li>
+<li><strong>Flex reserve</strong> — In shared mode, peak-concurrency spikes block users from signing in. Size license count to 120% of observed peak from Endpoint Analytics, then re-evaluate quarterly.</li>
 </ul>
 </div>
 "@
@@ -3887,11 +3887,11 @@ tr.filter-hidden{display:none}
                 $FieldNote = @"
 <div class="field-note">
 <div class="field-note-title">Field Notes — Cost & Optimization</div>
-<p>Windows 365 is per-user, per-month — no spot pricing, no scaling-down to zero. The cost levers are <strong>license count</strong>, <strong>SKU sizing</strong>, and <strong>Frontline ratio</strong>. Inactive PCs are pure waste.</p>
+<p>Windows 365 is per-user, per-month — no spot pricing, no scaling-down to zero. The cost levers are <strong>license count</strong>, <strong>SKU sizing</strong>, and <strong>Flex ratio</strong>. Inactive PCs are pure waste.</p>
 <ul>
 <li><strong>Inactive Cloud PCs</strong> — Each unused license costs ~$31-$158/month. A 10% inactive rate in a 1,000-seat deployment is $37 K-$190 K/year of waste. Pull utilization monthly from Endpoint Analytics; reclaim or downsize.</li>
 <li><strong>Right-sizing</strong> — Cloud PCs can be resized in-place without reprovisioning (no data loss). Hunt PCs running &lt;30% CPU and &lt;50% RAM for downsizing. PCs with consistent throttling for upsizing.</li>
-<li><strong>Frontline math</strong> — Required licenses = <code>ceil(peak concurrent / concurrency ratio)</code> × 1.2. Over-purchase loses the cost advantage; under-purchase blocks shift workers.</li>
+<li><strong>Flex math</strong> — Required licenses = <code>ceil(peak concurrent / concurrency ratio)</code> × 1.2. Over-purchase loses the cost advantage; under-purchase blocks shift workers.</li>
 <li><strong>Offboarding</strong> — Tie license removal to HR offboarding via Entra dynamic groups based on employee status attribute. Otherwise licenses pile up on departed users.</li>
 <li><strong>Egress (BYOD network)</strong> — Outbound traffic from Cloud PCs to OneDrive/Office in a different region incurs Azure egress charges. Co-locate Cloud PCs and user data; set Azure budget alerts.</li>
 </ul>

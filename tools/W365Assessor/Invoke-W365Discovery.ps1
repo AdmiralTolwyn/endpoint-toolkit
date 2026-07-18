@@ -1083,7 +1083,7 @@ $skuSummary = if ($Discovery.Inventory.ServicePlans) { (@($Discovery.Inventory.S
     -Severity 'Medium' `
     -Details "$planCount service plan(s) available; $($plansInUse.Count) distinct SKU(s) in use across provisioned Cloud PCs. Available: $skuSummary." `
     -Recommendation 'Standardise on a small set of vetted SKUs per persona. Right-size using the Cloud PC recommendation/utilization reports before adding new SKUs.' `
-    -Reference 'https://learn.microsoft.com/en-us/windows-365/enterprise/service-plans' `
+    -Reference 'https://learn.microsoft.com/en-us/windows-365/enterprise/planning-guide' `
     -Evidence @{ PlansAvailable = $planCount; SkusInUse = $plansInUse.Count }))
 
 # ─── PROV-006: Domain-join type (Entra vs Hybrid) consistency; Entra preferred ─────────────

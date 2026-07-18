@@ -5311,13 +5311,13 @@
       "origin": "SCT",
       "category": "Network Security",
       "id": "NET-017",
-      "remediation": "GPO: Set 'Policy' under HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\Wireless. Registry: HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\Wireless\\Policy. Intune: Use Settings Catalog or custom OMA-URI if CSP mapping available.",
+      "remediation": "GPO: Computer Configuration > Windows Settings > Security Settings > Wireless Network (IEEE 802.11) Policies — require WPA2/WPA3 authentication. Intune: Wi-Fi configuration profile with WPA2/WPA3-Enterprise. Verify effective policy in the WLAN GPO editor or Intune profile report.",
       "effort": "Quick Win",
-      "type": "Auto",
+      "type": "Manual",
       "name": "Enable WiFi Protected Access Requirement",
       "severity": "High",
       "weight": 4,
-      "description": "Require WPA2/WPA3 for wireless connections",
+      "description": "Require WPA2/WPA3 for wireless connections (manual review — WLAN Group Policy is stored as a binary blob under GPTWirelessPolicy, not a readable registry value, so the collector cannot evaluate it)",
       "applicableTo": [
         "intune",
         "gpo"
