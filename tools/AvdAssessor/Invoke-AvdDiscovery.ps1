@@ -21,8 +21,8 @@
     .\Invoke-AvdDiscovery.ps1 -SubscriptionId @("sub1","sub2") -OutputPath "C:\temp\discovery.json"
 .NOTES
     Author : Anton Romanyuk
-    Version: 0.3.0
-    Date   : 2026-04-07
+    Version: 0.5.0
+    Date   : 2026-07-18
 #>
 
 [CmdletBinding()]
@@ -47,7 +47,7 @@ $env:PSModulePath = ($env:PSModulePath -split ';' |
 $ScriptRoot = $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($ScriptRoot)) { $ScriptRoot = $PWD.Path }
 
-$ScriptVersion = '0.3.0'
+$ScriptVersion = '0.5.0'
 
 # ═══════════════════════════════════════════════════════════════════════════
 # HELPERS
@@ -173,6 +173,133 @@ function New-CheckResult {
     }
 }
 
+<#
+.SYNOPSIS
+    Resolves vCPU count and memory (GB) for a VM size, caching one Get-AzVMSize call per region.
+.DESCRIPTION
+    Uses a small built-in lookup for common AVD families, falling back to Get-AzVMSize (cached per
+    location in the supplied hashtable). Returns a PSCustomObject with VCPU and MemoryGB, or nulls
+    when the size cannot be resolved.
+.PARAMETER VMSize
+    The VM size string (e.g. 'Standard_D4s_v5').
+.PARAMETER Location
+    Azure region of the VM (used for the Get-AzVMSize fallback).
+.PARAMETER Cache
+    Hashtable used to cache per-location Get-AzVMSize results across calls.
+#>
+function Get-VMSizeSpec {
+    param([string]$VMSize, [string]$Location, [hashtable]$Cache)
+    if (-not $VMSize) { return [PSCustomObject]@{ VCPU = $null; MemoryGB = $null } }
+    # Small built-in lookup for the most common AVD families (avoids an API call in the common case).
+    $Builtin = @{
+        'Standard_D2s_v5' = @(2,8);   'Standard_D4s_v5' = @(4,16);  'Standard_D8s_v5' = @(8,32);  'Standard_D16s_v5' = @(16,64)
+        'Standard_D2s_v4' = @(2,8);   'Standard_D4s_v4' = @(4,16);  'Standard_D8s_v4' = @(8,32);  'Standard_D16s_v4' = @(16,64)
+        'Standard_D2s_v3' = @(2,8);   'Standard_D4s_v3' = @(4,16);  'Standard_D8s_v3' = @(8,32);  'Standard_D16s_v3' = @(16,64)
+        'Standard_E4s_v5' = @(4,32);  'Standard_E8s_v5' = @(8,64);  'Standard_E16s_v5' = @(16,128)
+        'Standard_E4s_v4' = @(4,32);  'Standard_E8s_v4' = @(8,64);  'Standard_E16s_v4' = @(16,128)
+        'Standard_B2ms'   = @(2,8);   'Standard_B4ms'   = @(4,16);  'Standard_B8ms'   = @(8,32);  'Standard_B2s' = @(2,4)
+        'Standard_D2as_v5'= @(2,8);   'Standard_D4as_v5'= @(4,16);  'Standard_D8as_v5'= @(8,32);  'Standard_D16as_v5' = @(16,64)
+    }
+    if ($Builtin.ContainsKey($VMSize)) {
+        return [PSCustomObject]@{ VCPU = $Builtin[$VMSize][0]; MemoryGB = $Builtin[$VMSize][1] }
+    }
+    if ($Location -and $Cache -ne $null) {
+        if (-not $Cache.ContainsKey($Location)) {
+            $Cache[$Location] = @{}
+            try {
+                foreach ($S in @(Get-AzVMSize -Location $Location -ErrorAction Stop)) {
+                    $Cache[$Location][$S.Name] = [PSCustomObject]@{ VCPU = $S.NumberOfCores; MemoryGB = [math]::Round($S.MemoryInMB / 1024, 0) }
+                }
+            } catch { }
+        }
+        if ($Cache[$Location].ContainsKey($VMSize)) { return $Cache[$Location][$VMSize] }
+    }
+    return [PSCustomObject]@{ VCPU = $null; MemoryGB = $null }
+}
+
+<#
+.SYNOPSIS
+    Tests whether an NSG security rule targets a given destination port, honoring singular ranges,
+    the plural DestinationPortRanges collection, wildcard '*', and "start-end" ranges (audit C-1).
+.PARAMETER Rule
+    An NSG security rule object.
+.PARAMETER Port
+    The destination port number to test for (e.g. 3389).
+#>
+function Test-NsgRulePort {
+    param($Rule, [int]$Port)
+    $Candidates = @()
+    if ($null -ne $Rule.DestinationPortRange)  { $Candidates += @($Rule.DestinationPortRange) }
+    if ($null -ne $Rule.DestinationPortRanges) { $Candidates += @($Rule.DestinationPortRanges) }
+    foreach ($C in $Candidates) {
+        $Val = "$C".Trim()
+        if ($Val -eq '*') { return $true }
+        if ($Val -eq "$Port") { return $true }
+        if ($Val -match '^(\d+)-(\d+)$') {
+            if ($Port -ge [int]$Matches[1] -and $Port -le [int]$Matches[2]) { return $true }
+        }
+    }
+    return $false
+}
+
+<#
+.SYNOPSIS
+    Returns true when an NSG rule's source is the public internet ('*', 'Internet', or 0.0.0.0/0).
+#>
+function Test-NsgInternetSource {
+    param($Rule)
+    return ($Rule.SourceAddressPrefix -eq '*' -or $Rule.SourceAddressPrefix -eq 'Internet' -or $Rule.SourceAddressPrefix -eq '0.0.0.0/0')
+}
+
+<#
+.SYNOPSIS
+    Acquires a Microsoft Graph bearer token from the existing Az login, returning a plain string.
+.DESCRIPTION
+    Uses Get-AzAccessToken -ResourceUrl https://graph.microsoft.com. Handles both the legacy plain-string
+    .Token (Az.Accounts 2.x) and the SecureString .Token returned by Az.Accounts 5.x. Returns $null when
+    a token cannot be obtained (caller degrades the identity checks to Status 'Error').
+#>
+function Get-GraphTokenString {
+    try {
+        $Tok = Get-AzAccessToken -ResourceUrl 'https://graph.microsoft.com' -ErrorAction Stop
+    } catch {
+        return $null
+    }
+    if (-not $Tok -or -not $Tok.Token) { return $null }
+    if ($Tok.Token -is [System.Security.SecureString]) {
+        try {
+            $Bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($Tok.Token)
+            try { return [System.Runtime.InteropServices.Marshal]::PtrToStringBSTR($Bstr) }
+            finally { [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($Bstr) }
+        } catch { return $null }
+    }
+    return "$($Tok.Token)"
+}
+
+<#
+.SYNOPSIS
+    Performs a paged Microsoft Graph GET, following @odata.nextLink, returning all .value items.
+.PARAMETER Uri
+    The initial Graph REST URI.
+.PARAMETER Token
+    A plain-string bearer token (from Get-GraphTokenString).
+.OUTPUTS
+    Array of result objects (the flattened .value collections across all pages). Throws on HTTP error
+    so callers can distinguish permission failures (403) from empty results.
+#>
+function Invoke-GraphGet {
+    param([string]$Uri, [string]$Token)
+    $Headers = @{ Authorization = "Bearer $Token"; 'Content-Type' = 'application/json' }
+    $Results = @()
+    $Next = $Uri
+    while ($Next) {
+        $Resp = Invoke-RestMethod -Uri $Next -Headers $Headers -Method GET -ErrorAction Stop
+        if ($null -ne $Resp.value) { $Results += @($Resp.value) } else { $Results += @($Resp) }
+        $Next = $Resp.'@odata.nextLink'
+    }
+    return $Results
+}
+
 # ═══════════════════════════════════════════════════════════════════════════
 # PREREQUISITE CHECK
 # ═══════════════════════════════════════════════════════════════════════════
@@ -205,14 +332,16 @@ $RequiredModules = @(
     @{ Name = 'Az.Compute';               MinVersion = '5.0.0' }
     @{ Name = 'Az.Network';               MinVersion = '5.0.0' }
     @{ Name = 'Az.PrivateDns';            MinVersion = '1.0.0' }
+    @{ Name = 'Az.Monitor';               MinVersion = '4.0.0' }
+    @{ Name = 'Az.Storage';               MinVersion = '5.0.0' }
+    @{ Name = 'Az.KeyVault';              MinVersion = '4.0.0' }
+    @{ Name = 'Az.Security';              MinVersion = '1.0.0' }
+)
 
 # Pre-import modules with noisy warnings silently
 foreach ($Noisy in @('Az.Network','Az.Monitor','Az.PrivateDns')) {
     Import-Module $Noisy -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
 }
-    @{ Name = 'Az.Monitor';               MinVersion = '4.0.0' }
-    @{ Name = 'Az.Storage';               MinVersion = '5.0.0' }
-)
 
 Write-Status "Prerequisites" -Level 'SECTION'
 $Missing = @()
@@ -363,6 +492,9 @@ $Discovery = [PSCustomObject]@{
 
 $AllChecks = [System.Collections.ArrayList]::new()
 
+# Log Analytics workspace resource IDs harvested from host-pool diagnostic settings (feeds MON-SIEM / MON-012).
+$LAWorkspaceIds = @{}
+
 foreach ($SubId in $SubscriptionId) {
     Write-Status "Subscription: $SubId" -Level 'SECTION'
 
@@ -373,6 +505,8 @@ foreach ($SubId in $SubscriptionId) {
             Id   = $SubId
             Name = $Sub.Subscription.Name
         }
+        # Short sub id used to keep singleton check IDs unique across subscriptions (A-1).
+        $SubShort = ($SubId -split '-')[0]
         Write-Status "$($Sub.Subscription.Name)" -Level 'SUCCESS'
     } catch {
         Write-Status "Failed to set subscription context: $($_.Exception.Message)" -Level 'ERROR'
@@ -404,17 +538,6 @@ foreach ($SubId in $SubscriptionId) {
             }
             $Discovery.Inventory.HostPools += $HPObj
 
-            # ─── CHECK: Host pool type alignment ───
-            [void]$AllChecks.Add((New-CheckResult -Id "SH-001-$($HP.Name)" `
-                -Category 'Session Hosts' -Name 'Host Pool Type' `
-                -Description 'Verify host pool type aligns with workload requirements' `
-                -Status $(if ($HP.HostPoolType -eq 'Pooled') { 'Pass' } else { 'Warning' }) `
-                -Severity 'Low' `
-                -Details "Type: $($HP.HostPoolType), LB: $($HP.LoadBalancerType), MaxSessions: $($HP.MaxSessionLimit)" `
-                -Recommendation 'Use Pooled for shared workloads (cost-effective). Personal for users needing admin rights or persistent state.' `
-                -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/host-pool-load-balancing' `
-                -Evidence @{ HostPool = $HP.Name; Type = $HP.HostPoolType }))
-
             # ─── CHECK: Start VM on Connect ───
             [void]$AllChecks.Add((New-CheckResult -Id "GOV-001-$($HP.Name)" `
                 -Category 'Governance & Cost' -Name 'Start VM on Connect' `
@@ -427,14 +550,24 @@ foreach ($SubId in $SubscriptionId) {
                 -Evidence @{ HostPool = $HP.Name; Enabled = $HP.StartVMOnConnect }))
 
             # ─── CHECK: Max Session Limit ───
-            $SessionLimitStatus = if ($HP.HostPoolType -eq 'Pooled' -and $HP.MaxSessionLimit -gt 0 -and $HP.MaxSessionLimit -le 999999) { 'Pass' }
-                                  elseif ($HP.HostPoolType -eq 'Pooled' -and ($HP.MaxSessionLimit -le 0 -or $HP.MaxSessionLimit -gt 999999)) { 'Fail' }
-                                  else { 'N/A' }
+            # 999999 is Azure's "unlimited" sentinel (the never-configured default) - Fail.
+            $SessionLimitDetail = "MaxSessionLimit: $($HP.MaxSessionLimit)"
+            if ($HP.HostPoolType -ne 'Pooled') {
+                $SessionLimitStatus = 'N/A'
+            } elseif ($HP.MaxSessionLimit -le 0 -or $HP.MaxSessionLimit -ge 999999) {
+                $SessionLimitStatus = 'Fail'
+                $SessionLimitDetail = "MaxSessionLimit: $($HP.MaxSessionLimit) (default/unlimited - set an explicit workload-appropriate limit)"
+            } elseif ($HP.MaxSessionLimit -gt 100) {
+                $SessionLimitStatus = 'Warning'
+                $SessionLimitDetail = "MaxSessionLimit: $($HP.MaxSessionLimit) (unusually high - verify VM sizing supports this density)"
+            } else {
+                $SessionLimitStatus = 'Pass'
+            }
             [void]$AllChecks.Add((New-CheckResult -Id "SH-002-$($HP.Name)" `
                 -Category 'Session Hosts' -Name 'Max Session Limit Configured' `
                 -Description 'Pooled host pools should have an explicit max session limit' `
                 -Status $SessionLimitStatus -Severity 'High' `
-                -Details "MaxSessionLimit: $($HP.MaxSessionLimit)" `
+                -Details $SessionLimitDetail `
                 -Recommendation 'Set MaxSessionLimit based on VM sizing and workload profile (typically 4-16 for multi-session).' `
                 -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/configure-host-pool-load-balancing'))
 
@@ -470,26 +603,31 @@ foreach ($SubId in $SubscriptionId) {
                 -Recommendation 'Leave drivestoredirect unset or empty to block drive redirection; restrict to specific drives only if required.' `
                 -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/rdp-properties#device-redirection'))
 
-            # Clipboard redirection (default when unset: 0 = disabled)
+            # Secure-by-default redirection change (clipboard/printer/camera/mic off when unset) applies only to
+            # host pools created after the mid-2025 rollout and is NOT retroactive. Unset therefore cannot be
+            # assumed disabled - warn with a creation-date caveat.
+            $RedirDefaultCaveat = 'default depends on host pool creation date - pools created before mid-2025 default to enabled; verify effective value'
+
+            # Clipboard redirection
             $ClipVal = $ParsedRdp['redirectclipboard']
             [void]$AllChecks.Add((New-CheckResult -Id "SEC-CLIP-$($HP.Name)" `
                 -Category 'Security' -Name 'RDP Clipboard Redirection' `
                 -Description 'Clipboard redirection should be restricted for sensitive environments' `
-                -Status $(if ($null -eq $ClipVal -or $ClipVal -eq '0') { 'Pass' } else { 'Warning' }) `
+                -Status $(if ($ClipVal -eq '0') { 'Pass' } else { 'Warning' }) `
                 -Severity 'Medium' `
-                -Details "redirectclipboard: $(if ($null -eq $ClipVal) { '(not set - default: disabled)' } else { $ClipVal })" `
-                -Recommendation 'Keep redirectclipboard at 0 (disabled) for sensitive workloads, or use clipboard transfer direction policies for granular control.' `
+                -Details "redirectclipboard: $(if ($null -eq $ClipVal) { "(not set - $RedirDefaultCaveat)" } else { $ClipVal })" `
+                -Recommendation 'Set redirectclipboard:i:0 explicitly to disable, or use clipboard transfer direction policies for granular control.' `
                 -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/rdp-properties#device-redirection'))
 
-            # Printer redirection (default when unset: 0 = disabled)
+            # Printer redirection
             $PrintVal = $ParsedRdp['redirectprinters']
             [void]$AllChecks.Add((New-CheckResult -Id "SEC-PRINT-$($HP.Name)" `
                 -Category 'Security' -Name 'RDP Printer Redirection' `
                 -Description 'Printer redirection should be evaluated - disable if not required' `
-                -Status $(if ($null -eq $PrintVal -or $PrintVal -eq '0') { 'Pass' } else { 'Warning' }) `
+                -Status $(if ($PrintVal -eq '0') { 'Pass' } else { 'Warning' }) `
                 -Severity 'Low' `
-                -Details "redirectprinters: $(if ($null -eq $PrintVal) { '(not set - default: disabled)' } else { $PrintVal })" `
-                -Recommendation 'Enable redirectprinters:i:1 only if printer redirection is required; otherwise leave disabled.' `
+                -Details "redirectprinters: $(if ($null -eq $PrintVal) { "(not set - $RedirDefaultCaveat)" } else { $PrintVal })" `
+                -Recommendation 'Set redirectprinters:i:0 explicitly to disable, or redirectprinters:i:1 only if printer redirection is required.' `
                 -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/rdp-properties#device-redirection'))
 
             # USB redirection
@@ -515,23 +653,27 @@ foreach ($SubId in $SubscriptionId) {
                     -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/rdp-properties#device-redirection'))
             }
 
-            # Camera redirection (informational - often needed for Teams)
+            # Camera redirection (webcam) - followed the same secure-defaults change.
+            # camerastoredirect:s: (empty) = disabled; :s:* or device list = enabled.
             $CamVal = $ParsedRdp['camerastoredirect']
             [void]$AllChecks.Add((New-CheckResult -Id "SEC-CAM-$($HP.Name)" `
                 -Category 'Security' -Name 'RDP Camera Redirection' `
                 -Description 'Camera redirection status - required for Teams calls, evaluate for security-sensitive workloads' `
-                -Status $(if ($null -eq $CamVal -or $CamVal -eq '*') { 'Pass' } else { 'Pass' }) `
+                -Status $(if ($null -eq $CamVal) { 'Warning' } elseif ($CamVal -eq '') { 'Pass' } else { 'Warning' }) `
                 -Severity 'Low' `
-                -Details "camerastoredirect: $(if ($null -eq $CamVal) { '(not set)' } else { "'$CamVal'" })" `
+                -Details "camerastoredirect: $(if ($null -eq $CamVal) { "(not set - $RedirDefaultCaveat)" } else { "'$CamVal'" })" `
+                -Recommendation 'Set camerastoredirect:s: (empty) to disable webcam redirection for sensitive workloads; allow only if required for calls.' `
                 -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/rdp-properties#device-redirection'))
 
-            # Audio capture (microphone)
+            # Audio capture (microphone). audiocapturemode:i:0 = disabled, :i:1 = enabled.
             $AudioCapVal = $ParsedRdp['audiocapturemode']
             [void]$AllChecks.Add((New-CheckResult -Id "SEC-AUDIO-$($HP.Name)" `
                 -Category 'Security' -Name 'RDP Audio Capture (Microphone)' `
                 -Description 'Audio input capture - needed for calls, evaluate for other workloads' `
-                -Status 'Pass' -Severity 'Low' `
-                -Details "audiocapturemode: $(if ($null -eq $AudioCapVal) { '(not set - default: disabled)' } else { $AudioCapVal })" `
+                -Status $(if ($null -eq $AudioCapVal) { 'Warning' } elseif ($AudioCapVal -eq '0') { 'Pass' } else { 'Warning' }) `
+                -Severity 'Low' `
+                -Details "audiocapturemode: $(if ($null -eq $AudioCapVal) { "(not set - $RedirDefaultCaveat)" } else { $AudioCapVal })" `
+                -Recommendation 'Set audiocapturemode:i:0 to disable microphone redirection for sensitive workloads; allow only if required for calls.' `
                 -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/rdp-properties#device-redirection'))
 
             # RDP property summary for evidence
@@ -565,25 +707,10 @@ foreach ($SubId in $SubscriptionId) {
                 -Recommendation $(if ($IsEntraTarget -and -not $HasSSO) { 'SSO is strongly recommended for Entra ID joined hosts - enable enablerdsaadauth:i:1.' } else { 'Enable SSO for seamless authentication.' }) `
                 -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/configure-single-sign-on'))
 
-            # ─── CHECK: Watermarking (from RDP properties) ───
-            $HasWatermark = $RdpProps -match 'watermark'
-            [void]$AllChecks.Add((New-CheckResult -Id "SEC-WM-$($HP.Name)" `
-                -Category 'Security' -Name 'Watermarking Enabled' `
-                -Description 'QR code watermarking deters screen capture and enables session tracing' `
-                -Status $(if ($HasWatermark) { 'Pass' } else { 'Warning' }) `
-                -Severity 'Medium' `
-                -Details "Watermarking: $(if ($HasWatermark) { 'Enabled' } else { 'Not configured' })" `
-                -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/watermarking'))
-
-            # ─── CHECK: Screen Capture Protection (from RDP properties) ───
-            $HasScreenCapture = $RdpProps -match 'screen capture protection'
-            [void]$AllChecks.Add((New-CheckResult -Id "SEC-SCP-$($HP.Name)" `
-                -Category 'Security' -Name 'Screen Capture Protection' `
-                -Description 'Screen capture protection blocks screenshots and screen sharing of remote content' `
-                -Status $(if ($HasScreenCapture) { 'Pass' } else { 'Warning' }) `
-                -Severity 'Medium' `
-                -Details "ScreenCaptureProtection: $(if ($HasScreenCapture) { 'Enabled' } else { 'Not configured' })" `
-                -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/screen-capture-protection'))
+            # NOTE: Watermarking (SEC-WM) and Screen Capture Protection (SEC-SCP) are configured via
+            # GPO/Intune registry policy (fEnableWatermarking / fEnableScreenCaptureProtect), never via
+            # CustomRdpProperty. RDP-property greps produced permanent false negatives, so those emits
+            # were removed and the checks reclassified Manual in checks.json (audit A-4).
 
             # ─── CHECK: Tag Quality ───
             $HasTags = $HP.Tag -and $HP.Tag.Count -gt 0
@@ -601,13 +728,8 @@ foreach ($SubId in $SubscriptionId) {
                 -Reference 'https://learn.microsoft.com/en-us/azure/cloud-adoption-framework/ready/azure-best-practices/resource-tagging' `
                 -Evidence @{ HostPool = $HP.Name; TagCount = $TagKeys.Count; Score = $TagScore; Missing = @($RecommendedTags | Where-Object { $_ -notin $FoundRecommended }) }))
 
-            # ─── CHECK: Load Balancing Algorithm ───
-            [void]$AllChecks.Add((New-CheckResult -Id "SH-LB-$($HP.Name)" `
-                -Category 'Session Hosts' -Name 'Load Balancing Algorithm' `
-                -Description 'LB should align with workload (BreadthFirst for ramp-up, DepthFirst for cost)' `
-                -Status 'Pass' -Severity 'Medium' `
-                -Details "Algorithm: $($HP.LoadBalancerType), PoolType: $($HP.HostPoolType)" `
-                -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/host-pool-load-balancing'))
+            # NOTE: Load Balancing Algorithm check (SH-LB) is emitted later in the Scaling Plans section,
+            # where scaling-plan assignment is known (autoscale overrides LB during scheduled hours).
 
             # ─── CHECK: Host Pool Private Link (SEC-024) ───
             try {
@@ -624,7 +746,90 @@ foreach ($SubId in $SubscriptionId) {
                     -Recommendation 'Configure AVD Private Link to keep session brokering traffic off the public internet.' `
                     -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/private-link-overview' `
                     -Evidence @{ HostPool = $HP.Name; PECount = $HPPrivateEndpoints.Count }))
-            } catch { }
+            } catch {
+                [void]$AllChecks.Add((New-CheckResult -Id "SEC-HPPL-$($HP.Name)" `
+                    -Category 'Security' -Name 'Host Pool Private Link' `
+                    -Description 'AVD host pools should use Private Link for control-plane traffic' `
+                    -Status 'Error' -Severity 'Medium' `
+                    -Details "Could not assess host pool Private Link: $($_.Exception.Message)" `
+                    -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/private-link-overview'))
+            }
+
+            # ─── CHECK: Private Link / Private Endpoints (NET-005) — reuses HP privateEndpointConnections ───
+            try {
+                $HPRes2 = Get-AzResource -ResourceId $HP.Id -ErrorAction SilentlyContinue
+                $HPPE = if ($HPRes2 -and $HPRes2.Properties.privateEndpointConnections) { @($HPRes2.Properties.privateEndpointConnections) } else { @() }
+                [void]$AllChecks.Add((New-CheckResult -Id "NET-PL-$($HP.Name)" `
+                    -Category 'Networking' -Name 'Private Link / Private Endpoints' `
+                    -Description 'AVD control-plane resources should use Private Link to keep management traffic off the public internet' `
+                    -Status $(if ($HPPE.Count -gt 0) { 'Pass' } else { 'Warning' }) `
+                    -Severity 'Medium' `
+                    -Details "HostPool $($HP.Name): privateEndpointConnections: $($HPPE.Count)" `
+                    -Recommendation 'Configure AVD Private Link (feed/broker/gateway) so control-plane traffic stays on the Microsoft backbone. RDP Shortpath over Private Link is supported.' `
+                    -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/private-link-overview' `
+                    -Evidence @{ HostPool = $HP.Name; PECount = $HPPE.Count }))
+            } catch {
+                [void]$AllChecks.Add((New-CheckResult -Id "NET-PL-$($HP.Name)" `
+                    -Category 'Networking' -Name 'Private Link / Private Endpoints' `
+                    -Description 'AVD control-plane resources should use Private Link' `
+                    -Status 'Error' -Severity 'Medium' `
+                    -Details "Could not assess Private Link: $($_.Exception.Message)" `
+                    -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/private-link-overview'))
+            }
+
+            # ─── CHECK: Session Host Update feature (SH-020) — GA June 2026, automated management ───
+            try {
+                $ShuManaged = $false
+                $ShuDetail  = ''
+                # Prefer an explicit managementType on the host pool model when present.
+                if ($HP.PSObject.Properties.Name -contains 'ManagementType' -and $HP.ManagementType) {
+                    $ShuManaged = "$($HP.ManagementType)" -match 'Automated'
+                    $ShuDetail  = "ManagementType: $($HP.ManagementType)"
+                } else {
+                    # Fall back to the sessionHostConfigurations child resource (session host update GA).
+                    $ShuResp = Invoke-AzRestMethod -Path "$($HP.Id)/sessionHostConfigurations/default?api-version=2024-04-08-preview" -Method GET -ErrorAction SilentlyContinue
+                    if ($ShuResp -and $ShuResp.StatusCode -eq 200) {
+                        $ShuManaged = $true
+                        $ShuDetail  = 'sessionHostConfigurations/default present (Automated session host management configured)'
+                    } else {
+                        $ShuManaged = $false
+                        $ShuDetail  = "No session host configuration found (HTTP $(if ($ShuResp) { $ShuResp.StatusCode } else { 'n/a' })) - Standard (manual) management"
+                    }
+                }
+                [void]$AllChecks.Add((New-CheckResult -Id "SH-SHU-$($HP.Name)" `
+                    -Category 'Session Hosts' -Name 'Session Host Update Feature' `
+                    -Description 'Session Host Update (GA June 2026) automates image rollout with health validation and rollback' `
+                    -Status $(if ($ShuManaged) { 'Pass' } else { 'Warning' }) `
+                    -Severity 'Medium' `
+                    -Details "HostPool $($HP.Name): $ShuDetail" `
+                    -Recommendation 'Session Host Update is GA — consider automated management (session host configuration + managed identity) to reduce golden-image lifecycle effort.' `
+                    -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/session-host-update' `
+                    -Evidence @{ HostPool = $HP.Name; Automated = $ShuManaged }))
+            } catch {
+                [void]$AllChecks.Add((New-CheckResult -Id "SH-SHU-$($HP.Name)" `
+                    -Category 'Session Hosts' -Name 'Session Host Update Feature' `
+                    -Description 'Session Host Update (GA June 2026) automates image rollout' `
+                    -Status 'Error' -Severity 'Medium' `
+                    -Details "Could not query session host configuration: $($_.Exception.Message)" `
+                    -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/session-host-update'))
+            }
+
+            # ─── CHECK: App Attach - MSIX packages on host pool (APP-002) ───
+            try {
+                $MsixPkgs = @(Get-AzWvdMsixPackage -HostPoolName $HP.Name -ResourceGroupName (($HP.Id -split '/')[4]) -ErrorAction SilentlyContinue)
+                if ($MsixPkgs.Count -gt 0) {
+                    [void]$AllChecks.Add((New-CheckResult -Id "APP-ATTACH-MSIX-$($HP.Name)" `
+                        -Category 'Application Delivery' -Name 'App Attach' `
+                        -Description 'App Attach decouples application lifecycle from the golden image' `
+                        -Status 'Pass' -Severity 'Low' `
+                        -Details "HostPool $($HP.Name): $($MsixPkgs.Count) MSIX/App Attach package(s) ($(@($MsixPkgs | ForEach-Object { $_.DisplayName } | Select-Object -First 5) -join ', '))" `
+                        -Recommendation 'Legacy MSIX App Attach was retired June 1 2025 — migrate to CIM-based App Attach.' `
+                        -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/app-attach-overview' `
+                        -Evidence @{ HostPool = $HP.Name; PackageCount = $MsixPkgs.Count }))
+                }
+            } catch {
+                Write-Status "    Could not enumerate MSIX packages for $($HP.Name): $($_.Exception.Message)" -Level 'WARN'
+            }
         }
     } catch {
         Write-Status "  Error discovering host pools: $($_.Exception.Message)" -Level 'ERROR'
@@ -633,6 +838,12 @@ foreach ($SubId in $SubscriptionId) {
 
     # ─── SESSION HOSTS ────────────────────────────────────────────────────
     Write-Status "Session Hosts" -Level 'SECTION'
+    # E-7 perf: cache Get-AzVM (model) and Get-AzVM -Status per resource group so we make one ARM
+    # call per RG instead of two per session host. Keyed by "$RG/$VMName" (lower-case).
+    $VMModelCache  = @{}
+    $VMStatusCache = @{}
+    $VMRGLoaded    = @{}
+    $VMSizeCache   = @{}  # Get-AzVMSize per location (B-2)
     try {
         foreach ($HP in $HostPools) {
             $RG = ($HP.Id -split '/')[4]
@@ -643,21 +854,33 @@ foreach ($SubId in $SubscriptionId) {
                 $VMName = ($SH.ResourceId -split '/')[-1]
                 $VMRG   = ($SH.ResourceId -split '/')[4]
 
-                # Get VM model (size, security, storage, zones)
-                $VMModel = $null
-                try {
-                    $VMModel = Get-AzVM -ResourceGroupName $VMRG -Name $VMName -ErrorAction Stop
-                } catch {
-                    Write-Status "    Could not get VM model for $VMName : $($_.Exception.Message)" -Level 'WARN'
+                # Batch-load all VMs in this RG (model + status) on first encounter.
+                if (-not $VMRGLoaded.ContainsKey($VMRG)) {
+                    $VMRGLoaded[$VMRG] = $true
+                    try {
+                        foreach ($V in @(Get-AzVM -ResourceGroupName $VMRG -ErrorAction Stop)) {
+                            $VMModelCache["$VMRG/$($V.Name)".ToLower()] = $V
+                        }
+                    } catch {
+                        Write-Status "    Could not batch VM models for RG $VMRG : $($_.Exception.Message)" -Level 'WARN'
+                    }
+                    try {
+                        foreach ($V in @(Get-AzVM -ResourceGroupName $VMRG -Status -ErrorAction Stop)) {
+                            $VMStatusCache["$VMRG/$($V.Name)".ToLower()] = $V
+                        }
+                    } catch {
+                        Write-Status "    Could not batch VM status for RG $VMRG : $($_.Exception.Message)" -Level 'WARN'
+                    }
                 }
 
-                # Get VM instance view (power state, extensions)
-                $VMInstance = $null
-                try {
-                    $VMInstance = Get-AzVM -ResourceGroupName $VMRG -Name $VMName -Status -ErrorAction Stop
-                } catch {
-                    Write-Status "    Could not get VM status for $VMName : $($_.Exception.Message)" -Level 'WARN'
+                # VM model (size, security, storage, zones) from cache
+                $VMKey = "$VMRG/$VMName".ToLower()
+                $VMModel = $VMModelCache[$VMKey]
+                if (-not $VMModel) {
+                    Write-Status "    Could not get VM model for $VMName (not in RG batch)" -Level 'WARN'
                 }
+                # VM instance view (power state, extensions) from cache
+                $VMInstance = $VMStatusCache[$VMKey]
 
                 # Derive extension-based properties from instance view
                 $ExtList = @()
@@ -671,6 +894,8 @@ foreach ($SubId in $SubscriptionId) {
                 } elseif ($VMModel -and $VMModel.Extensions) {
                     $VMModel.Extensions
                 } else { $null }
+                # Distinguish "no join extension found" from "could not read extension data at all" (C-8).
+                $JoinDataAvailable = ($null -ne $VMModel) -or ($null -ne $VMInstance)
                 if ($RawExts) {
                     $ExtList = @($RawExts | ForEach-Object {
                         $ExtType = if ($_.VirtualMachineExtensionType) { $_.VirtualMachineExtensionType } else { $_.Type }
@@ -678,9 +903,12 @@ foreach ($SubId in $SubscriptionId) {
                     } | Where-Object { $_ })
                     $HasAADExt = 'AADLoginForWindows' -in $ExtList
                     $HasDJExt  = 'JsonADDomainExtension' -in $ExtList
-                    $SHJoinType = if ($HasAADExt -and $HasDJExt) { 'Hybrid' } elseif ($HasAADExt) { 'Entra ID' } elseif ($HasDJExt) { 'AD DS' } else { 'Unknown' }
+                    # The domain-join extension alone cannot distinguish pure AD DS from Hybrid (Hybrid = AD join
+                    # plus Entra Connect sync, which is not visible from VM extensions), so report both (C-8).
+                    $SHJoinType = if ($HasAADExt -and $HasDJExt) { 'Hybrid' } elseif ($HasAADExt) { 'Entra ID' } elseif ($HasDJExt) { 'AD DS or Hybrid' } else { 'Unknown' }
                     $HasAMAExt = 'AzureMonitorWindowsAgent' -in $ExtList
-                    $HasMDEExt = @($ExtList | Where-Object { $_ -in @('MDE.Windows','MicrosoftMonitoringAgent') }).Count -gt 0
+                    # MicrosoftMonitoringAgent (MMA) was retired Aug 2024 and is NOT MDE - only MDE.Windows counts (B-4).
+                    $HasMDEExt = @($ExtList | Where-Object { $_ -eq 'MDE.Windows' }).Count -gt 0
                 }
                 if ($VMModel -and $VMModel.SecurityProfile) {
                     $HasTrustedLaunch = $VMModel.SecurityProfile.SecurityType -eq 'TrustedLaunch'
@@ -719,18 +947,29 @@ foreach ($SubId in $SubscriptionId) {
                     AvailabilityZone    = if ($VMModel) { $VMModel.Zones } else { $null }
                     ImageReference      = if ($VMModel) { $VMModel.StorageProfile.ImageReference } else { $null }
                     JoinType            = $SHJoinType
+                    JoinDataAvailable   = $JoinDataAvailable
                     AMAInstalled        = $HasAMAExt
                     MDEInstalled        = $HasMDEExt
                     Extensions          = $ExtList
+                    Tags                = if ($VMModel) { $VMModel.Tags } else { $null }
+                    # NIC facts cached here (E-7) so the networking pass need not re-fetch VM + NIC.
+                    NicSubnetId         = $null
+                    NicHasPublicIP      = $null
                 }
 
-                # Check NIC for accelerated networking
+                # Check NIC for accelerated networking; cache subnet + public IP for the networking pass (E-7).
                 if ($VMModel -and $VMModel.NetworkProfile.NetworkInterfaces.Count -gt 0) {
                     try {
                         $NicId = $VMModel.NetworkProfile.NetworkInterfaces[0].Id
                         $Nic = Get-AzNetworkInterface -ResourceId $NicId -ErrorAction Stop
                         $SHObj.AcceleratedNetworking = $Nic.EnableAcceleratedNetworking
-                    } catch { }
+                        if ($Nic.IpConfigurations -and $Nic.IpConfigurations[0].Subnet.Id) {
+                            $SHObj.NicSubnetId = $Nic.IpConfigurations[0].Subnet.Id
+                        }
+                        $SHObj.NicHasPublicIP = ($null -ne $Nic.IpConfigurations[0].PublicIpAddress)
+                    } catch {
+                        Write-Status "    Could not read NIC for $VMName : $($_.Exception.Message)" -Level 'WARN'
+                    }
                 }
 
                 $Discovery.Inventory.SessionHosts += $SHObj
@@ -750,17 +989,26 @@ foreach ($SubId in $SubscriptionId) {
                         -Recommendation 'Enable Trusted Launch with Secure Boot and vTPM for enhanced boot integrity.' `
                         -Reference 'https://learn.microsoft.com/en-us/azure/virtual-machines/trusted-launch' `
                         -Evidence @{ VM = $VMName; SecurityType = $VMModel.SecurityProfile.SecurityType }))
-                } else {
+                } elseif ($VMModel) {
+                    # Model loaded but no SecurityProfile => Standard security type (not Trusted Launch).
                     [void]$AllChecks.Add((New-CheckResult -Id "SEC-TL-$VMName" `
                         -Category 'Security & IAM' -Name 'Trusted Launch' `
                         -Description 'Session hosts should use Trusted Launch' `
                         -Status 'Fail' -Severity 'High' `
-                        -Details 'No security profile detected - VM is likely using Standard security type.' `
-                        -Recommendation 'Redeploy session hosts with Trusted Launch security type.' `
+                        -Details 'No security profile on VM model - VM is using Standard security type, not Trusted Launch.' `
+                        -Recommendation 'Enable Trusted Launch in-place on Gen2 VMs, or redeploy with Trusted Launch security type.' `
+                        -Reference 'https://learn.microsoft.com/en-us/azure/virtual-machines/trusted-launch'))
+                } else {
+                    # Model could not be read (API/permission error) - do not fabricate a conclusion (A-10).
+                    [void]$AllChecks.Add((New-CheckResult -Id "SEC-TL-$VMName" `
+                        -Category 'Security & IAM' -Name 'Trusted Launch' `
+                        -Status 'Error' -Severity 'High' `
+                        -Description 'Session hosts should use Trusted Launch' `
+                        -Details "Could not read VM model for $VMName - security type undetermined." `
                         -Reference 'https://learn.microsoft.com/en-us/azure/virtual-machines/trusted-launch'))
                 }
 
-                # ─── CHECK: Secure Boot (SH-022) ───
+                # ─── CHECK: Secure Boot (SH-025) ───
                 if ($VMModel -and $VMModel.SecurityProfile) {
                     $SBEnabled = $VMModel.SecurityProfile.UefiSettings.SecureBootEnabled -eq $true
                     [void]$AllChecks.Add((New-CheckResult -Id "SH-SECBOOT-$VMName" `
@@ -772,9 +1020,24 @@ foreach ($SubId in $SubscriptionId) {
                         -Recommendation 'Enable Secure Boot in the VM security profile to protect the boot chain.' `
                         -Reference 'https://learn.microsoft.com/en-us/azure/virtual-machines/trusted-launch#secure-boot' `
                         -Evidence @{ VM = $VMName; SecureBoot = $SBEnabled }))
+                } elseif ($VMModel) {
+                    [void]$AllChecks.Add((New-CheckResult -Id "SH-SECBOOT-$VMName" `
+                        -Category 'Session Hosts' -Name 'Secure Boot Enabled' `
+                        -Description 'Trusted Launch VMs should have Secure Boot enabled to protect against boot-level malware' `
+                        -Status 'Fail' -Severity 'High' `
+                        -Details 'No security profile - Secure Boot not enabled; VM is not Trusted Launch.' `
+                        -Recommendation 'Enable Trusted Launch with Secure Boot to protect the boot chain.' `
+                        -Reference 'https://learn.microsoft.com/en-us/azure/virtual-machines/trusted-launch#secure-boot'))
+                } else {
+                    [void]$AllChecks.Add((New-CheckResult -Id "SH-SECBOOT-$VMName" `
+                        -Category 'Session Hosts' -Name 'Secure Boot Enabled' `
+                        -Status 'Error' -Severity 'High' `
+                        -Description 'Trusted Launch VMs should have Secure Boot enabled' `
+                        -Details "Could not read VM model for $VMName - Secure Boot state undetermined." `
+                        -Reference 'https://learn.microsoft.com/en-us/azure/virtual-machines/trusted-launch#secure-boot'))
                 }
 
-                # ─── CHECK: vTPM (SH-023) ───
+                # ─── CHECK: vTPM (SH-026) ───
                 if ($VMModel -and $VMModel.SecurityProfile) {
                     $VTpmOn = $VMModel.SecurityProfile.UefiSettings.VTpmEnabled -eq $true
                     [void]$AllChecks.Add((New-CheckResult -Id "SH-VTPM-$VMName" `
@@ -786,6 +1049,21 @@ foreach ($SubId in $SubscriptionId) {
                         -Recommendation 'Enable vTPM to support BitLocker, measured boot, and Windows Hello for Business.' `
                         -Reference 'https://learn.microsoft.com/en-us/azure/virtual-machines/trusted-launch#vtpm' `
                         -Evidence @{ VM = $VMName; VTpm = $VTpmOn }))
+                } elseif ($VMModel) {
+                    [void]$AllChecks.Add((New-CheckResult -Id "SH-VTPM-$VMName" `
+                        -Category 'Session Hosts' -Name 'vTPM Enabled' `
+                        -Description 'Trusted Launch VMs should have vTPM enabled for measured boot and key protection' `
+                        -Status 'Fail' -Severity 'High' `
+                        -Details 'No security profile - vTPM not enabled; VM is not Trusted Launch.' `
+                        -Recommendation 'Enable Trusted Launch with vTPM for measured boot and key protection.' `
+                        -Reference 'https://learn.microsoft.com/en-us/azure/virtual-machines/trusted-launch#vtpm'))
+                } else {
+                    [void]$AllChecks.Add((New-CheckResult -Id "SH-VTPM-$VMName" `
+                        -Category 'Session Hosts' -Name 'vTPM Enabled' `
+                        -Status 'Error' -Severity 'High' `
+                        -Description 'Trusted Launch VMs should have vTPM enabled' `
+                        -Details "Could not read VM model for $VMName - vTPM state undetermined." `
+                        -Reference 'https://learn.microsoft.com/en-us/azure/virtual-machines/trusted-launch#vtpm'))
                 }
 
                 # ─── CHECK: OS Disk Encryption - ADE or host-based (SEC-021) ───
@@ -816,7 +1094,17 @@ foreach ($SubId in $SubscriptionId) {
                 }
 
                 # ─── CHECK: Accelerated Networking ───
-                if ($null -ne $SHObj.AcceleratedNetworking) {
+                # B-series and very small sizes (<2 vCPU) do not support accelerated networking - N/A, not Warning (C-7).
+                $ANSpec = Get-VMSizeSpec -VMSize $SHObj.VMSize -Location $SHObj.Location -Cache $VMSizeCache
+                $ANUnsupported = ($SHObj.VMSize -match '^Standard_B') -or ($ANSpec.VCPU -ne $null -and $ANSpec.VCPU -lt 2)
+                if ($ANUnsupported) {
+                    [void]$AllChecks.Add((New-CheckResult -Id "NET-AN-$VMName" `
+                        -Category 'Networking' -Name 'Accelerated Networking' `
+                        -Description 'Accelerated networking improves throughput and reduces latency' `
+                        -Status 'N/A' -Severity 'Medium' `
+                        -Details "VMSize: $($SHObj.VMSize) does not support accelerated networking (B-series / small size)." `
+                        -Reference 'https://learn.microsoft.com/en-us/azure/virtual-network/accelerated-networking-overview'))
+                } elseif ($null -ne $SHObj.AcceleratedNetworking) {
                     [void]$AllChecks.Add((New-CheckResult -Id "NET-AN-$VMName" `
                         -Category 'Networking' -Name 'Accelerated Networking' `
                         -Description 'Accelerated networking improves throughput and reduces latency' `
@@ -833,21 +1121,12 @@ foreach ($SubId in $SubscriptionId) {
                         -Category 'Security & IAM' -Name 'Managed Disk Encryption' `
                         -Description 'OS disk should use managed encryption' `
                         -Status 'Pass' -Severity 'Medium' `
-                        -Details "DiskType: $($SHObj.OSDiskType) (Azure managed disks are encrypted by default with platform-managed keys)" `
+                        -Details "DiskType: $($SHObj.OSDiskType) (Azure managed disks are encrypted by default with platform-managed keys - CMK not evaluated)" `
                         -Reference 'https://learn.microsoft.com/en-us/azure/virtual-machines/disk-encryption-overview'))
                 }
 
-                # ─── CHECK: Availability Zones ───
-                if ($VMModel) {
-                    [void]$AllChecks.Add((New-CheckResult -Id "BCDR-AZ-$VMName" `
-                        -Category 'BCDR' -Name 'Availability Zone Deployment' `
-                        -Description 'Session hosts should be spread across availability zones for resilience' `
-                        -Status $(if ($SHObj.AvailabilityZone -and $SHObj.AvailabilityZone.Count -gt 0) { 'Pass' } else { 'Warning' }) `
-                        -Severity 'Medium' `
-                        -Details "Zones: $(if ($SHObj.AvailabilityZone) { $SHObj.AvailabilityZone -join ',' } else { 'None' })" `
-                        -Recommendation 'Deploy session hosts across multiple availability zones for high availability.' `
-                        -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/azure-virtual-desktop-fault-domain-mode'))
-                }
+                # NOTE: Availability Zone deployment (BCDR-AZ) is evaluated per host pool after the
+                # session-host loop (zone SPREAD across hosts), not per VM (audit C-4).
 
                 # ─── CHECK: OS Disk SSD ───
                 if ($SHObj.OSDiskType) {
@@ -863,7 +1142,8 @@ foreach ($SubId in $SubscriptionId) {
 
                 # ─── CHECK: VM Heartbeat / Token Risk ───
                 if ($SH.LastHeartBeat) {
-                    $DaysSinceHB = ((Get-Date) - [DateTime]$SH.LastHeartBeat).Days
+                    # LastHeartBeat is reported in UTC - compare against UTC now (C-9).
+                    $DaysSinceHB = ((Get-Date).ToUniversalTime() - [DateTime]$SH.LastHeartBeat).Days
                     $HBStatus = if ($DaysSinceHB -gt 60) { 'Fail' } elseif ($DaysSinceHB -gt 30) { 'Warning' } else { 'Pass' }
                     [void]$AllChecks.Add((New-CheckResult -Id "OPS-HB-$VMName" `
                         -Category 'Governance & Cost' -Name 'VM Heartbeat / Token Risk' `
@@ -904,6 +1184,19 @@ foreach ($SubId in $SubscriptionId) {
                                     # Avoid duplicate gallery entries
                                     if (-not ($Discovery.Inventory.GalleryImageVersions | Where-Object { $_.Gallery -eq $GalName -and $_.Version -eq $VerName })) {
                                         $Discovery.Inventory.GalleryImageVersions += $ImgEntry
+
+                                        # ─── CHECK: Image Replication (BCDR-006) — replicated target regions ───
+                                        $TargetRegions = @($GalImgVer.PublishingProfile.TargetRegions)
+                                        $RegionCount = $TargetRegions.Count
+                                        [void]$AllChecks.Add((New-CheckResult -Id "BCDR-IMGREP-$GalName-$VerName" `
+                                            -Category 'BCDR' -Name 'Image Replication' `
+                                            -Description 'Golden images should be replicated to secondary region(s) so DR host pools can deploy during an outage' `
+                                            -Status $(if ($RegionCount -gt 1) { 'Pass' } else { 'Warning' }) `
+                                            -Severity 'Medium' `
+                                            -Details "Gallery image $GalName/$ImgName v$VerName replicated to $RegionCount region(s): $(@($TargetRegions | ForEach-Object { $_.Name }) -join ', ')" `
+                                            -Recommendation 'Replicate golden images to at least one secondary region via Azure Compute Gallery so DR deployment is not blocked during a regional outage.' `
+                                            -Reference 'https://learn.microsoft.com/en-us/azure/virtual-machines/azure-compute-gallery' `
+                                            -Evidence @{ Gallery = $GalName; Version = $VerName; RegionCount = $RegionCount }))
                                     }
                                     $Stale = $AgeDays -gt 90
                                     [void]$AllChecks.Add((New-CheckResult -Id "SH-IMGFRESH-$VMName" `
@@ -917,31 +1210,46 @@ foreach ($SubId in $SubscriptionId) {
                                         -Evidence @{ VM = $VMName; AgeDays = $AgeDays; Gallery = $GalName }))
                                 }
                             }
-                        } catch { }
+                        } catch {
+                            Write-Status "    Could not read gallery image version for $VMName : $($_.Exception.Message)" -Level 'WARN'
+                        }
                     }
                 }
 
-                # ─── CHECK: VM Sizing (B-series flagging) ───
+                # ─── CHECK: VM Sizing (B-2 - emit for every session host) ───
                 if ($SHObj.VMSize) {
                     $IsBSeries = $SHObj.VMSize -match '^Standard_B'
+                    $SizeSpec  = Get-VMSizeSpec -VMSize $SHObj.VMSize -Location $SHObj.Location -Cache $VMSizeCache
+                    $IsMultiSession = $HP.HostPoolType -eq 'Pooled'
+                    $SizeStatus = 'Pass'
+                    $SizeDetail = "VMSize: $($SHObj.VMSize)$(if ($SizeSpec.VCPU) { " ($($SizeSpec.VCPU) vCPU, $($SizeSpec.MemoryGB) GB)" })"
+                    $SizeRec    = 'VM size meets Microsoft multi-session sizing guidance.'
                     if ($IsBSeries) {
-                        [void]$AllChecks.Add((New-CheckResult -Id "SH-BSERIES-$VMName" `
-                            -Category 'Session Hosts' -Name 'VM Sizing (B-series)' `
-                            -Description 'B-series VMs are burstable and may cause inconsistent performance for pooled desktops' `
-                            -Status 'Warning' -Severity 'Medium' `
-                            -Details "VMSize: $($SHObj.VMSize)" `
-                            -Recommendation 'Use D-series or E-series for production pooled host pools.' `
-                            -Reference 'https://learn.microsoft.com/en-us/azure/virtual-machines/sizes'))
+                        $SizeStatus = 'Warning'
+                        $SizeRec = 'B-series is burstable - use D-series or E-series for production pooled host pools.'
+                        $SizeDetail += ' - burstable B-series (inconsistent performance for shared desktops)'
+                    } elseif ($IsMultiSession -and $SizeSpec.VCPU -ne $null -and ($SizeSpec.VCPU -lt 4 -or $SizeSpec.MemoryGB -lt 16)) {
+                        $SizeStatus = 'Warning'
+                        $SizeRec = 'Below Microsoft multi-session minimum guidance (4+ vCPU, 16+ GB RAM). Increase VM size.'
+                        $SizeDetail += ' - below multi-session minimum (4 vCPU / 16 GB)'
                     }
+                    [void]$AllChecks.Add((New-CheckResult -Id "SH-BSERIES-$VMName" `
+                        -Category 'Session Hosts' -Name 'VM Sizing' `
+                        -Description 'Session host VM size should meet workload and multi-session guidance' `
+                        -Status $SizeStatus -Severity 'Medium' `
+                        -Details $SizeDetail `
+                        -Recommendation $SizeRec `
+                        -Reference 'https://learn.microsoft.com/en-us/azure/virtual-machines/sizes' `
+                        -Evidence @{ VM = $VMName; VMSize = $SHObj.VMSize; VCPU = $SizeSpec.VCPU; MemoryGB = $SizeSpec.MemoryGB }))
                 }
 
                 # ─── CHECK: Entra Join Type (from VM extensions) ───
                 [void]$AllChecks.Add((New-CheckResult -Id "IAM-JOIN-$VMName" `
                     -Category 'Identity & Access' -Name 'Entra ID Join Type' `
                     -Description 'Session hosts should use Entra ID or Hybrid join' `
-                    -Status $(if ($SHObj.JoinType -ne 'Unknown') { 'Pass' } else { 'Warning' }) `
+                    -Status $(if (-not $SHObj.JoinDataAvailable) { 'Error' } elseif ($SHObj.JoinType -ne 'Unknown') { 'Pass' } else { 'Warning' }) `
                     -Severity 'High' `
-                    -Details "JoinType: $($SHObj.JoinType)" `
+                    -Details "$(if (-not $SHObj.JoinDataAvailable) { 'Could not read VM extension data - join type undetermined.' } else { "JoinType: $($SHObj.JoinType)" })" `
                     -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/prerequisites#identity'))
 
                 # ─── CHECK: Azure Monitor Agent (AMA) ───
@@ -964,6 +1272,70 @@ foreach ($SubId in $SubscriptionId) {
                     -Recommendation 'Deploy Microsoft Defender for Endpoint via VM extension, Intune, or Defender for Cloud auto-provisioning.' `
                     -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/security-recommendations'))
 
+                # ─── CHECK: OS End-of-Support Risk (SH-029) ───
+                if ($SHObj.ImageReference) {
+                    $ImgOffer = "$($SHObj.ImageReference.Offer)".ToLower()
+                    $ImgSku   = "$($SHObj.ImageReference.Sku)".ToLower()
+                    $IsCustomImg = -not $SHObj.ImageReference.Publisher
+                    $EolStatus = 'Warning'
+                    $EolDetail = "Image: $ImgOffer/$ImgSku"
+                    $EolRec    = 'Verify the OS build support lifecycle and plan an upgrade before end-of-support.'
+                    if ($IsCustomImg) {
+                        $EolStatus = 'Warning'
+                        $EolDetail = "Custom/gallery image (offer/sku not marketplace) - verify OS build support status"
+                    } elseif ($ImgOffer -match 'windows-11|windows11|win11' -or $ImgSku -match 'win11|windows-11') {
+                        $EolStatus = 'Pass'
+                        $EolDetail = "Windows 11 image: $ImgOffer/$ImgSku (supported)"
+                    } elseif ($ImgOffer -match 'windowsserver' -or $ImgSku -match 'server|datacenter|core-') {
+                        if ($ImgSku -match '2022|2025|23h2|2019|2016') {
+                            if ($ImgSku -match '2022|2025|23h2') {
+                                $EolStatus = 'Pass'; $EolDetail = "Windows Server image: $ImgSku (2022+ supported)"
+                            } else {
+                                $EolStatus = 'Warning'; $EolDetail = "Windows Server image: $ImgSku (verify support lifecycle; consider Server 2022/2025)"
+                            }
+                        } else {
+                            $EolStatus = 'Warning'; $EolDetail = "Windows Server image: $ImgSku (verify OS build support status)"
+                        }
+                    } elseif ($ImgOffer -match 'windows-10|windows10|win10' -or $ImgSku -match 'win10|windows-10') {
+                        if ($ImgSku -match 'esu') {
+                            $EolStatus = 'Warning'
+                            $EolDetail = "Windows 10 image with ESU: $ImgSku (Win10 reached end-of-support Oct 2025 - ESU in place, plan migration to Windows 11)"
+                        } else {
+                            $EolStatus = 'Fail'
+                            $EolDetail = "Windows 10 image without ESU: $ImgOffer/$ImgSku (Windows 10 reached end-of-support Oct 2025 - no security updates)"
+                            $EolRec    = 'Migrate to Windows 11 multi-session, or enroll in Extended Security Updates (ESU) as an interim measure.'
+                        }
+                    } else {
+                        $EolStatus = 'Warning'
+                        $EolDetail = "Unrecognized image: $ImgOffer/$ImgSku - verify OS build support status"
+                    }
+                    [void]$AllChecks.Add((New-CheckResult -Id "SH-OSEOL-$VMName" `
+                        -Category 'Session Hosts' -Name 'OS End-of-Support Risk' `
+                        -Description 'Session hosts should run an OS build that is within its support lifecycle (Windows 10 reached end-of-support Oct 2025)' `
+                        -Status $EolStatus -Severity 'High' `
+                        -Details $EolDetail `
+                        -Recommendation $EolRec `
+                        -Reference 'https://learn.microsoft.com/en-us/lifecycle/products/windows-10-enterprise-and-education' `
+                        -Evidence @{ VM = $VMName; Offer = $ImgOffer; Sku = $ImgSku }))
+                }
+
+                # ─── CHECK: GPU Session Host Configuration (SH-030) ───
+                if ($SHObj.VMSize -match '^Standard_(NV|NC|NG)') {
+                    $HasGpuDriver = $false
+                    if ($SHObj.Extensions) {
+                        $HasGpuDriver = @($SHObj.Extensions | Where-Object { $_ -match 'NvidiaGpuDriverWindows|AmdGpuDriverWindows' }).Count -gt 0
+                    }
+                    [void]$AllChecks.Add((New-CheckResult -Id "SH-GPU-$VMName" `
+                        -Category 'Session Hosts' -Name 'GPU Session Host Configuration' `
+                        -Description 'GPU-enabled session hosts should have the GPU driver extension installed for hardware acceleration' `
+                        -Status $(if ($HasGpuDriver) { 'Pass' } else { 'Warning' }) `
+                        -Severity 'Medium' `
+                        -Details "VMSize: $($SHObj.VMSize), GPUDriverExtension: $(if ($HasGpuDriver) { 'Installed' } else { 'Not found' })" `
+                        -Recommendation 'Install the NVIDIA/AMD GPU driver extension and enable GPU acceleration policies for graphics-intensive workloads.' `
+                        -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/enable-gpu-acceleration' `
+                        -Evidence @{ VM = $VMName; VMSize = $SHObj.VMSize; GpuDriver = $HasGpuDriver }))
+                }
+
                 # ─── CHECK: Ephemeral OS Disk (Pooled VMs) ───
                 if ($HP.HostPoolType -eq 'Pooled' -and $VMModel) {
                     $IsEphemeral = $null -ne $VMModel.StorageProfile.OsDisk.DiffDiskSettings
@@ -978,62 +1350,78 @@ foreach ($SubId in $SubscriptionId) {
                 }
 
                 # ─── CHECK: Disk Type Cost Optimization ───
-                if ($SHObj.OSDiskType) {
+                if ($SHObj.OSDiskType -and $HP.HostPoolType -eq 'Pooled') {
                     $IsPremium = $SHObj.OSDiskType -match 'Premium'
-                    if ($IsPremium -and $HP.HostPoolType -eq 'Pooled') {
-                        [void]$AllChecks.Add((New-CheckResult -Id "GOV-DISKSKU-$VMName" `
-                            -Category 'Governance & Cost' -Name 'Disk Type Cost Optimization' `
-                            -Description 'Premium SSD on pooled hosts may be unnecessary cost - Standard SSD is often sufficient' `
-                            -Status 'Warning' -Severity 'Low' `
-                            -Details "DiskType: $($SHObj.OSDiskType), PoolType: $($HP.HostPoolType)" `
-                            -Recommendation 'Evaluate Standard SSD for pooled hosts to reduce storage costs. Premium is typically only needed for heavy I/O workloads.' `
-                            -Reference 'https://learn.microsoft.com/en-us/azure/virtual-machines/disks-types'))
-                    }
+                    $IsStdSSD  = $SHObj.OSDiskType -match 'StandardSSD'
+                    [void]$AllChecks.Add((New-CheckResult -Id "GOV-DISKSKU-$VMName" `
+                        -Category 'Governance & Cost' -Name 'Disk Type Cost Optimization' `
+                        -Description 'Premium SSD on pooled hosts may be unnecessary cost - Standard SSD is often sufficient' `
+                        -Status $(if ($IsPremium) { 'Warning' } elseif ($IsStdSSD) { 'Pass' } else { 'Warning' }) `
+                        -Severity 'Low' `
+                        -Details "DiskType: $($SHObj.OSDiskType), PoolType: $($HP.HostPoolType)" `
+                        -Recommendation 'Standard SSD is typically sufficient for pooled hosts; Premium is only needed for heavy I/O workloads.' `
+                        -Reference 'https://learn.microsoft.com/en-us/azure/virtual-machines/disks-types'))
                 }
 
                 # ─── CHECK: Guest Attestation (Trusted Launch integrity monitoring) ───
                 if ($SHObj.TrustedLaunch -and $SHObj.Extensions) {
                     $HasGuestAttest = 'GuestAttestation' -in $SHObj.Extensions
-                    if (-not $HasGuestAttest) {
-                        [void]$AllChecks.Add((New-CheckResult -Id "SEC-ATTEST-$VMName" `
-                            -Category 'Security' -Name 'Guest Attestation Extension' `
-                            -Description 'Trusted Launch VMs should have Guest Attestation extension for integrity monitoring' `
-                            -Status 'Warning' -Severity 'Medium' `
-                            -Details "TrustedLaunch: Yes, GuestAttestation: Not installed" `
-                            -Recommendation 'Install the Guest Attestation extension to enable boot integrity monitoring via Defender for Cloud.' `
-                            -Reference 'https://learn.microsoft.com/en-us/azure/virtual-machines/trusted-launch#microsoft-defender-for-cloud-integration'))
-                    }
-                }
-                # ─── CHECK: Agent Version Currency ───
-                if ($SH.AgentVersion) {
-                    $MinRecommendedAgent = [Version]'1.0.8431.0'
-                    try {
-                        $CurrentVer = [Version]$SH.AgentVersion
-                        $IsAgentCurrent = $CurrentVer -ge $MinRecommendedAgent
-                    } catch {
-                        $IsAgentCurrent = $false
-                    }
-                    [void]$AllChecks.Add((New-CheckResult -Id "OPS-AGENT-$VMName" `
-                        -Category 'Operations' -Name 'Agent Version Currency' `
-                        -Description 'AVD Agent should be at current recommended version' `
-                        -Status $(if ($IsAgentCurrent) { 'Pass' } else { 'Warning' }) `
+                    [void]$AllChecks.Add((New-CheckResult -Id "SEC-ATTEST-$VMName" `
+                        -Category 'Security' -Name 'Guest Attestation Extension' `
+                        -Description 'Trusted Launch VMs should have Guest Attestation extension for integrity monitoring' `
+                        -Status $(if ($HasGuestAttest) { 'Pass' } else { 'Warning' }) `
                         -Severity 'Medium' `
-                        -Details "AgentVersion: $($SH.AgentVersion), MinRecommended: $MinRecommendedAgent" `
-                        -Recommendation 'AVD agent updates automatically when VM is running. Ensure VMs are powered on periodically.' `
-                        -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/agent-overview'))
+                        -Details "TrustedLaunch: Yes, GuestAttestation: $(if ($HasGuestAttest) { 'Installed' } else { 'Not installed' })" `
+                        -Recommendation 'Install the Guest Attestation extension to enable boot integrity monitoring via Defender for Cloud.' `
+                        -Reference 'https://learn.microsoft.com/en-us/azure/virtual-machines/trusted-launch#microsoft-defender-for-cloud-integration' `
+                        -Evidence @{ VM = $VMName; GuestAttestation = [bool]$HasGuestAttest }))
                 }
+                # NOTE: Agent Version Currency (OPS-AGENT) is emitted after all subscriptions are
+                # discovered so each host can also be compared against the fleet maximum (C-9).
 
                 # ─── CHECK: Session Host Status ───
                 if ($SH.Status) {
                     $SHStatusOK = $SH.Status -eq 'Available'
-                    [void]$AllChecks.Add((New-CheckResult -Id "SH-STATUS-$VMName" `
-                        -Category 'Session Hosts' -Name 'Session Host Health Status' `
-                        -Description 'Session host should report Available status' `
-                        -Status $(if ($SHStatusOK) { 'Pass' } elseif ($SH.Status -eq 'NeedsAssistance') { 'Fail' } else { 'Warning' }) `
-                        -Severity $(if ($SH.Status -eq 'NeedsAssistance') { 'High' } else { 'Medium' }) `
-                        -Details "Status: $($SH.Status), AllowNewSession: $($SH.AllowNewSession)" `
-                        -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/troubleshoot-vm-connectivity'))
+                    $IsDeallocated = ($SHObj.PowerState -and $SHObj.PowerState -match 'deallocated|stopped')
+                    if (-not $SHStatusOK -and $IsDeallocated) {
+                        # Deallocated hosts are commonly autoscale off-hours - not a health failure (C-10).
+                        [void]$AllChecks.Add((New-CheckResult -Id "SH-STATUS-$VMName" `
+                            -Category 'Session Hosts' -Name 'Session Host Health Status' `
+                            -Description 'Session host should report Available status' `
+                            -Status 'N/A' -Severity 'Medium' `
+                            -Details "Status: $($SH.Status), PowerState: $($SHObj.PowerState) (deallocated - may be autoscale off-hours)" `
+                            -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/troubleshoot-vm-connectivity'))
+                    } else {
+                        [void]$AllChecks.Add((New-CheckResult -Id "SH-STATUS-$VMName" `
+                            -Category 'Session Hosts' -Name 'Session Host Health Status' `
+                            -Description 'Session host should report Available status' `
+                            -Status $(if ($SHStatusOK) { 'Pass' } elseif ($SH.Status -eq 'NeedsAssistance') { 'Fail' } else { 'Warning' }) `
+                            -Severity $(if ($SH.Status -eq 'NeedsAssistance') { 'High' } else { 'Medium' }) `
+                            -Details "Status: $($SH.Status), AllowNewSession: $($SH.AllowNewSession)" `
+                            -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/troubleshoot-vm-connectivity'))
+                    }
                 }
+            }
+
+            # ─── CHECK: Availability Zone spread (per host pool, C-4) ───
+            $HPHosts = @($Discovery.Inventory.SessionHosts | Where-Object { $_.HostPoolName -eq $HP.Name })
+            if ($HPHosts.Count -gt 0) {
+                $HPZones = @($HPHosts | ForEach-Object { $_.AvailabilityZone } | Where-Object { $_ } | Sort-Object -Unique)
+                if ($HPZones.Count -ge 2) {
+                    $AZStatus = 'Pass'; $AZDetail = "Hosts span $($HPZones.Count) zones: $($HPZones -join ',')"
+                } elseif ($HPZones.Count -eq 1) {
+                    $AZStatus = 'Warning'; $AZDetail = "All hosts pinned to a single zone ($($HPZones -join ',')) - no zone spread"
+                } else {
+                    $AZStatus = 'Warning'; $AZDetail = 'No availability zones assigned (note: some regions lack AZ support - verify region capability)'
+                }
+                [void]$AllChecks.Add((New-CheckResult -Id "BCDR-AZ-$($HP.Name)" `
+                    -Category 'BCDR' -Name 'Availability Zone Deployment' `
+                    -Description 'Session hosts should be spread across availability zones for resilience' `
+                    -Status $AZStatus -Severity 'Medium' `
+                    -Details $AZDetail `
+                    -Recommendation 'Deploy session hosts across multiple availability zones for high availability where the region supports AZs.' `
+                    -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/azure-virtual-desktop-fault-domain-mode' `
+                    -Evidence @{ HostPool = $HP.Name; Zones = $HPZones; HostCount = $HPHosts.Count }))
             }
         }
     } catch {
@@ -1047,6 +1435,14 @@ foreach ($SubId in $SubscriptionId) {
         $AppGroups = @(Get-AzWvdApplicationGroup -ErrorAction Stop)
         Write-Status "  Found $($AppGroups.Count) app group(s)" -Level 'SUCCESS'
 
+        # Group app-group types by host pool to detect Desktop+RemoteApp mixing (B-1).
+        $AGTypesByHostPool = @{}
+        foreach ($AG in $AppGroups) {
+            $HpPath = "$($AG.HostPoolArmPath)".ToLower()
+            if (-not $AGTypesByHostPool.ContainsKey($HpPath)) { $AGTypesByHostPool[$HpPath] = @() }
+            $AGTypesByHostPool[$HpPath] += $AG.ApplicationGroupType
+        }
+
         foreach ($AG in $AppGroups) {
             $Discovery.Inventory.AppGroups += [PSCustomObject]@{
                 SubscriptionId       = $SubId
@@ -1059,13 +1455,37 @@ foreach ($SubId in $SubscriptionId) {
                 Tags                 = $AG.Tag
             }
 
-            # ─── CHECK: App group type validation ───
+            # ─── CHECK: App group configuration (B-1 - real evaluation) ───
+            $AGStatus = 'Pass'
+            $AGRec    = 'Application group is configured appropriately.'
+            $HpTypes  = @($AGTypesByHostPool["$($AG.HostPoolArmPath)".ToLower()] | Sort-Object -Unique)
+            $IsMixed  = (@($HpTypes | Where-Object { $_ -eq 'Desktop' }).Count -gt 0) -and (@($HpTypes | Where-Object { $_ -eq 'RemoteApp' }).Count -gt 0)
+            $AppCount = $null
+            if ($AG.ApplicationGroupType -eq 'RemoteApp') {
+                try {
+                    $Apps = @(Get-AzWvdApplication -ResourceGroupName (($AG.Id -split '/')[4]) -ApplicationGroupName $AG.Name -ErrorAction Stop)
+                    $AppCount = $Apps.Count
+                    if ($AppCount -eq 0) {
+                        $AGStatus = 'Warning'
+                        $AGRec = 'RemoteApp group has no published applications - add applications or remove the empty group.'
+                    }
+                } catch {
+                    $AGStatus = 'Error'
+                    $AGRec = "Could not enumerate applications: $($_.Exception.Message)"
+                }
+            }
+            if ($IsMixed -and $AGStatus -eq 'Pass') {
+                $AGStatus = 'Warning'
+                $AGRec = 'Host pool mixes Desktop and RemoteApp application groups - separate them into distinct host pools.'
+            }
             [void]$AllChecks.Add((New-CheckResult -Id "APP-CFG-$($AG.Name)" `
                 -Category 'Application Delivery' -Name 'App Group Configuration' `
                 -Description 'Application groups should be configured appropriately' `
-                -Status 'Pass' -Severity 'Medium' `
-                -Details "Type: $($AG.ApplicationGroupType), HostPool: $(($AG.HostPoolArmPath -split '/')[-1])" `
-                -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/manage-app-groups'))
+                -Status $AGStatus -Severity 'Medium' `
+                -Details "Type: $($AG.ApplicationGroupType), HostPool: $(($AG.HostPoolArmPath -split '/')[-1])$(if ($null -ne $AppCount) { ", Apps: $AppCount" }), HostPoolMixesTypes: $IsMixed" `
+                -Recommendation $AGRec `
+                -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/manage-app-groups' `
+                -Evidence @{ AppGroup = $AG.Name; Type = $AG.ApplicationGroupType; AppCount = $AppCount; Mixed = $IsMixed }))
         }
     } catch {
         Write-Status "  Error: $($_.Exception.Message)" -Level 'ERROR'
@@ -1115,7 +1535,7 @@ foreach ($SubId in $SubscriptionId) {
             }
         }
 
-        # ─── CHECK: Scaling plan coverage ───
+        # ─── CHECK: Scaling plan coverage + Load Balancing Algorithm (B-1) ───
         $HPsWithScaling = @($ScalingPlans | ForEach-Object { $_.HostPoolReference.HostPoolArmPath } | Where-Object { $_ })
         foreach ($HP in $HostPools) {
             $HasScaling = $HPsWithScaling -contains $HP.Id
@@ -1128,92 +1548,131 @@ foreach ($SubId in $SubscriptionId) {
                 -Recommendation 'Create and assign a scaling plan to reduce compute costs during off-peak hours.' `
                 -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/autoscale-scaling-plan' `
                 -Evidence @{ HostPool = $HP.Name; HasScalingPlan = $HasScaling }))
+
+            # ─── CHECK: Load Balancing Algorithm (moved here so scaling-plan assignment is known) ───
+            if ($HasScaling) {
+                $LBStatus = 'Pass'
+                $LBDetail = "Algorithm: $($HP.LoadBalancerType), PoolType: $($HP.HostPoolType). A scaling plan is assigned - autoscale overrides the LB algorithm during scheduled hours."
+                $LBRec    = 'Scaling plan governs ramp behavior; LB algorithm applies outside scheduled hours.'
+            } elseif ($HP.LoadBalancerType -eq 'DepthFirst') {
+                $LBStatus = 'Warning'
+                $LBDetail = "Algorithm: DepthFirst, PoolType: $($HP.HostPoolType). Session packing without a scaling plan gives no autoscale ramp guidance."
+                $LBRec    = 'Assign a scaling plan, or use BreadthFirst if you need even distribution during ramp-up.'
+            } else {
+                $LBStatus = 'Pass'
+                $LBDetail = "Algorithm: $($HP.LoadBalancerType), PoolType: $($HP.HostPoolType)."
+                $LBRec    = 'BreadthFirst distributes sessions evenly during ramp-up.'
+            }
+            [void]$AllChecks.Add((New-CheckResult -Id "SH-LB-$($HP.Name)" `
+                -Category 'Session Hosts' -Name 'Load Balancing Algorithm' `
+                -Description 'LB should align with workload (BreadthFirst for ramp-up, DepthFirst for cost)' `
+                -Status $LBStatus -Severity 'Medium' `
+                -Details $LBDetail `
+                -Recommendation $LBRec `
+                -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/host-pool-load-balancing' `
+                -Evidence @{ HostPool = $HP.Name; LoadBalancer = $HP.LoadBalancerType; HasScalingPlan = $HasScaling }))
         }
 
-        # CHECK: Scaling plan active (not just assigned but has schedules)
+        # CHECK: Scaling plan active - must be ENABLED on a host-pool reference, not just have schedules (C-5)
         foreach ($SP in $ScalingPlans) {
             $HasSchedules = $SP.Schedule -and $SP.Schedule.Count -gt 0
+            $EnabledRefs  = @($SP.HostPoolReference | Where-Object { $_.ScalingPlanEnabled })
+            $AnyEnabled   = $EnabledRefs.Count -gt 0
+            if ($AnyEnabled) {
+                $SPActiveStatus = 'Pass'
+                $SPActiveDetail = "Enabled on $($EnabledRefs.Count) host pool reference(s), Schedules: $(if ($HasSchedules) { $SP.Schedule.Count } else { 0 })"
+            } elseif ($HasSchedules) {
+                $SPActiveStatus = 'Warning'
+                $SPActiveDetail = "Schedules defined ($($SP.Schedule.Count)) but ScalingPlanEnabled is false on all host pool references - plan is inactive."
+            } else {
+                $SPActiveStatus = 'Warning'
+                $SPActiveDetail = 'No schedules and not enabled on any host pool reference.'
+            }
             [void]$AllChecks.Add((New-CheckResult -Id "GOV-SPACTIVE-$($SP.Name)" `
                 -Category 'Governance & Cost' -Name 'Scaling Plan Active' `
                 -Description 'Scaling plans should be enabled with active schedules' `
-                -Status $(if ($HasSchedules) { 'Pass' } else { 'Warning' }) `
-                -Severity 'High' `
-                -Details "Schedules: $(if ($HasSchedules) { $SP.Schedule.Count } else { 0 })" `
-                -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/autoscale-scaling-plan'))
+                -Status $SPActiveStatus -Severity 'High' `
+                -Details $SPActiveDetail `
+                -Recommendation 'Enable the scaling plan on its host pool references (ScalingPlanEnabled) and confirm schedules exist.' `
+                -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/autoscale-scaling-plan' `
+                -Evidence @{ ScalingPlan = $SP.Name; EnabledReferences = $EnabledRefs.Count; ScheduleCount = $(if ($HasSchedules) { $SP.Schedule.Count } else { 0 }) }))
+        }
+        # NOTE: BCDR-SPSCHED emit removed (audit M-3 - mis-mapped target; schedule data now feeds SH-LB / GOV-SPACTIVE).
+
+        # ─── CHECK: Personal Pool Autoscale & Hibernate (SH-031) — Personal host pools only ───
+        foreach ($HP in @($HostPools | Where-Object { $_.HostPoolType -eq 'Personal' })) {
+            $PersonalPlan = @($ScalingPlans | Where-Object {
+                "$($_.HostPoolType)" -eq 'Personal' -and
+                (@($_.HostPoolReference | Where-Object { "$($_.HostPoolArmPath)".ToLower() -eq "$($HP.Id)".ToLower() }).Count -gt 0)
+            })
+            [void]$AllChecks.Add((New-CheckResult -Id "SH-PERSAUTO-$($HP.Name)" `
+                -Category 'Session Hosts' -Name 'Personal Pool Autoscale & Hibernate' `
+                -Description 'Personal host pools should use a Personal-type scaling plan to deallocate/hibernate idle hosts for cost savings' `
+                -Status $(if ($PersonalPlan.Count -gt 0) { 'Pass' } else { 'Warning' }) `
+                -Severity 'Medium' `
+                -Details "Personal host pool $($HP.Name): Personal scaling plan $(if ($PersonalPlan.Count -gt 0) { "assigned ($(@($PersonalPlan | ForEach-Object { $_.Name }) -join ', '))" } else { 'not assigned' })" `
+                -Recommendation 'Assign a Personal-type scaling plan (personal autoscale is GA); hibernate reduces cost further — note FSLogix/App Attach incompatibility with hibernate.' `
+                -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/autoscale-scenarios' `
+                -Evidence @{ HostPool = $HP.Name; PersonalPlan = $PersonalPlan.Count }))
         }
 
-
-        # CHECK: Scaling plan schedule depth
+        # ─── CHECK: Scaling Plan Diagnostics (MON-017) — only when scaling plans exist ───
         foreach ($SP in $ScalingPlans) {
-            $Schedules = $SP.Schedule
-            $HasPeakOffPeak = $Schedules -and $Schedules.Count -ge 1
-            [void]$AllChecks.Add((New-CheckResult -Id "BCDR-SPSCHED-$($SP.Name)" `
-                -Category 'BCDR' -Name 'Scaling Plan Schedule Defined' `
-                -Description 'Scaling plan should have schedules with peak and off-peak ramp configurations' `
-                -Status $(if ($HasPeakOffPeak) { 'Pass' } else { 'Fail' }) `
-                -Severity 'Medium' `
-                -Details "Schedules: $(if ($Schedules) { $Schedules.Count } else { 0 }), Days covered: $(if ($Schedules) { ($Schedules | ForEach-Object { $_.DaysOfWeek } | Select-Object -Unique).Count } else { 0 })" `
-                -Recommendation 'Configure scaling plan schedules with ramp-up, peak, ramp-down, and off-peak phases.' `
-                -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/autoscale-scaling-plan' `
-                -Evidence @{ ScalingPlan = $SP.Name; ScheduleCount = $(if ($Schedules) { $Schedules.Count } else { 0 }) }))
+            try {
+                $SPDiag = @(Get-AzDiagnosticSetting -ResourceId $SP.Id -ErrorAction Stop -WarningAction SilentlyContinue)
+                [void]$AllChecks.Add((New-CheckResult -Id "MON-SPDIAG-$($SP.Name)" `
+                    -Category 'Monitoring' -Name 'Scaling Plan Diagnostics' `
+                    -Description 'Scaling plans should have diagnostic settings enabled for an autoscale audit trail' `
+                    -Status $(if ($SPDiag.Count -gt 0) { 'Pass' } else { 'Warning' }) `
+                    -Severity 'Low' `
+                    -Details "ScalingPlan $($SP.Name): diagnostic settings: $($SPDiag.Count)" `
+                    -Recommendation 'Enable diagnostic settings on scaling plans to capture autoscale evaluation and action logs.' `
+                    -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/autoscale-diagnostics' `
+                    -Evidence @{ ScalingPlan = $SP.Name; DiagCount = $SPDiag.Count }))
+            } catch {
+                [void]$AllChecks.Add((New-CheckResult -Id "MON-SPDIAG-$($SP.Name)" `
+                    -Category 'Monitoring' -Name 'Scaling Plan Diagnostics' `
+                    -Description 'Scaling plans should have diagnostic settings enabled' `
+                    -Status 'Error' -Severity 'Low' `
+                    -Details "Could not read scaling plan diagnostic settings: $($_.Exception.Message)" `
+                    -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/autoscale-diagnostics'))
+            }
         }
     } catch {
         Write-Status "  Error: $($_.Exception.Message)" -Level 'ERROR'
         $Discovery.Errors += "Scaling plan discovery failed: $($_.Exception.Message)"
     }
-
-    # ─── MULTI-REGION CHECK ───
-    $HPLocations = @($HostPools | ForEach-Object { $_.Location } | Sort-Object -Unique)
-    if ($HPLocations.Count -gt 1) {
-        [void]$AllChecks.Add((New-CheckResult -Id "BCDR-MULTIREGION" `
-            -Category 'BCDR' -Name 'Multi-Region Host Pool' `
-            -Description 'Host pools deployed in multiple regions for disaster recovery' `
-            -Status 'Pass' -Severity 'Medium' `
-            -Details "Regions: $($HPLocations -join ', ')" `
-            -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/disaster-recovery'))
-    } else {
-        [void]$AllChecks.Add((New-CheckResult -Id "BCDR-MULTIREGION" `
-            -Category 'BCDR' -Name 'Multi-Region Host Pool' `
-            -Description 'Host pools concentrated in single region - DR risk' `
-            -Status 'Warning' -Severity 'Medium' `
-            -Details "Regions: $(if ($HPLocations) { $HPLocations -join ', ' } else { 'None' })"))
-    }
+    # NOTE: BCDR-MULTIREGION is emitted once after all subscriptions (audit A-1) so host-pool regions
+    # are aggregated across the whole estate rather than per subscription.
 
     # ─── NETWORKING ───────────────────────────────────────────────────────
     Write-Status "Networking" -Level 'SECTION'
     try {
-        # Collect unique VNets from session host NICs
+        # Determine whether the whole estate is cloud-native Entra-joined (used by NET-DNS, C-7).
+        $EstateHosts = @($Discovery.Inventory.SessionHosts | Where-Object { $_.JoinDataAvailable })
+        $AllEntraJoined = ($EstateHosts.Count -gt 0) -and (@($EstateHosts | Where-Object { $_.JoinType -ne 'Entra ID' }).Count -eq 0)
+
+        # Collect unique VNets from session host NICs. Reuse NIC facts cached during the session-host
+        # pass (E-7) instead of re-fetching VM + NIC per host.
         $DiscoveredVNetIds = @{}
         foreach ($SH in $Discovery.Inventory.SessionHosts) {
-            if ($SH.ResourceId) {
-                try {
-                    $VMRG   = ($SH.ResourceId -split '/')[4]
-                    $VMName = ($SH.ResourceId -split '/')[-1]
-                    $VM = Get-AzVM -ResourceGroupName $VMRG -Name $VMName -ErrorAction SilentlyContinue
-                    if ($VM -and $VM.NetworkProfile.NetworkInterfaces.Count -gt 0) {
-                        $NicId = $VM.NetworkProfile.NetworkInterfaces[0].Id
-                        $Nic = Get-AzNetworkInterface -ResourceId $NicId -ErrorAction SilentlyContinue
-                        if ($Nic -and $Nic.IpConfigurations[0].Subnet.Id) {
-                            $SubnetId = $Nic.IpConfigurations[0].Subnet.Id
-                            $VNetId = ($SubnetId -split '/subnets/')[0]
-                            if (-not $DiscoveredVNetIds.ContainsKey($VNetId)) {
-                                $DiscoveredVNetIds[$VNetId] = $true
-                            }
-
-                            # CHECK: Public IP on session host
-                            $HasPublicIP = $null -ne $Nic.IpConfigurations[0].PublicIpAddress
-                            [void]$AllChecks.Add((New-CheckResult -Id "NET-PIP-$VMName" `
-                                -Category 'Networking' -Name 'No Public IP on Session Host' `
-                                -Description 'Session hosts should not have public IP addresses' `
-                                -Status $(if ($HasPublicIP) { 'Fail' } else { 'Pass' }) `
-                                -Severity 'Critical' `
-                                -Details "PublicIP: $(if ($HasPublicIP) { 'ASSIGNED' } else { 'None' })" `
-                                -Recommendation 'Remove public IPs from session hosts. Use Azure Bastion or JIT for management access.' `
-                                -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/security-guide'))
-                        }
-                    }
-                } catch { }
+            $VMName = if ($SH.ResourceId) { ($SH.ResourceId -split '/')[-1] } else { $SH.Name }
+            $SubnetId = $SH.NicSubnetId
+            if (-not $SubnetId) { continue }
+            $VNetId = ($SubnetId -split '/subnets/')[0]
+            if (-not $DiscoveredVNetIds.ContainsKey($VNetId)) {
+                $DiscoveredVNetIds[$VNetId] = $true
             }
+            # CHECK: Public IP on session host
+            $HasPublicIP = [bool]$SH.NicHasPublicIP
+            [void]$AllChecks.Add((New-CheckResult -Id "NET-PIP-$VMName" `
+                -Category 'Networking' -Name 'No Public IP on Session Host' `
+                -Description 'Session hosts should not have public IP addresses' `
+                -Status $(if ($HasPublicIP) { 'Fail' } else { 'Pass' }) `
+                -Severity 'Critical' `
+                -Details "PublicIP: $(if ($HasPublicIP) { 'ASSIGNED' } else { 'None' })" `
+                -Recommendation 'Remove public IPs from session hosts. Use Azure Bastion or JIT for management access.' `
+                -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/security-guide'))
         }
 
         # Get VNet details
@@ -1248,50 +1707,84 @@ foreach ($SubId in $SubscriptionId) {
                     DnsServers    = $VNet.DhcpOptions.DnsServers
                     HasPeering    = $VNet.VirtualNetworkPeerings.Count -gt 0
                     Location      = $VNet.Location
+                    Tags          = $VNet.Tag
                 }
                 $Discovery.Inventory.VNets += $VNetObj
 
-                # CHECK: Custom DNS
+                # CHECK: Custom DNS - cloud-native Entra-joined estates can safely use default Azure DNS (C-7)
                 $HasCustomDns = $VNet.DhcpOptions -and $VNet.DhcpOptions.DnsServers -and $VNet.DhcpOptions.DnsServers.Count -gt 0
+                if ($HasCustomDns) {
+                    $DnsStatus = 'Pass'; $DnsDetail = "DNS: $($VNet.DhcpOptions.DnsServers -join ', ')"
+                } elseif ($AllEntraJoined) {
+                    $DnsStatus = 'Pass'; $DnsDetail = 'DNS: Azure Default (acceptable - all session hosts are Entra-joined, no AD DS/Hybrid resolution required)'
+                } else {
+                    $DnsStatus = 'Warning'; $DnsDetail = 'DNS: Azure Default (AD DS/Hybrid hosts need custom DNS pointing to domain controllers)'
+                }
                 [void]$AllChecks.Add((New-CheckResult -Id "NET-DNS-$VNetName" `
                     -Category 'Networking' -Name 'Custom DNS Configuration' `
                     -Description 'VNets with AD-joined session hosts should use custom DNS pointing to domain controllers' `
-                    -Status $(if ($HasCustomDns) { 'Pass' } else { 'Warning' }) `
-                    -Severity 'Medium' `
-                    -Details "DNS: $(if ($HasCustomDns) { $VNet.DhcpOptions.DnsServers -join ', ' } else { 'Azure Default' })" `
-                    -Recommendation 'Configure custom DNS servers pointing to domain controllers for AD-joined environments.'))
+                    -Status $DnsStatus -Severity 'Medium' `
+                    -Details $DnsDetail `
+                    -Recommendation 'Configure custom DNS pointing to domain controllers for AD DS/Hybrid; default Azure DNS is fine for pure Entra join.'))
 
-                # CHECK: NSG on AVD subnets
-                $SubnetsWithoutNSG = @($VNet.Subnets | Where-Object { -not $_.NetworkSecurityGroup })
-                $TotalSubnets = $VNet.Subnets.Count
+                # CHECK: NSG on AVD subnets - exclude reserved/gateway subnets from the denominator (C-3)
+                $ReservedSubnets = @('GatewaySubnet','AzureFirewallSubnet','AzureFirewallManagementSubnet','AzureBastionSubnet','RouteServerSubnet')
+                $EvalSubnets = @($VNet.Subnets | Where-Object { $_.Name -notin $ReservedSubnets })
+                $SubnetsWithoutNSG = @($EvalSubnets | Where-Object { -not $_.NetworkSecurityGroup })
+                $TotalSubnets = $EvalSubnets.Count
                 $HasNSGCoverage = $SubnetsWithoutNSG.Count -eq 0 -and $TotalSubnets -gt 0
                 [void]$AllChecks.Add((New-CheckResult -Id "NET-NSG-$VNetName" `
                     -Category 'Networking' -Name 'NSG on AVD Subnets' `
                     -Description 'All AVD subnets should have Network Security Groups applied' `
                     -Status $(if ($HasNSGCoverage) { 'Pass' } elseif ($TotalSubnets -eq 0) { 'N/A' } else { 'Warning' }) `
                     -Severity 'High' `
-                    -Details "Subnets: $TotalSubnets total, $($SubnetsWithoutNSG.Count) without NSG" `
+                    -Details "Subnets (excluding reserved): $TotalSubnets, $($SubnetsWithoutNSG.Count) without NSG$(if ($SubnetsWithoutNSG.Count -gt 0) { " ($( ($SubnetsWithoutNSG | ForEach-Object { $_.Name }) -join ', '))" })" `
                     -Recommendation 'Apply NSGs to all AVD subnets for network traffic filtering.' `
                     -Reference 'https://learn.microsoft.com/en-us/azure/virtual-network/network-security-groups-overview'))
 
-                # CHECK: Route tables on subnets
-                $SubnetsWithRT = @($VNet.Subnets | Where-Object { $_.RouteTable })
+                # Analyze route tables for a 0.0.0.0/0 hop to an NVA/firewall/gateway (C-7). Cache by RouteTable Id.
+                $HasDefaultRouteToNVA = $false
+                $RTNextHops = @()
+                foreach ($SubnetEntry in ($EvalSubnets | Where-Object { $_.RouteTable })) {
+                    $RTId = $SubnetEntry.RouteTable.Id
+                    if (-not $RTId) { continue }
+                    try {
+                        $RT = Get-AzRouteTable -ResourceGroupName (($RTId -split '/')[4]) -Name (($RTId -split '/')[-1]) -ErrorAction Stop
+                        foreach ($Route in @($RT.Routes)) {
+                            if ($Route.AddressPrefix -eq '0.0.0.0/0' -and $Route.NextHopType -in @('VirtualAppliance','VirtualNetworkGateway')) {
+                                $HasDefaultRouteToNVA = $true
+                                $RTNextHops += $Route.NextHopType
+                            }
+                        }
+                    } catch {
+                        Write-Status "    Could not read route table $(($RTId -split '/')[-1]): $($_.Exception.Message)" -Level 'WARN'
+                    }
+                }
+
+                # CHECK: Route table default route - Pass requires 0.0.0.0/0 to VirtualAppliance/Gateway (C-7)
                 [void]$AllChecks.Add((New-CheckResult -Id "NET-UDR-$VNetName" `
                     -Category 'Networking' -Name 'Route Table on AVD Subnets' `
                     -Description 'UDR should force traffic through firewall/NVA for inspection' `
-                    -Status $(if ($SubnetsWithRT.Count -gt 0) { 'Pass' } else { 'Warning' }) `
+                    -Status $(if ($HasDefaultRouteToNVA) { 'Pass' } else { 'Warning' }) `
                     -Severity 'Medium' `
-                    -Details "SubnetsWithRouteTable: $($SubnetsWithRT.Count)/$TotalSubnets" `
+                    -Details "$(if ($HasDefaultRouteToNVA) { "0.0.0.0/0 route to $($RTNextHops -join ',') present" } else { 'No 0.0.0.0/0 route to a VirtualAppliance/Gateway found' })" `
+                    -Recommendation 'Add a 0.0.0.0/0 user-defined route with next hop VirtualAppliance (firewall/NVA) to force egress inspection.' `
                     -Reference 'https://learn.microsoft.com/en-us/azure/well-architected/azure-virtual-desktop/networking'))
 
-                # CHECK: NAT Gateway
-                $SubnetsWithNAT = @($VNet.Subnets | Where-Object { $_.NatGateway })
+                # CHECK: NAT Gateway - soften to Pass when a firewall/NVA egress design exists (C-7)
+                $SubnetsWithNAT = @($EvalSubnets | Where-Object { $_.NatGateway })
+                if ($SubnetsWithNAT.Count -gt 0) {
+                    $NatStatus = 'Pass'; $NatDetail = "SubnetsWithNATGW: $($SubnetsWithNAT.Count)/$TotalSubnets"
+                } elseif ($HasDefaultRouteToNVA) {
+                    $NatStatus = 'Pass'; $NatDetail = 'No NAT Gateway, but firewall/NVA egress design detected (0.0.0.0/0 UDR to VirtualAppliance/Gateway)'
+                } else {
+                    $NatStatus = 'Warning'; $NatDetail = "SubnetsWithNATGW: 0/$TotalSubnets (no explicit outbound method detected)"
+                }
                 [void]$AllChecks.Add((New-CheckResult -Id "NET-NATGW-$VNetName" `
                     -Category 'Networking' -Name 'NAT Gateway for Outbound' `
                     -Description 'Private subnets should use NAT Gateway for explicit outbound connectivity' `
-                    -Status $(if ($SubnetsWithNAT.Count -gt 0) { 'Pass' } else { 'Warning' }) `
-                    -Severity 'Medium' `
-                    -Details "SubnetsWithNATGW: $($SubnetsWithNAT.Count)/$TotalSubnets"))
+                    -Status $NatStatus -Severity 'Medium' `
+                    -Details $NatDetail))
 
                 # CHECK: Subnet IP capacity
                 foreach ($SubnetEntry in $VNet.Subnets) {
@@ -1391,34 +1884,49 @@ foreach ($SubId in $SubscriptionId) {
                                     Protocol               = $_.Protocol
                                     SourcePortRange        = $_.SourcePortRange
                                     DestinationPortRange   = $_.DestinationPortRange
+                                    DestinationPortRanges  = $_.DestinationPortRanges
                                     SourceAddressPrefix    = $_.SourceAddressPrefix
                                     DestinationAddressPrefix = $_.DestinationAddressPrefix
                                 }
                             })
                         }
 
+                        $InboundRules = @($NSG.SecurityRules | Where-Object { $_.Direction -eq 'Inbound' })
+
+                        # Helper (inline): is an internet-source Allow on $Port overridden by a higher-priority
+                        # (lower number) Deny covering the same port from the same/broader source? (C-1)
+                        $EvalPortExposure = {
+                            param([int]$Port)
+                            $AllowExposed = @($InboundRules | Where-Object {
+                                $_.Access -eq 'Allow' -and (Test-NsgRulePort -Rule $_ -Port $Port) -and (Test-NsgInternetSource -Rule $_)
+                            })
+                            $Effective = @($AllowExposed | Where-Object {
+                                $AllowRule = $_
+                                $OverridingDeny = @($InboundRules | Where-Object {
+                                    $_.Access -eq 'Deny' -and $_.Priority -lt $AllowRule.Priority -and
+                                    (Test-NsgRulePort -Rule $_ -Port $Port) -and (Test-NsgInternetSource -Rule $_)
+                                })
+                                $OverridingDeny.Count -eq 0
+                            })
+                            return $Effective
+                        }
+
                         # CHECK: Port 3389 exposure
-                        $RdpRules = @($NSG.SecurityRules | Where-Object {
-                            $_.Direction -eq 'Inbound' -and $_.Access -eq 'Allow' -and
-                            ($_.DestinationPortRange -contains '3389' -or $_.DestinationPortRange -contains '*')
-                        })
-                        $ExposedToInternet = @($RdpRules | Where-Object {
-                            $_.SourceAddressPrefix -eq '*' -or $_.SourceAddressPrefix -eq 'Internet' -or $_.SourceAddressPrefix -eq '0.0.0.0/0'
-                        })
+                        $ExposedToInternet = @(& $EvalPortExposure 3389)
                         [void]$AllChecks.Add((New-CheckResult -Id "NET-RDP-$NSGName" `
                             -Category 'Networking' -Name 'RDP Port 3389 Not Internet-Exposed' `
                             -Description 'Port 3389 should not be open to the internet on AVD subnets' `
                             -Status $(if ($ExposedToInternet.Count -gt 0) { 'Fail' } else { 'Pass' }) `
                             -Severity 'Critical' `
-                            -Details "Internet-facing RDP rules: $($ExposedToInternet.Count)" `
+                            -Details "Internet-facing RDP rules (not overridden by a higher-priority Deny): $($ExposedToInternet.Count)$(if ($ExposedToInternet.Count -gt 0) { " ($( ($ExposedToInternet | ForEach-Object { $_.Name }) -join ', '))" })" `
                             -Recommendation 'Block inbound RDP from internet. Use Azure Bastion or JIT access for administration.' `
                             -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/security-guide' `
-                            -Evidence @{ NSG = $NSGName; ExposedRules = $ExposedToInternet.Name }))
+                            -Evidence @{ NSG = $NSGName; ExposedRules = @($ExposedToInternet | ForEach-Object { $_.Name }) }))
 
                         # CHECK: AVD required outbound connectivity
                         $OutboundRules = @($NSG.SecurityRules | Where-Object { $_.Direction -eq 'Outbound' })
                         $HasDenyAllOut = @($OutboundRules | Where-Object {
-                            $_.Access -eq 'Deny' -and $_.DestinationAddressPrefix -eq '*' -and $_.DestinationPortRange -eq '*'
+                            $_.Access -eq 'Deny' -and $_.DestinationAddressPrefix -eq '*' -and (Test-NsgRulePort -Rule $_ -Port 443)
                         }).Count -gt 0
                         if ($HasDenyAllOut) {
                             $HasWVDAllow = @($OutboundRules | Where-Object {
@@ -1440,23 +1948,24 @@ foreach ($SubId in $SubscriptionId) {
                         }
 
                         # CHECK: SSH port 22 exposure (common misconfiguration)
-                        $SshRules = @($NSG.SecurityRules | Where-Object {
-                            $_.Direction -eq 'Inbound' -and $_.Access -eq 'Allow' -and
-                            ($_.DestinationPortRange -contains '22' -or $_.DestinationPortRange -contains '*')
-                        })
-                        $SshExposed = @($SshRules | Where-Object {
-                            $_.SourceAddressPrefix -eq '*' -or $_.SourceAddressPrefix -eq 'Internet' -or $_.SourceAddressPrefix -eq '0.0.0.0/0'
-                        })
+                        $SshExposed = @(& $EvalPortExposure 22)
                         if ($SshExposed.Count -gt 0) {
                             [void]$AllChecks.Add((New-CheckResult -Id "NET-SSH-$NSGName" `
                                 -Category 'Networking' -Name 'SSH Port 22 Not Internet-Exposed' `
                                 -Description 'Port 22 should not be open to the internet' `
                                 -Status 'Fail' -Severity 'High' `
-                                -Details "Internet-facing SSH rules: $($SshExposed.Count)" `
+                                -Details "Internet-facing SSH rules (not overridden by a higher-priority Deny): $($SshExposed.Count)" `
                                 -Recommendation 'Block inbound SSH from internet. Use Azure Bastion for management.' `
                                 -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/security-guide'))
                         }
-                    } catch { }
+                    } catch {
+                        [void]$AllChecks.Add((New-CheckResult -Id "NET-RDP-$($Subnet.NSG -split '/' | Select-Object -Last 1)" `
+                            -Category 'Networking' -Name 'RDP Port 3389 Not Internet-Exposed' `
+                            -Description 'Port 3389 should not be open to the internet on AVD subnets' `
+                            -Status 'Error' -Severity 'Critical' `
+                            -Details "Could not read NSG rules: $($_.Exception.Message)" `
+                            -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/security-guide'))
+                    }
                 }
             }
         }
@@ -1510,14 +2019,14 @@ foreach ($SubId in $SubscriptionId) {
         foreach ($VNet in $Discovery.Inventory.VNets) {
             if ($VNet.Peerings) {
                 foreach ($Peer in $VNet.Peerings) {
-                    if ($Peer.RemoteVNetId -in $FwVNetIds) { $PeeredFw = $true }
+                    if ($Peer.RemoteVNet -in $FwVNetIds) { $PeeredFw = $true }
                 }
             }
         }
         $DirectFw = @($AzFirewalls | Where-Object { ($_.IpConfigurations[0].Subnet.Id -split '/subnets/')[0] -in $AvdVNetIds }).Count -gt 0
         $HasFirewall = $PeeredFw -or $DirectFw -or ($AzFirewalls.Count -gt 0)
         Write-Status "  Azure Firewalls: $($AzFirewalls.Count), Peered to AVD: $PeeredFw" -Level $(if ($HasFirewall) { 'SUCCESS' } else { 'WARN' })
-        [void]$AllChecks.Add((New-CheckResult -Id "NET-HUBFW" `
+        [void]$AllChecks.Add((New-CheckResult -Id "NET-HUBFW-$SubShort" `
             -Category 'Networking' -Name 'Hub Firewall Present' `
             -Description 'Azure Firewall or NVA should exist in hub for centralized egress filtering' `
             -Status $(if ($HasFirewall) { 'Pass' } else { 'Warning' }) `
@@ -1550,7 +2059,7 @@ foreach ($SubId in $SubscriptionId) {
         $HasGateway = $VPNGateways.Count -gt 0
         $GwTypes = @($VPNGateways | ForEach-Object { $_.GatewayType } | Sort-Object -Unique) -join ', '
         Write-Status "  VPN/ER Gateways: $($VPNGateways.Count) ($GwTypes)" -Level $(if ($HasGateway) { 'SUCCESS' } else { 'WARN' })
-        [void]$AllChecks.Add((New-CheckResult -Id "NET-HUBGW" `
+        [void]$AllChecks.Add((New-CheckResult -Id "NET-HUBGW-$SubShort" `
             -Category 'Networking' -Name 'VPN/ExpressRoute Gateway' `
             -Description 'Hub network should have VPN or ExpressRoute gateway for hybrid connectivity' `
             -Status $(if ($HasGateway) { 'Pass' } else { 'Warning' }) `
@@ -1572,6 +2081,8 @@ foreach ($SubId in $SubscriptionId) {
                 $DiagSettings = @(Get-AzDiagnosticSetting -ResourceId $HP.Id -ErrorAction Stop -WarningAction SilentlyContinue)
                 $HasDiag = $DiagSettings.Count -gt 0
                 $HasLA   = @($DiagSettings | Where-Object { $_.WorkspaceId }).Count -gt 0
+                # Harvest Log Analytics workspace resource IDs for the SIEM/Sentinel check (MON-012).
+                foreach ($DS in @($DiagSettings | Where-Object { $_.WorkspaceId })) { $LAWorkspaceIds["$($DS.WorkspaceId)"] = $true }
 
                 [void]$AllChecks.Add((New-CheckResult -Id "MON-DIAG-$($HP.Name)" `
                     -Category 'Monitoring' -Name 'Diagnostic Settings Enabled' `
@@ -1584,19 +2095,28 @@ foreach ($SubId in $SubscriptionId) {
 
                 # ─── CHECK: Diagnostic Log Categories (MON-016) ───
                 if ($HasDiag) {
+                    # A diagnostic setting using a category GROUP (allLogs / audit) covers all recommended categories (C-6).
+                    $UsesCategoryGroup = @($DiagSettings | ForEach-Object { $_.Log } | Where-Object { $_.Enabled -and $_.CategoryGroup -in @('allLogs','audit') }).Count -gt 0
                     $EnabledCategories = @($DiagSettings | ForEach-Object { $_.Log } | Where-Object { $_.Enabled } | ForEach-Object { $_.Category }) | Sort-Object -Unique
-                    $MissingCategories = @($RecommendedCategories | Where-Object { $_ -notin $EnabledCategories })
+                    $MissingCategories = if ($UsesCategoryGroup) { @() } else { @($RecommendedCategories | Where-Object { $_ -notin $EnabledCategories }) }
                     [void]$AllChecks.Add((New-CheckResult -Id "MON-DIAGCAT-$($HP.Name)" `
                         -Category 'Monitoring' -Name 'Diagnostic Log Categories' `
                         -Description 'All recommended AVD diagnostic log categories should be enabled' `
                         -Status $(if ($MissingCategories.Count -eq 0) { 'Pass' } else { 'Warning' }) `
                         -Severity 'Medium' `
-                        -Details "Enabled: $($EnabledCategories -join ', '). Missing: $(if ($MissingCategories.Count -gt 0) { $MissingCategories -join ', ' } else { 'None' })" `
-                        -Recommendation "Enable missing categories: $($MissingCategories -join ', ')" `
+                        -Details "$(if ($UsesCategoryGroup) { 'CategoryGroup (allLogs/audit) enabled - covers all recommended categories' } else { "Enabled: $($EnabledCategories -join ', '). Missing: $(if ($MissingCategories.Count -gt 0) { $MissingCategories -join ', ' } else { 'None' })" })" `
+                        -Recommendation "$(if ($MissingCategories.Count -gt 0) { "Enable missing categories: $($MissingCategories -join ', ')" } else { 'Diagnostic categories fully covered.' })" `
                         -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/diagnostics-log-analytics' `
-                        -Evidence @{ Enabled = $EnabledCategories; Missing = $MissingCategories }))
+                        -Evidence @{ Enabled = $EnabledCategories; Missing = $MissingCategories; CategoryGroup = $UsesCategoryGroup }))
                 }
-            } catch { }
+            } catch {
+                [void]$AllChecks.Add((New-CheckResult -Id "MON-DIAG-$($HP.Name)" `
+                    -Category 'Monitoring' -Name 'Diagnostic Settings Enabled' `
+                    -Description 'Host pools should have diagnostics enabled for monitoring and troubleshooting' `
+                    -Status 'Error' -Severity 'High' `
+                    -Details "Could not read diagnostic settings: $($_.Exception.Message)" `
+                    -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/diagnostics-log-analytics'))
+            }
         }
         $DiagHPCount = @($AllChecks | Where-Object { $_.Id -like 'MON-DIAG-*' }).Count
         $DiagPassCount = @($AllChecks | Where-Object { $_.Id -like 'MON-DIAG-*' -and $_.Status -eq 'Pass' }).Count
@@ -1609,21 +2129,69 @@ foreach ($SubId in $SubscriptionId) {
     # ─── RBAC ─────────────────────────────────────────────────────────────
     Write-Status "RBAC" -Level 'SECTION'
     try {
+        $BroadRoles = @('Owner','Contributor','User Access Administrator')
         foreach ($HP in $HostPools) {
-            $RG = ($HP.Id -split '/')[4]
             try {
+                # Assignments on the host pool AND its application groups - user assignments normally
+                # live on app groups, not the host pool (A-3).
                 $Assignments = @(Get-AzRoleAssignment -Scope $HP.Id -ErrorAction Stop)
-                $HasCustomRoles = @($Assignments | Where-Object { $_.RoleDefinitionName -like '*Virtual Desktop*' }).Count -gt 0
+                $HPAppGroups = @($AppGroups | Where-Object { "$($_.HostPoolArmPath)".ToLower() -eq "$($HP.Id)".ToLower() })
+                foreach ($HPAG in $HPAppGroups) {
+                    $Assignments += @(Get-AzRoleAssignment -Scope $HPAG.Id -ErrorAction Stop)
+                }
+                # Azure built-in AVD roles are named "Desktop Virtualization ..." (A-3 - wildcard was reversed).
+                $AvdRoleCount = @($Assignments | Where-Object { $_.RoleDefinitionName -like '*Desktop Virtualization*' }).Count
+                $BroadAtScope = @($Assignments | Where-Object {
+                    $_.RoleDefinitionName -in $BroadRoles -and ($_.Scope -like "*$($HP.Name)*" -or $_.Scope -like '*applicationGroups*')
+                })
+                if ($BroadAtScope.Count -gt 0) {
+                    $RbacStatus = 'Warning'
+                    $RbacDetail = "Broad roles assigned directly at AVD scope: $(@($BroadAtScope | ForEach-Object { "$($_.RoleDefinitionName) ($($_.DisplayName))" } | Select-Object -First 5) -join ', '). AVDRoles: $AvdRoleCount"
+                } elseif ($AvdRoleCount -gt 0) {
+                    $RbacStatus = 'Pass'
+                    $RbacDetail = "TotalAssignments: $($Assignments.Count), Desktop Virtualization roles: $AvdRoleCount, no broad roles at AVD scope"
+                } else {
+                    $RbacStatus = 'Warning'
+                    $RbacDetail = "TotalAssignments: $($Assignments.Count), no Desktop Virtualization built-in roles found on host pool or app groups"
+                }
+                [void]$AllChecks.Add((New-CheckResult -Id "SEC-RBAC-$($HP.Name)" `
+                    -Category 'Security & IAM' -Name 'AVD RBAC Roles Used' `
+                    -Description 'Use built-in AVD roles for least-privilege access; avoid Owner/Contributor at AVD scopes' `
+                    -Status $RbacStatus -Severity 'Medium' `
+                    -Details $RbacDetail `
+                    -Recommendation 'Use built-in AVD roles (Desktop Virtualization Contributor, Desktop Virtualization User, etc.); remove Owner/Contributor/User Access Administrator assignments at host pool and app group scopes.' `
+                    -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/rbac' `
+                    -Evidence @{ HostPool = $HP.Name; AvdRoles = $AvdRoleCount; BroadRoles = @($BroadAtScope | ForEach-Object { $_.RoleDefinitionName }) }))
 
+                # ─── CHECK: App Group Assignment via Entra Groups (APP-004) — reuses $Assignments ───
+                $UserAssignments = @($Assignments | Where-Object { $_.RoleDefinitionName -eq 'Desktop Virtualization User' })
+                $GroupAssigned   = @($UserAssignments | Where-Object { $_.ObjectType -eq 'Group' })
+                $DirectUserAssigned = @($UserAssignments | Where-Object { $_.ObjectType -eq 'User' })
+                if ($UserAssignments.Count -gt 0) {
+                    if ($DirectUserAssigned.Count -gt 0) {
+                        $GrpStatus = 'Warning'
+                        $GrpDetail = "Desktop Virtualization User: $($GroupAssigned.Count) group, $($DirectUserAssigned.Count) direct-user assignment(s) - assign via Entra groups"
+                    } else {
+                        $GrpStatus = 'Pass'
+                        $GrpDetail = "Desktop Virtualization User assigned via $($GroupAssigned.Count) Entra group(s), no direct-user assignments"
+                    }
+                    [void]$AllChecks.Add((New-CheckResult -Id "APP-GRPASSIGN-$($HP.Name)" `
+                        -Category 'Application Delivery' -Name 'App Group Assignment via Entra Groups' `
+                        -Description 'Application group access should be granted via Entra ID security groups rather than direct user assignment' `
+                        -Status $GrpStatus -Severity 'Medium' `
+                        -Details "HostPool $($HP.Name): $GrpDetail" `
+                        -Recommendation 'Assign the Desktop Virtualization User role to Entra ID security groups (self-service via access packages, simpler auditing) rather than to individual users.' `
+                        -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/manage-app-groups' `
+                        -Evidence @{ HostPool = $HP.Name; GroupAssignments = $GroupAssigned.Count; UserAssignments = $DirectUserAssigned.Count }))
+                }
+            } catch {
                 [void]$AllChecks.Add((New-CheckResult -Id "SEC-RBAC-$($HP.Name)" `
                     -Category 'Security & IAM' -Name 'AVD RBAC Roles Used' `
                     -Description 'Use built-in AVD roles for least-privilege access' `
-                    -Status $(if ($HasCustomRoles) { 'Pass' } else { 'Warning' }) `
-                    -Severity 'Medium' `
-                    -Details "TotalAssignments: $($Assignments.Count), AVDRoles: $HasCustomRoles" `
-                    -Recommendation 'Use built-in AVD roles (Desktop Virtualization Contributor, User, etc.) instead of broad roles like Contributor.' `
+                    -Status 'Error' -Severity 'Medium' `
+                    -Details "Could not enumerate role assignments (authorization?): $($_.Exception.Message)" `
                     -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/rbac'))
-            } catch { }
+            }
         }
         $RbacChecked = @($AllChecks | Where-Object { $_.Id -like 'SEC-RBAC-*' }).Count
         $RbacWithAvdRoles = @($AllChecks | Where-Object { $_.Id -like 'SEC-RBAC-*' -and $_.Status -eq 'Pass' }).Count
@@ -1646,7 +2214,14 @@ foreach ($SubId in $SubscriptionId) {
                     -Severity 'Medium' `
                     -Details "DiagSettings: $($WSDiag.Count)" `
                     -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/diagnostics-log-analytics'))
-            } catch { }
+            } catch {
+                [void]$AllChecks.Add((New-CheckResult -Id "MON-WSDIAG-$($WS.Name)" `
+                    -Category 'Monitoring' -Name 'Workspace Diagnostics' `
+                    -Description 'AVD workspaces should have diagnostic settings enabled' `
+                    -Status 'Error' -Severity 'Medium' `
+                    -Details "Could not read diagnostic settings: $($_.Exception.Message)" `
+                    -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/diagnostics-log-analytics'))
+            }
         }
         # Check app groups
         foreach ($AG in $AppGroups) {
@@ -1659,7 +2234,14 @@ foreach ($SubId in $SubscriptionId) {
                     -Severity 'Medium' `
                     -Details "DiagSettings: $($AGDiag.Count)" `
                     -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/diagnostics-log-analytics'))
-            } catch { }
+            } catch {
+                [void]$AllChecks.Add((New-CheckResult -Id "MON-AGDIAG-$($AG.Name)" `
+                    -Category 'Monitoring' -Name 'App Group Diagnostics' `
+                    -Description 'App groups should have diagnostic settings enabled' `
+                    -Status 'Error' -Severity 'Medium' `
+                    -Details "Could not read diagnostic settings: $($_.Exception.Message)" `
+                    -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/diagnostics-log-analytics'))
+            }
         }
         $WsDiagCount   = @($AllChecks | Where-Object { $_.Id -like 'MON-WSDIAG-*' }).Count
         $AgDiagCount   = @($AllChecks | Where-Object { $_.Id -like 'MON-AGDIAG-*' }).Count
@@ -1672,9 +2254,9 @@ foreach ($SubId in $SubscriptionId) {
 
     # ─── DEFENDER FOR CLOUD ───────────────────────────────────────────────
     try {
-        $DefenderVMs = Get-AzSecurityPricing -Name 'VirtualMachines' -ErrorAction SilentlyContinue
+        $DefenderVMs = Get-AzSecurityPricing -Name 'VirtualMachines' -ErrorAction Stop
         if ($DefenderVMs) {
-            [void]$AllChecks.Add((New-CheckResult -Id "MON-DEFENDER" `
+            [void]$AllChecks.Add((New-CheckResult -Id "MON-DEFENDER-$SubShort" `
                 -Category 'Monitoring' -Name 'Defender for Cloud Enabled' `
                 -Description 'Microsoft Defender for Cloud should be enabled for VMs' `
                 -Status $(if ($DefenderVMs.PricingTier -eq 'Standard') { 'Pass' } else { 'Warning' }) `
@@ -1682,7 +2264,14 @@ foreach ($SubId in $SubscriptionId) {
                 -Details "PricingTier: $($DefenderVMs.PricingTier)" `
                 -Reference 'https://learn.microsoft.com/en-us/azure/defender-for-cloud/enable-enhanced-security'))
         }
-    } catch { }
+    } catch {
+        [void]$AllChecks.Add((New-CheckResult -Id "MON-DEFENDER-$SubShort" `
+            -Category 'Monitoring' -Name 'Defender for Cloud Enabled' `
+            -Description 'Microsoft Defender for Cloud should be enabled for VMs' `
+            -Status 'Error' -Severity 'High' `
+            -Details "Could not read Defender for Cloud pricing (Az.Security missing or access denied): $($_.Exception.Message)" `
+            -Reference 'https://learn.microsoft.com/en-us/azure/defender-for-cloud/enable-enhanced-security'))
+    }
 
     # ─── STORAGE ──────────────────────────────────────────────────────────
     Write-Status "Storage (FSLogix)" -Level 'SECTION'
@@ -1690,7 +2279,26 @@ foreach ($SubId in $SubscriptionId) {
         $StorageAccounts = @(Get-AzStorageAccount -ErrorAction Stop)
         # Look for storage accounts that might be used for FSLogix (heuristic: has 'profiles' or 'fslogix' in name or file shares)
         foreach ($SA in $StorageAccounts) {
-            $IsFSLogix = $SA.StorageAccountName -match 'fslogix|profile|avd'
+            # ─── FSLogix candidate classification (A-7): evidence-based, not name-substring only ───
+            $FSLogixReasons = @()
+            # Name signal: 'fslogix'/'profile' substrings, or 'avd' as a word-ish token (not e.g. 'mavdata').
+            if ($SA.StorageAccountName -match 'fslogix|profile') { $FSLogixReasons += "name matches 'fslogix|profile'" }
+            elseif ($SA.StorageAccountName -match '(^|[-_])avd')  { $FSLogixReasons += "name contains 'avd' token" }
+            # Identity-based auth signal: AD DS or Entra Kerberos configured for Azure Files.
+            $DirSvc = $null
+            if ($SA.AzureFilesIdentityBasedAuth -and $SA.AzureFilesIdentityBasedAuth.DirectoryServiceOptions) {
+                $DirSvc = "$($SA.AzureFilesIdentityBasedAuth.DirectoryServiceOptions)"
+                if ($DirSvc -in @('AD','AADKERB','AADDS')) { $FSLogixReasons += "identity-based file auth: $DirSvc" }
+            }
+            # File share name signal: shares matching profile/fslogix/odfc.
+            try {
+                $Shares = @(Get-AzRmStorageShare -ResourceGroupName $SA.ResourceGroupName -StorageAccountName $SA.StorageAccountName -ErrorAction Stop)
+                $ProfileShares = @($Shares | Where-Object { $_.Name -match 'profile|fslogix|odfc' })
+                if ($ProfileShares.Count -gt 0) { $FSLogixReasons += "share name(s): $(@($ProfileShares | ForEach-Object { $_.Name }) -join ',')" }
+            } catch {
+                Write-Status "    Could not enumerate file shares on $($SA.StorageAccountName): $($_.Exception.Message)" -Level 'WARN'
+            }
+            $IsFSLogix = $FSLogixReasons.Count -gt 0
             # Get-AzStorageAccount doesn't reliably populate PrivateEndpointConnections — use ARM API
             $SAResource = Get-AzResource -ResourceId $SA.Id -ErrorAction SilentlyContinue
             $HasPrivateEndpoint = $SAResource -and $SAResource.Properties.privateEndpointConnections -and
@@ -1708,21 +2316,45 @@ foreach ($SubId in $SubscriptionId) {
                 HttpsOnly         = $SA.EnableHttpsTrafficOnly
                 PrivateEndpoints  = $HasPrivateEndpoint
                 LikelyFSLogix     = $IsFSLogix
+                FSLogixEvidence   = $FSLogixReasons
                 Replication       = $SA.Sku.Name  # LRS, ZRS, GRS, etc.
                 LargeFileShares   = $SA.LargeFileSharesState
+                Tags              = $SA.Tags
             }
             $Discovery.Inventory.StorageAccounts += $SAObj
 
             if ($IsFSLogix) {
+                # Classification evidence is included so users can spot misclassification (A-7).
+                $FSLogixWhy = "Classified as FSLogix candidate because: $($FSLogixReasons -join '; ')"
+
+                # ─── CHECK: Entra Kerberos for Profile Storage (IAM-012) — evidence from DirectoryServiceOptions ───
+                $KerbAuth = if ($DirSvc) { "$DirSvc" } else { 'None' }
+                if ($KerbAuth -eq 'AADKERB') {
+                    $KerbStat = 'Pass'; $KerbDet = "DirectoryServiceOptions: AADKERB (Entra Kerberos - cloud-native identity-based SMB auth)"
+                } elseif ($KerbAuth -in @('AD','AADDS')) {
+                    $KerbStat = 'Pass'; $KerbDet = "DirectoryServiceOptions: $KerbAuth (identity-based SMB auth configured; Entra Kerberos (AADKERB) is preferred for cloud-native estates)"
+                } else {
+                    $KerbStat = 'Warning'; $KerbDet = "DirectoryServiceOptions: None (identity-based SMB auth not configured)"
+                }
+                [void]$AllChecks.Add((New-CheckResult -Id "IAM-KERB-$($SA.StorageAccountName)" `
+                    -Category 'Identity & Access' -Name 'Entra Kerberos for Profile Storage' `
+                    -Description 'FSLogix profile storage should use identity-based SMB authentication (Entra Kerberos preferred for cloud-native, no on-prem AD DS required)' `
+                    -Status $KerbStat -Severity 'Medium' `
+                    -Details "$KerbDet. $FSLogixWhy" `
+                    -Recommendation 'Enable Entra Kerberos (AADKERB) on the storage account for cloud-native identity-based access to FSLogix profile shares.' `
+                    -Reference 'https://learn.microsoft.com/en-us/azure/storage/files/storage-files-identity-auth-hybrid-identities-enable' `
+                    -Evidence @{ StorageAccount = $SA.StorageAccountName; DirectoryServiceOptions = $KerbAuth }))
+
                 # CHECK: Private endpoint on FSLogix storage
                 [void]$AllChecks.Add((New-CheckResult -Id "PROF-PE-$($SA.StorageAccountName)" `
                     -Category 'FSLogix & Profiles' -Name 'Private Endpoint on Profile Storage' `
                     -Description 'FSLogix storage should use private endpoints for security' `
                     -Status $(if ($HasPrivateEndpoint) { 'Pass' } else { 'Warning' }) `
                     -Severity 'High' `
-                    -Details "PrivateEndpoint: $HasPrivateEndpoint" `
+                    -Details "PrivateEndpoint: $HasPrivateEndpoint. $FSLogixWhy" `
                     -Recommendation 'Configure private endpoints for FSLogix profile storage to keep traffic on the Microsoft network.' `
-                    -Reference 'https://learn.microsoft.com/en-us/azure/storage/files/storage-files-networking-overview'))
+                    -Reference 'https://learn.microsoft.com/en-us/azure/storage/files/storage-files-networking-overview' `
+                    -Evidence @{ StorageAccount = $SA.StorageAccountName; ClassificationEvidence = $FSLogixReasons }))
 
                 # CHECK: HTTPS only
                 [void]$AllChecks.Add((New-CheckResult -Id "PROF-HTTPS-$($SA.StorageAccountName)" `
@@ -1730,13 +2362,13 @@ foreach ($SubId in $SubscriptionId) {
                     -Description 'Storage account should enforce HTTPS-only traffic' `
                     -Status $(if ($SA.EnableHttpsTrafficOnly) { 'Pass' } else { 'Fail' }) `
                     -Severity 'High' `
-                    -Details "HttpsOnly: $($SA.EnableHttpsTrafficOnly)"))
+                    -Details "HttpsOnly: $($SA.EnableHttpsTrafficOnly). $FSLogixWhy"))
 
-                # CHECK: TLS version
+                # CHECK: TLS version - explicit membership test, not lexical compare (C-9)
                 [void]$AllChecks.Add((New-CheckResult -Id "PROF-TLS-$($SA.StorageAccountName)" `
                     -Category 'FSLogix & Profiles' -Name 'Minimum TLS 1.2' `
                     -Description 'Storage account should enforce TLS 1.2 minimum' `
-                    -Status $(if ($SA.MinimumTlsVersion -ge 'TLS1_2') { 'Pass' } else { 'Fail' }) `
+                    -Status $(if ("$($SA.MinimumTlsVersion)" -in @('TLS1_2','TLS1_3')) { 'Pass' } else { 'Fail' }) `
                     -Severity 'High' `
                     -Details "MinTLS: $($SA.MinimumTlsVersion)"))
 
@@ -1784,54 +2416,68 @@ foreach ($SubId in $SubscriptionId) {
                         -Details "SoftDelete: $SDEnabled" `
                         -Reference 'https://learn.microsoft.com/en-us/azure/storage/files/storage-files-enable-soft-delete'))
 
-                    # CHECK: SMB security settings (while we have file service props)
-                    if ($FSP -and $FSP.ProtocolSetting -and $FSP.ProtocolSetting.Smb) {
-                        $Smb = $FSP.ProtocolSetting.Smb
-                        # SMB versions
-                        $Versions = $Smb.Versions
-                        $HasSMB21 = $Versions -match 'SMB2\.1'
-                        [void]$AllChecks.Add((New-CheckResult -Id "PROF-SMBVER-$($SA.StorageAccountName)" `
-                            -Category 'FSLogix & Profiles' -Name 'SMB Minimum Version' `
-                            -Description 'SMB 2.1 should be disabled - require SMB 3.0+' `
-                            -Status $(if ($HasSMB21) { 'Warning' } else { 'Pass' }) `
-                            -Severity 'High' `
-                            -Details "Versions: $Versions" `
-                            -Reference 'https://learn.microsoft.com/en-us/azure/storage/files/files-smb-protocol#smb-security-settings'))
+                    # CHECK: SMB security settings (A-6). Null/unset settings are NOT compliant - Azure
+                    # Files defaults still permit SMB 2.1 / RC4-HMAC / NTLMv2. Pass only when the
+                    # property exists AND excludes the weak value. When ProtocolSetting.Smb is entirely
+                    # null, still emit the same Warnings (do not skip).
+                    $Smb = if ($FSP -and $FSP.ProtocolSetting) { $FSP.ProtocolSetting.Smb } else { $null }
+                    $SmbUnsetDetail = 'SMB security not explicitly hardened; Azure Files defaults permit SMB 2.1 / RC4-HMAC / NTLMv2 - configure explicit versions/encryption/auth'
 
-                        # Kerberos encryption
-                        $KerbEnc = $Smb.KerberosTicketEncryption
-                        $HasRC4 = $KerbEnc -match 'RC4'
-                        [void]$AllChecks.Add((New-CheckResult -Id "PROF-KERB-$($SA.StorageAccountName)" `
-                            -Category 'FSLogix & Profiles' -Name 'Kerberos Ticket Encryption' `
-                            -Description 'RC4-HMAC should be disabled - use AES-256 only' `
-                            -Status $(if ($HasRC4) { 'Warning' } else { 'Pass' }) `
-                            -Severity 'Medium' `
-                            -Details "KerberosEncryption: $KerbEnc" `
-                            -Reference 'https://learn.microsoft.com/en-us/azure/storage/files/files-smb-protocol#smb-security-settings'))
+                    # SMB versions (PROF-020)
+                    $Versions = if ($Smb) { $Smb.Versions } else { $null }
+                    $SmbVerStatus = if ([string]::IsNullOrEmpty("$Versions")) { 'Warning' }
+                                    elseif ("$Versions" -match 'SMB2\.1') { 'Warning' } else { 'Pass' }
+                    [void]$AllChecks.Add((New-CheckResult -Id "PROF-SMBVER-$($SA.StorageAccountName)" `
+                        -Category 'FSLogix & Profiles' -Name 'SMB Minimum Version' `
+                        -Description 'SMB 2.1 should be disabled - require SMB 3.0+' `
+                        -Status $SmbVerStatus -Severity 'High' `
+                        -Details "$(if ([string]::IsNullOrEmpty("$Versions")) { "Versions: (not set) - $SmbUnsetDetail" } else { "Versions: $Versions" })" `
+                        -Recommendation 'Explicitly restrict SMB versions to SMB3.0/SMB3.1.1 in the file service protocol settings.' `
+                        -Reference 'https://learn.microsoft.com/en-us/azure/storage/files/files-smb-protocol#smb-security-settings'))
 
-                        # Auth methods
-                        $AuthMethods = $Smb.AuthenticationMethods
-                        $HasNTLM = $AuthMethods -match 'NTLMv2'
-                        [void]$AllChecks.Add((New-CheckResult -Id "PROF-AUTH-$($SA.StorageAccountName)" `
-                            -Category 'FSLogix & Profiles' -Name 'Authentication Methods' `
-                            -Description 'NTLMv2 should be disabled - use Kerberos only' `
-                            -Status $(if ($HasNTLM) { 'Warning' } else { 'Pass' }) `
-                            -Severity 'Medium' `
-                            -Details "AuthMethods: $AuthMethods" `
-                            -Reference 'https://learn.microsoft.com/en-us/azure/storage/files/files-smb-protocol#smb-security-settings'))
+                    # Kerberos encryption (PROF-022)
+                    $KerbEnc = if ($Smb) { $Smb.KerberosTicketEncryption } else { $null }
+                    $KerbStatus = if ([string]::IsNullOrEmpty("$KerbEnc")) { 'Warning' }
+                                  elseif ("$KerbEnc" -match 'RC4') { 'Warning' } else { 'Pass' }
+                    [void]$AllChecks.Add((New-CheckResult -Id "PROF-KERB-$($SA.StorageAccountName)" `
+                        -Category 'FSLogix & Profiles' -Name 'Kerberos Ticket Encryption' `
+                        -Description 'RC4-HMAC should be disabled - use AES-256 only' `
+                        -Status $KerbStatus -Severity 'Medium' `
+                        -Details "$(if ([string]::IsNullOrEmpty("$KerbEnc")) { "KerberosEncryption: (not set) - $SmbUnsetDetail" } else { "KerberosEncryption: $KerbEnc" })" `
+                        -Recommendation 'Explicitly set Kerberos ticket encryption to AES-256 (RC4-HMAC disabled).' `
+                        -Reference 'https://learn.microsoft.com/en-us/azure/storage/files/files-smb-protocol#smb-security-settings'))
 
-                        # Channel encryption
-                        $ChanEnc = $Smb.ChannelEncryption
-                        $HasAES256 = $ChanEnc -match 'AES-256'
-                        [void]$AllChecks.Add((New-CheckResult -Id "PROF-SMBENC-$($SA.StorageAccountName)" `
-                            -Category 'FSLogix & Profiles' -Name 'SMB Channel Encryption' `
-                            -Description 'AES-256-GCM preferred for SMB channel encryption' `
-                            -Status $(if ($HasAES256) { 'Pass' } else { 'Warning' }) `
-                            -Severity 'Medium' `
-                            -Details "ChannelEncryption: $ChanEnc" `
-                            -Reference 'https://learn.microsoft.com/en-us/azure/storage/files/files-smb-protocol#smb-security-settings'))
-                    }
-                } catch { }
+                    # Auth methods (PROF-023)
+                    $AuthMethods = if ($Smb) { $Smb.AuthenticationMethods } else { $null }
+                    $AuthStatus = if ([string]::IsNullOrEmpty("$AuthMethods")) { 'Warning' }
+                                  elseif ("$AuthMethods" -match 'NTLMv2') { 'Warning' } else { 'Pass' }
+                    [void]$AllChecks.Add((New-CheckResult -Id "PROF-AUTH-$($SA.StorageAccountName)" `
+                        -Category 'FSLogix & Profiles' -Name 'Authentication Methods' `
+                        -Description 'NTLMv2 should be disabled - use Kerberos only' `
+                        -Status $AuthStatus -Severity 'Medium' `
+                        -Details "$(if ([string]::IsNullOrEmpty("$AuthMethods")) { "AuthMethods: (not set) - $SmbUnsetDetail" } else { "AuthMethods: $AuthMethods" })" `
+                        -Recommendation 'Explicitly restrict authentication methods to Kerberos (NTLMv2 disabled).' `
+                        -Reference 'https://learn.microsoft.com/en-us/azure/storage/files/files-smb-protocol#smb-security-settings'))
+
+                    # Channel encryption
+                    $ChanEnc = if ($Smb) { $Smb.ChannelEncryption } else { $null }
+                    $ChanStatus = if ([string]::IsNullOrEmpty("$ChanEnc")) { 'Warning' }
+                                  elseif ("$ChanEnc" -match 'AES-256') { 'Pass' } else { 'Warning' }
+                    [void]$AllChecks.Add((New-CheckResult -Id "PROF-SMBENC-$($SA.StorageAccountName)" `
+                        -Category 'FSLogix & Profiles' -Name 'SMB Channel Encryption' `
+                        -Description 'AES-256-GCM preferred for SMB channel encryption' `
+                        -Status $ChanStatus -Severity 'Medium' `
+                        -Details "$(if ([string]::IsNullOrEmpty("$ChanEnc")) { "ChannelEncryption: (not set) - $SmbUnsetDetail" } else { "ChannelEncryption: $ChanEnc" })" `
+                        -Recommendation 'Explicitly configure SMB channel encryption to include AES-256-GCM.' `
+                        -Reference 'https://learn.microsoft.com/en-us/azure/storage/files/files-smb-protocol#smb-security-settings'))
+                } catch {
+                    [void]$AllChecks.Add((New-CheckResult -Id "PROF-SD-$($SA.StorageAccountName)" `
+                        -Category 'FSLogix & Profiles' -Name 'Soft Delete Enabled' `
+                        -Description 'File share soft delete protects against accidental deletion' `
+                        -Status 'Error' -Severity 'Medium' `
+                        -Details "Could not read file service properties: $($_.Exception.Message)" `
+                        -Reference 'https://learn.microsoft.com/en-us/azure/storage/files/storage-files-enable-soft-delete'))
+                }
             }
         }
         $FSLogixAccts = @($Discovery.Inventory.StorageAccounts | Where-Object { $_.LikelyFSLogix })
@@ -1843,17 +2489,33 @@ foreach ($SubId in $SubscriptionId) {
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
-# CROSS-SUBSCRIPTION DISCOVERY (runs after all subscription loops)
+# PER-SUBSCRIPTION SWEEP (A-1)
+# Orphaned disks/NICs, Key Vaults, policy, alerts, quota, capacity reservations,
+# budgets, RI, Network Watcher and Private DNS previously ran only against the
+# LAST subscription's context. This sweep re-runs them per subscription and
+# suffixes singleton check IDs with the sub short-id so results stay unique.
 # ═══════════════════════════════════════════════════════════════════════════
 
-# Collect unique RG names from discovered AVD resources for scoped queries
-$AvdResourceGroups = @(
-    @($Discovery.Inventory.HostPools | ForEach-Object { $_.ResourceGroup }) +
-    @($Discovery.Inventory.SessionHosts | ForEach-Object { $_.ResourceGroup }) +
-    @($Discovery.Inventory.StorageAccounts | ForEach-Object { $_.ResourceGroup })
-) | Sort-Object -Unique
+foreach ($SubEntry in $Discovery.Subscriptions) {
+    $SubId = $SubEntry.Id
+    $SubShort = ($SubId -split '-')[0]
+    Write-Status "Subscription sweep: $($SubEntry.Name)" -Level 'SECTION'
+    try {
+        Set-AzContext -SubscriptionId $SubId -ErrorAction Stop -WarningAction SilentlyContinue | Out-Null
+    } catch {
+        Write-Status "  Could not switch context to $SubId : $($_.Exception.Message)" -Level 'ERROR'
+        $Discovery.Errors += "Sweep failed for subscription $SubId : $($_.Exception.Message)"
+        continue
+    }
 
-$AvdRegions = @($Discovery.Inventory.SessionHosts | ForEach-Object { $_.Location } | Sort-Object -Unique)
+    # Scope RG/region lists to resources discovered in THIS subscription
+    $SubPattern = "(?i)/subscriptions/$SubId/"
+    $AvdResourceGroups = @(
+        @($Discovery.Inventory.HostPools | Where-Object { $_.SubscriptionId -eq $SubId } | ForEach-Object { $_.ResourceGroup }) +
+        @($Discovery.Inventory.SessionHosts | Where-Object { "$($_.ResourceId)" -match $SubPattern } | ForEach-Object { $_.ResourceGroup }) +
+        @($Discovery.Inventory.StorageAccounts | Where-Object { "$($_.Id)" -match $SubPattern } | ForEach-Object { $_.ResourceGroup })
+    ) | Sort-Object -Unique
+    $AvdRegions = @($Discovery.Inventory.SessionHosts | Where-Object { "$($_.ResourceId)" -match $SubPattern } | ForEach-Object { $_.Location } | Sort-Object -Unique)
 
 # ─── ORPHANED DISKS (GOV-011) ──────────────────────────────────────────
 Write-Status "Orphaned Resources" -Level 'SECTION'
@@ -1870,7 +2532,7 @@ try {
             Location      = $Disk.Location
         }
     }
-    [void]$AllChecks.Add((New-CheckResult -Id "GOV-ORPHDISK" `
+    [void]$AllChecks.Add((New-CheckResult -Id "GOV-ORPHDISK-$SubShort" `
         -Category 'Governance & Cost' -Name 'Orphaned Disks Detected' `
         -Description 'No unattached managed disks should exist in AVD resource groups' `
         -Status $(if ($OrphanedDisks.Count -eq 0) { 'Pass' } else { 'Warning' }) `
@@ -1897,7 +2559,7 @@ try {
             HasPublicIP   = ($NIC.IpConfigurations | Where-Object { $_.PublicIpAddress }).Count -gt 0
         }
     }
-    [void]$AllChecks.Add((New-CheckResult -Id "GOV-ORPHNIC" `
+    [void]$AllChecks.Add((New-CheckResult -Id "GOV-ORPHNIC-$SubShort" `
         -Category 'Governance & Cost' -Name 'Orphaned NICs Detected' `
         -Description 'No unattached network interfaces should exist in AVD resource groups' `
         -Status $(if ($OrphanedNICs.Count -eq 0) { 'Pass' } else { 'Warning' }) `
@@ -1937,7 +2599,7 @@ try {
             HasPrivateEndpoint = $KVHasPE
         }
     }
-    [void]$AllChecks.Add((New-CheckResult -Id "SEC-KEYVAULT" `
+    [void]$AllChecks.Add((New-CheckResult -Id "SEC-KEYVAULT-$SubShort" `
         -Category 'Security & IAM' -Name 'Key Vault for Secrets' `
         -Description 'Azure Key Vault should exist in AVD resource groups for certificate and secret management' `
         -Status $(if ($KeyVaults.Count -gt 0) { 'Pass' } else { 'Warning' }) `
@@ -1949,7 +2611,7 @@ try {
 
     # ─── CHECK: Key Vault Private Endpoint (SEC-023) ───
     if ($KeyVaults.Count -gt 0) {
-        [void]$AllChecks.Add((New-CheckResult -Id "SEC-KVPE" `
+        [void]$AllChecks.Add((New-CheckResult -Id "SEC-KVPE-$SubShort" `
             -Category 'Security' -Name 'Key Vault Private Endpoint' `
             -Description 'Key Vaults should use private endpoints to prevent secret exposure over public networks' `
             -Status $(if ($KVsWithoutPE -eq 0) { 'Pass' } else { 'Warning' }) `
@@ -1979,7 +2641,7 @@ try {
         }
     }
     Write-Status "  Network Watchers in AVD regions: $($Discovery.Inventory.NetworkWatchers.Count), Missing: $($MissingRegions.Count)" -Level $(if ($MissingRegions.Count -eq 0) { 'SUCCESS' } else { 'WARN' })
-    [void]$AllChecks.Add((New-CheckResult -Id "NET-NETWATCHER" `
+    [void]$AllChecks.Add((New-CheckResult -Id "NET-NETWATCHER-$SubShort" `
         -Category 'Networking' -Name 'Network Watcher Enabled' `
         -Description 'Network Watcher should be enabled in each region where AVD session hosts are deployed' `
         -Status $(if ($MissingRegions.Count -eq 0) { 'Pass' } else { 'Warning' }) `
@@ -2017,7 +2679,7 @@ try {
         }
     }
     Write-Status "  privatelink.file.core.windows.net: $(if ($FileZone) { 'Found' } else { 'Not found' }), Linked to AVD VNet: $LinkedToAvdVNet" -Level $(if ($LinkedToAvdVNet) { 'SUCCESS' } else { 'WARN' })
-    [void]$AllChecks.Add((New-CheckResult -Id "NET-PRIVDNS" `
+    [void]$AllChecks.Add((New-CheckResult -Id "NET-PRIVDNS-$SubShort" `
         -Category 'Networking' -Name 'Private DNS Zone Linked' `
         -Description 'Private DNS zone (privatelink.file.core.windows.net) should exist and be linked to AVD VNets' `
         -Status $(if ($LinkedToAvdVNet) { 'Pass' } elseif ($FileZone) { 'Warning' } else { 'Fail' }) `
@@ -2036,7 +2698,7 @@ Write-Status "Azure Policy" -Level 'SECTION'
 try {
     $PolicyAssignments = @()
     foreach ($RG in $AvdResourceGroups) {
-        $Scope = "/subscriptions/$($Discovery.Subscriptions[-1])/resourceGroups/$RG"
+        $Scope = "/subscriptions/$SubId/resourceGroups/$RG"
         $PolicyAssignments += @(Get-AzPolicyAssignment -Scope $Scope -ErrorAction SilentlyContinue -WarningAction SilentlyContinue)
     }
     # Deduplicate by assignment ID
@@ -2050,7 +2712,7 @@ try {
             PolicyDefId = $PA.Properties.PolicyDefinitionId
         }
     }
-    [void]$AllChecks.Add((New-CheckResult -Id "GOV-POLICY" `
+    [void]$AllChecks.Add((New-CheckResult -Id "GOV-POLICY-$SubShort" `
         -Category 'Governance & Cost' -Name 'Azure Policy Assignments' `
         -Description 'At least one Azure Policy assignment should exist on AVD resource groups for governance' `
         -Status $(if ($PolicyAssignments.Count -gt 0) { 'Pass' } else { 'Warning' }) `
@@ -2068,28 +2730,47 @@ try {
 Write-Status "Alert Rules" -Level 'SECTION'
 try {
     $AlertRules = @()
+    $LogAlertRules = @()
     foreach ($RG in $AvdResourceGroups) {
         $AlertRules += @(Get-AzMetricAlertRuleV2 -ResourceGroupName $RG -ErrorAction SilentlyContinue -WarningAction SilentlyContinue)
+        # Also count scheduled-query (log) alerts - MON-015 says "metric or log" (C-6).
+        try {
+            $LogAlertRules += @(Get-AzScheduledQueryRule -ResourceGroupName $RG -ErrorAction SilentlyContinue -WarningAction SilentlyContinue)
+        } catch {
+            Write-Status "    Could not enumerate log alert rules in RG $RG : $($_.Exception.Message)" -Level 'WARN'
+        }
     }
-    Write-Status "  Metric alert rules in AVD RGs: $($AlertRules.Count)" -Level $(if ($AlertRules.Count -gt 0) { 'SUCCESS' } else { 'WARN' })
+    $TotalAlertRules = $AlertRules.Count + $LogAlertRules.Count
+    Write-Status "  Alert rules in AVD RGs: $($AlertRules.Count) metric, $($LogAlertRules.Count) log" -Level $(if ($TotalAlertRules -gt 0) { 'SUCCESS' } else { 'WARN' })
     foreach ($AR in $AlertRules) {
         $Discovery.Inventory.AlertRules += [PSCustomObject]@{
             Name           = $AR.Name
+            Type           = 'Metric'
             ResourceGroup  = ($AR.Id -split '/')[4]
             Severity       = $AR.Severity
             Enabled        = $AR.Enabled
             TargetResource = ($AR.Scopes | Select-Object -First 1)
         }
     }
-    [void]$AllChecks.Add((New-CheckResult -Id "MON-ALERTS" `
+    foreach ($AR in $LogAlertRules) {
+        $Discovery.Inventory.AlertRules += [PSCustomObject]@{
+            Name           = $AR.Name
+            Type           = 'Log'
+            ResourceGroup  = ($AR.Id -split '/')[4]
+            Severity       = $AR.Severity
+            Enabled        = $AR.Enabled
+            TargetResource = ($AR.Scope | Select-Object -First 1)
+        }
+    }
+    [void]$AllChecks.Add((New-CheckResult -Id "MON-ALERTS-$SubShort" `
         -Category 'Monitoring' -Name 'Alert Rules Configured' `
         -Description 'Metric or log alert rules should exist targeting AVD resources' `
-        -Status $(if ($AlertRules.Count -gt 0) { 'Pass' } else { 'Warning' }) `
+        -Status $(if ($TotalAlertRules -gt 0) { 'Pass' } else { 'Warning' }) `
         -Severity 'Medium' `
-        -Details "AlertRules: $($AlertRules.Count)$(if ($AlertRules.Count -gt 0) { " ($( ($AlertRules | ForEach-Object { $_.Name } | Select-Object -First 3) -join ', '))" })" `
-        -Recommendation 'Configure metric alerts for CPU, memory, disk, and AVD-specific health signals.' `
+        -Details "AlertRules: $TotalAlertRules ($($AlertRules.Count) metric, $($LogAlertRules.Count) log)$(if ($TotalAlertRules -gt 0) { " ($( (@($AlertRules) + @($LogAlertRules) | ForEach-Object { $_.Name } | Select-Object -First 3) -join ', '))" })" `
+        -Recommendation 'Configure metric alerts for CPU, memory, disk, and log alerts for AVD-specific health signals.' `
         -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/set-up-service-alerts' `
-        -Evidence @{ Count = $AlertRules.Count }))
+        -Evidence @{ MetricCount = $AlertRules.Count; LogCount = $LogAlertRules.Count }))
 } catch {
     Write-Status "  Alert rules error: $($_.Exception.Message)" -Level 'ERROR'
     $Discovery.Errors += "Alert rule discovery failed: $($_.Exception.Message)"
@@ -2121,7 +2802,7 @@ try {
     }
     $HighUsage = @($Discovery.Inventory.Quotas | Where-Object { $_.UsagePct -ge 80 })
     Write-Status "  Quota entries tracked: $($Discovery.Inventory.Quotas.Count), High usage (>80%): $($HighUsage.Count)" -Level $(if ($QuotaWarning) { 'WARN' } else { 'SUCCESS' })
-    [void]$AllChecks.Add((New-CheckResult -Id "GOV-QUOTA" `
+    [void]$AllChecks.Add((New-CheckResult -Id "GOV-QUOTA-$SubShort" `
         -Category 'Governance & Cost' -Name 'VM Quota Headroom' `
         -Description 'vCPU quota per region should have headroom for scaling' `
         -Status $(if ($HighUsage.Count -gt 0) { 'Warning' } else { 'Pass' }) `
@@ -2150,7 +2831,7 @@ try {
         }
     }
     Write-Status "  Capacity Reservation Groups: $($CRGs.Count)" -Level $(if ($CRGs.Count -gt 0) { 'SUCCESS' } else { 'WARN' })
-    [void]$AllChecks.Add((New-CheckResult -Id "GOV-CAPRESERV" `
+    [void]$AllChecks.Add((New-CheckResult -Id "GOV-CAPRESERV-$SubShort" `
         -Category 'Governance & Cost' -Name 'Capacity Reservation' `
         -Description 'Capacity Reservation Groups guarantee VM availability for critical workloads' `
         -Status $(if ($CRGs.Count -gt 0) { 'Pass' } else { 'Warning' }) `
@@ -2167,7 +2848,7 @@ try {
 Write-Status "Cost Budgets" -Level 'SECTION'
 try {
     # Use Invoke-AzRestMethod to check for budgets at subscription scope (avoids Az.Billing dependency)
-    $SubScope = "/subscriptions/$($Discovery.Subscriptions[-1])"
+    $SubScope = "/subscriptions/$SubId"
     $BudgetResponse = Invoke-AzRestMethod -Path "$SubScope/providers/Microsoft.Consumption/budgets?api-version=2023-05-01" -Method GET -ErrorAction SilentlyContinue
     $Budgets = @()
     if ($BudgetResponse -and $BudgetResponse.StatusCode -eq 200) {
@@ -2186,7 +2867,7 @@ try {
     }
     $HasAlertThresholds = @($Budgets | Where-Object { $_.properties.notifications }).Count -gt 0
     Write-Status "  Budgets: $($Budgets.Count), With alerts: $HasAlertThresholds" -Level $(if ($Budgets.Count -gt 0 -and $HasAlertThresholds) { 'SUCCESS' } else { 'WARN' })
-    [void]$AllChecks.Add((New-CheckResult -Id "GOV-BUDGET" `
+    [void]$AllChecks.Add((New-CheckResult -Id "GOV-BUDGET-$SubShort" `
         -Category 'Governance & Cost' -Name 'Budget Alerts Configured' `
         -Description 'Azure cost budgets with alert thresholds should be configured' `
         -Status $(if ($Budgets.Count -gt 0 -and $HasAlertThresholds) { 'Pass' } elseif ($Budgets.Count -gt 0) { 'Warning' } else { 'Fail' }) `
@@ -2224,7 +2905,7 @@ try {
     Write-Status "  VM Reservations/Orders: $($Reservations.Count)" -Level $(if ($Reservations.Count -gt 0) { 'SUCCESS' } else { 'WARN' })
     # Check if there are personal/always-on host pools that would benefit
     $AlwaysOnHPs = @($Discovery.Inventory.HostPools | Where-Object { $_.HostPoolType -eq 'Personal' })
-    [void]$AllChecks.Add((New-CheckResult -Id "GOV-RI" `
+    [void]$AllChecks.Add((New-CheckResult -Id "GOV-RI-$SubShort" `
         -Category 'Governance & Cost' -Name 'Reserved Instance Coverage' `
         -Description 'Evaluate RI or Savings Plans for always-on or personal host pools' `
         -Status $(if ($Reservations.Count -gt 0) { 'Pass' } elseif ($AlwaysOnHPs.Count -gt 0) { 'Warning' } else { 'Pass' }) `
@@ -2237,43 +2918,586 @@ try {
     Write-Status "  RI check error: $($_.Exception.Message)" -Level 'WARN'
 }
 
+# ─── RESOURCE LOCKS (GOV-007) ─────────────────────────────────────────
+Write-Status "Resource Locks" -Level 'SECTION'
+try {
+    $Locks = @()
+    foreach ($RG in $AvdResourceGroups) {
+        $Locks += @(Get-AzResourceLock -ResourceGroupName $RG -ErrorAction SilentlyContinue)
+    }
+    Write-Status "  Resource locks on AVD RGs: $($Locks.Count)" -Level $(if ($Locks.Count -gt 0) { 'SUCCESS' } else { 'WARN' })
+    [void]$AllChecks.Add((New-CheckResult -Id "GOV-LOCK-$SubShort" `
+        -Category 'Governance & Cost' -Name 'Resource Locks Applied' `
+        -Description 'CanNotDelete/ReadOnly locks should protect critical AVD resources from accidental deletion' `
+        -Status $(if ($Locks.Count -gt 0) { 'Pass' } else { 'Warning' }) `
+        -Severity 'Medium' `
+        -Details "Locks on AVD resource groups: $($Locks.Count)$(if ($Locks.Count -gt 0) { " ($( @($Locks | ForEach-Object { "$($_.Name) [$($_.Properties.level)]" } | Select-Object -First 5) -join ', '))" })" `
+        -Recommendation 'Apply CanNotDelete locks to host pools, workspaces, Log Analytics, and profile storage to prevent accidental deletion.' `
+        -Reference 'https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/lock-resources' `
+        -Evidence @{ LockCount = $Locks.Count }))
+} catch {
+    Write-Status "  Resource lock error: $($_.Exception.Message)" -Level 'WARN'
+}
+
+# ─── SERVICE HEALTH ALERTS (MON-003) ──────────────────────────────────
+Write-Status "Service Health Alerts" -Level 'SECTION'
+try {
+    $ActivityAlerts = @(Get-AzActivityLogAlert -ErrorAction SilentlyContinue)
+    $SvcHealthAlerts = @($ActivityAlerts | Where-Object {
+        $Cond = if ($_.Condition) { $_.Condition } elseif ($_.ConditionAllOf) { $_.ConditionAllOf } else { $_ }
+        ("$($Cond | ConvertTo-Json -Depth 6 -Compress)" -match 'ServiceHealth')
+    })
+    Write-Status "  Service Health alert rules: $($SvcHealthAlerts.Count) of $($ActivityAlerts.Count) activity log alerts" -Level $(if ($SvcHealthAlerts.Count -gt 0) { 'SUCCESS' } else { 'WARN' })
+    [void]$AllChecks.Add((New-CheckResult -Id "MON-SVCHEALTH-$SubShort" `
+        -Category 'Monitoring' -Name 'Service Health Alerts' `
+        -Description 'Azure Service Health alert rules should notify on AVD service issues, planned maintenance, and health advisories' `
+        -Status $(if ($SvcHealthAlerts.Count -gt 0) { 'Pass' } else { 'Warning' }) `
+        -Severity 'Medium' `
+        -Details "ServiceHealth activity-log alerts: $($SvcHealthAlerts.Count) (total activity-log alerts: $($ActivityAlerts.Count))" `
+        -Recommendation 'Create a Service Health alert (category=ServiceHealth) targeting the Azure Virtual Desktop service to receive maintenance and incident notifications.' `
+        -Reference 'https://learn.microsoft.com/en-us/azure/service-health/alerts-activity-log-service-notifications-portal' `
+        -Evidence @{ ServiceHealthAlerts = $SvcHealthAlerts.Count; TotalActivityAlerts = $ActivityAlerts.Count }))
+} catch {
+    Write-Status "  Service Health alert error: $($_.Exception.Message)" -Level 'WARN'
+}
+
+# ─── DEFENDER SECURE SCORE (SEC-005) ──────────────────────────────────
+Write-Status "Secure Score" -Level 'SECTION'
+try {
+    $SecureScores = @(Get-AzSecuritySecureScore -ErrorAction Stop)
+    $AscScore = $SecureScores | Where-Object { $_.Name -eq 'ascScore' } | Select-Object -First 1
+    if (-not $AscScore) { $AscScore = $SecureScores | Select-Object -First 1 }
+    $ScorePct = $null
+    if ($AscScore) {
+        if ($null -ne $AscScore.Percentage) { $ScorePct = [math]::Round([double]$AscScore.Percentage * 100, 0) }
+        elseif ($AscScore.Score -and $null -ne $AscScore.Score.Percentage) { $ScorePct = [math]::Round([double]$AscScore.Score.Percentage * 100, 0) }
+    }
+    if ($null -eq $ScorePct) {
+        [void]$AllChecks.Add((New-CheckResult -Id "SEC-SCORE-$SubShort" `
+            -Category 'Security' -Name 'Secure Score Review' `
+            -Description 'Microsoft Defender Secure Score for the AVD subscription should be reviewed and improved' `
+            -Status 'Error' -Severity 'Medium' `
+            -Details 'Secure Score returned no percentage (Defender for Cloud may not be enabled).' `
+            -Reference 'https://learn.microsoft.com/en-us/azure/defender-for-cloud/secure-score-security-controls'))
+    } else {
+        Write-Status "  Defender Secure Score: $ScorePct%" -Level $(if ($ScorePct -ge 70) { 'SUCCESS' } else { 'WARN' })
+        [void]$AllChecks.Add((New-CheckResult -Id "SEC-SCORE-$SubShort" `
+            -Category 'Security' -Name 'Secure Score Review' `
+            -Description 'Microsoft Defender Secure Score for the AVD subscription should be reviewed and improved' `
+            -Status $(if ($ScorePct -ge 70) { 'Pass' } else { 'Warning' }) `
+            -Severity 'Medium' `
+            -Details "Defender Secure Score: $ScorePct%" `
+            -Recommendation 'Review Defender for Cloud Secure Score recommendations for the AVD subscription and remediate high-impact controls.' `
+            -Reference 'https://learn.microsoft.com/en-us/azure/defender-for-cloud/secure-score-security-controls' `
+            -Evidence @{ SecureScorePercent = $ScorePct }))
+    }
+} catch {
+    [void]$AllChecks.Add((New-CheckResult -Id "SEC-SCORE-$SubShort" `
+        -Category 'Security' -Name 'Secure Score Review' `
+        -Description 'Microsoft Defender Secure Score for the AVD subscription should be reviewed and improved' `
+        -Status 'Error' -Severity 'Medium' `
+        -Details "Could not read Secure Score (Defender for Cloud required): $($_.Exception.Message)" `
+        -Reference 'https://learn.microsoft.com/en-us/azure/defender-for-cloud/secure-score-security-controls'))
+}
+
+# ─── JUST-IN-TIME VM ACCESS (SEC-021) ─────────────────────────────────
+Write-Status "Just-in-Time VM Access" -Level 'SECTION'
+try {
+    $SubShHostIds = @($Discovery.Inventory.SessionHosts | Where-Object { "$($_.ResourceId)" -match $SubPattern } | ForEach-Object { "$($_.ResourceId)".ToLower() })
+    # Exposure signal (reuse collected data): public IP on a session host, or an RDP-open NSG (NET-RDP Fail).
+    $SubHostsPublicIP = @($Discovery.Inventory.SessionHosts | Where-Object { "$($_.ResourceId)" -match $SubPattern -and $_.NicHasPublicIP }).Count -gt 0
+    $RdpOpen = @($AllChecks | Where-Object { $_.Id -like 'NET-RDP-*' -and $_.Status -eq 'Fail' }).Count -gt 0
+    $Exposed = $SubHostsPublicIP -or $RdpOpen
+    $JitPolicies = @(Get-AzJitNetworkAccessPolicy -ErrorAction SilentlyContinue)
+    $JitCoveredVMs = @()
+    foreach ($JP in $JitPolicies) {
+        foreach ($JVM in @($JP.VirtualMachines)) {
+            if ("$($JVM.Id)".ToLower() -in $SubShHostIds) { $JitCoveredVMs += "$($JVM.Id)" }
+        }
+    }
+    $JitCovers = $JitCoveredVMs.Count -gt 0
+    if ($JitCovers) {
+        $JitStatus = 'Pass'; $JitDetail = "JIT policies cover $($JitCoveredVMs.Count) session host VM(s)"
+    } elseif ($Exposed) {
+        $JitStatus = 'Warning'; $JitDetail = "No JIT policy covers session hosts, and hosts are exposed (PublicIP: $SubHostsPublicIP, RDP-open NSG: $RdpOpen)"
+    } else {
+        $JitStatus = 'N/A'; $JitDetail = 'No JIT policy covering session hosts, but no exposed hosts detected (no public IPs / no internet-open RDP)'
+    }
+    Write-Status "  JIT policies: $($JitPolicies.Count), covering session hosts: $JitCovers" -Level $(if ($JitCovers) { 'SUCCESS' } else { 'WARN' })
+    [void]$AllChecks.Add((New-CheckResult -Id "SEC-JIT-$SubShort" `
+        -Category 'Security' -Name 'Just-in-Time VM Access' `
+        -Description 'JIT VM access should keep RDP/SSH closed by default and open on-demand with time-limited, audited requests' `
+        -Status $JitStatus -Severity 'Medium' `
+        -Details $JitDetail `
+        -Recommendation 'Enable Defender for Cloud Just-in-Time VM access on session hosts so management ports are closed by default.' `
+        -Reference 'https://learn.microsoft.com/en-us/azure/defender-for-cloud/just-in-time-access-usage' `
+        -Evidence @{ JitPolicies = $JitPolicies.Count; CoveredVMs = $JitCoveredVMs.Count; Exposed = $Exposed }))
+} catch {
+    Write-Status "  JIT check error: $($_.Exception.Message)" -Level 'WARN'
+}
+
+# ─── SECURITY BASELINE / REGULATORY COMPLIANCE (SEC-013) ──────────────
+Write-Status "Security Baseline" -Level 'SECTION'
+try {
+    $ComplianceStandards = @(Get-AzSecurityRegulatoryComplianceStandard -ErrorAction Stop)
+    $Benchmark = @($ComplianceStandards | Where-Object { $_.Name -match 'Azure-Security-Benchmark|Microsoft-cloud-security-benchmark' }) | Select-Object -First 1
+    if ($Benchmark) {
+        $Passed = [double]($Benchmark.PassedControls | ForEach-Object { $_ })
+        $Failed = [double]($Benchmark.FailedControls | ForEach-Object { $_ })
+        $Skipped = [double]($Benchmark.SkippedControls | ForEach-Object { $_ })
+        $TotalCtl = $Passed + $Failed + $Skipped
+        $CompliancePct = if ($TotalCtl -gt 0) { [math]::Round($Passed / $TotalCtl * 100, 0) } else { -1 }
+        Write-Status "  $($Benchmark.Name): $CompliancePct% controls passing" -Level 'SUCCESS'
+        [void]$AllChecks.Add((New-CheckResult -Id "SEC-BASELINE-$SubShort" `
+            -Category 'Security' -Name 'Azure Security Baseline' `
+            -Description 'The AVD subscription should be evaluated against the Microsoft cloud security benchmark' `
+            -Status 'Pass' -Severity 'High' `
+            -Details "$($Benchmark.Name) present$(if ($CompliancePct -ge 0) { " - $CompliancePct% controls passing ($([int]$Passed) passed / $([int]$Failed) failed)" })" `
+            -Recommendation 'Review failed controls in the Microsoft cloud security benchmark for the AVD subscription and remediate.' `
+            -Reference 'https://learn.microsoft.com/en-us/security/benchmark/azure/baselines/azure-virtual-desktop-security-baseline' `
+            -Evidence @{ Standard = $Benchmark.Name; CompliancePercent = $CompliancePct }))
+    } else {
+        [void]$AllChecks.Add((New-CheckResult -Id "SEC-BASELINE-$SubShort" `
+            -Category 'Security' -Name 'Azure Security Baseline' `
+            -Description 'The AVD subscription should be evaluated against the Microsoft cloud security benchmark' `
+            -Status 'Warning' -Severity 'High' `
+            -Details 'Microsoft cloud security benchmark / Azure Security Benchmark not found in regulatory compliance standards.' `
+            -Recommendation 'Enable the Microsoft cloud security benchmark standard in Defender for Cloud regulatory compliance for the AVD subscription.' `
+            -Reference 'https://learn.microsoft.com/en-us/security/benchmark/azure/baselines/azure-virtual-desktop-security-baseline'))
+    }
+} catch {
+    [void]$AllChecks.Add((New-CheckResult -Id "SEC-BASELINE-$SubShort" `
+        -Category 'Security' -Name 'Azure Security Baseline' `
+        -Description 'The AVD subscription should be evaluated against the Microsoft cloud security benchmark' `
+        -Status 'Error' -Severity 'High' `
+        -Details "Could not read regulatory compliance standards (Defender for Cloud required): $($_.Exception.Message)" `
+        -Reference 'https://learn.microsoft.com/en-us/security/benchmark/azure/baselines/azure-virtual-desktop-security-baseline'))
+}
+
+# ─── APP ATTACH (CIM) PACKAGES AT SUBSCRIPTION SCOPE (APP-002) ────────
+Write-Status "App Attach Packages" -Level 'SECTION'
+try {
+    $AppAttachResp = Invoke-AzRestMethod -Path "/subscriptions/$SubId/providers/Microsoft.DesktopVirtualization/appAttachPackages?api-version=2024-04-03" -Method GET -ErrorAction SilentlyContinue
+    $AppAttachPkgs = @()
+    if ($AppAttachResp -and $AppAttachResp.StatusCode -eq 200) {
+        $AAData = $AppAttachResp.Content | ConvertFrom-Json -ErrorAction SilentlyContinue
+        if ($AAData -and $AAData.value) { $AppAttachPkgs = @($AAData.value) }
+    }
+    if ($AppAttachPkgs.Count -gt 0) {
+        Write-Status "  CIM App Attach packages: $($AppAttachPkgs.Count)" -Level 'SUCCESS'
+        [void]$AllChecks.Add((New-CheckResult -Id "APP-ATTACH-CIM-$SubShort" `
+            -Category 'Application Delivery' -Name 'App Attach' `
+            -Description 'CIM-based App Attach decouples application lifecycle from the golden image' `
+            -Status 'Pass' -Severity 'Low' `
+            -Details "CIM App Attach packages in subscription: $($AppAttachPkgs.Count)" `
+            -Recommendation 'CIM-based App Attach is GA - continue using it for admin-less app updates and per-group targeting.' `
+            -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/app-attach-overview' `
+            -Evidence @{ PackageCount = $AppAttachPkgs.Count }))
+    }
+    # No packages: N/A is emitted at estate level (APP-ATTACH-NONE) only if nothing found anywhere - handled post-loop.
+} catch {
+    Write-Status "  App Attach package error: $($_.Exception.Message)" -Level 'WARN'
+}
+}  # end per-subscription sweep (A-1)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MICROSOFT GRAPH — IDENTITY (Conditional Access, MFA, token protection, passwordless)
+# Tenant-level (singleton) checks. Degrades to Status 'Error' when Graph permissions are missing.
+# ═══════════════════════════════════════════════════════════════════════════
+Write-Status "Microsoft Graph (Identity)" -Level 'SECTION'
+$AvdAppIds = [ordered]@{
+    'Azure Virtual Desktop'    = '9cdead84-a844-4324-93f2-b2e6bb768d07'
+    'Windows Cloud Login'      = '270efc09-cd0d-444b-a71f-39af4910ec45'
+    'Microsoft Remote Desktop' = 'a4a365df-50f1-4397-bc59-1a1564b8bb9c'
+}
+$AvdAppIdList = @($AvdAppIds.Values)
+$WclAppId     = $AvdAppIds['Windows Cloud Login']
+$MrdAppId     = $AvdAppIds['Microsoft Remote Desktop']
+
+$GraphToken = Get-GraphTokenString
+$GraphPermMsg = 'insufficient Graph permissions — grant Policy.Read.All / AuditLog.Read.All for identity checks'
+
+# --- Conditional Access derived checks: IAM-002 (MFA), IAM-003 (CA), IAM-011 (WCL), IAM-010 (token protection) ---
+$CaError = $null
+$CaPolicies = @()
+if (-not $GraphToken) {
+    $CaError = 'Could not acquire a Microsoft Graph token from the current Az login.'
+} else {
+    try {
+        $CaPolicies = @(Invoke-GraphGet -Uri 'https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies' -Token $GraphToken)
+    } catch {
+        $CaError = "$GraphPermMsg ($($_.Exception.Message))"
+    }
+}
+
+if ($CaError) {
+    foreach ($EId in @('IAM-MFA','IAM-CA','IAM-WCL','IAM-TOKPROT')) {
+        [void]$AllChecks.Add((New-CheckResult -Id $EId `
+            -Category 'Identity & Access' -Name 'Conditional Access (Graph)' `
+            -Description 'Identity posture evaluated from Entra Conditional Access policies via Microsoft Graph' `
+            -Status 'Error' -Severity 'High' `
+            -Details $CaError `
+            -Reference 'https://learn.microsoft.com/en-us/entra/identity/conditional-access/overview'))
+    }
+    Write-Status "  Conditional Access: $CaError" -Level 'WARN'
+} else {
+    # Classify each policy against the AVD app IDs.
+    $EnabledMfa = @(); $ReportOnlyMfa = @()
+    $EnabledAvdCa = @(); $EnabledMrdOnlyCa = @()
+    $WclCovered = $false; $AvdCovered = $false
+    $TokProtEnabled = @()
+    foreach ($P in $CaPolicies) {
+        $State = "$($P.state)"
+        $IncApps = @($P.conditions.applications.includeApplications)
+        $TargetsAll = ('All' -in $IncApps)
+        $TargetsAvdApp = @($IncApps | Where-Object { $_ -in $AvdAppIdList }).Count -gt 0
+        $TargetsWcl = ($WclAppId -in $IncApps)
+        $TargetsMrdOnly = ($MrdAppId -in $IncApps) -and -not (@($IncApps | Where-Object { $_ -in @($AvdAppIds['Azure Virtual Desktop'], $WclAppId) }).Count -gt 0)
+        $Grant = @($P.grantControls.builtInControls)
+        $HasMfa = ('mfa' -in $Grant)
+        $CoversAvd = $TargetsAll -or $TargetsAvdApp
+        $CoversWcl = $TargetsAll -or $TargetsWcl
+
+        if ($CoversAvd -and $HasMfa) {
+            if ($State -eq 'enabled') { $EnabledMfa += $P.displayName }
+            elseif ($State -eq 'enabledForReportingButNotEnforced') { $ReportOnlyMfa += $P.displayName }
+        }
+        if ($State -eq 'enabled' -and ($TargetsAll -or $TargetsAvdApp)) {
+            if ($TargetsMrdOnly) { $EnabledMrdOnlyCa += $P.displayName } else { $EnabledAvdCa += $P.displayName }
+        }
+        if ($State -eq 'enabled' -and $CoversAvd) { $AvdCovered = $true }
+        if ($State -eq 'enabled' -and $CoversWcl -and $HasMfa) { $WclCovered = $true }
+        # Token protection: sessionControls.secureSignInSession / signInSessionControls
+        $SessCtl = $P.sessionControls
+        $HasTokProt = $false
+        if ($SessCtl) {
+            if ($SessCtl.secureSignInSession -and $SessCtl.secureSignInSession.isEnabled) { $HasTokProt = $true }
+            if ($SessCtl.signInSessionControls) { $HasTokProt = $true }
+        }
+        if ($State -eq 'enabled' -and $HasTokProt) { $TokProtEnabled += $P.displayName }
+    }
+
+    # IAM-002 MFA
+    if ($EnabledMfa.Count -gt 0) {
+        $MfaStatus = 'Pass'; $MfaDetail = "Enabled MFA policies targeting AVD apps: $($EnabledMfa -join ', ')"
+    } elseif ($ReportOnlyMfa.Count -gt 0) {
+        $MfaStatus = 'Warning'; $MfaDetail = "MFA policies for AVD apps exist but are report-only: $($ReportOnlyMfa -join ', ')"
+    } else {
+        $MfaStatus = 'Fail'; $MfaDetail = 'No enabled Conditional Access policy enforces MFA for the AVD or Windows Cloud Login apps (or All apps).'
+    }
+    [void]$AllChecks.Add((New-CheckResult -Id 'IAM-MFA' `
+        -Category 'Identity & Access' -Name 'MFA Enforcement' `
+        -Description 'MFA must be enforced for AVD users via Conditional Access targeting the AVD / Windows Cloud Login apps' `
+        -Status $MfaStatus -Severity 'Critical' `
+        -Details $MfaDetail `
+        -Recommendation 'Enforce MFA via a Conditional Access policy targeting Azure Virtual Desktop and Windows Cloud Login (grant control: require MFA).' `
+        -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/set-up-mfa' `
+        -Evidence @{ EnabledMfaPolicies = $EnabledMfa; ReportOnly = $ReportOnlyMfa }))
+
+    # IAM-003 CA
+    if ($EnabledAvdCa.Count -gt 0) {
+        $CaStatus = 'Pass'; $CaDetail = "Enabled CA policies targeting AVD apps: $($EnabledAvdCa -join ', ')"
+    } elseif ($EnabledMrdOnlyCa.Count -gt 0) {
+        $CaStatus = 'Warning'; $CaDetail = "CA policies target only the legacy Microsoft Remote Desktop app: $($EnabledMrdOnlyCa -join ', '). Retarget to Azure Virtual Desktop + Windows Cloud Login."
+    } else {
+        $CaStatus = 'Warning'; $CaDetail = 'No enabled Conditional Access policy targets the AVD cloud apps.'
+    }
+    [void]$AllChecks.Add((New-CheckResult -Id 'IAM-CA' `
+        -Category 'Identity & Access' -Name 'Conditional Access Policies' `
+        -Description 'Conditional Access should target the Azure Virtual Desktop and Windows Cloud Login cloud apps' `
+        -Status $CaStatus -Severity 'High' `
+        -Details $CaDetail `
+        -Recommendation 'Target Conditional Access at Azure Virtual Desktop and Windows Cloud Login (Microsoft Remote Desktop is legacy). Consider the "Every time" sign-in frequency for high-sensitivity access.' `
+        -Reference 'https://learn.microsoft.com/en-us/entra/identity/conditional-access/overview' `
+        -Evidence @{ AvdPolicies = $EnabledAvdCa; LegacyOnlyPolicies = $EnabledMrdOnlyCa }))
+
+    # IAM-011 Windows Cloud Login coverage
+    if ($WclCovered) {
+        $WclStatus = 'Pass'; $WclDetail = 'Windows Cloud Login app is covered by an enabled MFA/CA policy (explicitly or via All apps).'
+    } elseif ($AvdCovered) {
+        $WclStatus = 'Fail'; $WclDetail = 'Azure Virtual Desktop app is covered but Windows Cloud Login is NOT — SSO and current sign-in flows depend on Windows Cloud Login coverage.'
+    } else {
+        $WclStatus = 'Fail'; $WclDetail = 'Windows Cloud Login app is not covered by any enabled MFA/CA policy.'
+    }
+    [void]$AllChecks.Add((New-CheckResult -Id 'IAM-WCL' `
+        -Category 'Identity & Access' -Name 'Windows Cloud Login CA Coverage' `
+        -Description 'Conditional Access / MFA policies must cover the Windows Cloud Login app (the current AVD sign-in app)' `
+        -Status $WclStatus -Severity 'High' `
+        -Details $WclDetail `
+        -Recommendation 'Add the Windows Cloud Login app (270efc09-cd0d-444b-a71f-39af4910ec45) to your AVD Conditional Access / MFA policies, or target All cloud apps.' `
+        -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/set-up-mfa' `
+        -Evidence @{ WclCovered = $WclCovered; AvdCovered = $AvdCovered }))
+
+    # IAM-010 Token protection
+    [void]$AllChecks.Add((New-CheckResult -Id 'IAM-TOKPROT' `
+        -Category 'Identity & Access' -Name 'Token Protection Policy' `
+        -Description 'Conditional Access token protection (token binding) should bind sign-in sessions to the originating device' `
+        -Status $(if ($TokProtEnabled.Count -gt 0) { 'Pass' } else { 'Warning' }) `
+        -Severity 'Medium' `
+        -Details "$(if ($TokProtEnabled.Count -gt 0) { "Enabled token-protection policies: $($TokProtEnabled -join ', ')" } else { 'No enabled Conditional Access policy configures token protection (secure sign-in session).' })" `
+        -Recommendation 'Enable Conditional Access token protection (sign-in session token binding) for AVD sign-ins to prevent token replay.' `
+        -Reference 'https://learn.microsoft.com/en-us/entra/identity/conditional-access/concept-token-protection' `
+        -Evidence @{ TokenProtectionPolicies = $TokProtEnabled }))
+
+    Write-Status "  CA policies: $($CaPolicies.Count), MFA=$MfaStatus, CA=$CaStatus, WCL=$WclStatus, TokProt=$(if ($TokProtEnabled.Count -gt 0) { 'Pass' } else { 'Warning' })" -Level 'SUCCESS'
+}
+
+# --- IAM-009 passwordless registration (authenticationMethods report; needs AuditLog.Read.All + premium) ---
+if (-not $GraphToken) {
+    [void]$AllChecks.Add((New-CheckResult -Id 'IAM-PWLESS' `
+        -Category 'Identity & Access' -Name 'Passwordless Authentication' `
+        -Description 'Users should be registered for passwordless methods (Windows Hello for Business, FIDO2, passkeys)' `
+        -Status 'Error' -Severity 'Low' `
+        -Details 'Could not acquire a Microsoft Graph token from the current Az login.' `
+        -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/authentication#in-session-passwordless-authentication'))
+} else {
+    try {
+        $RegDetails = @(Invoke-GraphGet -Uri 'https://graph.microsoft.com/v1.0/reports/authenticationMethods/userRegistrationDetails?$top=999' -Token $GraphToken)
+        $TotalUsers = $RegDetails.Count
+        $Passwordless = @($RegDetails | Where-Object {
+            @($_.methodsRegistered | Where-Object { $_ -match 'windowsHelloForBusiness|fido2|passKey' }).Count -gt 0
+        })
+        $PwlessPct = if ($TotalUsers -gt 0) { [math]::Round($Passwordless.Count / $TotalUsers * 100, 0) } else { 0 }
+        $PwlessStatus = if ($PwlessPct -ge 50) { 'Pass' } elseif ($PwlessPct -gt 0) { 'Warning' } else { 'Fail' }
+        Write-Status "  Passwordless registration: $PwlessPct% of $TotalUsers users" -Level $(if ($PwlessPct -ge 50) { 'SUCCESS' } else { 'WARN' })
+        [void]$AllChecks.Add((New-CheckResult -Id 'IAM-PWLESS' `
+            -Category 'Identity & Access' -Name 'Passwordless Authentication' `
+            -Description 'Users should be registered for passwordless methods (Windows Hello for Business, FIDO2, passkeys)' `
+            -Status $PwlessStatus -Severity 'Low' `
+            -Details "$PwlessPct% of $TotalUsers users registered for a passwordless method (WHfB / FIDO2 / passkey)" `
+            -Recommendation 'Drive passwordless adoption (Windows Hello for Business, FIDO2 keys, passkeys) to eliminate password-based attack vectors in-session.' `
+            -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/authentication#in-session-passwordless-authentication' `
+            -Evidence @{ TotalUsers = $TotalUsers; PasswordlessUsers = $Passwordless.Count; Percent = $PwlessPct }))
+    } catch {
+        [void]$AllChecks.Add((New-CheckResult -Id 'IAM-PWLESS' `
+            -Category 'Identity & Access' -Name 'Passwordless Authentication' `
+            -Description 'Users should be registered for passwordless methods (Windows Hello for Business, FIDO2, passkeys)' `
+            -Status 'Error' -Severity 'Low' `
+            -Details "$GraphPermMsg ($($_.Exception.Message))" `
+            -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/authentication#in-session-passwordless-authentication'))
+    }
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SIEM / SENTINEL ONBOARDING (MON-012) — per Log Analytics workspace from diag settings
+# ═══════════════════════════════════════════════════════════════════════════
+Write-Status "SIEM / Sentinel" -Level 'SECTION'
+$WsIds = @($LAWorkspaceIds.Keys)
+if ($WsIds.Count -eq 0) {
+    [void]$AllChecks.Add((New-CheckResult -Id 'MON-SIEM-NONE' `
+        -Category 'Monitoring' -Name 'SIEM Integration' `
+        -Description 'Microsoft Sentinel (or equivalent SIEM) should be connected to the AVD Log Analytics workspace' `
+        -Status 'Warning' -Severity 'Medium' `
+        -Details 'No Log Analytics workspace found via host-pool diagnostic settings — cannot assess Sentinel onboarding.' `
+        -Recommendation 'Send AVD diagnostics to a Log Analytics workspace and onboard Microsoft Sentinel for security correlation.' `
+        -Reference 'https://learn.microsoft.com/en-us/azure/sentinel/overview'))
+} else {
+    foreach ($WsId in $WsIds) {
+        $WsName = ($WsId -split '/')[-1]
+        try {
+            $SentinelResp = Invoke-AzRestMethod -Path "$WsId/providers/Microsoft.SecurityInsights/onboardingStates/default?api-version=2024-03-01" -Method GET -ErrorAction Stop
+            $Onboarded = $SentinelResp -and $SentinelResp.StatusCode -eq 200
+            if ($SentinelResp -and $SentinelResp.StatusCode -notin @(200, 404)) {
+                [void]$AllChecks.Add((New-CheckResult -Id "MON-SIEM-$WsName" `
+                    -Category 'Monitoring' -Name 'SIEM Integration' `
+                    -Description 'Microsoft Sentinel should be connected to the AVD Log Analytics workspace' `
+                    -Status 'Error' -Severity 'Medium' `
+                    -Details "Sentinel onboarding query returned HTTP $($SentinelResp.StatusCode) for workspace $WsName" `
+                    -Reference 'https://learn.microsoft.com/en-us/azure/sentinel/overview'))
+                continue
+            }
+            [void]$AllChecks.Add((New-CheckResult -Id "MON-SIEM-$WsName" `
+                -Category 'Monitoring' -Name 'SIEM Integration' `
+                -Description 'Microsoft Sentinel should be connected to the AVD Log Analytics workspace' `
+                -Status $(if ($Onboarded) { 'Pass' } else { 'Warning' }) `
+                -Severity 'Medium' `
+                -Details "Workspace ${WsName}: Microsoft Sentinel $(if ($Onboarded) { 'onboarded' } else { 'not onboarded (HTTP 404)' })" `
+                -Recommendation 'Onboard Microsoft Sentinel onto the AVD Log Analytics workspace for security event correlation and AVD analytics rules.' `
+                -Reference 'https://learn.microsoft.com/en-us/azure/sentinel/overview' `
+                -Evidence @{ Workspace = $WsName; Onboarded = $Onboarded }))
+        } catch {
+            [void]$AllChecks.Add((New-CheckResult -Id "MON-SIEM-$WsName" `
+                -Category 'Monitoring' -Name 'SIEM Integration' `
+                -Description 'Microsoft Sentinel should be connected to the AVD Log Analytics workspace' `
+                -Status 'Error' -Severity 'Medium' `
+                -Details "Could not query Sentinel onboarding for workspace $WsName : $($_.Exception.Message)" `
+                -Reference 'https://learn.microsoft.com/en-us/azure/sentinel/overview'))
+        }
+    }
+    Write-Status "  Log Analytics workspaces checked for Sentinel: $($WsIds.Count)" -Level 'SUCCESS'
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# REGION PROXIMITY (SH-018) — session hosts vs FSLogix storage regions, per host pool
+# ═══════════════════════════════════════════════════════════════════════════
+Write-Status "Region Proximity" -Level 'SECTION'
+$FSLogixLocations = @($Discovery.Inventory.StorageAccounts | Where-Object { $_.LikelyFSLogix -and $_.Location } | ForEach-Object { "$($_.Location)".ToLower() } | Sort-Object -Unique)
+foreach ($HP in $Discovery.Inventory.HostPools) {
+    $HPHostLocs = @($Discovery.Inventory.SessionHosts | Where-Object { $_.HostPoolName -eq $HP.Name -and $_.Location } | ForEach-Object { "$($_.Location)".ToLower() } | Sort-Object -Unique)
+    if ($HPHostLocs.Count -eq 0) { continue }
+    if ($FSLogixLocations.Count -eq 0) {
+        [void]$AllChecks.Add((New-CheckResult -Id "SH-PROX-$($HP.Name)" `
+            -Category 'Session Hosts' -Name 'Region Proximity' `
+            -Description 'Session hosts and their FSLogix profile storage should be in the same Azure region' `
+            -Status 'N/A' -Severity 'Medium' `
+            -Details "HostPool $($HP.Name) hosts in: $($HPHostLocs -join ', '); no FSLogix storage accounts classified to compare against." `
+            -Reference 'https://learn.microsoft.com/en-us/azure/well-architected/azure-virtual-desktop/networking'))
+        continue
+    }
+    $Mismatches = @($HPHostLocs | Where-Object { $_ -notin $FSLogixLocations })
+    if ($Mismatches.Count -eq 0) {
+        [void]$AllChecks.Add((New-CheckResult -Id "SH-PROX-$($HP.Name)" `
+            -Category 'Session Hosts' -Name 'Region Proximity' `
+            -Description 'Session hosts and their FSLogix profile storage should be in the same Azure region' `
+            -Status 'Pass' -Severity 'Medium' `
+            -Details "HostPool $($HP.Name): all hosts co-located with FSLogix storage region(s) ($($HPHostLocs -join ', '))" `
+            -Recommendation 'Keep session hosts and FSLogix profile storage in the same region to avoid cross-region profile-mount latency.' `
+            -Reference 'https://learn.microsoft.com/en-us/azure/well-architected/azure-virtual-desktop/networking' `
+            -Evidence @{ HostPool = $HP.Name; HostRegions = $HPHostLocs; FSLogixRegions = $FSLogixLocations }))
+    } else {
+        [void]$AllChecks.Add((New-CheckResult -Id "SH-PROX-$($HP.Name)" `
+            -Category 'Session Hosts' -Name 'Region Proximity' `
+            -Description 'Session hosts and their FSLogix profile storage should be in the same Azure region' `
+            -Status 'Warning' -Severity 'Medium' `
+            -Details "HostPool $($HP.Name): host region(s) not matching FSLogix storage. Hosts: $($HPHostLocs -join ', '); FSLogix: $($FSLogixLocations -join ', '); mismatched: $($Mismatches -join ', ')" `
+            -Recommendation 'Move session hosts or profile storage so both share a region; cross-region profile mounts add 50-200ms per file operation.' `
+            -Reference 'https://learn.microsoft.com/en-us/azure/well-architected/azure-virtual-desktop/networking' `
+            -Evidence @{ HostPool = $HP.Name; HostRegions = $HPHostLocs; FSLogixRegions = $FSLogixLocations; Mismatched = $Mismatches }))
+    }
+}
+
+# ─── APP ATTACH: estate-level N/A when nothing found anywhere (APP-002) ───
+if (@($AllChecks | Where-Object { $_.Id -like 'APP-ATTACH-*' -and $_.Id -notlike 'APP-ATTACH-NONE*' }).Count -eq 0) {
+    [void]$AllChecks.Add((New-CheckResult -Id 'APP-ATTACH-NONE' `
+        -Category 'Application Delivery' -Name 'App Attach' `
+        -Description 'App Attach decouples application lifecycle from the golden image' `
+        -Status 'N/A' -Severity 'Low' `
+        -Details 'No MSIX or CIM App Attach packages found in any assessed host pool or subscription — App Attach is not in use.' `
+        -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/app-attach-overview'))
+}
+
+# ─── MULTI-REGION CHECK (aggregated across ALL subscriptions, A-1) ────
+$HPLocations = @($Discovery.Inventory.HostPools | ForEach-Object { $_.Location } | Sort-Object -Unique)
+if ($HPLocations.Count -gt 1) {
+    [void]$AllChecks.Add((New-CheckResult -Id "BCDR-MULTIREGION" `
+        -Category 'BCDR' -Name 'Multi-Region Host Pool' `
+        -Description 'Host pools deployed in multiple regions for disaster recovery' `
+        -Status 'Pass' -Severity 'Medium' `
+        -Details "Regions (all subscriptions): $($HPLocations -join ', ')" `
+        -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/disaster-recovery'))
+} else {
+    [void]$AllChecks.Add((New-CheckResult -Id "BCDR-MULTIREGION" `
+        -Category 'BCDR' -Name 'Multi-Region Host Pool' `
+        -Description 'Host pools concentrated in single region - DR risk' `
+        -Status 'Warning' -Severity 'Medium' `
+        -Details "Regions (all subscriptions): $(if ($HPLocations) { $HPLocations -join ', ' } else { 'None' })"))
+}
+
+# ─── DR CAPACITY RESERVATION (BCDR-011) — estate-level, reuses per-sub reservation data ────
+$AllCapResRegions = @($Discovery.Inventory.CapacityReservations | Where-Object { $_.Location } | ForEach-Object { "$($_.Location)".ToLower() } | Sort-Object -Unique)
+$HPRegionsLower = @($HPLocations | ForEach-Object { "$_".ToLower() })
+if ($HPLocations.Count -le 1) {
+    [void]$AllChecks.Add((New-CheckResult -Id "BCDR-DRCAP" `
+        -Category 'BCDR' -Name 'Capacity Reservation for DR' `
+        -Description 'On-demand capacity reservations should exist in the secondary/failover region to guarantee VM availability during a regional outage' `
+        -Status 'N/A' -Severity 'Medium' `
+        -Details "Single-region estate ($(if ($HPLocations) { $HPLocations -join ', ' } else { 'none' })) - no secondary region to reserve capacity in." `
+        -Reference 'https://learn.microsoft.com/en-us/azure/virtual-machines/capacity-reservation-overview'))
+} else {
+    $PrimaryRegion = $HPRegionsLower[0]
+    $DrReservations = @($AllCapResRegions | Where-Object { $_ -ne $PrimaryRegion })
+    if ($DrReservations.Count -gt 0) {
+        [void]$AllChecks.Add((New-CheckResult -Id "BCDR-DRCAP" `
+            -Category 'BCDR' -Name 'Capacity Reservation for DR' `
+            -Description 'On-demand capacity reservations should exist in the secondary/failover region to guarantee VM availability during a regional outage' `
+            -Status 'Pass' -Severity 'Medium' `
+            -Details "Capacity reservation group(s) present in non-primary region(s): $($DrReservations -join ', ') (primary host-pool region: $PrimaryRegion)" `
+            -Recommendation 'Maintain capacity reservations in the failover region so DR host pools can allocate VMs during a regional outage.' `
+            -Reference 'https://learn.microsoft.com/en-us/azure/virtual-machines/capacity-reservation-overview' `
+            -Evidence @{ DrRegions = $DrReservations; PrimaryRegion = $PrimaryRegion }))
+    } else {
+        [void]$AllChecks.Add((New-CheckResult -Id "BCDR-DRCAP" `
+            -Category 'BCDR' -Name 'Capacity Reservation for DR' `
+            -Description 'On-demand capacity reservations should exist in the secondary/failover region to guarantee VM availability during a regional outage' `
+            -Status 'Warning' -Severity 'Medium' `
+            -Details "Multi-region estate ($($HPLocations -join ', ')) but no capacity reservation group found outside the primary region ($PrimaryRegion). Reservations found in: $(if ($AllCapResRegions.Count -gt 0) { $AllCapResRegions -join ', ' } else { 'none' })" `
+            -Recommendation 'Create on-demand capacity reservations in the secondary/failover region to guarantee VM availability during a regional outage.' `
+            -Reference 'https://learn.microsoft.com/en-us/azure/virtual-machines/capacity-reservation-overview' `
+            -Evidence @{ EstateRegions = $HPLocations; ReservationRegions = $AllCapResRegions }))
+    }
+}
+
+# ─── AGENT VERSION CURRENCY (fleet-relative, C-9) ─────────────────────
+# Compare each host against a maintained floor AND against the fleet's maximum
+# observed agent version (more than 2 distinct versions behind fleet max = Warning).
+try {
+    # UPDATE PERIODICALLY: 2026-era floor for the AVD agent version.
+    $MinRecommendedAgent = [Version]'1.0.10000.0'
+    $FleetVersions = @()
+    foreach ($SH in $Discovery.Inventory.SessionHosts) {
+        if ($SH.AgentVersion) {
+            try { $FleetVersions += [Version]$SH.AgentVersion } catch { }
+        }
+    }
+    $FleetSorted = @($FleetVersions | Sort-Object -Unique -Descending)
+    $FleetMax = if ($FleetSorted.Count -gt 0) { $FleetSorted[0] } else { $null }
+    foreach ($SH in $Discovery.Inventory.SessionHosts) {
+        if (-not $SH.AgentVersion) { continue }
+        $VMName = if ($SH.ResourceId) { ($SH.ResourceId -split '/')[-1] } else { $SH.Name }
+        $ParsedAgent = $null
+        try { $ParsedAgent = [Version]$SH.AgentVersion } catch { }
+        $AgentStatus = 'Pass'
+        $AgentDetail = "AgentVersion: $($SH.AgentVersion), MinRecommended: $MinRecommendedAgent, FleetMax: $FleetMax"
+        if (-not $ParsedAgent) {
+            $AgentStatus = 'Warning'
+            $AgentDetail = "AgentVersion: '$($SH.AgentVersion)' could not be parsed"
+        } elseif ($ParsedAgent -lt $MinRecommendedAgent) {
+            $AgentStatus = 'Warning'
+            $AgentDetail += ' - below recommended floor'
+        } else {
+            # Position within the fleet's distinct-version ladder (0 = newest).
+            $VersionsBehind = [array]::IndexOf($FleetSorted, $ParsedAgent)
+            if ($VersionsBehind -gt 2) {
+                $AgentStatus = 'Warning'
+                $AgentDetail += " - $VersionsBehind distinct versions behind fleet max"
+            }
+        }
+        [void]$AllChecks.Add((New-CheckResult -Id "OPS-AGENT-$VMName" `
+            -Category 'Operations' -Name 'Agent Version Currency' `
+            -Description 'AVD Agent should be at current recommended version and close to fleet max' `
+            -Status $AgentStatus -Severity 'Medium' `
+            -Details $AgentDetail `
+            -Recommendation 'AVD agent updates automatically when VM is running. Ensure VMs are powered on periodically.' `
+            -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/agent-overview' `
+            -Evidence @{ VM = $VMName; AgentVersion = "$($SH.AgentVersion)"; FleetMax = "$FleetMax" }))
+    }
+} catch {
+    Write-Status "  Agent version check error: $($_.Exception.Message)" -Level 'WARN'
+}
+
 # ─── CROSS-RESOURCE TAG COMPLIANCE (GOV-018) ──────────────────────────
+# Reuses tags captured during discovery (E-7) - no per-resource Get-AzResource calls.
 Write-Status "Cross-Resource Tag Compliance" -Level 'SECTION'
 try {
     $RecommendedTags = @('Environment','Owner','CostCenter','Application','Department')
     $TagScores = @()
-    # Score VMs (session hosts)
+    # Score VMs (session hosts) from cached VM model tags
     foreach ($SH in $Discovery.Inventory.SessionHosts) {
-        if ($SH.ResourceId) {
-            try {
-                $Res = Get-AzResource -ResourceId $SH.ResourceId -ErrorAction SilentlyContinue
-                $Tags = if ($Res -and $Res.Tags) { @($Res.Tags.Keys) } else { @() }
-                $Found = @($RecommendedTags | Where-Object { $T = $_; $Tags | Where-Object { $_ -like "*$T*" } })
-                $TagScores += [PSCustomObject]@{ Type = 'VM'; Name = ($SH.ResourceId -split '/')[-1]; Score = $Found.Count; Total = $RecommendedTags.Count }
-            } catch { }
-        }
+        $Tags = if ($SH.Tags) { @($SH.Tags.Keys) } else { @() }
+        $Found = @($RecommendedTags | Where-Object { $T = $_; $Tags | Where-Object { $_ -like "*$T*" } })
+        $TagScores += [PSCustomObject]@{ Type = 'VM'; Name = $SH.Name; Score = $Found.Count; Total = $RecommendedTags.Count }
     }
-    # Score VNets
+    # Score VNets from cached tags
     foreach ($VNet in $Discovery.Inventory.VNets) {
-        if ($VNet.Id) {
-            try {
-                $Res = Get-AzResource -ResourceId $VNet.Id -ErrorAction SilentlyContinue
-                $Tags = if ($Res -and $Res.Tags) { @($Res.Tags.Keys) } else { @() }
-                $Found = @($RecommendedTags | Where-Object { $T = $_; $Tags | Where-Object { $_ -like "*$T*" } })
-                $TagScores += [PSCustomObject]@{ Type = 'VNet'; Name = $VNet.Name; Score = $Found.Count; Total = $RecommendedTags.Count }
-            } catch { }
-        }
+        $Tags = if ($VNet.Tags) { @($VNet.Tags.Keys) } else { @() }
+        $Found = @($RecommendedTags | Where-Object { $T = $_; $Tags | Where-Object { $_ -like "*$T*" } })
+        $TagScores += [PSCustomObject]@{ Type = 'VNet'; Name = $VNet.Name; Score = $Found.Count; Total = $RecommendedTags.Count }
     }
-    # Score Storage Accounts
+    # Score Storage Accounts from cached tags
     foreach ($SA in $Discovery.Inventory.StorageAccounts) {
-        if ($SA.Id) {
-            try {
-                $Res = Get-AzResource -ResourceId $SA.Id -ErrorAction SilentlyContinue
-                $Tags = if ($Res -and $Res.Tags) { @($Res.Tags.Keys) } else { @() }
-                $Found = @($RecommendedTags | Where-Object { $T = $_; $Tags | Where-Object { $_ -like "*$T*" } })
-                $TagScores += [PSCustomObject]@{ Type = 'Storage'; Name = $SA.Name; Score = $Found.Count; Total = $RecommendedTags.Count }
-            } catch { }
-        }
+        $Tags = if ($SA.Tags) { @($SA.Tags.Keys) } else { @() }
+        $Found = @($RecommendedTags | Where-Object { $T = $_; $Tags | Where-Object { $_ -like "*$T*" } })
+        $TagScores += [PSCustomObject]@{ Type = 'Storage'; Name = $SA.Name; Score = $Found.Count; Total = $RecommendedTags.Count }
     }
     $AvgScore = if ($TagScores.Count -gt 0) {
         [math]::Round(($TagScores | ForEach-Object { $_.Score / $_.Total * 100 } | Measure-Object -Average).Average, 0)

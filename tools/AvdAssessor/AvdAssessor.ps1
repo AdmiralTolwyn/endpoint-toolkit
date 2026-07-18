@@ -9,7 +9,7 @@
     Well-Architected Framework, and Landing Zone Accelerator best practices.
 .NOTES
     Author : Anton Romanyuk
-    Version: 0.1.0
+    Version: 0.2.0
     Date   : 2026-03-26
 #>
 
@@ -29,7 +29,7 @@ $env:PSModulePath = ($env:PSModulePath -split ';' |
 $Global:Root = $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($Global:Root)) { $Global:Root = $PWD.Path }
 
-$Global:AppVersion       = "0.1.0-alpha"
+$Global:AppVersion       = "0.2.0"
 $Global:AppTitle         = "AVD Assessor v$($Global:AppVersion)"
 $Global:PrefsPath        = Join-Path $Global:Root "user_prefs.json"
 $Global:AssessmentDir    = Join-Path $Global:Root "assessments"
@@ -53,7 +53,6 @@ foreach ($dir in @($Global:AssessmentDir, $Global:ReportDir)) {
 
 # Named constants
 $Script:LOG_MAX_LINES       = 500
-$Script:TIMER_INTERVAL_MS   = 50
 $Script:TOAST_DURATION_MS   = 4000
 $Script:CONFETTI_COUNT      = 80
 $Script:CLEANUP_DELAY_MS    = 5000
@@ -153,87 +152,10 @@ $Global:AnimationsDisabled  = $false
 $Global:SuppressThemeHandler = $false
 
 # ===============================================================================
-# SECTION 3: THREAD SYNCHRONIZATION BRIDGE
-# Synchronized hashtable with StatusQueue and LogQueue for cross-thread communication.
-# Start-BackgroundWork launches STA runspaces tracked in $Global:BgJobs ArrayList.
+# SECTION 3 (removed): the Start-BackgroundWork/SyncHash/BgJobs runspace scaffolding was
+# never invoked — discovery runs out-of-band via Invoke-AvdDiscovery.ps1 and results are
+# imported from JSON. Removed as dead code (audit E-6).
 # ===============================================================================
-
-$Global:SyncHash = [Hashtable]::Synchronized(@{
-    StatusQueue  = [System.Collections.Queue]::Synchronized([System.Collections.Queue]::new())
-    LogQueue     = [System.Collections.Queue]::Synchronized([System.Collections.Queue]::new())
-    StopFlag     = $false
-})
-
-$Global:BgJobs          = [System.Collections.ArrayList]::Synchronized([System.Collections.ArrayList]::new())
-$Global:TimerProcessing = $false
-
-<#
-.SYNOPSIS
-    Launches a PowerShell script block in a separate STA runspace for non-blocking execution.
-.DESCRIPTION
-    Creates and opens a new runspace with Bypass execution policy, injects specified variables
-    and the SyncHash for cross-thread communication, and begins asynchronous invocation. The
-    job is tracked in $Global:BgJobs and polled by the dispatcher timer for completion.
-.PARAMETER Name
-    Descriptive label for the background job (used in debug logging).
-.PARAMETER ScriptBlock
-    The work to execute in the background runspace.
-.PARAMETER OnComplete
-    Callback script block invoked on the UI thread when the job finishes.
-.PARAMETER Arguments
-    Positional arguments passed to the script block.
-.PARAMETER Variables
-    Hashtable of named variables injected into the runspace session state.
-.PARAMETER Context
-    Arbitrary hashtable stored with the job for use in OnComplete.
-#>
-function Start-BackgroundWork {
-    param(
-        [string]$Name = 'BgWork',
-        [ScriptBlock]$ScriptBlock,
-        [ScriptBlock]$OnComplete,
-        [array]$Arguments = @(),
-        [hashtable]$Variables = @{},
-        [hashtable]$Context   = @{}
-    )
-    $Work = $ScriptBlock
-    $ISS = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
-    $ISS.ExecutionPolicy = [Microsoft.PowerShell.ExecutionPolicy]::Bypass
-    $RS  = [RunspaceFactory]::CreateRunspace($ISS)
-    $RS.ApartmentState = 'STA'
-    $RS.ThreadOptions  = 'ReuseThread'
-    $RS.Open()
-
-    $CleanModulePath = ($env:PSModulePath -split ';' |
-        Where-Object { $_ -notlike '*OneDrive*' }) -join ';'
-
-    $PS = [PowerShell]::Create()
-    $PS.Runspace = $RS
-
-    $RS.SessionStateProxy.SetVariable('SyncHash', $Global:SyncHash)
-    $RS.SessionStateProxy.SetVariable('PSModulePath_Clean', $CleanModulePath)
-
-    foreach ($Key in $Variables.Keys) {
-        $RS.SessionStateProxy.SetVariable($Key, $Variables[$Key])
-    }
-
-    [void]$PS.AddScript($Work)
-    foreach ($Arg in $Arguments) { [void]$PS.AddArgument($Arg) }
-
-    $Handle = $PS.BeginInvoke()
-
-    [void]$Global:BgJobs.Add([PSCustomObject]@{
-        Name       = $Name
-        PS         = $PS
-        Handle     = $Handle
-        RS         = $RS
-        OnComplete = $OnComplete
-        Context    = $Context
-        StartTime  = [DateTime]::Now
-    })
-
-    Write-DebugLog "BgWork: launched '$Name'" -Level 'DEBUG'
-}
 
 # ===============================================================================
 # SECTION 4: XAML GUI LOAD
@@ -445,7 +367,7 @@ function Write-DebugLog {
             [System.IO.File]::Move($Global:DebugLogFile, $Rotated)
         }
         [System.IO.File]::AppendAllText($Global:DebugLogFile, $line + "`r`n")
-    } catch { }
+    } catch { Write-Host "[LOG] Disk log write failed: $($_.Exception.Message)" -ForegroundColor DarkYellow }
 
     # Ring buffer
     [void]$Global:FullLogSB.AppendLine($line)
@@ -485,7 +407,7 @@ function Write-DebugLog {
             $Global:DebugLineCount--
         }
         $logScroller.ScrollToEnd()
-    } catch { }
+    } catch { Write-Host "[LOG] UI log append failed: $($_.Exception.Message)" -ForegroundColor DarkYellow }
 }
 
 # ===============================================================================
@@ -504,7 +426,7 @@ $ApplyTheme = {
             # Replace the resource entry — this triggers DynamicResource re-evaluation
             # Mutating .Color does NOT trigger DynamicResource/SetResourceReference updates
             $Window.Resources[$Key] = [System.Windows.Media.SolidColorBrush]::new($NewColor)
-        } catch { }
+        } catch { Write-DebugLog "Theme: failed to apply resource '$Key': $($_.Exception.Message)" -Level 'DEBUG' }
     }
     $Global:IsLightMode = $IsLight
 
@@ -668,7 +590,7 @@ function Show-Toast {
                 $ToastRef.BeginAnimation([System.Windows.UIElement]::OpacityProperty, $FadeOut)
                 $RemoveTimerRef.Start()
             }
-        } catch { }
+        } catch { Write-DebugLog "Toast dismiss failed: $($_.Exception.Message)" -Level 'DEBUG' }
     }.GetNewClosure())
     $DismissTimer.Start()
     Write-DebugLog "Toast [$Type]: $Message"
@@ -846,7 +768,7 @@ function Show-ThemedDialog {
 
     # Drag support
     $OuterBorder.Add_MouseLeftButtonDown({
-        try { $Dlg.DragMove() } catch { }
+        try { $Dlg.DragMove() } catch { Write-DebugLog "Dialog DragMove failed: $($_.Exception.Message)" -Level 'DEBUG' }
     }.GetNewClosure())
 
     $Dlg.ShowDialog() | Out-Null
@@ -993,6 +915,7 @@ $Global:Assessment = [PSCustomObject]@{
     Discovery     = $null   # Imported discovery JSON
     Checks        = [System.Collections.ArrayList]::new()
     ManualOverrides = @{}
+    CatalogVersion  = ''    # E-3: checks.json _metadata.version — stamped after catalog load
 }
 $Global:CatScoreRefs = @{}  # Category -> @{ ScoreTB; CountTB; DotEllipse; SbScoreTB; SbDot }
 
@@ -1008,7 +931,9 @@ if (-not (Test-Path $Global:ChecksJsonPath)) {
 try {
     $ChecksFile = Get-Content $Global:ChecksJsonPath -Raw -Encoding UTF8 | ConvertFrom-Json
     $Global:CheckDefinitions = $ChecksFile.checks
-    Write-Host "[INIT] Loaded $($Global:CheckDefinitions.Count) check definitions from checks.json" -ForegroundColor DarkGray
+    # E-3: catalog version from checks.json _metadata — stamped into saved assessments as CatalogVersion
+    $Global:ChecksCatalogVersion = if ($ChecksFile._metadata -and $ChecksFile._metadata.version) { [string]$ChecksFile._metadata.version } else { 'unknown' }
+    Write-Host "[INIT] Loaded $($Global:CheckDefinitions.Count) check definitions from checks.json (catalog v$Global:ChecksCatalogVersion)" -ForegroundColor DarkGray
 } catch {
     [System.Windows.MessageBox]::Show(
         "Failed to parse checks.json:`n$($_.Exception.Message)",
@@ -1036,6 +961,7 @@ foreach ($Def in $Global:CheckDefinitions) {
         Effort         = $Def.effort         # Quick Win, Some Effort, Major Effort
     })
 }
+$Global:Assessment.CatalogVersion = $Global:ChecksCatalogVersion
 
 # ===============================================================================
 # SECTION 11: ASSESSMENT LOGIC
@@ -1058,8 +984,9 @@ function Get-Categories {
 .SYNOPSIS
     Calculates the weighted readiness score (0-100) for a single assessment category.
 .DESCRIPTION
-    Scores all non-excluded checks in the category using weighted points: Pass=100,
-    Warning=50, Fail=0, Not Assessed=0. N/A scores the same as Pass. Excluded checks are removed from
+    Scores checks in the category using weighted points: Pass=100, Warning=50, Fail=0,
+    Not Assessed=0 (kept in the denominator for honest partial-completion scores). N/A checks
+    are truly excluded from both numerator and denominator; Excluded checks are removed from
     scoring entirely. Returns -1 if no checks are assessable.
 .PARAMETER Category
     The category name to score.
@@ -1068,11 +995,13 @@ function Get-Categories {
 #>
 function Get-CategoryScore {
     param([string]$Category)
-    # Score ALL non-excluded checks in category. "Not Assessed" counts as 0 points
-    # but IS included in the denominator so partial completion shows honest scores.
-    # N/A scores the same as Pass (100 points). Excluded are removed from scoring.
+    # Scoring semantics (E-1):
+    #   Excluded  -> removed entirely (never scored).
+    #   N/A       -> truly excluded from BOTH numerator AND denominator (not applicable = no points, no weight).
+    #   Not Assessed -> 0 points but STAYS in the denominator (intentional "honest scores" for partial completion).
+    #   Pass = 100, Warning = 50, Fail = 0.
     $Checks = @($Global:Assessment.Checks | Where-Object {
-        $_.Category -eq $Category -and -not $_.Excluded
+        $_.Category -eq $Category -and -not $_.Excluded -and $_.Status -ne 'N/A'
     })
     if ($Checks.Count -eq 0) { return -1 }
     # If nothing has been assessed at all, return -1 (not scored)
@@ -1083,7 +1012,6 @@ function Get-CategoryScore {
         $W = [math]::Max(1, [int]$C.Weight)
         $Points = switch ($C.Status) {
             'Pass'         { 100 }
-            'N/A'          { 100 }  # N/A = not applicable, scores same as Pass
             'Warning'      { 50 }
             'Fail'         { 0 }
             'Not Assessed' { 0 }   # Unreviewed = 0 points, still counts in denominator
@@ -1106,10 +1034,10 @@ function Get-CategoryScore {
     Integer score (0-100) or -1 if not scorable.
 #>
 function Get-OverallScore {
-    # Score across ALL non-excluded checks. "Not Assessed" = 0 points in denominator.
-    # N/A scores the same as Pass (100 points).
+    # Scoring semantics (E-1): Excluded removed entirely; N/A truly excluded from numerator AND
+    # denominator; Not Assessed = 0 points but stays in the denominator. Pass=100, Warning=50, Fail=0.
     $AllChecks = @($Global:Assessment.Checks | Where-Object {
-        -not $_.Excluded
+        -not $_.Excluded -and $_.Status -ne 'N/A'
     })
     if ($AllChecks.Count -eq 0) { return -1 }
     $AnyAssessed = @($AllChecks | Where-Object { $_.Status -ne 'Not Assessed' }).Count
@@ -1119,7 +1047,6 @@ function Get-OverallScore {
         $W = [math]::Max(1, [int]$C.Weight)
         $Points = switch ($C.Status) {
             'Pass'         { 100 }
-            'N/A'          { 100 }
             'Warning'      { 50 }
             'Fail'         { 0 }
             'Not Assessed' { 0 }
@@ -1160,8 +1087,10 @@ function Get-DimensionScore {
     param([string]$DimensionKey)
     $Dim = $Global:MaturityDimensions[$DimensionKey]
     if (-not $Dim) { return -1 }
+    # Scoring semantics (E-1): N/A truly excluded from numerator AND denominator; Not Assessed = 0
+    # points but stays in the denominator; Excluded removed entirely.
     $DimChecks = @($Global:Assessment.Checks | Where-Object {
-        $Id = $_.Id; -not $_.Excluded -and
+        $Id = $_.Id; -not $_.Excluded -and $_.Status -ne 'N/A' -and
         ($Dim.Prefixes | Where-Object { $Id -like "$_*" })
     })
     $Assessed = @($DimChecks | Where-Object { $_.Status -ne 'Not Assessed' })
@@ -1171,7 +1100,6 @@ function Get-DimensionScore {
         $W = [math]::Max(1, [int]$C.Weight)
         $Pts = switch ($C.Status) {
             'Pass'         { 100 }
-            'N/A'          { 100 }
             'Warning'      { 50 }
             'Fail'         { 0 }
             'Not Assessed' { 0 }
@@ -1201,6 +1129,36 @@ function Get-MaturityLevel {
         ($Score -ge 0)  { return 'Initial'    }
         default         { return 'Not Scored' }
     }
+}
+
+<#
+.SYNOPSIS
+    Canonical 5-tier maturity zone color for a score (E-4). Single source of truth so the
+    dashboard, HTML report, and email summary all agree on thresholds and colors.
+.DESCRIPTION
+    Tiers: 0-34 Initial, 35-54 Developing, 55-74 Defined, 75-89 Managed, 90-100 Optimized.
+    A negative score (not scored) returns a neutral gray. Returns a light-theme hex by default
+    (suitable for printed HTML/email documents); pass -DarkMode for the dark app theme palette.
+.PARAMETER Score
+    Numeric score (0-100), or negative for "not scored".
+.OUTPUTS
+    Hex color string (e.g. '#0D9488').
+#>
+function Get-MaturityZoneColor {
+    param([int]$Score, [switch]$DarkMode)
+    if ($Score -lt 0) { return '#8A8886' }  # Not scored
+    if ($DarkMode) {
+        if     ($Score -ge 90) { return '#00C853' }  # Optimized
+        elseif ($Score -ge 75) { return '#2DD4BF' }  # Managed
+        elseif ($Score -ge 55) { return '#FBBF24' }  # Defined
+        elseif ($Score -ge 35) { return '#F59E0B' }  # Developing
+        else                   { return '#FF5000' }  # Initial
+    }
+    if     ($Score -ge 90) { return '#15803D' }  # Optimized
+    elseif ($Score -ge 75) { return '#0D9488' }  # Managed
+    elseif ($Score -ge 55) { return '#CA8A04' }  # Defined
+    elseif ($Score -ge 35) { return '#C2410C' }  # Developing
+    else                   { return '#DC2626' }  # Initial
 }
 
 <#
@@ -1322,103 +1280,133 @@ function Import-DiscoveryJson {
         # Map discovery check results to assessment checks
         # Phase 1: collect all per-object results grouped by assessment check ID
         $CheckBuckets = @{}  # checkId → [list of {Status, Details, ObjectName}]
-        $StatusRank = @{ 'Fail' = 0; 'Error' = 0; 'Warning' = 1; 'Pass' = 2; 'N/A' = 3; 'Not Assessed' = 4 }
+        # Severity ranking for aggregating multiple per-object verdicts (lower = worse).
+        # 'Error' is handled separately (M/E-9) and never ranked into a Fail/Warning verdict.
+        $StatusRank = @{ 'Fail' = 0; 'Warning' = 1; 'Pass' = 2; 'N/A' = 3; 'Not Assessed' = 4 }
         $Mapped = 0
+        $Unmapped = 0
+        $UnmappedIds = @{}   # distinct discovery IDs with no matching arm (M-3 / E-10)
         foreach ($DiscCheck in $Json.CheckResults) {
             # Find matching assessment check by category pattern
             $Match = $null
+            # First/exact-match: every arm ends with `break` so the switch stops at the first
+            # matching pattern (fixes M-4 last-match-wins + full-scan). Patterns are ordered so
+            # more-specific IDs are not shadowed by broader prefixes.
             switch -Wildcard ($DiscCheck.Id) {
-                'SEC-TL-*'     { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-001' }
-                'SH-002-*'     { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-002' }
-                'SEC-RDP-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-011' }
-                'NET-PIP-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'NET-003' }
-                'NET-RDP-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'NET-004' }
-                'NET-AN-*'     { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'NET-009' }
-                'NET-DNS-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'NET-010' }
-                'MON-DIAG-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'MON-001' }
-                'SEC-RBAC-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'IAM-004' }
-                'GOV-001-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'GOV-001' }
-                'GOV-TAG-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'GOV-002' }
-                'OPS-001-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'GOV-003' }
-                'GOV-SCALE-*'  { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'BCDR-001' }
-                'PROF-PE-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'PROF-002' }
-                'PROF-TIER-*'  { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'PROF-003' }
-                'PROF-HTTPS-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'PROF-004' }
-                'PROF-TLS-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'PROF-005' }
-                'BCDR-STOR-*'  { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'BCDR-002' }
-                'BCDR-AZ-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-010' }
+                'SEC-TL-*'     { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-001'; break }
+                'SH-002-*'     { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-002'; break }
+                'SEC-RDP-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SEC-018'; break }  # M-1: was SH-011
+                'NET-PIP-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'NET-003'; break }
+                'NET-RDP-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'NET-004'; break }
+                'NET-AN-*'     { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'NET-009'; break }
+                'NET-DNS-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'NET-010'; break }
+                'MON-DIAG-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'MON-001'; break }
+                'SEC-RBAC-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'IAM-004'; break }
+                'GOV-001-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'GOV-001'; break }
+                'GOV-TAG-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'GOV-002'; break }
+                'OPS-001-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'GOV-003'; break }
+                'GOV-SCALE-*'  { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'BCDR-001'; break }
+                'PROF-PE-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'PROF-002'; break }
+                'PROF-TIER-*'  { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'PROF-003'; break }
+                'PROF-HTTPS-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'PROF-004'; break }
+                'PROF-TLS-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'PROF-005'; break }
+                'BCDR-STOR-*'  { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'BCDR-002'; break }
+                'BCDR-AZ-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-010'; break }
                 # New mappings
-                'NET-NSG-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'NET-002' }
-                'APP-CFG-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'APP-001' }
-                'SEC-DISK-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-013' }
-                'NET-SHORTPATH-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'NET-011' }
+                'NET-NSG-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'NET-002'; break }
+                'APP-CFG-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'APP-001'; break }
+                'SEC-DISK-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-013'; break }
                 # New auto checks
-                'SH-LB-*'     { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-017' }
-                'SH-SSD-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-019' }
-                'OPS-HB-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'OPS-002' }
-                'NET-UDR-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'NET-013' }
-                'PROF-FW-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'PROF-024' }
-                'PROF-SD-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'PROF-025' }
+                'SH-LB-*'     { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-017'; break }
+                'SH-SSD-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-019'; break }
+                'OPS-HB-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'OPS-002'; break }
+                'NET-UDR-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'NET-013'; break }
+                'PROF-FW-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'PROF-024'; break }
+                'PROF-SD-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'PROF-025'; break }
                 # New from full automation pass
-                'IAM-SSO-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'IAM-008' }
-                'IAM-JOIN-*'  { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'IAM-001' }
-                'SEC-WM-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SEC-002' }
-                'SEC-SCP-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-007' }
-                'SH-IMG-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-004' }
-                'SH-BSERIES-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-003' }
-                'NET-NATGW-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'NET-012' }
-                'GOV-SPACTIVE-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'GOV-009' }
-                'BCDR-MULTIREGION' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'BCDR-008' }
-                'MON-WSDIAG-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'MON-001' }
-                'MON-AGDIAG-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'MON-001' }
-                'MON-DEFENDER' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'MON-011' }
-                'PROF-SMBVER-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'PROF-020' }
-                'PROF-KERB-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'PROF-022' }
-                'PROF-AUTH-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'PROF-023' }
-                'PROF-SMBENC-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'PROF-021' }
+                'IAM-SSO-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'IAM-008'; break }
+                'IAM-JOIN-*'  { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'IAM-001'; break }
+                'SH-IMG-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-004'; break }
+                'SH-BSERIES-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-003'; break }
+                'NET-NATGW-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'NET-012'; break }
+                'GOV-SPACTIVE-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'GOV-009'; break }
+                'BCDR-MULTIREGION' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'BCDR-009'; break }  # M-1: was BCDR-008
+                'MON-WSDIAG-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'MON-001'; break }
+                'MON-AGDIAG-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'MON-001'; break }
+                'MON-DEFENDER-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'MON-011'; break }
+                'PROF-SMBVER-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'PROF-020'; break }
+                'PROF-KERB-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'PROF-022'; break }
+                'PROF-AUTH-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'PROF-023'; break }
+                'PROF-SMBENC-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'PROF-021'; break }
                 # Phase 2 new checks
-                'SH-SECBOOT-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-025' }
-                'SH-VTPM-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-026' }
-                'SEC-OSDISK-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SEC-020' }
-                'SEC-KEYVAULT' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SEC-022' }
-                'NET-PRIVDNS'  { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'NET-018' }
-                'NET-NETWATCHER' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'NET-019' }
-                'GOV-ORPHDISK' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'GOV-011' }
-                'GOV-ORPHNIC'  { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'GOV-012' }
-                'GOV-POLICY'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'GOV-013' }
-                'MON-ALERTS'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'MON-015' }
-                'BCDR-SPSCHED-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'BCDR-012' }
+                'SH-SECBOOT-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-025'; break }
+                'SH-VTPM-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-026'; break }
+                'SEC-OSDISK-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SEC-020'; break }
+                'SEC-KEYVAULT-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SEC-022'; break }
+                'NET-PRIVDNS-*'  { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'NET-018'; break }
+                'NET-NETWATCHER-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'NET-019'; break }
+                'GOV-ORPHDISK-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'GOV-011'; break }
+                'GOV-ORPHNIC-*'  { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'GOV-012'; break }
+                'GOV-POLICY-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'GOV-013'; break }
+                'MON-ALERTS-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'MON-015'; break }
                 # Phase 3 new checks
-                'SH-IMGFRESH-*'  { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-027' }
-                'GOV-QUOTA'      { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'GOV-014' }
-                'GOV-CAPRESERV'  { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'GOV-015' }
-                'GOV-BUDGET'     { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'GOV-016' }
-                'GOV-RI'         { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'GOV-017' }
-                'GOV-TAGALL'     { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'GOV-018' }
-                'NET-HUBFW'      { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'NET-020' }
-                'NET-HUBGW'      { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'NET-021' }
-                'MON-DIAGCAT-*'  { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'MON-016' }
-                'SEC-KVPE'       { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SEC-023' }
-                'SEC-HPPL-*'     { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SEC-024' }
-                'GOV-DISKSKU-*'  { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-022' }
-                'MON-AMA-*'      { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'MON-004' }
-                'NET-AVDOUT-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'NET-016' }
-                'NET-PEER-*'     { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'NET-017' }
-                'NET-SSH-*'      { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'NET-004' }
-                'NET-SUBCAP-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'NET-015' }
-                'OPS-AGENT-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'OPS-005' }
-                'SEC-ATTEST-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SEC-019' }
-                'SEC-AUDIO-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-011' }
-                'SEC-CAM-*'      { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-011' }
-                'SEC-CLIP-*'     { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SEC-015' }
-                'SEC-COM-*'      { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-011' }
-                'SEC-DRIVE-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SEC-014' }
-                'SEC-MDE-*'      { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-006' }
-                'SEC-PRINT-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SEC-017' }
-                'SEC-USB-*'      { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SEC-016' }
-                'SH-EPHEMERAL-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-021' }
-                'SH-STATUS-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-024' }
-
+                'SH-IMGFRESH-*'  { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-027'; break }
+                'GOV-QUOTA-*'      { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'GOV-014'; break }
+                'GOV-CAPRESERV-*'  { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'GOV-015'; break }
+                'GOV-BUDGET-*'     { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'GOV-016'; break }
+                'GOV-RI-*'         { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'GOV-017'; break }
+                'GOV-TAGALL'     { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'GOV-018'; break }
+                'NET-HUBFW-*'      { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'NET-020'; break }
+                'NET-HUBGW-*'      { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'NET-021'; break }
+                'MON-DIAGCAT-*'  { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'MON-016'; break }
+                'SEC-KVPE-*'       { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SEC-023'; break }
+                'SEC-HPPL-*'     { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SEC-024'; break }
+                'GOV-DISKSKU-*'  { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-022'; break }
+                'MON-AMA-*'      { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'MON-004'; break }
+                'NET-AVDOUT-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'NET-016'; break }
+                'NET-PEER-*'     { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'NET-017'; break }
+                'NET-SSH-*'      { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'NET-004'; break }
+                'NET-SUBCAP-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'NET-015'; break }
+                'OPS-AGENT-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'OPS-005'; break }
+                'SEC-ATTEST-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SEC-019'; break }
+                'SEC-AUDIO-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-011'; break }
+                'SEC-CAM-*'      { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-011'; break }
+                'SEC-CLIP-*'     { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SEC-015'; break }
+                'SEC-COM-*'      { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-011'; break }
+                'SEC-DRIVE-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SEC-014'; break }
+                'SEC-MDE-*'      { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SEC-006'; break }  # M-1: was SH-006
+                'SEC-PRINT-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SEC-017'; break }
+                'SEC-USB-*'      { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SEC-016'; break }
+                'SH-EPHEMERAL-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-021'; break }
+                'SH-STATUS-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-024'; break }
+                # Phase 2 (0.5.0) — Graph identity (singletons), Manual→Auto conversions, new Auto checks
+                'IAM-MFA'         { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'IAM-002'; break }
+                'IAM-CA'          { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'IAM-003'; break }
+                'IAM-WCL'         { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'IAM-011'; break }
+                'IAM-TOKPROT'     { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'IAM-010'; break }
+                'IAM-PWLESS'      { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'IAM-009'; break }
+                'IAM-KERB-*'      { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'IAM-012'; break }
+                'BCDR-IMGREP-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'BCDR-006'; break }
+                'BCDR-DRCAP'      { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'BCDR-011'; break }
+                'GOV-LOCK-*'      { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'GOV-007'; break }
+                'SH-SHU-*'        { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-020'; break }
+                'SH-PROX-*'       { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-018'; break }
+                'SH-OSEOL-*'      { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-029'; break }
+                'SH-GPU-*'        { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-030'; break }
+                'SH-PERSAUTO-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SH-031'; break }
+                'APP-ATTACH-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'APP-002'; break }
+                'APP-GRPASSIGN-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'APP-004'; break }
+                'MON-SVCHEALTH-*' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'MON-003'; break }
+                'MON-SIEM-*'      { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'MON-012'; break }
+                'MON-SPDIAG-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'MON-017'; break }
+                'NET-PL-*'        { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'NET-005'; break }
+                'SEC-SCORE-*'     { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SEC-005'; break }
+                'SEC-JIT-*'       { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SEC-021'; break }
+                'SEC-BASELINE-*'  { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'SEC-013'; break }
+                # Removed arms (discovery no longer emits these / dead rules):
+                #   NET-SHORTPATH-*  (M-3 dead rule — never emitted)
+                #   SEC-WM-* / SEC-SCP-*  (no longer emitted; targets reclassified Manual)
+                #   BCDR-SPSCHED-*   (no longer emitted)
             }
 
             if ($Match) {
@@ -1442,34 +1430,45 @@ function Import-DiscoveryJson {
                     Object   = $ObjName
                 })
                 $Mapped++
+            } else {
+                # E-10: discovery result matched no arm — count + surface instead of dropping silently
+                $Unmapped++
+                if (-not $UnmappedIds.ContainsKey($DiscCheck.Id)) { $UnmappedIds[$DiscCheck.Id] = $true }
             }
+        }
+        if ($Unmapped -gt 0) {
+            Write-DebugLog "Import: $Unmapped discovery results had no matching check definition ($($UnmappedIds.Keys -join ', '))" -Level 'WARN'
         }
 
         # Phase 2: aggregate per-object results into each assessment check
+        $ManualEvidenceCount = 0   # M-1/E-8: discovery data attached to Manual checks as evidence only
         foreach ($CheckId in $CheckBuckets.Keys) {
             $Results = $CheckBuckets[$CheckId]
             $Match = $Global:Assessment.Checks | Where-Object Id -eq $CheckId
             if (-not $Match) { continue }
 
-            # Determine worst status across all objects
+            # Separate hard errors (discovery could not evaluate) from real verdicts.
+            $Errored   = @($Results | Where-Object { $_.Status -eq 'Error' })
+            $Evaluated = @($Results | Where-Object { $_.Status -ne 'Error' })
+
+            # Determine worst status across evaluated objects (severity ranking preserved)
             $WorstRank = 4
-            foreach ($R in $Results) {
+            foreach ($R in $Evaluated) {
                 $Rank = if ($StatusRank.ContainsKey($R.Status)) { $StatusRank[$R.Status] } else { 4 }
                 if ($Rank -lt $WorstRank) { $WorstRank = $Rank }
             }
             $WorstStatus = switch ($WorstRank) { 0 { 'Fail' } 1 { 'Warning' } 2 { 'Pass' } 3 { 'N/A' } default { 'Not Assessed' } }
-            $Match.Status = $WorstStatus
-            $Match.Source  = 'Auto'
 
-            # Build aggregated details with per-object breakdown
+            # Build aggregated details with per-object breakdown (into $DetailText)
             $Total = $Results.Count
             if ($Total -eq 1) {
                 # Single object: show details directly with object name
                 $R = $Results[0]
-                $Match.Details = "[$($R.Object)] $($R.Details)"
+                $DetailText = "[$($R.Object)] $($R.Details)"
             } else {
-                # Multiple objects: show summary + list affected
-                $FailList    = @($Results | Where-Object { $_.Status -eq 'Fail' -or $_.Status -eq 'Error' })
+                # Multiple objects: show summary + list affected (errors reported separately, E-9)
+                $FailList    = @($Results | Where-Object { $_.Status -eq 'Fail' })
+                $ErrList     = @($Results | Where-Object { $_.Status -eq 'Error' })
                 $WarnList    = @($Results | Where-Object { $_.Status -eq 'Warning' })
                 $PassList    = @($Results | Where-Object { $_.Status -eq 'Pass' })
                 $NaList      = @($Results | Where-Object { $_.Status -eq 'N/A' })
@@ -1478,6 +1477,7 @@ function Import-DiscoveryJson {
                 if ($PassList.Count -gt 0) { [void]$Parts.Add("$([char]0x2713) $($PassList.Count) pass") }
                 if ($WarnList.Count -gt 0) { [void]$Parts.Add("$([char]0x26A0) $($WarnList.Count) warning") }
                 if ($FailList.Count -gt 0) { [void]$Parts.Add("$([char]0x2717) $($FailList.Count) fail") }
+                if ($ErrList.Count -gt 0)  { [void]$Parts.Add("$($ErrList.Count) error") }
                 if ($NaList.Count -gt 0)   { [void]$Parts.Add("$($NaList.Count) N/A") }
                 $Summary = "$Total objects: $($Parts -join ', ')"
 
@@ -1493,18 +1493,40 @@ function Import-DiscoveryJson {
                         $Remaining = $ObjLines.Count - 6
                         $ObjLines = @($ObjLines | Select-Object -First 6) + @("  ...and $Remaining more")
                     }
-                    $Match.Details = "$Summary`n$($ObjLines -join "`n")"
+                    $DetailText = "$Summary`n$($ObjLines -join "`n")"
                 } else {
-                    $Match.Details = $Summary
+                    $DetailText = $Summary
                 }
+            }
+
+            if ($Evaluated.Count -eq 0) {
+                # E-9: aggregated discovery status is Error — never let it masquerade as Fail/Warning.
+                $Match.Status  = 'Not Assessed'
+                $Match.Source  = 'Auto'
+                $Reason = if ($Errored.Count -gt 0 -and $Errored[0].Details) { $Errored[0].Details } else { 'discovery could not evaluate this check' }
+                $Match.Details = "Discovery error: $Reason`n$DetailText"
+            } elseif ($Match.Type -ne 'Auto') {
+                # E-8 importer type-guard: mapped to a Manual-type check. Do NOT overwrite Status/Source;
+                # attach discovery data as evidence only, and count it separately for the summary toast.
+                $Ev = "Discovery evidence: $DetailText"
+                $Match.Details = if ($Match.Details) { "$($Match.Details)`n$Ev" } else { $Ev }
+                $ManualEvidenceCount++
+            } else {
+                $Match.Status  = $WorstStatus
+                $Match.Source  = 'Auto'
+                $Match.Details = $DetailText
             }
         }
 
-        Write-DebugLog "Mapped $Mapped discovery checks to assessment" -Level 'SUCCESS'
-        Show-Toast "Imported discovery: $($Json.Inventory.HostPools.Count) host pools, $($Json.Inventory.SessionHosts.Count) session hosts, $Mapped checks mapped" -Type 'Success'
+        Write-DebugLog "Mapped $Mapped discovery results to assessment ($ManualEvidenceCount manual-evidence, $Unmapped unmapped)" -Level 'SUCCESS'
+        $ToastMsg = "Imported discovery: $($Json.Inventory.HostPools.Count) host pools, $($Json.Inventory.SessionHosts.Count) session hosts, $Mapped results mapped"
+        if ($ManualEvidenceCount -gt 0) { $ToastMsg += " ($ManualEvidenceCount attached as manual evidence)" }
+        if ($Unmapped -gt 0) { $ToastMsg += " · $Unmapped results had no matching check definition" }
+        Show-Toast $ToastMsg -Type 'Success'
 
         Unlock-Achievement 'first_discovery'
 
+        Set-Dirty   # E-5: imported results are unsaved changes; the autosave timer persists them
         Update-Dashboard
         Update-Progress
 
@@ -1521,10 +1543,35 @@ function Import-DiscoveryJson {
     After loading a saved assessment, syncs impact, remediation, and effort fields from the
     current checks.json definitions without overwriting user-entered data. Also updates
     description, severity, and weight if the check definition has been updated.
+    E-3: additionally prunes loaded checks whose Id no longer exists in checks.json (retired
+    checks must not linger with frozen metadata and keep scoring) — one toast lists them.
 #>
 function Sync-CheckDefinitions {
     $DefLookup = @{}
     foreach ($Def in $Global:CheckDefinitions) { $DefLookup[$Def.id] = $Def }
+
+    # E-3: catalog version reconciliation — saved assessments are stamped with the checks.json
+    # _metadata.version; if the loaded assessment was built against a different catalog, tell the user.
+    $SavedCatVer = if ($Global:Assessment.PSObject.Properties.Name -contains 'CatalogVersion') { [string]$Global:Assessment.CatalogVersion } else { '' }
+    if ($SavedCatVer -and $SavedCatVer -ne $Global:ChecksCatalogVersion) {
+        Show-Toast "Assessment was saved with check catalog v$SavedCatVer; current catalog is v$Global:ChecksCatalogVersion. Definitions have been synced." -Type 'Info'
+        Write-DebugLog "Catalog version changed: assessment=v$SavedCatVer, current=v$Global:ChecksCatalogVersion" -Level 'INFO'
+    }
+    if ($Global:Assessment.PSObject.Properties.Name -contains 'CatalogVersion') {
+        $Global:Assessment.CatalogVersion = $Global:ChecksCatalogVersion
+    } else {
+        $Global:Assessment | Add-Member -NotePropertyName 'CatalogVersion' -NotePropertyValue $Global:ChecksCatalogVersion -Force
+    }
+
+    # E-3: prune retired checks (present in the loaded assessment, absent from the catalog)
+    $Retired = @($Global:Assessment.Checks | Where-Object { -not $DefLookup.ContainsKey($_.Id) })
+    if ($Retired.Count -gt 0) {
+        foreach ($R in $Retired) { $Global:Assessment.Checks.Remove($R) }
+        $RetiredIds = ($Retired | ForEach-Object { $_.Id }) -join ', '
+        Write-DebugLog "Pruned $($Retired.Count) retired check(s) not in current catalog: $RetiredIds" -Level 'WARN'
+        Show-Toast "$($Retired.Count) retired checks removed: $RetiredIds" -Type 'Info'
+    }
+
     foreach ($Check in $Global:Assessment.Checks) {
         $Def = $DefLookup[$Check.Id]
         if ($Def) {
@@ -1839,13 +1886,14 @@ function Update-Dashboard {
     $CompositeScore = Get-CompositeMaturityScore
     $CompositeLevel = if ($CompositeScore -ge 0) { Get-MaturityLevel $CompositeScore } else { 'Not Scored' }
 
-    # Zone definitions: threshold, label, color
+    # Zone definitions: threshold, label, color (colors sourced from canonical Get-MaturityZoneColor, E-4)
+    $ZoneDark = -not $Global:IsLightMode
     $Zones = @(
-        @{ Min = 0;  Max = 34; Label = 'Initial';    Color = $(if ($Global:IsLightMode) { '#DC2626' } else { '#FF5000' }) }
-        @{ Min = 35; Max = 54; Label = 'Developing'; Color = $(if ($Global:IsLightMode) { '#C2410C' } else { '#F59E0B' }) }
-        @{ Min = 55; Max = 74; Label = 'Defined';    Color = $(if ($Global:IsLightMode) { '#CA8A04' } else { '#FBBF24' }) }
-        @{ Min = 75; Max = 89; Label = 'Managed';    Color = $(if ($Global:IsLightMode) { '#0D9488' } else { '#2DD4BF' }) }
-        @{ Min = 90; Max = 100; Label = 'Optimized'; Color = $(if ($Global:IsLightMode) { '#15803D' } else { '#00C853' }) }
+        @{ Min = 0;  Max = 34; Label = 'Initial';    Color = (Get-MaturityZoneColor 0  -DarkMode:$ZoneDark) }
+        @{ Min = 35; Max = 54; Label = 'Developing'; Color = (Get-MaturityZoneColor 35 -DarkMode:$ZoneDark) }
+        @{ Min = 55; Max = 74; Label = 'Defined';    Color = (Get-MaturityZoneColor 55 -DarkMode:$ZoneDark) }
+        @{ Min = 75; Max = 89; Label = 'Managed';    Color = (Get-MaturityZoneColor 75 -DarkMode:$ZoneDark) }
+        @{ Min = 90; Max = 100; Label = 'Optimized'; Color = (Get-MaturityZoneColor 90 -DarkMode:$ZoneDark) }
     )
 
     # Composite header card
@@ -2136,7 +2184,10 @@ function Update-Dashboard {
     bar value, overall score label, and status text. Triggers the dirty flag for auto-save.
 #>
 function Update-Progress {
-    # Single-pass stats collection
+    # Single-pass stats collection. Also accumulates per-category weighted score sums so the
+    # category score is computed inline (E-7) instead of re-filtering all checks via
+    # Get-CategoryScore per category. Scoring semantics match Get-CategoryScore (E-1):
+    # Excluded removed; N/A excluded from numerator AND denominator; Not Assessed = 0 in denominator.
     $Total = @($Global:Assessment.Checks).Count
     $Excluded = 0; $NA = 0; $Checked = 0
     $CatStats = @{}
@@ -2146,27 +2197,35 @@ function Update-Progress {
         if ($Chk.Status -eq 'N/A') { $NA++ }
         # Build per-category stats
         $Cat = $Chk.Category
-        if (-not $CatStats.ContainsKey($Cat)) { $CatStats[$Cat] = @{ Assessed = 0; Pass = 0; Warn = 0; Fail = 0; Total = 0 } }
+        if (-not $CatStats.ContainsKey($Cat)) { $CatStats[$Cat] = @{ Assessed = 0; Pass = 0; Warn = 0; Fail = 0; Total = 0; WSum = 0; WTot = 0; ScorableAssessed = 0 } }
         $CatStats[$Cat].Total++
         if ($Chk.Status -ne 'Not Assessed') {
             $CatStats[$Cat].Assessed++
             switch ($Chk.Status) {
                 'Pass'    { $CatStats[$Cat].Pass++ }
-                'N/A'     { $CatStats[$Cat].Pass++ }  # N/A counts as Pass
+                'N/A'     { $CatStats[$Cat].Pass++ }  # N/A counts as Pass in the x/y display
                 'Warning' { $CatStats[$Cat].Warn++ }
                 'Fail'    { $CatStats[$Cat].Fail++ }
             }
+        }
+        # Weighted score accumulation (N/A truly excluded from both sums)
+        if ($Chk.Status -ne 'N/A') {
+            $W = [math]::Max(1, [int]$Chk.Weight)
+            $Pts = switch ($Chk.Status) { 'Pass' { 100 } 'Warning' { 50 } default { 0 } }
+            $CatStats[$Cat].WSum += $Pts * $W
+            $CatStats[$Cat].WTot += $W
+            if ($Chk.Status -ne 'Not Assessed') { $CatStats[$Cat].ScorableAssessed++ }
         }
     }
     $Scorable = $Total - $Excluded
     $lblProgressChecked.Text = "$Checked / $Scorable scored$(if ($Excluded -gt 0) { " ($Excluded excluded)" })$(if ($NA -gt 0) { " · $NA N/A" })"
     $barProgress.Value  = if ($Scorable -gt 0) { [math]::Round(($Checked / $Scorable) * 100, 0) } else { 0 }
 
-    # Refresh category scores in cards + sidebar (using cached CatStats)
+    # Refresh category scores in cards + sidebar (score computed inline from cached CatStats, E-7)
     foreach ($Cat in $Global:CatScoreRefs.Keys) {
         $Refs = $Global:CatScoreRefs[$Cat]
-        $CatScore = Get-CategoryScore $Cat
-        $CS = if ($CatStats.ContainsKey($Cat)) { $CatStats[$Cat] } else { @{ Assessed = 0; Pass = 0; Warn = 0; Fail = 0; Total = 0 } }
+        $CS = if ($CatStats.ContainsKey($Cat)) { $CatStats[$Cat] } else { @{ Assessed = 0; Pass = 0; Warn = 0; Fail = 0; Total = 0; WSum = 0; WTot = 0; ScorableAssessed = 0 } }
+        $CatScore = if ($CS.ScorableAssessed -gt 0 -and $CS.WTot -gt 0) { [math]::Round($CS.WSum / $CS.WTot, 0) } else { -1 }
         $CatPass = $CS.Pass
         $CatTotalCount = $CS.Total
 
@@ -2444,10 +2503,12 @@ function Render-AssessmentChecks {
             $Col1 = New-Object System.Windows.Controls.ColumnDefinition; $Col1.Width = [System.Windows.GridLength]::new(130)
             $Col2 = New-Object System.Windows.Controls.ColumnDefinition; $Col2.Width = [System.Windows.GridLength]::new(50)
             $Col3 = New-Object System.Windows.Controls.ColumnDefinition; $Col3.Width = [System.Windows.GridLength]::new(60)
+            $Col4 = New-Object System.Windows.Controls.ColumnDefinition; $Col4.Width = [System.Windows.GridLength]::new(76)  # E-2: Exclude checkbox
             [void]$Grid.ColumnDefinitions.Add($Col0)
             [void]$Grid.ColumnDefinitions.Add($Col1)
             [void]$Grid.ColumnDefinitions.Add($Col2)
             [void]$Grid.ColumnDefinitions.Add($Col3)
+            [void]$Grid.ColumnDefinitions.Add($Col4)
 
             # Left: Check info
             $InfoSP = New-Object System.Windows.Controls.StackPanel
@@ -2600,8 +2661,11 @@ function Render-AssessmentChecks {
                 $Target = $Global:Assessment.Checks | Where-Object Id -eq $CheckId
                 if ($Target) {
                     $Val = if ($this.Text -eq 'Add notes...') { '' } else { $this.Text }
-                    $Target.Notes = $Val
-                    if ($Val) { AutoSave-Assessment }
+                    if ($Val -ne $Target.Notes) {
+                        $Target.Notes = $Val
+                        # E-5: no direct AutoSave here — flag dirty and let the autosave timer persist
+                        Set-Dirty
+                    }
                 }
                 if (-not $this.Text) {
                     $this.SetResourceReference([System.Windows.Controls.TextBox]::ForegroundProperty, 'ThemeTextFaintest')
@@ -2646,8 +2710,9 @@ function Render-AssessmentChecks {
                         default   { if ($Global:IsLightMode) { '#C0C0C4' } else { '#444448' } }
                     }
                     $Bar.Background = $Global:CachedBC.ConvertFromString($BarColor)
+                    Set-Dirty
                     Update-Progress
-                    AutoSave-Assessment
+                    # E-5: no direct AutoSave here — the autosave timer persists when dirty
                 }
             })
             [System.Windows.Controls.Grid]::SetColumn($StatusCmb, 1)
@@ -2684,6 +2749,37 @@ function Render-AssessmentChecks {
             $SevPill.Child = $SevBadge
             [System.Windows.Controls.Grid]::SetColumn($SevPill, 3)
             [void]$Grid.Children.Add($SevPill)
+
+            # Col 4: Exclude-from-scoring checkbox (E-2)
+            $ExclCB = New-Object System.Windows.Controls.CheckBox
+            $ExclCB.Content = 'Excluded'
+            $ExclCB.FontSize = 11
+            $ExclCB.ToolTip = 'Exclude from scoring'
+            $ExclCB.Tag = $Check.Id
+            $ExclCB.IsChecked = [bool]$Check.Excluded
+            $ExclCB.HorizontalAlignment = 'Center'; $ExclCB.VerticalAlignment = 'Center'
+            $ExclCB.Margin = [System.Windows.Thickness]::new(8,0,0,0)
+            $ExclCB.SetResourceReference([System.Windows.Controls.CheckBox]::ForegroundProperty, 'ThemeTextMuted')
+            $ExclHandler = {
+                $CheckId = $this.Tag
+                $Target = $Global:Assessment.Checks | Where-Object Id -eq $CheckId
+                if ($Target) {
+                    $Target.Excluded = [bool]$this.IsChecked
+                    # Visually dim the whole row when excluded
+                    $Row = $this.Parent.Parent.Parent   # CheckBox -> Grid -> CheckCard -> OuterGrid
+                    $Row.Opacity = if ($Target.Excluded) { 0.45 } else { 1.0 }
+                    Set-Dirty
+                    Update-Progress
+                    Check-AssessmentAchievements
+                }
+            }
+            $ExclCB.Add_Checked($ExclHandler)
+            $ExclCB.Add_Unchecked($ExclHandler)
+            [System.Windows.Controls.Grid]::SetColumn($ExclCB, 4)
+            [void]$Grid.Children.Add($ExclCB)
+
+            # Dim excluded rows on initial render (E-2)
+            if ($Check.Excluded) { $OuterGrid.Opacity = 0.45 }
 
             $CheckCard.Child = $Grid
             [System.Windows.Controls.Grid]::SetColumn($CheckCard, 1)
@@ -3359,7 +3455,8 @@ tr.filter-hidden{display:none}
     foreach ($K in $DimKeys) {
         $DS = $DimScores[$K]
         $DLabel = $Global:MaturityDimensions[$K].Label
-        $DColor = if ($DS -ge 80) { 'var(--green)' } elseif ($DS -ge 50) { 'var(--orange)' } elseif ($DS -ge 0) { 'var(--red)' } else { 'var(--text-faint)' }
+        # E-4: canonical 5-tier maturity zone color (matches live dashboard thresholds)
+        $DColor = if ($DS -ge 0) { Get-MaturityZoneColor $DS } else { 'var(--text-faint)' }
         $DWidth = if ($DS -ge 0) { $DS } else { 0 }
         # Count pass/warn/fail in dimension
         $DimPrefixes = $Global:MaturityDimensions[$K].Prefixes
@@ -4006,169 +4103,10 @@ function Get-ExecutiveSummary {
     [void]$sb.AppendLine('SCORING METHODOLOGY')
     [void]$sb.AppendLine('-------------------')
     [void]$sb.AppendLine('  Score = weighted average: Critical(5x), High(4x), Medium(3x), Low(2x)')
-    [void]$sb.AppendLine('  Pass/N/A = 100pts, Warning = 50pts, Fail/Not Assessed = 0pts')
+    [void]$sb.AppendLine('  Pass = 100pts, Warning = 50pts, Fail/Not Assessed = 0pts; N/A and Excluded checks are not scored')
     [void]$sb.AppendLine('  Maturity: Initial(0-34), Developing(35-54), Defined(55-74), Managed(75-89), Optimized(90+)')
 
     return $sb.ToString()
-}
-
-function Get-ExecutiveSummaryRtf {
-    <#
-    .SYNOPSIS  Clean, Robinhood-inspired RTF executive summary for Outlook/Word/Teams.
-    #>
-    $Checks   = $Global:Assessment.Checks
-    $Score    = Get-OverallScore
-    $Maturity = Get-MaturityLevel $Score
-
-    $Total    = $Checks.Count
-    $Assessed = @($Checks | Where-Object { $_.Status -ne 'Not Assessed' }).Count
-    $Pass     = @($Checks | Where-Object { $_.Status -eq 'Pass' }).Count
-    $Fail     = @($Checks | Where-Object { $_.Status -eq 'Fail' }).Count
-    $Warn     = @($Checks | Where-Object { $_.Status -eq 'Warning' }).Count
-    $NA       = @($Checks | Where-Object { $_.Status -eq 'N/A' }).Count
-
-    $DefLookup = @{}
-    foreach ($Def in $Global:CheckDefinitions) { $DefLookup[$Def.id] = $Def }
-
-    $esc = { param($t) if (-not $t) { return '' }; "$t".Replace('\','\\').Replace('{','\{').Replace('}','\}') }
-
-    $rtf = [System.Text.StringBuilder]::new()
-    [void]$rtf.Append('{\rtf1\ansi\deff0')
-    [void]$rtf.Append('{\fonttbl{\f0\fswiss\fcharset0 Segoe UI;}{\f1\fmodern\fcharset0 Cascadia Mono;}}')
-    [void]$rtf.Append('{\colortbl;')
-    [void]$rtf.Append('\red0\green120\blue212;')      #  1 Microsoft Blue
-    [void]$rtf.Append('\red16\green124\blue16;')       #  2 Green
-    [void]$rtf.Append('\red209\green52\blue56;')       #  3 Red
-    [void]$rtf.Append('\red202\green80\blue16;')       #  4 Orange
-    [void]$rtf.Append('\red138\green136\blue134;')     #  5 Gray
-    [void]$rtf.Append('\red243\green242\blue241;')     #  6 Light bg
-    [void]$rtf.Append('\red255\green255\blue255;')     #  7 White
-    [void]$rtf.Append('\red50\green49\blue48;')        #  8 Dark text
-    [void]$rtf.Append('\red0\green47\blue108;')        #  9 Navy
-    [void]$rtf.Append('}')
-    [void]$rtf.Append('\f0\fs20\cf8 ')
-
-    # ── HEADER ──
-    $custName = if ($Global:Assessment.CustomerName) { & $esc $Global:Assessment.CustomerName } else { 'Assessment' }
-    [void]$rtf.Append("{\pard\sb0\sa40\ql{\f0\fs18\cf5 MICROSOFT  \u8226  AZURE VIRTUAL DESKTOP}\par")
-    [void]$rtf.Append("\pard\sb0\sa0\ql{\f0\fs40\b\cf8 $custName}\par")
-    [void]$rtf.Append("\pard\sb0\sa200\ql{\f0\fs18\cf5 $(Get-Date -Format 'MMMM d, yyyy')}\par}")
-
-    # ── SCORE HERO ──
-    $scoreStr = if ($Score -ge 0) { "$Score" } else { '\u8212' }
-    $scoreClr = if ($Score -ge 75) { '\cf2' } elseif ($Score -ge 50) { '\cf4' } elseif ($Score -ge 0) { '\cf3' } else { '\cf5' }
-    [void]$rtf.Append("{\pard\sb0\sa0\ql{\f0\fs96\b$scoreClr $scoreStr}{\f0\fs32\cf5  / 100}\par")
-    [void]$rtf.Append("\pard\sb0\sa200\ql{\f0\fs22\cf5 Overall Score  \u8226  }{\f0\fs22\b\cf1 $Maturity}\par}")
-
-    # ── STATUS LINE ──
-    [void]$rtf.Append("{\pard\sb0\sa200\ql{\f0\fs20 ")
-    [void]$rtf.Append("{\b\cf2 $Pass} pass   ")
-    [void]$rtf.Append("{\b\cf3 $Fail} fail   ")
-    [void]$rtf.Append("{\b\cf4 $Warn} warning   ")
-    [void]$rtf.Append("{\cf5 $NA N/A}")
-    [void]$rtf.Append("{\cf5   \u8226  $Assessed of $Total assessed}")
-    [void]$rtf.Append("}\par}")
-
-    # ── THIN DIVIDER ──
-    [void]$rtf.Append('\pard\sb0\sa200{\f0\fs4\cf5\brdrb\brdrs\brdrw5\brsp20 \par}')
-
-    # ── ENVIRONMENT (if discovery data) ──
-    if ($Global:Assessment.Discovery -and $Global:Assessment.Discovery.Inventory) {
-        $Inv = $Global:Assessment.Discovery.Inventory
-        [void]$rtf.Append("{\pard\sb0\sa120\ql{\f0\fs15\b\cf5 ENVIRONMENT}\par")
-        [void]$rtf.Append("\pard\sb0\sa200\ql{\f0\fs20\cf8 ")
-        [void]$rtf.Append("{\b $($Inv.HostPools.Count)} host pools   ")
-        [void]$rtf.Append("{\b $($Inv.SessionHosts.Count)} session hosts   ")
-        [void]$rtf.Append("{\b $($Inv.AppGroups.Count)} app groups   ")
-        [void]$rtf.Append("{\b $($Inv.Workspaces.Count)} workspaces")
-        if ($Global:Assessment.Discovery.Subscriptions) {
-            $subNames = ($Global:Assessment.Discovery.Subscriptions | ForEach-Object { $_.Name }) -join ', '
-            [void]$rtf.Append("\line{\cf5 $($Global:Assessment.Discovery.Subscriptions.Count) subscription ($subNames)}")
-        }
-        [void]$rtf.Append("}\par}")
-    }
-
-    # ── CATEGORY SCORES (simple list) ──
-    [void]$rtf.Append("{\pard\sb0\sa120\ql{\f0\fs15\b\cf5 CATEGORIES}\par}")
-    foreach ($Cat in (Get-Categories)) {
-        $CatScore = Get-CategoryScore $Cat
-        $CatChecks = @($Checks | Where-Object { $_.Category -eq $Cat })
-        $CatPass  = @($CatChecks | Where-Object { $_.Status -eq 'Pass' }).Count
-        $CatFail  = @($CatChecks | Where-Object { $_.Status -eq 'Fail' }).Count
-        $CatWarn  = @($CatChecks | Where-Object { $_.Status -eq 'Warning' }).Count
-        $ScoreStr = if ($CatScore -ge 0) { "$CatScore%" } else { 'N/A' }
-        $sClr     = if ($CatScore -ge 80) { '\cf2' } elseif ($CatScore -ge 50) { '\cf4' } elseif ($CatScore -ge 0) { '\cf3' } else { '\cf5' }
-        [void]$rtf.Append("{\pard\sb0\sa20\ql{\f0\fs20\cf8 $(& $esc $Cat)  }{\f0\fs20\b$sClr $ScoreStr}")
-        [void]$rtf.Append("{\f0\fs16\cf5   $CatPass pass \u8226 $CatWarn warn \u8226 $CatFail fail}")
-        [void]$rtf.Append("\par}")
-    }
-
-    # ── THIN DIVIDER ──
-    [void]$rtf.Append('\pard\sb120\sa200{\f0\fs4\cf5\brdrb\brdrs\brdrw5\brsp20 \par}')
-
-    # ── MATURITY DIMENSIONS (simple list) ──
-    [void]$rtf.Append("{\pard\sb0\sa120\ql{\f0\fs15\b\cf5 MATURITY}\par}")
-    foreach ($Key in $Global:MaturityDimensions.Keys) {
-        $Dim    = $Global:MaturityDimensions[$Key]
-        $DScore = Get-DimensionScore $Key
-        $DStr   = if ($DScore -ge 0) { "$DScore%" } else { 'N/A' }
-        $DLevel = if ($DScore -ge 0) { Get-MaturityLevel $DScore } else { '' }
-        $dClr   = if ($DScore -ge 80) { '\cf2' } elseif ($DScore -ge 50) { '\cf4' } elseif ($DScore -ge 0) { '\cf3' } else { '\cf5' }
-        [void]$rtf.Append("{\pard\sb0\sa20\ql{\f0\fs20\cf8 $(& $esc $Dim.Label)  }{\f0\fs20\b$dClr $DStr}{\f0\fs16\cf5   $DLevel}\par}")
-    }
-    $Composite = Get-CompositeMaturityScore
-    if ($Composite -ge 0) {
-        $cClr = if ($Composite -ge 80) { '\cf2' } elseif ($Composite -ge 50) { '\cf4' } else { '\cf3' }
-        [void]$rtf.Append("{\pard\sb20\sa0\ql{\f0\fs20\b\cf8 Composite  }{\f0\fs20\b$cClr $Composite%}{\f0\fs16\cf5   $(Get-MaturityLevel $Composite)}\par}")
-    }
-
-    # ── THIN DIVIDER ──
-    [void]$rtf.Append('\pard\sb120\sa200{\f0\fs4\cf5\brdrb\brdrs\brdrw5\brsp20 \par}')
-
-    # ── TOP FAILURES (Critical & High only) ──
-    $critFails = @($Checks | Where-Object {
-        $_.Status -eq 'Fail' -and $_.Severity -in @('Critical','High')
-    } | Sort-Object @{E={if($_.Severity -eq 'Critical'){0}else{1}}}, Id)
-    if ($critFails.Count -gt 0) {
-        [void]$rtf.Append("{\pard\sb0\sa120\ql{\f0\fs15\b\cf5 TOP FINDINGS ($($critFails.Count))}\par}")
-        foreach ($f in $critFails) {
-            $sevClr = if ($f.Severity -eq 'Critical') { '\cf3' } else { '\cf4' }
-            [void]$rtf.Append("{\pard\sb0\sa10\ql{\f0\fs18$sevClr \u9679 }{\f0\fs18\cf8 $(& $esc $f.Name)}{\f0\fs15\cf5   $($f.Id)}\par}")
-        }
-
-        $medLowFails = @($Checks | Where-Object { $_.Status -eq 'Fail' -and $_.Severity -in @('Medium','Low') })
-        if ($medLowFails.Count -gt 0) {
-            $medCount = @($medLowFails | Where-Object { $_.Severity -eq 'Medium' }).Count
-            $lowCount = @($medLowFails | Where-Object { $_.Severity -eq 'Low' }).Count
-            [void]$rtf.Append("{\pard\sb40\sa0\ql{\f0\fs16\cf5 + $medCount medium and $lowCount low severity findings}\par}")
-        }
-    }
-
-    # ── QUICK WINS ──
-    $quickWins = @($Checks | Where-Object {
-        $_.Status -eq 'Fail' -and ($DefLookup[$_.Id].effort -eq 'Quick Win' -or $_.effort -eq 'Quick Win')
-    } | Sort-Object @{E={switch($_.Severity){'Critical'{0}'High'{1}'Medium'{2}default{3}}}}, Id | Select-Object -First 5)
-    if ($quickWins.Count -gt 0) {
-        [void]$rtf.Append('\pard\sb120\sa200{\f0\fs4\cf5\brdrb\brdrs\brdrw5\brsp20 \par}')
-        [void]$rtf.Append("{\pard\sb0\sa120\ql{\f0\fs15\b\cf5 QUICK WINS}\par}")
-        $qi = 0
-        foreach ($qw in $quickWins) {
-            $qi++
-            $rem = if ($qw.remediation) { $qw.remediation } elseif ($DefLookup[$qw.Id].remediation) { $DefLookup[$qw.Id].remediation } else { $null }
-            [void]$rtf.Append("{\pard\sb0\sa10\ql{\f0\fs18\cf8 ${qi}. $(& $esc $qw.Name)}\par}")
-            if ($rem) {
-                $remText = if ($rem.Length -gt 120) { $rem.Substring(0,120) + '...' } else { $rem }
-                [void]$rtf.Append("{\pard\sb0\sa20\li200{\f0\fs16\i\cf5 $(& $esc $remText)}\par}")
-            }
-        }
-    }
-
-    # ── FOOTER ──
-    [void]$rtf.Append('\pard\sb200\sa0{\f0\fs4\cf5\brdrb\brdrs\brdrw5\brsp20 \par}')
-    [void]$rtf.Append("{\pard\sb40\sa0\ql{\f0\fs14\cf5 Generated by AVD Assessor v$Global:AppVersion  \u8226  Microsoft Confidential}\par}")
-
-    [void]$rtf.Append('}')
-    return $rtf.ToString()
 }
 
 function Get-ExecutiveSummaryEmailHtml {
@@ -4190,7 +4128,8 @@ function Get-ExecutiveSummaryEmailHtml {
     foreach ($Def in $Global:CheckDefinitions) { $DefLookup[$Def.id] = $Def }
 
     $hesc = { param($t) if (-not $t) { return '' }; [System.Net.WebUtility]::HtmlEncode("$t") }
-    $sClr = { param($s) if ($s -ge 80) { '#107C10' } elseif ($s -ge 50) { '#CA5010' } elseif ($s -ge 0) { '#D13438' } else { '#8A8886' } }
+    # E-4: canonical 5-tier maturity zone color (matches live dashboard thresholds)
+    $sClr = { param($s) Get-MaturityZoneColor ([int]$s) }
 
     $custName   = & $hesc $(if ($Global:Assessment.CustomerName) { $Global:Assessment.CustomerName } else { 'Assessment' })
     $scoreColor = & $sClr $Score
@@ -4332,7 +4271,7 @@ function Get-ExecutiveSummaryEmailHtml {
         $DStr   = if ($DScore -ge 0) { "$DScore%" } else { 'N/A' }
         $DLevel = if ($DScore -ge 0) { Get-MaturityLevel $DScore } else { '' }
         $dClr   = & $sClr $DScore
-        $dBg    = if ($DScore -ge 80) { '#E6F2E6' } elseif ($DScore -ge 50) { '#FDF0E6' } elseif ($DScore -ge 0) { '#FBEAEA' } else { '#F3F2F1' }
+        $dBg    = if ($DScore -ge 75) { '#E6F2E6' } elseif ($DScore -ge 35) { '#FDF0E6' } elseif ($DScore -ge 0) { '#FBEAEA' } else { '#F3F2F1' }  # E-4: tier boundaries aligned with Get-MaturityZoneColor
         $bgRow  = if ($dimIdx % 2 -eq 0) { '#FFFFFF' } else { '#F3F2F1' }
         $barPct = if ($DScore -ge 0) { [Math]::Max($DScore, 2) } else { 0 }
 
@@ -4350,7 +4289,7 @@ function Get-ExecutiveSummaryEmailHtml {
     $Composite = Get-CompositeMaturityScore
     if ($Composite -ge 0) {
         $cClr = & $sClr $Composite
-        $cBg  = if ($Composite -ge 80) { '#E6F2E6' } elseif ($Composite -ge 50) { '#FDF0E6' } else { '#FBEAEA' }
+        $cBg  = if ($Composite -ge 75) { '#E6F2E6' } elseif ($Composite -ge 35) { '#FDF0E6' } else { '#FBEAEA' }  # E-4: tier boundaries aligned with Get-MaturityZoneColor
         $cPct = [Math]::Max($Composite, 2)
         [void]$h.Append("<tr style=`"background-color:#EFF6FC;`">")
         [void]$h.Append("<td style=`"padding:10px 12px;font-weight:bold;border-top:2px solid #0078D4;`">Composite Score</td>")
@@ -4451,7 +4390,7 @@ function Get-ExecutiveSummaryEmailHtml {
 <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:#EFF6FC;border-left:3px solid #0078D4;">
 <tr><td style="padding:14px 16px;">
 <p style="Margin:0;font-size:10px;font-weight:bold;color:#0078D4;letter-spacing:1px;padding-bottom:6px;">SCORING METHODOLOGY</p>
-<p style="Margin:0;font-size:11px;color:#424242;line-height:18px;">Weighted average: Critical (5&#215;), High (4&#215;), Medium (3&#215;), Low (2&#215;). Scores: Pass/N/A = 100pts, Warning = 50pts, Fail = 0pts. Maturity: Initial (0&#8211;34), Developing (35&#8211;54), Defined (55&#8211;74), Managed (75&#8211;89), Optimized (90+).</p>
+<p style="Margin:0;font-size:11px;color:#424242;line-height:18px;">Weighted average: Critical (5&#215;), High (4&#215;), Medium (3&#215;), Low (2&#215;). Scores: Pass = 100pts, Warning = 50pts, Fail/Not Assessed = 0pts; N/A and Excluded checks are not scored. Maturity: Initial (0&#8211;34), Developing (35&#8211;54), Defined (55&#8211;74), Managed (75&#8211;89), Optimized (90+).</p>
 </td></tr></table>
 </td></tr>
 "@)
@@ -4525,7 +4464,19 @@ function Export-CsvReport {
 
     if ($dlg.ShowDialog() -eq $true) {
         try {
-            $Global:Assessment.Checks | Select-Object Id, Category, Name, Description, Status, Severity, Weight, Excluded, Origin, Source, Details, Notes |
+            # E-6: neutralize Excel/Sheets formula injection — free-text values starting with
+            # = + - @ are prefixed with a single quote so they import as text, not formulas.
+            $NoFormula = {
+                param($v)
+                $s = "$v"
+                if ($s -and $s[0] -in @([char]'=', [char]'+', [char]'-', [char]'@')) { "'" + $s } else { $s }
+            }
+            $Global:Assessment.Checks | Select-Object Id, Category,
+                @{ Name = 'Name';        Expression = { & $NoFormula $_.Name } },
+                @{ Name = 'Description'; Expression = { & $NoFormula $_.Description } },
+                Status, Severity, Weight, Excluded, Origin, Source,
+                @{ Name = 'Details';     Expression = { & $NoFormula $_.Details } },
+                @{ Name = 'Notes';       Expression = { & $NoFormula $_.Notes } } |
                 Export-Csv -Path $dlg.FileName -NoTypeInformation -Encoding UTF8
             Write-DebugLog "CSV exported: $($dlg.FileName)" -Level 'SUCCESS'
             Unlock-Achievement 'export_csv'
@@ -4611,7 +4562,9 @@ function Clear-Dirty {
 #>
 function AutoSave-Assessment {
     if (-not $Global:AutoSaveEnabled) { return }
-    Set-Dirty
+    # E-5: skip the write entirely when there are no unsaved changes (no Set-Dirty here —
+    # autosaving is not itself a change, and re-lighting the dirty dot after a manual save was a bug).
+    if (-not $Global:IsDirty) { return }
     try {
         Sync-AssessmentFromUI
         $JsonStr = $Global:Assessment | ConvertTo-Json -Depth 10
@@ -4631,9 +4584,9 @@ function AutoSave-Assessment {
         $OldBackups = @(Get-ChildItem $BackupDir -Filter 'backup_*.json' -ErrorAction SilentlyContinue |
             Sort-Object LastWriteTime -Descending | Select-Object -Skip $Global:MaxBackups)
         foreach ($Old in $OldBackups) {
-            try { [System.IO.File]::Delete($Old.FullName) } catch { }
+            try { [System.IO.File]::Delete($Old.FullName) } catch { Write-DebugLog "AutoSave: backup purge failed for $($Old.Name): $($_.Exception.Message)" -Level 'DEBUG' }
         }
-    } catch { }
+    } catch { Write-DebugLog "AutoSave failed: $($_.Exception.Message)" -Level 'WARN' }
 }
 
 <#
@@ -4679,7 +4632,7 @@ function Save-Assessment {
         # Remove the old untitled file if renaming
         if ($Global:ActiveFilePath -and (Test-Path $Global:ActiveFilePath) -and
             (Split-Path $Global:ActiveFilePath -Leaf) -match '^untitled_') {
-            try { [System.IO.File]::Delete($Global:ActiveFilePath) } catch { }
+            try { [System.IO.File]::Delete($Global:ActiveFilePath) } catch { Write-DebugLog "Save: failed to remove old untitled file '$Global:ActiveFilePath': $($_.Exception.Message)" -Level 'DEBUG' }
         }
         $Global:ActiveFilePath = $Path
     } else {
@@ -4768,6 +4721,7 @@ function Load-Assessment {
                     Discovery     = $null
                     Checks        = [System.Collections.ArrayList]::new()
                     ManualOverrides = @{}
+                    CatalogVersion  = $Global:ChecksCatalogVersion
                 }
                 foreach ($Def in $Global:CheckDefinitions) {
                     [void]$Global:Assessment.Checks.Add([PSCustomObject]@{
@@ -4882,18 +4836,19 @@ function Refresh-AssessmentList {
                 $DisplayName = if ($Peek.CustomerName) { $Peek.CustomerName } else { 'Untitled Assessment' }
                 $ProgressText = "$Assessed/$Total"
                 if ($Assessed -gt 0) {
-                    # Honest scoring matching dashboard: Not Assessed = 0 pts, included in denominator, weighted
-                    $ScoringChecks = @($Peek.Checks)
+                    # Honest scoring matching dashboard (E-1): Not Assessed = 0 pts in denominator;
+                    # N/A and Excluded removed from numerator AND denominator; weighted
+                    $ScoringChecks = @($Peek.Checks | Where-Object { -not $_.Excluded -and $_.Status -ne 'N/A' })
                     $WeightedSum = 0; $TotalWeight = 0
                     foreach ($SC in $ScoringChecks) {
                         $W = [math]::Max(1, [int]$SC.Weight)
-                        $Pts = switch ($SC.Status) { 'Pass' { 100 } 'N/A' { 100 } 'Warning' { 50 } default { 0 } }
+                        $Pts = switch ($SC.Status) { 'Pass' { 100 } 'Warning' { 50 } default { 0 } }
                         $WeightedSum += $Pts * $W; $TotalWeight += $W
                     }
                     if ($TotalWeight -gt 0) { $ScorePercent = [math]::Round($WeightedSum / $TotalWeight, 0) }
                 }
             }
-        } catch { }
+        } catch { Write-DebugLog "Assessment list: failed to peek '$($F.Name)': $($_.Exception.Message)" -Level 'DEBUG' }
 
         $Item = New-Object System.Windows.Controls.ListViewItem
         $Item.Tag = $F.FullName
@@ -5664,46 +5619,10 @@ foreach ($Cat in (Get-Categories)) {
 $cmbFilterCategory.SelectedIndex = 0
 
 # ===============================================================================
-# SECTION 17: BACKGROUND JOB POLLING TIMER
+# SECTION 17 (removed): the background-job polling timer only drained the never-used
+# Start-BackgroundWork/SyncHash/BgJobs scaffolding — removed with it (audit E-6).
+# Discovery runs out-of-band; the only remaining timer is the autosave DispatcherTimer.
 # ===============================================================================
-
-$Timer = New-Object System.Windows.Threading.DispatcherTimer
-$Timer.Interval = [TimeSpan]::FromMilliseconds($Script:TIMER_INTERVAL_MS)
-$Timer.Add_Tick({
-    if ($Global:TimerProcessing) { return }
-    $Global:TimerProcessing = $true
-    try {
-        # Process completed background jobs
-        $Completed = @($Global:BgJobs | Where-Object { $_.Handle.IsCompleted })
-        foreach ($Job in $Completed) {
-            try {
-                $Results = $Job.PS.EndInvoke($Job.Handle)
-                $Errors  = $Job.PS.Streams.Error
-                if ($Job.OnComplete) {
-                    & $Job.OnComplete $Results $Errors $Job.Context
-                }
-            } catch {
-                Write-DebugLog "BgJob [$($Job.Name)] error: $($_.Exception.Message)" -Level 'ERROR'
-            } finally {
-                $Job.PS.Dispose()
-                $Job.RS.Dispose()
-                [void]$Global:BgJobs.Remove($Job)
-            }
-        }
-
-        # Process sync queue messages
-        while ($Global:SyncHash.LogQueue.Count -gt 0) {
-            $Msg = $Global:SyncHash.LogQueue.Dequeue()
-            Write-DebugLog $Msg.Message -Level $Msg.Level
-        }
-        while ($Global:SyncHash.StatusQueue.Count -gt 0) {
-            $null = $Global:SyncHash.StatusQueue.Dequeue()
-        }
-    } finally {
-        $Global:TimerProcessing = $false
-    }
-})
-$Timer.Start()
 
 # ===============================================================================
 # SECTION 18: INITIALIZATION
@@ -5715,6 +5634,10 @@ Write-DebugLog "[INIT] Root: $Global:Root" -Level 'DEBUG'
 # Set initial values
 $txtAssessmentDate.Text = (Get-Date -Format 'yyyy-MM-dd')
 $lblSplashVersion.Text = "v$Global:AppVersion"
+# H-5: Settings tab + title bar version labels were hardcoded in XAML and never bound — bind like the splash
+$lblSettingsVersionRun = $Window.FindName('lblSettingsVersion')
+if ($lblSettingsVersionRun) { $lblSettingsVersionRun.Text = "v$Global:AppVersion" }
+if ($lblTitleVersion) { $lblTitleVersion.Text = "v$Global:AppVersion" }
 
 # Splash step 
 Update-AchievementBadges
@@ -5830,7 +5753,7 @@ $Window.Add_Closing({
             Sync-AssessmentFromUI
             $Global:Assessment | ConvertTo-Json -Depth 10 | Set-Content $Global:ActiveFilePath -Encoding UTF8 -Force
             Write-DebugLog "Auto-saved to active profile: $Global:ActiveFilePath" -Level 'SUCCESS'
-        } catch { }
+        } catch { Write-DebugLog "Close: save to active profile failed: $($_.Exception.Message)" -Level 'ERROR' }
     }
     # If dirty but no active file, warn
     elseif ($Global:IsDirty -and (Test-AssessmentDirty)) {
@@ -5863,14 +5786,13 @@ $Window.Add_ContentRendered({
     try {
         $WIH = New-Object System.Windows.Interop.WindowInteropHelper($Window)
         [ForegroundHelper]::SetForegroundWindow($WIH.Handle) | Out-Null
-    } catch { }
+    } catch { Write-DebugLog "SetForegroundWindow failed: $($_.Exception.Message)" -Level 'DEBUG' }
 })
 
 # Show window (blocks until closed)
 $Window.ShowDialog() | Out-Null
 
 # Cleanup
-$Timer.Stop()
 $Global:AutoSaveTimer.Stop()
 Write-DebugLog "Application closed" -Level 'INFO'
 

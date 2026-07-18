@@ -1,0 +1,10 @@
+* text=auto
+*.ps1 text eol=lf
+*.psm1 text eol=lf
+*.xaml text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.bat text eol=crlf
+*.png binary
+*.ico binary

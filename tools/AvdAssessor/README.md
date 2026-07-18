@@ -2,7 +2,7 @@
 
 **Assess Azure Virtual Desktop environments against CAF, Well-Architected Framework, and Landing Zone Accelerator best practices.**
 
-AVD Assessor is a PowerShell/WPF desktop application that combines automated Azure subscription discovery with a workshop-friendly manual checklist — 173 checks across 11 categories — to produce scored readiness reports with maturity dimensions, category breakdowns, and exportable HTML/CSV/JSON deliverables.
+AVD Assessor is a PowerShell/WPF desktop application that combines automated Azure subscription discovery with a workshop-friendly manual checklist — 183 checks across 11 categories — to produce scored readiness reports with maturity dimensions, category breakdowns, and exportable HTML/CSV/JSON deliverables.
 
 ![PowerShell](https://img.shields.io/badge/PowerShell-5.1%2B-blue)
 ![WPF](https://img.shields.io/badge/GUI-WPF-blueviolet)
@@ -14,8 +14,8 @@ AVD Assessor is a PowerShell/WPF desktop application that combines automated Azu
 
 Running an AVD readiness review typically involves spreadsheets, tribal knowledge, and hours of manual Azure portal checks. Findings are inconsistent between assessors, scoring is subjective, and reports are created from scratch each time. AVD Assessor solves this by:
 
-- **Standardizing the framework**: 173 checks derived from Microsoft CAF, WAF, and LZA guidance, each with severity, weight, effort estimate, and documentation reference
-- **Automating what can be automated**: A standalone discovery script scans Azure subscriptions and evaluates 82 checks automatically — networking rules, VM configurations, scaling plans, storage security, monitoring, and more
+- **Standardizing the framework**: 183 checks derived from Microsoft CAF, WAF, and LZA guidance, each with severity, weight, effort estimate, and documentation reference
+- **Automating what can be automated**: A standalone discovery script scans Azure subscriptions and evaluates 99 checks automatically — networking rules, VM configurations, scaling plans, storage security, monitoring, Conditional Access / MFA (via Microsoft Graph), and more
 - **Supporting the workshop**: A WPF GUI for interactive walkthroughs where the assessor and customer review checks together, add notes, and set statuses in real time
 - **Scoring objectively**: Weighted category scores, an overall score, and a six-dimension maturity model (Initial → Optimized) provide a clear picture of readiness
 - **Producing deliverables**: One-click export to dark/light HTML reports, CSV data dumps, or JSON snapshots for programmatic consumption
@@ -25,20 +25,20 @@ Running an AVD readiness review typically involves spreadsheets, tribal knowledg
 ## Features
 
 ### Assessment Framework
-- **173 checks** across 11 categories: Identity & Access, Networking, Session Hosts, FSLogix & Profiles, Security, Monitoring, BCDR, Governance & Cost, Application Delivery, Operations, Landing Zone
+- **183 checks** across 11 categories: Identity & Access, Networking, Session Hosts, FSLogix & Profiles, Security, Monitoring, BCDR, Governance & Cost, Application Delivery, Operations, Landing Zone
 - Each check carries severity (Critical/High/Medium/Low), weight (1–5), effort estimate (Quick Win/Some Effort/Major Effort), and a Microsoft documentation URL
 - Checks are defined in `checks.json` — extensible without code changes
-- Check types: 82 automated (discovery-backed) + 91 manual (workshop review)
+- Check types: 99 automated (discovery-backed) + 84 manual (workshop review)
 
 ### Automated Discovery
 - Standalone `Invoke-AvdDiscovery.ps1` script runs against one or more Azure subscriptions
-- Evaluates 82 checks automatically via Azure PowerShell modules
+- Evaluates 99 checks automatically via Azure PowerShell modules (including Conditional Access / MFA / passwordless via Microsoft Graph)
 - Discovers host pools, session hosts (VM metadata, boot diagnostics, disk encryption, agent versions), application groups, workspaces, scaling plans, VNets, NSGs, storage accounts, Key Vaults, policies, alerts, quotas, budgets, reserved instances, orphaned resources
 - Outputs a structured JSON that can be imported into the GUI for hybrid assessment
 - Supports multi-subscription scanning, custom output paths, and `‑SkipLogin` for existing Az contexts
 
 ### Scoring & Maturity Model
-- **Status scoring**: Pass = 100%, Warning = 50%, Fail = 0%, N/A and Not Assessed are excluded
+- **Status scoring**: Pass = 100%, Warning = 50%, Fail = 0%. N/A is excluded from both the numerator and denominator. Not Assessed scores 0% but remains in the denominator — partial completion shows honest scores. Excluded checks are removed entirely from scoring
 - **Category score**: Weighted average of assessed checks within each category
 - **Overall score**: Weighted average across all categories
 - **Six maturity dimensions**: Security & Identity, Operations & Hosts, Networking, Resiliency & BCDR, Profiles & Storage, Monitoring
@@ -161,16 +161,23 @@ Then import the discovery JSON into the GUI via **Import Discovery / Assessment*
 |---|---|
 | PowerShell | 5.1 or 7+ |
 | Az.Accounts | Authentication and subscription management |
-| Az.Compute | VM metadata, disk, and NIC details |
 | Az.DesktopVirtualization | Host pools, session hosts, app groups, workspaces, scaling plans |
+| Az.Resources | Resource groups, tags, locks, generic resource queries |
+| Az.Compute | VM metadata, disk, and NIC details |
+| Az.Network | NSGs, VNets, peerings, NAT Gateways, route tables |
+| Az.PrivateDns | Private DNS zone linkage checks |
+| Az.Monitor | Diagnostic settings, alerts, and monitoring checks |
 | Az.Storage | Storage account security and configuration checks |
 | Az.KeyVault | Key Vault existence and private endpoint checks |
-| Az.Monitor | Diagnostic settings, alerts, and monitoring checks |
+| Az.Security | Defender for Cloud, secure score, JIT, regulatory compliance checks |
 | Azure RBAC | **Reader** role on target subscription(s) |
+| Microsoft Graph | **Policy.Read.All** (Conditional Access / MFA / token-protection checks) and, optionally, **AuditLog.Read.All** (passwordless registration). The Graph token is acquired from the existing Az login — no extra module is required. Identity checks degrade to `Error` (not a crash) when these permissions are absent |
 
 ```powershell
-Install-Module Az.Accounts, Az.Compute, Az.DesktopVirtualization, Az.Storage, Az.KeyVault, Az.Monitor -Scope CurrentUser
+Install-Module Az.Accounts, Az.DesktopVirtualization, Az.Resources, Az.Compute, Az.Network, Az.PrivateDns, Az.Monitor, Az.Storage, Az.KeyVault, Az.Security -Scope CurrentUser
 ```
+
+> **Graph permissions**: the discovery script calls Microsoft Graph (Conditional Access policies, authentication method registration) using a token from your Az login. Grant the signed-in account `Policy.Read.All` for the MFA / Conditional Access / Windows Cloud Login / token-protection checks (IAM-002/003/010/011), and `AuditLog.Read.All` (plus an Entra ID P1/P2 license) for the passwordless-registration check (IAM-009). Without them, those identity checks report `Error` rather than failing the run.
 
 ---
 
@@ -178,17 +185,17 @@ Install-Module Az.Accounts, Az.Compute, Az.DesktopVirtualization, Az.Storage, Az
 
 | Category | Checks | ID Prefix | Sources | Key Areas |
 |---|---|---|---|---|
-| Session Hosts | 26 | SH | WAF, CAF | VM sizing, images, agents, boot diag, disk encryption, power states |
-| FSLogix & Profiles | 25 | PROF | WAF, FSL | Profile containers, VHD locations, exclusions, Azure Files SMB |
-| Security | 24 | SEC | SEC, WAF | MFA, conditional access, endpoint protection, TLS, clipboard policy |
-| Networking | 21 | NET | WAF, LZA | DNS, NSG rules, UDR, NAT Gateway, peering, subnet capacity |
-| Governance & Cost | 17 | GOV | CAF, WAF | Scaling plans, cost tagging, budgets, reserved instances, quotas |
-| Monitoring | 15 | MON | WAF, CAF | Diagnostic settings, alerts, Log Analytics, Connection Monitor |
-| BCDR | 12 | BCDR | WAF | Multi-region, backup, scaling plan schedules, disaster recovery |
-| Identity & Access | 10 | IAM | AVD, WAF | RBAC, Entra ID Join, SSO, service principals, admin isolation |
+| FSLogix & Profiles | 27 | PROF | WAF, FSL | Profile containers, VHD locations, exclusions, Azure Files SMB, Kerberos AES readiness |
+| Session Hosts | 29 | SH | WAF, CAF | VM sizing, images, agents, OS end-of-support, GPU config, region proximity, disk encryption, power states |
+| Security | 24 | SEC | SEC, WAF | MFA, conditional access, endpoint protection, secure score, JIT, security baseline, TLS, clipboard policy |
+| Networking | 21 | NET | WAF, LZA | DNS, NSG rules, UDR, NAT Gateway, private link, peering, subnet capacity |
+| Governance & Cost | 17 | GOV | CAF, WAF | Scaling plans, cost tagging, budgets, resource locks, reserved instances, quotas |
+| Monitoring | 16 | MON | WAF, CAF | Diagnostic settings, alerts, service health, SIEM/Sentinel, scaling-plan diagnostics, Log Analytics |
+| BCDR | 12 | BCDR | WAF | Multi-region, image replication, DR capacity reservation, backup, disaster recovery |
+| Identity & Access | 12 | IAM | AVD, WAF | Conditional Access / MFA, passwordless, token protection, Entra Kerberos, RBAC, SSO, Entra ID Join |
 | Landing Zone | 10 | LZ | LZA | Resource organization, naming, tagging, policy, hub-spoke |
-| Application Delivery | 9 | APP | WAF | MSIX, RemoteApp, App Attach, app layering, updates |
-| Operations | 4 | OPS | CAF, WAF | Operational readiness, run-books, day-2 processes |
+| Application Delivery | 10 | APP | WAF | App Attach, RemoteApp, Teams SlimCore migration, app layering, updates |
+| Operations | 5 | OPS | CAF, WAF | Operational readiness, run-books, Windows App client migration, day-2 processes |
 
 ### Check Metadata
 
@@ -212,9 +219,9 @@ Each check definition in `checks.json` includes:
 | Severity | Count | Weight Range |
 |---|---|---|
 | Critical | 4 | 5 |
-| High | 52 | 4–5 |
-| Medium | 93 | 2–4 |
-| Low | 24 | 1–2 |
+| High | 58 | 4 |
+| Medium | 92 | 3 |
+| Low | 23 | 2 |
 
 ---
 
@@ -222,19 +229,20 @@ Each check definition in `checks.json` includes:
 
 ### Status Scoring
 
-| Status | Score | Description |
-|---|---|---|
-| Pass | 100% | Check fully satisfied |
-| Warning | 50% | Partially met or acceptable risk documented |
-| Fail | 0% | Not met — remediation recommended |
-| N/A | Excluded | Not applicable to this environment |
-| Not Assessed | Excluded | Not yet evaluated |
+| Status | Score | Denominator | Description |
+|---|---|---|---|
+| Pass | 100% | Included | Check fully satisfied |
+| Warning | 50% | Included | Partially met or acceptable risk documented |
+| Fail | 0% | Included | Not met — remediation recommended |
+| N/A | Excluded | Excluded | Not applicable to this environment — removed from both numerator and denominator |
+| Not Assessed | 0% | Included | Not yet evaluated — scores 0 but stays in the denominator so partial completion shows honest, unrounded scores |
+| Excluded | Excluded | Excluded | Check explicitly excluded from scoring; removed entirely |
 
 ### Calculation
 
-**Category Score** = Σ (check_score × check_weight) / Σ (check_weight) for assessed checks in that category.
+**Category Score** = Σ (check_score × check_weight) / Σ (check_weight) for all non-N/A, non-Excluded checks in that category (Not Assessed checks contribute 0 to the numerator but their weight still counts in the denominator).
 
-**Overall Score** = Σ (category_score × category_weight) / Σ (category_weight) across all categories with assessed checks.
+**Overall Score** = Σ (category_score × category_weight) / Σ (category_weight) across all categories with in-scope checks.
 
 ### Maturity Dimensions
 
@@ -284,7 +292,7 @@ Pre-workshop         Workshop                Assessment            Deliverable
 
 ### Offline Assessment
 
-The GUI works fully offline for manual-only assessments — no Azure connection required. All 173 checks can be evaluated manually based on customer documentation and interview.
+The GUI works fully offline for manual-only assessments — no Azure connection required. All 183 checks can be evaluated manually based on customer documentation and interview.
 
 ### Hybrid Mode
 
@@ -298,7 +306,7 @@ Import discovery results to pre-populate automated check statuses, then overlay 
 Overall score, maturity level, per-category breakdown bars, dimension scores, and assessment progress. Refreshes in real time as checks are evaluated.
 
 ### Assessment
-Full checklist of 173 checks grouped by category. Each check row shows severity badge, status dropdown, notes field, weight, and reference link. Supports filtering by category, status, severity, and text search.
+Full checklist of 183 checks grouped by category. Each check row shows severity badge, status dropdown, notes field, weight, and reference link. Supports filtering by category, status, severity, and text search.
 
 ### Findings
 Filtered view of Fail, Warning, and Error checks only. Grouped by category with severity indicators and inline recommendations. 
@@ -313,7 +321,7 @@ Auto-save interval, backup management, cache purge, debug overlay toggle, animat
 
 ## Discovery Script Details
 
-`Invoke-AvdDiscovery.ps1` (v0.2.0) runs as a standalone script that scans Azure subscriptions and produces a structured JSON file.
+`Invoke-AvdDiscovery.ps1` (v0.5.0) runs as a standalone script that scans Azure subscriptions and produces a structured JSON file.
 
 ### Parameters
 
@@ -348,7 +356,7 @@ The script scans these resource types and generates automated check results:
 {
   "Metadata": {
     "Timestamp": "2026-03-27T14:30:00Z",
-    "ScriptVersion": "0.2.0",
+    "ScriptVersion": "0.5.0",
     "Subscriptions": ["sub-id-1"],
     "Duration": "00:02:45"
   },
@@ -391,11 +399,11 @@ The script scans these resource types and generates automated check results:
 
 ```
 AvdAssessor/
-├── AvdAssessor.ps1              # Main GUI application (41 functions, ~4900 lines)
+├── AvdAssessor.ps1              # Main GUI application (~6k lines)
 ├── AvdAssessor_UI.xaml          # WPF layout, styles, and resource dictionaries
-├── Invoke-AvdDiscovery.ps1     # Standalone discovery script (82 automated checks)
+├── Invoke-AvdDiscovery.ps1     # Standalone discovery script (99 automated checks)
 ├── Launch_AvdAssessor.bat      # Launcher (auto-detects PS7, falls back to PS5.1)
-├── checks.json                 # 173 check definitions with metadata
+├── checks.json                 # 183 check definitions with metadata
 ├── assessments/                # Saved assessment and discovery JSON files
 │   └── discovery_*.json        # Discovery scan outputs
 ├── reports/                    # Exported HTML/CSV reports
@@ -444,7 +452,7 @@ Invoke-AvdDiscovery.ps1 ─────────▶│  Import      │
   ├─ Scaling Plans                       ▼
   ├─ VNets, NSGs, Storage       ┌────────────────┐
   ├─ Key Vaults, Monitoring     │  Sync Check    │
-  └─ Policies, Budgets, Quotas  │  Definitions   │──▶ 173 checks loaded
+  └─ Policies, Budgets, Quotas  │  Definitions   │──▶ 183 checks loaded
                                 └────────┬───────┘
                                          │
                      ┌───────────────────┼───────────────────┐
@@ -500,7 +508,7 @@ Install-Module Az.DesktopVirtualization -Scope CurrentUser -Force
 
 ### Discovery Import Shows No Automated Checks
 
-Ensure the discovery JSON was generated by `Invoke-AvdDiscovery.ps1` v0.2.0+. Older formats may not include the `Checks` array. Re-run the discovery script.
+Ensure the discovery JSON was generated by `Invoke-AvdDiscovery.ps1` v0.5.0+. Older formats may not include the `Checks` array. Re-run the discovery script.
 
 ### GUI Appears Blank or Frozen
 
@@ -512,8 +520,10 @@ Check that the `_backups/` directory exists and is writable. The auto-save timer
 
 ### Scores Don't Match Expected
 
-- Only **assessed** checks (Pass/Fail/Warning) are included in scoring
-- N/A and Not Assessed checks are excluded from both numerator and denominator
+- Pass/Fail/Warning checks are included in scoring at 100%/0%/50% respectively
+- N/A checks are excluded from both numerator and denominator
+- Not Assessed checks score 0% but **remain in the denominator** — an incomplete assessment will show a lower score than a fully-assessed one, by design
+- Excluded checks are removed entirely from scoring
 - Weights amplify the impact of higher-weighted checks — a single weight-5 Critical failure can significantly lower a category score
 
 ---
@@ -532,6 +542,12 @@ Log format: `[HH:mm:ss.fff] [LEVEL] Message`
 Levels: INFO, DEBUG, WARN, ERROR, SUCCESS
 
 ---
+
+## Changelog
+
+**0.5.0** — Graph identity collection, 16 Manual→Auto conversions, 6 new checks. Added a Microsoft Graph section to discovery (Conditional Access / MFA / Windows Cloud Login / token protection / passwordless registration; degrades to `Error` when Graph permissions are missing), converted 16 ARM/Defender-discoverable checks from Manual to Auto (IAM-002/003/009/010, BCDR-006/011, GOV-007, SH-020, APP-002/004, MON-003/012, NET-005, SEC-005/013/021), implemented the orphaned SH-018 (region proximity), reclassified NET-011 to Manual (not ARM-discoverable), and added new Auto checks IAM-011 (Windows Cloud Login CA coverage), IAM-012 (Entra Kerberos), SH-029 (OS end-of-support), SH-030 (GPU config), SH-031 (personal-pool autoscale), and MON-017 (scaling-plan diagnostics). Also corrected 15 per-subscription mapping arms whose singleton IDs (suffixed with the sub short-id by the A-1 fix) no longer matched their exact-string arm patterns.
+
+**July 2026** — Applied catalog and docs fixes from a full-surface audit (see `AUDIT.md`): reclassified several checks that can't be discovered via ARM to Manual, refreshed guidance for Windows Cloud Login, Teams SlimCore, App Attach, Session Host Update GA, RDP Shortpath, FSLogix/Kerberos AES readiness, corrected scoring semantics documentation, fixed dead reference URLs, normalized metadata, and added four new Manual checks (APP-010, OPS-006, PROF-026, PROF-027).
 
 ## Author
 
