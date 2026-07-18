@@ -9,8 +9,8 @@
     check evaluation, weighted scoring, and rich HTML report export.
 .NOTES
     Author : Anton Romanyuk
-    Version: 0.1.0
-    Date   : 2026-03-31
+    Version: 0.2.0
+    Date   : 2026-07-18
 #>
 
 # ===============================================================================
@@ -26,7 +26,7 @@ $env:PSModulePath = ($env:PSModulePath -split ';' |
 $Global:Root = $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($Global:Root)) { $Global:Root = $PWD.Path }
 
-$Global:AppVersion       = "0.1.0-alpha"
+$Global:AppVersion       = "0.2.0"
 $Global:AppTitle         = "BaselinePilot v$($Global:AppVersion)"
 $Global:PrefsPath        = Join-Path $Global:Root "user_prefs.json"
 $Global:AssessmentDir    = Join-Path $Global:Root "assessments"
@@ -48,7 +48,6 @@ foreach ($dir in @($Global:AssessmentDir, $Global:ReportDir)) {
 }
 
 $Script:LOG_MAX_LINES       = 500
-$Script:TIMER_INTERVAL_MS   = 50
 $Script:TOAST_DURATION_MS   = 4000
 
 Add-Type -AssemblyName PresentationFramework
@@ -141,66 +140,8 @@ $Global:IsLightMode         = $false
 $Global:AnimationsDisabled  = $false
 $Global:SuppressThemeHandler = $false
 
-# ===============================================================================
-# SECTION 3: THREAD SYNCHRONIZATION BRIDGE
-# ===============================================================================
+# (Section 3 removed: dead background-work / SyncHash scaffolding — see AUDIT E-8)
 
-$Global:SyncHash = [Hashtable]::Synchronized(@{
-    StatusQueue  = [System.Collections.Queue]::Synchronized([System.Collections.Queue]::new())
-    LogQueue     = [System.Collections.Queue]::Synchronized([System.Collections.Queue]::new())
-    StopFlag     = $false
-})
-
-$Global:BgJobs          = [System.Collections.ArrayList]::Synchronized([System.Collections.ArrayList]::new())
-$Global:TimerProcessing = $false
-
-function Start-BackgroundWork {
-    param(
-        [string]$Name = 'BgWork',
-        [ScriptBlock]$ScriptBlock,
-        [ScriptBlock]$OnComplete,
-        [array]$Arguments = @(),
-        [hashtable]$Variables = @{},
-        [hashtable]$Context   = @{}
-    )
-    $Work = $ScriptBlock
-    $ISS = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
-    $ISS.ExecutionPolicy = [Microsoft.PowerShell.ExecutionPolicy]::Bypass
-    $RS  = [RunspaceFactory]::CreateRunspace($ISS)
-    $RS.ApartmentState = 'STA'
-    $RS.ThreadOptions  = 'ReuseThread'
-    $RS.Open()
-
-    $CleanModulePath = ($env:PSModulePath -split ';' |
-        Where-Object { $_ -notlike '*OneDrive*' }) -join ';'
-
-    $PS = [PowerShell]::Create()
-    $PS.Runspace = $RS
-
-    $RS.SessionStateProxy.SetVariable('SyncHash', $Global:SyncHash)
-    $RS.SessionStateProxy.SetVariable('PSModulePath_Clean', $CleanModulePath)
-
-    foreach ($Key in $Variables.Keys) {
-        $RS.SessionStateProxy.SetVariable($Key, $Variables[$Key])
-    }
-
-    [void]$PS.AddScript($Work)
-    foreach ($Arg in $Arguments) { [void]$PS.AddArgument($Arg) }
-
-    $Handle = $PS.BeginInvoke()
-
-    [void]$Global:BgJobs.Add([PSCustomObject]@{
-        Name       = $Name
-        PS         = $PS
-        Handle     = $Handle
-        RS         = $RS
-        OnComplete = $OnComplete
-        Context    = $Context
-        StartTime  = [DateTime]::Now
-    })
-
-    Write-DebugLog "BgWork: launched '$Name'" -Level 'DEBUG'
-}
 
 # ===============================================================================
 # SECTION 4: XAML GUI LOAD
@@ -239,6 +180,7 @@ $btnMaximize       = $Window.FindName("btnMaximize")
 $btnClose          = $Window.FindName("btnClose")
 $lblTitle          = $Window.FindName("lblTitle")
 $lblTitleVersion   = $Window.FindName("lblTitleVersion")
+$lblSettingsVersion = $Window.FindName("lblSettingsVersion")
 $dotDirty          = $Window.FindName("dotDirty")
 $lblDirtyText      = $Window.FindName("lblDirtyText")
 $btnQuickSave      = $Window.FindName("btnQuickSave")
@@ -313,7 +255,6 @@ $btnCopySummary    = $Window.FindName("btnCopySummary")
 # Settings
 $chkDarkMode         = $Window.FindName("chkDarkMode")
 $txtDefaultAssessor  = $Window.FindName("txtDefaultAssessor")
-$cmbBaselineVersion  = $Window.FindName("cmbBaselineVersion")
 $txtNotes            = $Window.FindName("txtNotes")
 $chkAutoSave         = $Window.FindName("chkAutoSave")
 $cmbAutoSaveInterval = $Window.FindName("cmbAutoSaveInterval")
@@ -777,6 +718,172 @@ function Show-ThemedDialog {
     return $DlgResult
 }
 
+# E-2: themed input dialog — returns the entered text, or $null on cancel.
+# When -Required is set, OK is blocked (with inline hint) until text is non-empty.
+function Show-ThemedInputDialog {
+    param(
+        [string]$Title    = 'BaselinePilot',
+        [string]$Message  = '',
+        [string]$Prompt   = '',
+        [string]$Icon     = [string]([char]0xE8FB),
+        [string]$IconColor = 'ThemeWarning',
+        [switch]$Required
+    )
+
+    $Dlg = [System.Windows.Window]::new()
+    $Dlg.WindowStyle           = 'None'
+    $Dlg.AllowsTransparency    = $true
+    $Dlg.Background            = [System.Windows.Media.Brushes]::Transparent
+    $Dlg.SizeToContent         = 'WidthAndHeight'
+    $Dlg.WindowStartupLocation = 'CenterOwner'
+    $Dlg.Owner                 = $Window
+    $Dlg.MinWidth              = 420
+    $Dlg.MaxWidth              = 560
+    $Dlg.ShowInTaskbar         = $false
+
+    foreach ($rk in $Window.Resources.Keys) { $Dlg.Resources[$rk] = $Window.Resources[$rk] }
+
+    $OuterBorder = [System.Windows.Controls.Border]::new()
+    $OuterBorder.CornerRadius    = [System.Windows.CornerRadius]::new(12)
+    $OuterBorder.BorderThickness = [System.Windows.Thickness]::new(1)
+    $OuterBorder.Padding         = [System.Windows.Thickness]::new(24,20,24,20)
+    $OuterBorder.Margin          = [System.Windows.Thickness]::new(20,20,20,20)
+    $OuterBorder.SetResourceReference([System.Windows.Controls.Border]::BackgroundProperty, 'ThemeCardBg')
+    $OuterBorder.SetResourceReference([System.Windows.Controls.Border]::BorderBrushProperty, 'ThemeBorderElevated')
+    $Shadow = [System.Windows.Media.Effects.DropShadowEffect]::new()
+    $Shadow.Color = [System.Windows.Media.Colors]::Black; $Shadow.BlurRadius = 40
+    $Shadow.ShadowDepth = 8; $Shadow.Opacity = 0.5
+    $OuterBorder.Effect = $Shadow
+    $Dlg.Content = $OuterBorder
+
+    $MainStack = [System.Windows.Controls.StackPanel]::new()
+    $OuterBorder.Child = $MainStack
+
+    $Header = [System.Windows.Controls.StackPanel]::new()
+    $Header.Orientation = 'Horizontal'
+    $Header.Margin = [System.Windows.Thickness]::new(0,0,0,12)
+    $IconBadge = [System.Windows.Controls.Border]::new()
+    $IconBadge.Width = 36; $IconBadge.Height = 36
+    $IconBadge.CornerRadius = [System.Windows.CornerRadius]::new(8)
+    $IconBadge.SetResourceReference([System.Windows.Controls.Border]::BackgroundProperty, 'ThemeAccentDim')
+    $IconBadge.Margin = [System.Windows.Thickness]::new(0,0,12,0)
+    $IconTB = [System.Windows.Controls.TextBlock]::new()
+    $IconTB.Text = $Icon
+    $IconTB.FontFamily = [System.Windows.Media.FontFamily]::new("Segoe Fluent Icons, Segoe MDL2 Assets")
+    $IconTB.FontSize = 17
+    $IconTB.HorizontalAlignment = 'Center'; $IconTB.VerticalAlignment = 'Center'
+    $IconTB.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, $IconColor)
+    $IconBadge.Child = $IconTB
+    [void]$Header.Children.Add($IconBadge)
+    $TitleTB = [System.Windows.Controls.TextBlock]::new()
+    $TitleTB.Text = $Title; $TitleTB.FontSize = 15
+    $TitleTB.FontWeight = [System.Windows.FontWeights]::Bold
+    $TitleTB.VerticalAlignment = 'Center'
+    $TitleTB.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'ThemeTextPrimary')
+    [void]$Header.Children.Add($TitleTB)
+    [void]$MainStack.Children.Add($Header)
+
+    if ($Message) {
+        $MsgBlock = [System.Windows.Controls.TextBlock]::new()
+        $MsgBlock.Text = $Message; $MsgBlock.FontSize = 12
+        $MsgBlock.TextWrapping = 'Wrap'
+        $MsgBlock.Margin = [System.Windows.Thickness]::new(0,0,0,10)
+        $MsgBlock.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'ThemeTextSecondary')
+        [void]$MainStack.Children.Add($MsgBlock)
+    }
+
+    if ($Prompt) {
+        $PromptTB = [System.Windows.Controls.TextBlock]::new()
+        $PromptTB.Text = $Prompt; $PromptTB.FontSize = 11
+        $PromptTB.Margin = [System.Windows.Thickness]::new(0,0,0,4)
+        $PromptTB.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'ThemeTextMuted')
+        [void]$MainStack.Children.Add($PromptTB)
+    }
+
+    $InputBox = [System.Windows.Controls.TextBox]::new()
+    $InputBox.MinHeight = 64; $InputBox.FontSize = 12
+    $InputBox.TextWrapping = 'Wrap'; $InputBox.AcceptsReturn = $true
+    $InputBox.VerticalScrollBarVisibility = 'Auto'
+    $InputBox.Padding = [System.Windows.Thickness]::new(8,6,8,6)
+    $InputBox.BorderThickness = [System.Windows.Thickness]::new(1)
+    $InputBox.SetResourceReference([System.Windows.Controls.TextBox]::BackgroundProperty, 'ThemeInputBg')
+    $InputBox.SetResourceReference([System.Windows.Controls.TextBox]::ForegroundProperty, 'ThemeTextBody')
+    $InputBox.SetResourceReference([System.Windows.Controls.TextBox]::BorderBrushProperty, 'ThemeBorderSubtle')
+    $InputBox.SetResourceReference([System.Windows.Controls.TextBox]::CaretBrushProperty, 'ThemeTextBody')
+    [void]$MainStack.Children.Add($InputBox)
+
+    $HintTB = [System.Windows.Controls.TextBlock]::new()
+    $HintTB.Text = 'Justification is required.'
+    $HintTB.FontSize = 11
+    $HintTB.Margin = [System.Windows.Thickness]::new(0,4,0,0)
+    $HintTB.Visibility = 'Collapsed'
+    $HintTB.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'ThemeError')
+    [void]$MainStack.Children.Add($HintTB)
+
+    $BtnRow = [System.Windows.Controls.StackPanel]::new()
+    $BtnRow.Orientation = 'Horizontal'
+    $BtnRow.HorizontalAlignment = 'Right'
+    $BtnRow.Margin = [System.Windows.Thickness]::new(0,16,0,0)
+
+    $ChromelessTpl = [System.Windows.Markup.XamlReader]::Parse(
+        '<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="Button"><Border Padding="{TemplateBinding Padding}" Background="{TemplateBinding Background}"><ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/></Border></ControlTemplate>')
+
+    foreach ($BtnDef in @(
+        @{ Text='OK';     Result='OK';     IsAccent=$true }
+        @{ Text='Cancel'; Result='Cancel'; IsAccent=$false }
+    )) {
+        $Btn = [System.Windows.Controls.Button]::new()
+        $Btn.Content = $BtnDef.Text
+        $Btn.Padding = [System.Windows.Thickness]::new(20,9,20,9)
+        $Btn.FontSize = 13
+        $Btn.FontWeight = [System.Windows.FontWeights]::SemiBold
+        $Btn.Cursor = [System.Windows.Input.Cursors]::Hand
+        $Btn.Template = $ChromelessTpl
+        $Btn.Background = [System.Windows.Media.Brushes]::Transparent
+
+        $BtnBorder = [System.Windows.Controls.Border]::new()
+        $BtnBorder.CornerRadius = [System.Windows.CornerRadius]::new(8)
+        $BtnBorder.Margin = [System.Windows.Thickness]::new(6,0,0,0)
+        if ($BtnDef.IsAccent) {
+            $BtnBorder.Background = $Global:CachedBC.ConvertFromString('#0078D4')
+            $Btn.Foreground = [System.Windows.Media.Brushes]::White
+        } else {
+            $BtnBorder.SetResourceReference([System.Windows.Controls.Border]::BackgroundProperty, 'ThemeSurfaceBg')
+            $BtnBorder.BorderThickness = [System.Windows.Thickness]::new(1)
+            $BtnBorder.SetResourceReference([System.Windows.Controls.Border]::BorderBrushProperty, 'ThemeBorderSubtle')
+            $Btn.SetResourceReference([System.Windows.Controls.Button]::ForegroundProperty, 'ThemeTextSecondary')
+        }
+        $BtnBorder.Child = $Btn
+        [void]$BtnRow.Children.Add($BtnBorder)
+
+        $handler = & {
+            param($tag, $dlg, $input, $hint, $req)
+            return {
+                if ($tag -eq 'OK' -and $req -and [string]::IsNullOrWhiteSpace($input.Text)) {
+                    $hint.Visibility = 'Visible'   # E-2: block empty justification
+                    $input.Focus() | Out-Null
+                    return
+                }
+                $dlg.Tag = $tag
+                $dlg.DialogResult = $true
+                $dlg.Close()
+            }.GetNewClosure()
+        } $BtnDef.Result $Dlg $InputBox $HintTB ([bool]$Required)
+        $Btn.Add_Click($handler)
+    }
+
+    [void]$MainStack.Children.Add($BtnRow)
+
+    $OuterBorder.Add_MouseLeftButtonDown({
+        try { $Dlg.DragMove() } catch { }
+    }.GetNewClosure())
+
+    $InputBox.Focus() | Out-Null
+    $Dlg.ShowDialog() | Out-Null
+    if ($Dlg.Tag -eq 'OK') { return $InputBox.Text.Trim() }
+    return $null
+}
+
 # ===============================================================================
 # SECTION 9: TAB SWITCHING
 # ===============================================================================
@@ -905,8 +1012,14 @@ $Global:Assessment = [PSCustomObject]@{
     # Multi-machine support
     Machines        = [System.Collections.ArrayList]::new()  # All imported machines
     MachineCount    = 0
+    # Per-machine result store (A-6): MachineResults[hostname][checkId] = @{Status;ActualValue;Details;Timestamp}
+    MachineResults  = @{}
+    CatalogVersion  = ''
 }
 $Global:CatScoreRefs = @{}
+
+# Catalog version from checks.json _metadata (E-7 stamping)
+$Global:CatalogVersion = ''
 
 # Load check definitions from external JSON
 $Global:ChecksJsonPath = Join-Path $Global:Root 'checks.json'
@@ -920,7 +1033,11 @@ if (-not (Test-Path $Global:ChecksJsonPath)) {
 try {
     $ChecksFile = Get-Content $Global:ChecksJsonPath -Raw -Encoding UTF8 | ConvertFrom-Json
     $Global:CheckDefinitions = $ChecksFile.checks
-    Write-Host "[INIT] Loaded $($Global:CheckDefinitions.Count) check definitions from checks.json" -ForegroundColor DarkGray
+    if ($ChecksFile._metadata -and $ChecksFile._metadata.version) {
+        $Global:CatalogVersion = "$($ChecksFile._metadata.version)"
+        $Global:Assessment.CatalogVersion = $Global:CatalogVersion
+    }
+    Write-Host "[INIT] Loaded $($Global:CheckDefinitions.Count) check definitions from checks.json (catalog v$($Global:CatalogVersion))" -ForegroundColor DarkGray
 } catch {
     [System.Windows.MessageBox]::Show(
         "Failed to parse checks.json:`n$($_.Exception.Message)",
@@ -964,9 +1081,11 @@ function Get-CspEnrichment {
     return $null
 }
 
-# Initialize checks in assessment
-foreach ($Def in $Global:CheckDefinitions) {
-    [void]$Global:Assessment.Checks.Add([PSCustomObject]@{
+# Factory for a fresh check object from a checks.json definition (single source of truth
+# so every add site — init, reset, load, retired-id merge — stays in sync).
+function New-CheckObject {
+    param($Def)
+    [PSCustomObject]@{
         Id             = $Def.id
         Category       = $Def.category
         Name           = $Def.name
@@ -983,18 +1102,30 @@ foreach ($Def in $Global:CheckDefinitions) {
         CollectionKeys = $Def.collectionKeys
         BaselineValue  = $Def.baselineValue
         CspPath        = $Def.cspPath         # CSP key for enrichment lookup
-        Rationale      = $Def.rationale       # Why this setting matters (from baseline blog) (e.g. "Defender/AllowRealtimeMonitoring")
+        Rationale      = $Def.rationale       # Why this setting matters (from baseline blog)
         applicableTo   = $Def.applicableTo
         threshold      = $Def.threshold
+        comparison     = $Def.comparison      # C-1: 'min'|'max'|'exact' (default exact)
+        eventIds       = $Def.eventIds
+        filterField    = $Def.filterField
+        filterValues   = $Def.filterValues
         ActualValue    = $null
         Status         = 'Not Assessed'
         AutoStatus     = $null            # Stores auto-evaluated status; set during eval, used for Undo
         Excluded       = $false
         Details        = ''
+        Decision       = ''               # E-3: UI governance tag (Remediate/AcceptRisk/NA/Defer) — separate from Details
+        PreDecisionDetails = $null        # E-4: pre-decision Details snapshot for Undo
         Notes          = ''
         Source         = $Def.type
         AffectedMachines = [System.Collections.ArrayList]::new()  # Multi-machine: tracks which hosts have this finding
-    })
+        MachineBreakdown = ''             # A-6: compact "host:status" per-machine line
+    }
+}
+
+# Initialize checks in assessment
+foreach ($Def in $Global:CheckDefinitions) {
+    [void]$Global:Assessment.Checks.Add((New-CheckObject $Def))
 }
 
 # ===============================================================================
@@ -1005,10 +1136,12 @@ function Get-Categories {
     return @($Global:Assessment.Checks | Select-Object -ExpandProperty Category -Unique)
 }
 
+# E-1: Accepted Risk is excluded from BOTH scoring functions and the compliance
+# denominator (aligned with the documented methodology). Deferred stays at 0 points.
 function Get-CategoryScore {
     param([string]$Category)
     $Checks = @($Global:Assessment.Checks | Where-Object {
-        $_.Category -eq $Category -and $_.Status -ne 'N/A' -and -not $_.Excluded
+        $_.Category -eq $Category -and $_.Status -notin @('N/A','Accepted Risk') -and -not $_.Excluded
     })
     if ($Checks.Count -eq 0) { return -1 }
     $AnyAssessed = @($Checks | Where-Object { $_.Status -ne 'Not Assessed' }).Count
@@ -1032,7 +1165,7 @@ function Get-CategoryScore {
 
 function Get-OverallScore {
     $AllChecks = @($Global:Assessment.Checks | Where-Object {
-        $_.Status -ne 'N/A' -and -not $_.Excluded
+        $_.Status -notin @('N/A','Accepted Risk') -and -not $_.Excluded
     })
     if ($AllChecks.Count -eq 0) { return -1 }
     $AnyAssessed = @($AllChecks | Where-Object { $_.Status -ne 'Not Assessed' }).Count
@@ -1057,7 +1190,7 @@ function Get-OverallScore {
 
 function Get-BaselineCompliancePercent {
     $Checks = @($Global:Assessment.Checks | Where-Object {
-        $_.Status -ne 'N/A' -and $_.Status -ne 'Not Assessed' -and -not $_.Excluded
+        $_.Status -notin @('N/A','Not Assessed','Accepted Risk') -and -not $_.Excluded
     })
     if ($Checks.Count -eq 0) { return -1 }
     $Passed = @($Checks | Where-Object { $_.Status -eq 'Pass' }).Count
@@ -1079,7 +1212,7 @@ function Get-DimensionScore {
     $Dim = $Global:MaturityDimensions[$DimensionKey]
     if (-not $Dim) { return -1 }
     $Checks = @($Global:Assessment.Checks | Where-Object {
-        $_.Category -in $Dim.Categories -and $_.Status -ne 'N/A' -and -not $_.Excluded
+        $_.Category -in $Dim.Categories -and $_.Status -notin @('N/A','Accepted Risk') -and -not $_.Excluded
     })
     if ($Checks.Count -eq 0) { return -1 }
     $AnyAssessed = @($Checks | Where-Object { $_.Status -ne 'Not Assessed' }).Count
@@ -1130,6 +1263,25 @@ function Update-Progress {
     $barProgress.Value   = $Assessed
 }
 
+# E-5: Report-sidebar hero number honors the cmbScoreView toggle
+# (0 = Baseline Compliance, 1 = Weighted Risk Score).
+function Update-OverallScoreDisplay {
+    $viewIdx = if ($cmbScoreView -and $cmbScoreView.SelectedIndex -ge 0) { $cmbScoreView.SelectedIndex } else { 0 }
+    if ($viewIdx -eq 1) {
+        $val = Get-OverallScore
+        $lblOverallScore.Text = if ($val -ge 0) { "$val" } else { [string][char]0x2014 }
+        if ($lblOverallLabel) { $lblOverallLabel.Text = 'Weighted Risk Score' }
+    } else {
+        $val = Get-BaselineCompliancePercent
+        $lblOverallScore.Text = if ($val -ge 0) { "$val%" } else { [char]0x2014 + '%' }
+        if ($lblOverallLabel) { $lblOverallLabel.Text = 'Baseline Compliance' }
+    }
+    if ($val -ge 80) { $lblOverallScore.Foreground = $Window.Resources['ThemeSuccess'] }
+    elseif ($val -ge 50) { $lblOverallScore.Foreground = $Window.Resources['ThemeWarning'] }
+    elseif ($val -ge 0) { $lblOverallScore.Foreground = $Window.Resources['ThemeError'] }
+    else { $lblOverallScore.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'ThemeAccent') }
+}
+
 function Update-Dashboard {
     Update-QuickStats
 
@@ -1156,7 +1308,7 @@ function Update-Dashboard {
         $lblHeroJoinType.Text = if ($Global:Assessment.JoinType) { $Global:Assessment.JoinType } else { [string][char]0x2014 }
     }
 
-    $lblOverallScore.Text = if ($RiskScore -ge 0) { "$RiskScore%" } else { [char]0x2014 + '%' }
+    Update-OverallScoreDisplay
 
     # ═══════════════════════════════════════════════════════
     # DONUT CHART — rendered into hero card
@@ -1903,6 +2055,16 @@ function Render-CategoryBlock {
             $DescTB.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'ThemeTextSecondary')
             [void]$SP.Children.Add($DescTB)
 
+            # ── Row 3b: per-machine breakdown (A-6, multi-machine imports only) ──
+            if ($Chk.MachineBreakdown -and $Global:Assessment.MachineCount -gt 1) {
+                $MbTB = New-Object System.Windows.Controls.TextBlock
+                $MbTB.Text = "Machines: $($Chk.MachineBreakdown)"
+                $MbTB.FontSize = 10; $MbTB.TextWrapping = 'Wrap'
+                $MbTB.Margin = [System.Windows.Thickness]::new(22,3,0,0)
+                $MbTB.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'ThemeTextMuted')
+                [void]$SP.Children.Add($MbTB)
+            }
+
             # ── Row 4: Action buttons ── show for Fail/Warning/Not Assessed/Accepted Risk/Deferred
             if ($Chk.Status -in @('Fail','Warning','Not Assessed','Accepted Risk','Deferred')) {
                 $ActionRow = New-Object System.Windows.Controls.WrapPanel
@@ -1916,7 +2078,10 @@ function Render-CategoryBlock {
                 [void]$ActionRow.Children.Add($DecLbl)
 
                 # Show Undo button if already overridden (Accepted Risk / Deferred / N/A set by user)
-                $IsOverridden = ($Chk.Status -in @('Accepted Risk','Deferred'))
+                # E-4: 'N/A' joins the undo-eligible set, but only when it came from a manual
+                # decision (Decision tag set) — auto-N/A from join-type filtering has no undo.
+                $IsOverridden = ($Chk.Status -in @('Accepted Risk','Deferred')) -or
+                                ($Chk.Status -eq 'N/A' -and $Chk.Decision -eq 'NA')
                 if ($IsOverridden -and $Chk.AutoStatus) {
                     $UndoBtn = New-Object System.Windows.Controls.Border
                     $UndoBtn.CornerRadius = [System.Windows.CornerRadius]::new(4)
@@ -1933,8 +2098,11 @@ function Render-CategoryBlock {
                     $UndoBtn.Child = $UndoTB
                     $UndoChkRef = $ChkRef
                     $UndoBtn.Add_MouseLeftButtonDown({
+                        # E-4: restore the pre-decision evaluation context, not a blank
                         $UndoChkRef.Status   = $UndoChkRef.AutoStatus
-                        $UndoChkRef.Details   = ''
+                        $UndoChkRef.Details  = if ($null -ne $UndoChkRef.PreDecisionDetails) { $UndoChkRef.PreDecisionDetails } else { '' }
+                        $UndoChkRef.PreDecisionDetails = $null
+                        $UndoChkRef.Decision = ''
                         $UndoChkRef.Excluded = $false
                         Set-Dirty; Update-Dashboard; Render-BaselineChecks
                     }.GetNewClosure())
@@ -1963,8 +2131,11 @@ function Render-CategoryBlock {
                     $DecTB.VerticalAlignment = 'Center'
                     $DecBtn.Child = $DecTB
 
-                    # Highlight if this decision is already selected
-                    $CurrentDec = $Chk.Details
+                    # Highlight if this decision is already selected (E-3: read the Decision
+                    # field; fall back to Details for assessments saved before the migration)
+                    $CurrentDec = if ($Chk.Decision) { $Chk.Decision }
+                                  elseif ($Chk.Details -in @('Remediate','AcceptRisk','NA','Defer')) { $Chk.Details }
+                                  else { '' }
                     if ($CurrentDec -eq $Dec.Tag) {
                         $DecBtn.Background = $Window.Resources[$Dec.Color]
                         $DecTB.Foreground = [System.Windows.Media.Brushes]::White
@@ -1987,7 +2158,23 @@ function Render-CategoryBlock {
                     $ClickTag  = $BtnInfo.Tag
                     $ClickStatusVal = $BtnInfo.StatusVal
                     $BtnInfo.Btn.Add_MouseLeftButtonDown({
-                        $DecChkRef.Details = $ClickTag
+                        # E-2: Accept Risk requires a written justification
+                        if ($ClickTag -eq 'AcceptRisk') {
+                            $justification = Show-ThemedInputDialog `
+                                -Title 'Accept Risk — Justification Required' `
+                                -Message "Accepting risk for '$($DecChkRef.Id): $($DecChkRef.Name)' excludes it from scoring. A business justification is mandatory." `
+                                -Prompt 'Justification' `
+                                -Icon ([string]([char]0xE8FB)) -IconColor 'ThemeWarning' -Required
+                            if ($null -eq $justification -or [string]::IsNullOrWhiteSpace($justification)) { return }
+                            $riskNote = "Risk accepted: $justification"
+                            $DecChkRef.Notes = if ([string]::IsNullOrWhiteSpace($DecChkRef.Notes)) { $riskNote } else { "$($DecChkRef.Notes)`n$riskNote" }
+                        }
+                        # E-3: record the governance tag in Decision — Details keeps the
+                        # evaluation context. E-4: snapshot Details once for Undo.
+                        if (-not $DecChkRef.Decision -and $null -eq $DecChkRef.PreDecisionDetails) {
+                            $DecChkRef.PreDecisionDetails = $DecChkRef.Details
+                        }
+                        $DecChkRef.Decision = $ClickTag
                         # Status-changing actions (AcceptRisk, NA, Defer) update the check status
                         if ($ClickStatusVal) {
                             $DecChkRef.Status   = $ClickStatusVal
@@ -2387,9 +2574,11 @@ function Get-ExecutiveSummary {
         [void]$sb.AppendLine("  Build:        $($si.displayVersion) (Build $($si.osBuild))")
         [void]$sb.AppendLine("  CPU:          $($si.cpuName.Trim())")
         [void]$sb.AppendLine("  RAM:          $($si.ramGB) GB")
-        [void]$sb.AppendLine("  TPM:          $(if ($si.tpmVersion) { $si.tpmVersion } else { 'N/A' })")
-        [void]$sb.AppendLine("  Secure Boot:  $(if ($si.secureBootEnabled) { 'Enabled' } else { 'Disabled' })")
-        [void]$sb.AppendLine("  Supported:    $(if ($si.isSupported) { 'Yes' } else { 'No' })")
+        [void]$sb.AppendLine("  TPM:          $(if ($si.tpmVersion) { $si.tpmVersion } elseif ($si.tpmPresent -eq $false) { 'Not present' } else { 'N/A' })")
+        # New collections report secureBootState ('Enabled'/'Disabled'/'Unsupported (Legacy BIOS)');
+        # fall back to the old boolean for older collection files.
+        [void]$sb.AppendLine("  Secure Boot:  $(if ($si.secureBootState) { $si.secureBootState } elseif ($si.secureBootEnabled) { 'Enabled' } else { 'Disabled' })")
+        [void]$sb.AppendLine("  Supported:    $(if ($si.isSupported) { 'Yes' } elseif ($si.isServer) { 'Server OS (client baseline)' } else { 'No' })")
     }
     [void]$sb.AppendLine("  Join Type:    $($Global:Assessment.JoinType)")
     [void]$sb.AppendLine("  Customer:     $($Global:Assessment.CustomerName)")
@@ -2506,9 +2695,11 @@ function Get-ExecutiveSummary {
     [void]$sb.AppendLine('SCORING METHODOLOGY')
     [void]$sb.AppendLine('-------------------')
     [void]$sb.AppendLine('  Compliance = Pass / (Total - N/A - Not Assessed - Accepted Risk)')
-    [void]$sb.AppendLine('  Risk Score = weighted: Critical(5x), High(4x), Medium(3x), Low(2x)')
-    [void]$sb.AppendLine('  Pass=100pts, Warning=50pts, Fail/Deferred=0pts')
+    [void]$sb.AppendLine('  Risk Score = weighted by each check''s catalog weight (1-5)')
+    [void]$sb.AppendLine('  Pass=100pts, Warning=50pts, Fail/Deferred/Not Assessed=0pts')
     [void]$sb.AppendLine('  Accepted Risk items excluded from both scores.')
+    [void]$sb.AppendLine('  Note: Compliance% counts only reviewed checks, while the Risk Score')
+    [void]$sb.AppendLine('  also scores Not Assessed checks as 0 - so the two can differ.')
 
     return $sb.ToString()
 }
@@ -2611,8 +2802,8 @@ function Get-ExecutiveSummaryRtf {
         [void]$deviceRows.Add(@('Build',        "$($si.displayVersion) (Build $($si.osBuild))"))
         [void]$deviceRows.Add(@('CPU',          "$($si.cpuName)".Trim()))
         [void]$deviceRows.Add(@('RAM',          "$($si.ramGB) GB"))
-        [void]$deviceRows.Add(@('TPM',          $(if ($si.tpmVersion) { $si.tpmVersion } else { 'N/A' })))
-        [void]$deviceRows.Add(@('Secure Boot',  $(if ($si.secureBootEnabled) { 'Enabled' } else { 'Disabled' })))
+        [void]$deviceRows.Add(@('TPM',          $(if ($si.tpmVersion) { $si.tpmVersion } elseif ($si.tpmPresent -eq $false) { 'Not present' } else { 'N/A' })))
+        [void]$deviceRows.Add(@('Secure Boot',  $(if ($si.secureBootState) { "$($si.secureBootState)" } elseif ($si.secureBootEnabled) { 'Enabled' } else { 'Disabled' })))
     }
     [void]$deviceRows.Add(@('Join Type',    $Global:Assessment.JoinType))
     [void]$deviceRows.Add(@('Customer',     $Global:Assessment.CustomerName))
@@ -2755,8 +2946,9 @@ function Get-ExecutiveSummaryRtf {
     # ═══════════════ SCORING METHODOLOGY ═══════════════
     [void]$rtf.Append('\pard\sb200\sa60{\f0\fs2\cf5\brdrb\brdrs\brdrw5\brsp20 \par}')
     [void]$rtf.Append('\pard\sb40\sa20{\f0\fs16\i\cf5 Scoring: Compliance = Pass / (Total \u8722 N/A \u8722 Not Assessed \u8722 Accepted Risk). ')
-    [void]$rtf.Append('Risk Score = weighted average: Critical(5\u215), High(4\u215), Medium(3\u215), Low(2\u215). ')
-    [void]$rtf.Append('Pass=100pts, Warning=50pts, Fail/Deferred=0pts. Accepted Risk excluded from both scores.}\par')
+    [void]$rtf.Append('Risk Score = weighted average using each check\u8217?s catalog weight (1\u8211?5). ')
+    [void]$rtf.Append('Pass=100pts, Warning=50pts, Fail/Deferred/Not Assessed=0pts. Accepted Risk excluded from both scores. ')
+    [void]$rtf.Append('Compliance% counts only reviewed checks; the Risk Score also scores Not Assessed checks as 0, so the two can differ.}\par')
 
     [void]$rtf.Append('}')
     return $rtf.ToString()
@@ -2815,6 +3007,667 @@ function Update-ReportPreview {
 # SECTION 13: COLLECTION IMPORT & AUTO-EVALUATION
 # ===============================================================================
 
+# ===============================================================================
+# SECTION 13B: EVALUATION ENGINE HELPERS
+# ===============================================================================
+
+# A-4: OS-build-aware secure-default table. When a default-secure check's value is
+# absent AND systemInfo.osBuild >= minBuild, the OS enforces the secure setting by
+# default, so treat as Pass rather than "not configured = Fail". Extend by adding rows.
+$Global:SecureDefaultTable = @{
+    'NET-001' = @{ minBuild = 26100; note = 'SMB signing required by default' }
+    'SEC-045' = @{ minBuild = 26100; note = 'SMB signing required by default' }
+    'SEC-046' = @{ minBuild = 26100; note = 'SMB signing required by default' }
+    'NET-024' = @{ minBuild = 26100; note = 'TLS 1.0 disabled by default' }
+    'NET-025' = @{ minBuild = 26100; note = 'TLS 1.1 disabled by default' }
+    'SEC-061' = @{ minBuild = 26100; note = 'VBS / Credential Guard enabled by default' }
+    'SEC-065' = @{ minBuild = 26100; note = 'PowerShell v2 engine removed' }
+    # Tamper Protection has no absent-value check id in this catalog; add here when one exists.
+}
+
+# A-3: return the collection-failure reason for a section, or $null when healthy.
+# Handles both the _collectionFailed marker object and structured _metadata.errors
+# entries ({area, error, sections}).
+function Get-SectionFailure {
+    param($Json, [string]$Section)
+    if ([string]::IsNullOrEmpty($Section)) { return $null }
+    $sec = $null
+    try { $sec = $Json.$Section } catch { $sec = $null }
+
+    if ($null -ne $sec) {
+        $failed = $false
+        try {
+            if ($sec -is [hashtable]) { $failed = [bool]$sec['_collectionFailed'] }
+            else {
+                $fp = $sec.PSObject.Properties['_collectionFailed']
+                if ($fp) { $failed = [bool]$fp.Value }
+            }
+        } catch { $failed = $false }
+        if ($failed) {
+            $err = $null
+            try { $err = $sec._error } catch { $err = $null }
+            if (-not $err) { $err = 'section collection failed' }
+            return "$err"
+        }
+        return $null   # section present and healthy
+    }
+
+    # Section is null — was it recorded as a failed area in _metadata.errors?
+    if ($Json._metadata -and $Json._metadata.errors) {
+        foreach ($e in @($Json._metadata.errors)) {
+            $areas = @()
+            if ($e.sections) { $areas += @($e.sections) }
+            if ($e.area)     { $areas += $e.area }
+            foreach ($a in $areas) {
+                if ("$a" -eq $Section) {
+                    if ($e.error) { return "$($e.error)" }
+                    return "$($e.area) collection failed"
+                }
+            }
+        }
+    }
+    return $null
+}
+
+# C-2: order-insensitive SID-set comparison for privilege-rights checks.
+# Absence == unassigned == empty. Subset rule: Pass when actual is a subset of
+# expected, Fail when actual contains SIDs beyond expected.
+function Compare-PrivilegeRights {
+    param($Expected, $Actual)
+    $toSet = {
+        param($v)
+        if ($null -eq $v) { return @() }
+        if (($v -is [System.Collections.IEnumerable]) -and ($v -isnot [string])) { $items = @($v) }
+        else { $items = @("$v" -split '[,;]') }
+        @($items | ForEach-Object { "$_".Trim().TrimStart('*').ToUpperInvariant() } |
+            Where-Object { $_ -ne '' }) | Sort-Object -Unique
+    }
+    $exp = @(& $toSet $Expected)
+    $act = @(& $toSet $Actual)
+    if ($act.Count -eq 0) {
+        if ($exp.Count -eq 0) { return @{ Status = 'Pass'; Details = 'No accounts assigned (matches empty baseline)' } }
+        return @{ Status = 'Pass'; Details = 'No accounts assigned (subset of baseline)' }
+    }
+    $beyond = @($act | Where-Object { $_ -notin $exp })
+    if ($beyond.Count -eq 0) {
+        return @{ Status = 'Pass'; Details = "Assigned: $([string]::Join(', ', $act)) (within baseline)" }
+    }
+    return @{ Status = 'Fail'; Details = "Unexpected assignees beyond baseline: $([string]::Join(', ', $beyond))" }
+}
+
+function Test-IsPrivilegeRightsCheck {
+    param($Chk)
+    foreach ($k in @($Chk.CollectionKeys)) {
+        if ("$k" -like 'securityPolicy.Privilege Rights_*') { return $true }
+    }
+    return $false
+}
+
+# C-5: look up a real MDM PolicyManager value for a check from mdmEnrollment.policyValues.
+# The collector emits policyValues nested by area: policyValues.<Area>.<Setting> = value.
+function Get-MdmPolicyValue {
+    param($Json, $Chk)
+    if (-not $Json.mdmEnrollment -or -not $Json.mdmEnrollment.policyValues) { return $null }
+    $pv = $Json.mdmEnrollment.policyValues
+    if (-not $Chk.CspPath) { return $null }
+    $parts = @("$($Chk.CspPath)" -split '/')
+    $area = $parts[0]
+    $leaf = $parts[-1]
+    $areaObj = $null
+    if ($pv -is [hashtable]) { $areaObj = $pv[$area] }
+    else {
+        try { $prop = $pv.PSObject.Properties[$area]; if ($prop) { $areaObj = $prop.Value } } catch { $areaObj = $null }
+    }
+    if ($null -ne $areaObj) {
+        if ($areaObj -is [hashtable]) {
+            if ($areaObj.ContainsKey($leaf)) { return $areaObj[$leaf] }
+        } else {
+            try {
+                $prop = $areaObj.PSObject.Properties[$leaf]
+                if ($prop -and $null -ne $prop.Value) { return $prop.Value }
+            } catch { }
+        }
+    }
+    # Fallback: flat map keyed by full CSP path or setting leaf
+    foreach ($c in @($Chk.CspPath, $leaf)) {
+        try {
+            $prop = $pv.PSObject.Properties[$c]
+            if ($prop -and $null -ne $prop.Value -and $prop.Value -isnot [PSCustomObject] -and $prop.Value -isnot [hashtable]) { return $prop.Value }
+        } catch { }
+    }
+    return $null
+}
+
+# Evaluate a single resolved actual value against a check definition.
+# Returns @{Status; ActualValue; Details}. Pure — never mutates $Chk.
+function Get-ValueEvaluation {
+    param($Chk, $ActualValue)
+
+    # A-1 backward compat: old collections emitted audit-policy values as {name, setting}
+    # objects. New collections emit plain strings, which pass through untouched.
+    if (($ActualValue -is [PSCustomObject]) -and $ActualValue.PSObject.Properties['setting'] -and
+        $ActualValue.PSObject.Properties['name']) {
+        $ActualValue = $ActualValue.setting
+    }
+
+    $rStatus  = 'Not Assessed'
+    $rActual  = $ActualValue
+    $rDetails = ''
+
+    # --- Baseline value comparison (with C-1 min/max/exact operator semantics) ---
+    if ($null -ne $Chk.BaselineValue) {
+        $cmp = if ($Chk.comparison) { "$($Chk.comparison)".ToLower() } else { 'exact' }
+        if ($cmp -eq 'min' -or $cmp -eq 'max') {
+            $aNum = 0.0; $eNum = 0.0
+            $aOk = [double]::TryParse("$ActualValue", [ref]$aNum)
+            $eOk = [double]::TryParse("$($Chk.BaselineValue)", [ref]$eNum)
+            if ($aOk -and $eOk) {
+                if ($cmp -eq 'min') {
+                    if ($aNum -ge $eNum) { $rStatus = 'Pass'; $rDetails = "Meets minimum ($($Chk.BaselineValue))" }
+                    else { $rStatus = 'Fail'; $rDetails = "Below minimum (need >= $($Chk.BaselineValue))" }
+                } else {
+                    if ($aNum -le $eNum) { $rStatus = 'Pass'; $rDetails = "Within maximum ($($Chk.BaselineValue))" }
+                    else { $rStatus = 'Fail'; $rDetails = "Above maximum (need <= $($Chk.BaselineValue))" }
+                }
+            } else {
+                if ("$ActualValue" -eq "$($Chk.BaselineValue)") { $rStatus = 'Pass' } else { $rStatus = 'Fail' }
+            }
+        } else {
+            if ("$ActualValue" -eq "$($Chk.BaselineValue)") { $rStatus = 'Pass' } else { $rStatus = 'Fail' }
+        }
+        return @{ Status = $rStatus; ActualValue = $rActual; Details = $rDetails }
+    }
+
+    # --- No baseline value — thresholds / heuristics ---
+    $thresholdHandled = $false
+
+    # Boot/logon duration arrays
+    if ($Chk.threshold -and ($null -ne $Chk.threshold.maxBootMs -or $null -ne $Chk.threshold.maxLogonMs) -and
+        ($ActualValue -is [System.Object[]] -or $ActualValue -is [System.Collections.ArrayList])) {
+        $boots = @($ActualValue)
+        $durations = @($boots | ForEach-Object { $_.BootDurationMs } | Where-Object { $null -ne $_ })
+        $bootCount = $boots.Count
+        if ($durations.Count -gt 0) {
+            $maxMs = ($durations | Measure-Object -Maximum).Maximum
+            $avgMs = [math]::Round(($durations | Measure-Object -Average).Average, 0)
+            $limitMs = if ($Chk.threshold.maxBootMs) { [double]$Chk.threshold.maxBootMs } else { [double]$Chk.threshold.maxLogonMs }
+            $limitLabel = if ($Chk.threshold.maxBootMs) { 'Boot' } else { 'Logon' }
+            $exceeded = @($durations | Where-Object { $_ -gt $limitMs }).Count
+            $rActual = "$([math]::Round($maxMs/1000,1))s max, $([math]::Round($avgMs/1000,1))s avg ($bootCount boots)"
+            if ($exceeded -gt 0) {
+                $rStatus = 'Fail'
+                $rDetails = "$exceeded of $($durations.Count) $($limitLabel.ToLower()) times exceed $([int]($limitMs/1000))s limit"
+            } else {
+                $rStatus = 'Pass'
+            }
+        } else {
+            $dates = @($boots | ForEach-Object { $_.TimeCreated } | Where-Object { $_ })
+            $dateRange = if ($dates.Count -ge 2) { "$("$($dates[-1])".Substring(0,10)) to $("$($dates[0])".Substring(0,10))" } elseif ($dates.Count -eq 1) { "$($dates[0])".Substring(0,10) } else { '' }
+            $rActual = "$bootCount boot events (no duration data)"
+            $rStatus = 'Warning'
+            $rDetails = "Boot events found but BootDuration not recorded by OS$(if ($dateRange) { " ($dateRange)" })"
+        }
+        $thresholdHandled = $true
+    }
+
+    if (-not $thresholdHandled -and $Chk.threshold -and ($ActualValue -is [int] -or $ActualValue -is [long] -or $ActualValue -is [double])) {
+        $numVal = [double]$ActualValue
+        if ($null -ne $Chk.threshold.maxDays) {
+            $limit = [double]$Chk.threshold.maxDays
+            $rActual = "$([int]$numVal) days"
+            if ($numVal -gt $limit) { $rStatus = 'Fail'; $rDetails = "Exceeds ${limit}-day limit" }
+            elseif ($numVal -gt ($limit * 0.8)) { $rStatus = 'Warning'; $rDetails = "Approaching ${limit}-day limit" }
+            else { $rStatus = 'Pass' }
+            $thresholdHandled = $true
+        } elseif ($null -ne $Chk.threshold.maxAge) {
+            $limit = [double]$Chk.threshold.maxAge
+            $rActual = "$([int]$numVal) days old"
+            if ($numVal -gt $limit) { $rStatus = 'Fail'; $rDetails = "Stale — exceeds ${limit}-day max age" }
+            else { $rStatus = 'Pass' }
+            $thresholdHandled = $true
+        } elseif ($null -ne $Chk.threshold.minGB) {
+            $limit = [double]$Chk.threshold.minGB
+            $rActual = "$([math]::Round($numVal,1)) GB free"
+            if ($numVal -lt $limit) { $rStatus = 'Fail'; $rDetails = "Below ${limit} GB minimum" }
+            elseif ($numVal -lt ($limit * 2)) { $rStatus = 'Warning'; $rDetails = "Low — approaching ${limit} GB minimum" }
+            else { $rStatus = 'Pass' }
+            $thresholdHandled = $true
+        } elseif ($null -ne $Chk.threshold.maxBootMs) {
+            $limit = [double]$Chk.threshold.maxBootMs
+            $rActual = "$([math]::Round($numVal/1000,1))s"
+            if ($numVal -gt $limit) { $rStatus = 'Fail'; $rDetails = "Boot time exceeds $([int]($limit/1000))s limit" }
+            else { $rStatus = 'Pass' }
+            $thresholdHandled = $true
+        } elseif ($null -ne $Chk.threshold.maxLogonMs) {
+            $limit = [double]$Chk.threshold.maxLogonMs
+            $rActual = "$([math]::Round($numVal/1000,1))s"
+            if ($numVal -gt $limit) { $rStatus = 'Fail'; $rDetails = "Logon time exceeds $([int]($limit/1000))s limit" }
+            else { $rStatus = 'Pass' }
+            $thresholdHandled = $true
+        }
+    }
+
+    if (-not $thresholdHandled) {
+        if ($ActualValue -is [bool]) {
+            $rStatus = if ($ActualValue) { 'Pass' } else { 'Fail' }
+        } elseif ($ActualValue -is [int] -or $ActualValue -is [long]) {
+            $rStatus = 'Warning'
+            $rDetails = "Value=$ActualValue (no baseline to compare)"
+        } elseif ($ActualValue -is [string] -and $ActualValue -eq '') {
+            $rStatus = 'Warning'
+            $rDetails = 'Not configured (empty)'
+        } elseif ($ActualValue -is [string] -and $ActualValue -eq 'No Auditing') {
+            # C-4: exact match (was -match substring)
+            $rStatus = 'Fail'
+        } elseif ($ActualValue -is [string] -and $ActualValue -in @('Success', 'Failure', 'Success and Failure')) {
+            # C-4: exact audit-policy setting whitelist (removes the -match 'Success' foot-gun)
+            $rStatus = 'Pass'
+        } elseif ($ActualValue -is [System.Object[]] -or $ActualValue -is [System.Collections.ArrayList]) {
+            $filteredArr = @($ActualValue)
+
+            if ($Chk.eventIds -and $Chk.eventIds.Count -gt 0) {
+                $eids = @($Chk.eventIds)
+                $filteredArr = @($filteredArr | Where-Object { $_.id -in $eids })
+            }
+            if ($Chk.filterField -and $Chk.filterValues -and $Chk.filterValues.Count -gt 0) {
+                $fField  = $Chk.filterField
+                $fValues = @($Chk.filterValues)
+                $filteredArr = @($filteredArr | Where-Object {
+                    $val = if ($fField -like 'props.*') { $_.props.($fField -replace '^props\.','') } else { $_.$fField }
+                    if ($val) {
+                        $leaf = [System.IO.Path]::GetFileName($val)
+                        $leaf -in $fValues
+                    }
+                })
+            }
+
+            # C-3: windowDays — filter events by timestamp when the events carry one
+            if ($Chk.threshold -and $Chk.threshold.windowDays) {
+                $cut = (Get-Date).AddDays(-[double]$Chk.threshold.windowDays)
+                $filteredArr = @($filteredArr | Where-Object {
+                    $ts = $null
+                    if ($_.TimeCreated) { $ts = $_.TimeCreated } elseif ($_.timestamp) { $ts = $_.timestamp } elseif ($_.time) { $ts = $_.time }
+                    if ($ts) { try { [datetime]$ts -ge $cut } catch { $true } } else { $true }
+                })
+            }
+
+            # C-3: perAccount — group by account, apply the threshold per account
+            if ($Chk.threshold -and $Chk.threshold.perAccount -and $null -ne $Chk.threshold.count) {
+                $limit = [int]$Chk.threshold.count
+                $groups = @($filteredArr | Group-Object {
+                    if ($_.account) { $_.account } elseif ($_.user) { $_.user }
+                    elseif ($_.TargetUserName) { $_.TargetUserName }
+                    elseif ($_.props -and $_.props.TargetUserName) { $_.props.TargetUserName }
+                    else { 'unknown' }
+                })
+                $offenders = @($groups | Where-Object { $_.Count -gt $limit })
+                $rActual = "$($filteredArr.Count) events across $($groups.Count) account(s)"
+                if ($offenders.Count -gt 0) {
+                    $rStatus = 'Fail'
+                    $rDetails = "Per-account threshold ($limit) exceeded: " + (($offenders | ForEach-Object { "$($_.Name)=$($_.Count)" }) -join ', ')
+                } elseif ($filteredArr.Count -gt 0) {
+                    $rStatus = 'Warning'
+                    $rDetails = "Events present but all accounts within per-account threshold of $limit"
+                } else {
+                    $rStatus = 'Pass'
+                    $rDetails = 'No events found'
+                }
+            } else {
+                $arrCount = $filteredArr.Count
+                if ($Chk.threshold -and $Chk.threshold.evalMode -eq 'count' -and $null -ne $Chk.threshold.count) {
+                    # C-3: honor the operator field (default gt)
+                    $limit = [int]$Chk.threshold.count
+                    $op = if ($Chk.threshold.operator) { "$($Chk.threshold.operator)".ToLower() } else { 'gt' }
+                    $rActual = "$arrCount events"
+                    $breach = switch ($op) {
+                        'ge' { $arrCount -ge $limit }
+                        'lt' { $arrCount -lt $limit }
+                        'le' { $arrCount -le $limit }
+                        'eq' { $arrCount -eq $limit }
+                        default { $arrCount -gt $limit }
+                    }
+                    if ($breach) {
+                        $rStatus = 'Fail'
+                        $rDetails = "$arrCount events breach threshold ($op $limit)$(if ($Chk.threshold.windowDays) { " in $($Chk.threshold.windowDays) days" })"
+                    } elseif ($arrCount -gt 0) {
+                        $rStatus = 'Warning'
+                        $rDetails = "$arrCount events (threshold: $op $limit)"
+                    } else {
+                        $rStatus = 'Pass'
+                        $rDetails = 'No events found'
+                    }
+                } else {
+                    $rActual = "$arrCount items"
+                    if ($arrCount -eq 0) {
+                        $rStatus = 'Pass'
+                        $rDetails = 'None found'
+                    } else {
+                        $rStatus = 'Fail'
+                        $preview = @($filteredArr | Select-Object -First 3 | ForEach-Object {
+                            if ($_.Name) { $_.Name } elseif ($_.DeviceName) { $_.DeviceName } else { "$_" }
+                        }) -join ', '
+                        $rDetails = "$arrCount found: $preview$(if ($arrCount -gt 3) { '...' })"
+                    }
+                }
+            }
+        } elseif ($ActualValue -is [PSCustomObject] -or $ActualValue -is [hashtable]) {
+            if ($Chk.threshold -and $Chk.threshold.evalMode -eq 'logCapacity' -and $null -ne $ActualValue.FileSize -and $null -ne $ActualValue.MaxSizeKB) {
+                $fileSizeKB = [double]$ActualValue.FileSize
+                $maxSizeKB  = [double]$ActualValue.MaxSizeKB
+                $usagePct   = if ($maxSizeKB -gt 0) { [math]::Round(($fileSizeKB / $maxSizeKB) * 100, 1) } else { 0 }
+                $maxPct     = if ($Chk.threshold.maxUsagePct) { [double]$Chk.threshold.maxUsagePct } else { 90 }
+                $recordCount = if ($ActualValue.RecordCount) { [int]$ActualValue.RecordCount } else { 0 }
+                $rActual = "$usagePct% full ($recordCount records, $([math]::Round($fileSizeKB/1024))/$([math]::Round($maxSizeKB/1024)) MB)"
+                if ($usagePct -ge $maxPct) {
+                    $rStatus = 'Warning'
+                    $rDetails = "Log is ${usagePct}% full — risk of event loss. Overflow: $($ActualValue.OverflowAction)"
+                } else {
+                    $rStatus = 'Pass'
+                    $rDetails = "Overflow: $($ActualValue.OverflowAction)"
+                }
+            }
+            elseif ($null -ne $ActualValue.count -and $Chk.threshold) {
+                # C-3: summary objects (from -EventSummaryOnly) cannot be filtered by
+                # event id / process name / account — comparing raw totals against the
+                # threshold guarantees false Fails. Not Assessed instead.
+                if (($Chk.eventIds -and $Chk.eventIds.Count -gt 0) -or $Chk.filterField -or ($Chk.threshold.perAccount)) {
+                    $rStatus = 'Not Assessed'
+                    $rActual = "$([int]$ActualValue.count) events (summary)"
+                    $rDetails = 'Requires full event collection — summary-only import cannot filter by event id/process/account'
+                } else {
+                    $evtCount  = [int]$ActualValue.count
+                    $threshold = [int]$Chk.threshold.count
+                    $op = if ($Chk.threshold.operator) { "$($Chk.threshold.operator)".ToLower() } else { 'gt' }
+                    $rActual = "$evtCount events"
+                    if ($ActualValue.topUsers) {
+                        $topList = ($ActualValue.topUsers | ForEach-Object { "$($_.user)($($_.count))" }) -join ', '
+                        $rDetails = "Top: $topList"
+                    }
+                    if ($ActualValue.firstEvent) {
+                        $span = "$($ActualValue.firstEvent.Substring(0,10)) – $($ActualValue.lastEvent.Substring(0,10))"
+                        $rDetails = if ($rDetails) { "$rDetails | $span" } else { $span }
+                    }
+                    $breach = switch ($op) {
+                        'ge' { $evtCount -ge $threshold }
+                        'lt' { $evtCount -lt $threshold }
+                        'le' { $evtCount -le $threshold }
+                        'eq' { $evtCount -eq $threshold }
+                        default { $evtCount -gt $threshold }
+                    }
+                    if ($breach) { $rStatus = 'Fail' }
+                    elseif ($evtCount -gt 0) { $rStatus = 'Warning' }
+                    else { $rStatus = 'Pass' }
+                }
+            }
+            elseif ($null -ne $ActualValue.count) {
+                $evtCount = [int]$ActualValue.count
+                $rActual = "$evtCount events"
+                if ($evtCount -gt 0) {
+                    $rStatus = 'Warning'
+                    $rDetails = "$evtCount events collected — no threshold defined"
+                } else {
+                    $rStatus = 'Pass'
+                }
+            }
+            else {
+                $svcStatus = $ActualValue.Status
+                $svcStart  = $ActualValue.StartType
+                $enabled   = $ActualValue.Enabled
+                if ($svcStatus) {
+                    $rActual = "$svcStatus ($svcStart)"
+                } elseif (-not $svcStatus -and -not $enabled) {
+                    $props = @($ActualValue.PSObject.Properties | Where-Object { $_.Value -ne $null -and $_.Value -isnot [System.Object[]] -and $_.Value -isnot [PSCustomObject] } | Select-Object -First 6)
+                    if ($props.Count -gt 0) {
+                        $summary = ($props | ForEach-Object { "$($_.Name)=$($_.Value)" }) -join '; '
+                        $rActual = $summary
+                    } else {
+                        $propCount = @($ActualValue.PSObject.Properties).Count
+                        $rActual = "$propCount properties collected"
+                    }
+                }
+                if ($svcStatus -eq 'Running' -or $enabled -eq $true) { $rStatus = 'Pass' }
+                elseif ($svcStatus -eq 'Stopped' -or $enabled -eq $false) { $rStatus = 'Warning' }
+                else { $rStatus = 'Warning'; $rDetails = 'Collected but needs manual review' }
+            }
+        } else {
+            $rStatus = 'Warning'
+            $rDetails = 'Collected but needs manual review'
+        }
+    }
+
+    return @{ Status = $rStatus; ActualValue = $rActual; Details = $rDetails }
+}
+
+# C-4/C-2: concrete evaluators replacing the permanent-Warning heuristics.
+# Returns a result hashtable, or $null when the check has no special handling.
+function Get-SpecialCheckEvaluation {
+    param($Chk, $Json)
+
+    # C-2: privilege-rights subset/set comparison (SEC-071..087 family, key-detected)
+    if (Test-IsPrivilegeRightsCheck $Chk) {
+        $secFail = Get-SectionFailure -Json $Json -Section 'securityPolicy'
+        if ($secFail) { return @{ Status='Not Assessed'; ActualValue=$null; Details="Collection error: $secFail" } }
+        $actual = $null
+        foreach ($k in @($Chk.CollectionKeys)) {
+            $v = Resolve-CollectionKey -Json $Json -Key $k
+            if ($null -ne $v) { $actual = $v; break }
+        }
+        $res = Compare-PrivilegeRights -Expected $Chk.BaselineValue -Actual $actual
+        $disp = if ($null -eq $actual -or "$actual" -eq '') { '(unassigned)' } else { "$actual" }
+        return @{ Status = $res.Status; ActualValue = $disp; Details = $res.Details }
+    }
+
+    switch ($Chk.Id) {
+        { $_ -in @('SEC-041','SEC-042') } {
+            # C-4: account-rename checks — compare against Windows defaults
+            $secFail = Get-SectionFailure -Json $Json -Section 'securityPolicy'
+            if ($secFail) { return @{ Status='Not Assessed'; ActualValue=$null; Details="Collection error: $secFail" } }
+            $name = $null
+            foreach ($k in @($Chk.CollectionKeys)) {
+                $v = Resolve-CollectionKey -Json $Json -Key $k
+                if ($null -ne $v) { $name = "$v".Trim().Trim('"'); break }
+            }
+            if ($null -eq $name) { return $null }   # not collected — fall to generic path
+            $default = if ($Chk.Id -eq 'SEC-041') { 'Administrator' } else { 'Guest' }
+            if ($name -eq $default -or $name -eq '') {
+                return @{ Status='Fail'; ActualValue=$name; Details="Built-in $default account not renamed from default" }
+            }
+            return @{ Status='Pass'; ActualValue=$name; Details="Built-in $default account renamed" }
+        }
+        'NET-028' {
+            # C-4: evaluate tlsConfig concretely — SSL2/SSL3/TLS1.0/TLS1.1 must all be disabled
+            $secFail = Get-SectionFailure -Json $Json -Section 'tlsConfig'
+            if ($secFail) { return @{ Status='Not Assessed'; ActualValue=$null; Details="Collection error: $secFail" } }
+            $tls = $null; try { $tls = $Json.tlsConfig } catch { }
+            if ($null -eq $tls) { return $null }
+            $legacy = @('SSL 2.0','SSL 3.0','TLS 1.0','TLS 1.1')
+            $offenders = New-Object System.Collections.ArrayList
+            foreach ($proto in $legacy) {
+                $protoNorm = $proto -replace '[^0-9A-Za-z]', ''
+                foreach ($p in $tls.PSObject.Properties) {
+                    if ("$($p.Name)" -like '_*') { continue }
+                    $pnNorm = "$($p.Name)" -replace '[^0-9A-Za-z]', ''
+                    if ($pnNorm -notmatch [regex]::Escape($protoNorm)) { continue }
+                    $val = $p.Value
+                    $isEnabled = $false
+                    if ($val -is [bool]) { $isEnabled = $val }
+                    elseif ($val -is [PSCustomObject]) {
+                        if ($val.PSObject.Properties['Enabled'] -and ($val.Enabled -eq 1 -or $val.Enabled -eq $true -or "$($val.Enabled)" -eq '4294967295')) { $isEnabled = $true }
+                    }
+                    elseif ($null -ne $val) {
+                        if ("$val" -in @('1','4294967295','True','Enabled')) { $isEnabled = $true }
+                    }
+                    if ($isEnabled -and -not $offenders.Contains($proto)) { [void]$offenders.Add($proto) }
+                }
+            }
+            if ($offenders.Count -eq 0) {
+                return @{ Status='Pass'; ActualValue='SSL 2.0/3.0, TLS 1.0/1.1 disabled'; Details='All legacy TLS/SSL protocols disabled or absent (secure default)' }
+            }
+            $offList = @($offenders) -join ', '
+            return @{ Status='Fail'; ActualValue="Enabled: $offList"; Details="Legacy protocols still enabled: $offList" }
+        }
+        'MON-030' {
+            # C-4: evaluate audit-policy coverage — >= N configured subcategories
+            $secFail = Get-SectionFailure -Json $Json -Section 'auditPolicy'
+            if ($secFail) { return @{ Status='Not Assessed'; ActualValue=$null; Details="Collection error: $secFail" } }
+            $ap = $null; try { $ap = $Json.auditPolicy } catch { }
+            if ($null -eq $ap) { return $null }
+            $guidRe = '^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$'
+            $configured = 0; $total = 0
+            foreach ($p in $ap.PSObject.Properties) {
+                $pn = "$($p.Name)"
+                if ($pn -like '_*') { continue }        # _names / _detail metadata
+                if ($pn -match $guidRe) { continue }     # count each subcategory once (display-name key)
+                $v = $p.Value
+                if (($v -is [PSCustomObject]) -and $v.PSObject.Properties['setting']) { $v = $v.setting }
+                $total++
+                if ("$v" -and "$v" -ne 'No Auditing') { $configured++ }
+            }
+            $needed = if ($Chk.threshold -and $Chk.threshold.count) { [int]$Chk.threshold.count } else { 10 }
+            if ($configured -ge $needed) {
+                return @{ Status='Pass'; ActualValue="$configured of $total subcategories audited"; Details="Meets audit coverage target (>= $needed configured subcategories)" }
+            }
+            return @{ Status='Fail'; ActualValue="$configured of $total subcategories audited"; Details="Below audit coverage target (>= $needed configured subcategories required)" }
+        }
+        { $_ -in @('OPS-011','OPS-022','OPS-023') } {
+            # C-4: no concrete data is collected for these (WER backlog / service-account
+            # logon rights / page-file config) — recommend catalog type=Manual. Until then,
+            # Not Assessed instead of a meaningless permanent Warning.
+            return @{ Status='Not Assessed'; ActualValue=$null; Details='Manual verification required — collector does not gather this data (recommend catalog type: Manual)' }
+        }
+    }
+    return $null
+}
+
+# Top-level per-check evaluation orchestrator (A-3/A-4/A-5/C-1..C-5).
+# Returns @{Status; ActualValue; Details}. Pure — never mutates $Chk.
+function Get-CheckEvaluation {
+    param($Chk, $Json, [int]$OsBuild = 0)
+
+    # Concrete special-case evaluators first (C-2 / C-4)
+    $special = Get-SpecialCheckEvaluation -Chk $Chk -Json $Json
+    if ($special) { return $special }
+
+    $keys = @($Chk.CollectionKeys)
+
+    # A-3: which of this check's sections failed collection?
+    $failedSections = @{}
+    foreach ($k in $keys) {
+        $sec = ("$k" -split '\.')[0]
+        if (-not $failedSections.ContainsKey($sec)) {
+            $reason = Get-SectionFailure -Json $Json -Section $sec
+            if ($reason) { $failedSections[$sec] = $reason }
+        }
+    }
+
+    # A-5: evaluate ALL collectionKeys (no first-match break)
+    $evals = @()          # per-key results for keys that resolved
+    $danglingKeys = @()   # unresolved keys whose section is healthy
+    foreach ($k in $keys) {
+        $sec = ("$k" -split '\.')[0]
+        if ($failedSections.ContainsKey($sec)) { continue }
+        $val = Resolve-CollectionKey -Json $Json -Key $k
+        if ($null -eq $val) { $danglingKeys += $k; continue }
+        $ev = Get-ValueEvaluation -Chk $Chk -ActualValue $val
+        $evals += , @{ Key = $k; Status = $ev.Status; ActualValue = $ev.ActualValue; Details = $ev.Details }
+    }
+
+    if ($evals.Count -gt 0) {
+        $rank = @{ 'Fail' = 3; 'Warning' = 2; 'Pass' = 1; 'Not Assessed' = 0 }
+        if ($evals.Count -eq 1) {
+            $status = $evals[0].Status; $actual = $evals[0].ActualValue; $details = $evals[0].Details
+        } else {
+            # Overall Pass only if every resolving key passes; report per-key detail
+            $assessed = @($evals | Where-Object { $_.Status -ne 'Not Assessed' })
+            if ($assessed.Count -eq 0) {
+                $status = 'Not Assessed'
+            } else {
+                $status = 'Pass'
+                foreach ($e in $assessed) { if ($rank[$e.Status] -gt $rank[$status]) { $status = $e.Status } }
+            }
+            $actual = (($evals | ForEach-Object { "$((("$($_.Key)") -split '\.')[-1])=$($_.ActualValue)" }) -join '; ')
+            $failing = @($evals | Where-Object { $_.Status -notin @('Pass','Not Assessed') })
+            if ($failing.Count -gt 0) {
+                $details = 'Keys not passing: ' + (($failing | ForEach-Object { "$((("$($_.Key)") -split '\.')[-1])" }) -join ', ')
+            } else {
+                $details = 'All resolved keys pass'
+            }
+        }
+        # A-5: a dangling key among several -> note it, don't fail on resolution alone
+        if ($danglingKeys.Count -gt 0) {
+            $note = "key(s) not found in collection: $($danglingKeys -join ', ')"
+            $details = if ($details) { "$details | $note" } else { $note }
+        }
+        if ($failedSections.Count -gt 0) {
+            $note = "section(s) failed collection: $(@($failedSections.Keys) -join ', ')"
+            $details = if ($details) { "$details | $note" } else { $note }
+        }
+        return @{ Status = $status; ActualValue = $actual; Details = $details }
+    }
+
+    # --- Nothing resolved ---
+    # A-3: section failure -> Not Assessed with reason (never Fail)
+    if ($failedSections.Count -gt 0) {
+        $reason = @($failedSections.Values)[0]
+        return @{ Status = 'Not Assessed'; ActualValue = $null; Details = "Collection error: $reason" }
+    }
+
+    # A-4: OS-build-aware secure default (absent value on a build where the default is secure)
+    $sd = $Global:SecureDefaultTable[$Chk.Id]
+    if ($sd -and $OsBuild -ge [int]$sd.minBuild) {
+        return @{ Status = 'Pass'; ActualValue = "OS default (build $OsBuild)"; Details = "OS default (24H2+): secure by default — $($sd.note)" }
+    }
+
+    # C-5: real MDM PolicyManager value
+    $mdmVal = Get-MdmPolicyValue -Json $Json -Chk $Chk
+    if ($null -ne $mdmVal) {
+        $ev = Get-ValueEvaluation -Chk $Chk -ActualValue $mdmVal
+        $ev.Details = ("Evaluated from MDM PolicyManager value. " + "$($ev.Details)").Trim()
+        return $ev
+    }
+
+    # C-5 fallback: area is MDM-managed but no concrete value found -> verify in portal
+    if ($Json.mdmEnrollment -and $Json.mdmEnrollment.mdmEnrolled -and $Json.mdmEnrollment.managedAreas) {
+        $cspArea = $null
+        if ($Chk.CspPath) { $cspArea = ("$($Chk.CspPath)" -split '/')[0] }
+        if (-not $cspArea -and $keys.Count -gt 0) {
+            $keyHints = @{ 'defender'='Defender'; 'firewall'='WindowsFirewall'; 'bitlocker'='BitLocker'; 'winrmConfig'='RemoteManagement' }
+            foreach ($k in $keys) { $s = ("$k" -split '\.')[0]; if ($keyHints.ContainsKey($s)) { $cspArea = $keyHints[$s]; break } }
+        }
+        if ($cspArea -and $Json.mdmEnrollment.managedAreas.$cspArea) {
+            $mdmArea = $Json.mdmEnrollment.managedAreas.$cspArea
+            return @{ Status = 'Warning'; ActualValue = 'Managed via Intune'; Details = "Setting managed by MDM ($($mdmArea.settingCount) settings in $cspArea area). No PolicyManager value found — verify in Intune portal." }
+        }
+    }
+
+    # "Not configured" = Fail only when a baseline value is defined
+    if ($null -ne $Chk.BaselineValue) {
+        return @{ Status = 'Fail'; ActualValue = 'Not configured'; Details = "Registry/policy value not found — insecure Windows default in effect. Expected: $($Chk.BaselineValue)" }
+    }
+
+    return @{ Status = 'Not Assessed'; ActualValue = $null; Details = '' }
+}
+
+# ===============================================================================
+# SECTION 13C: COLLECTION IMPORT & MULTI-MACHINE AGGREGATION
+# ===============================================================================
+
+# A-6: pick the worst per-machine result. Rank Fail > Warning > Pass; Not Assessed /
+# N/A are ignored whenever at least one machine produced an assessable result.
+function Get-WorstMachineStatus {
+    param($Results)   # array of @{Hostname;Status;ActualValue;Details}
+    $rank = @{ 'Fail' = 3; 'Warning' = 2; 'Pass' = 1 }
+    $assessed = @($Results | Where-Object { $_.Status -in @('Fail','Warning','Pass') })
+    if ($assessed.Count -eq 0) {
+        $na = @($Results | Where-Object { $_.Status -eq 'N/A' })
+        if ($na.Count -gt 0 -and $na.Count -eq @($Results).Count) { return $na[0] }
+        return @($Results)[0]
+    }
+    $worst = $assessed[0]
+    foreach ($r in $assessed) { if ($rank[$r.Status] -gt $rank[$worst.Status]) { $worst = $r } }
+    return $worst
+}
+
 function Import-CollectionJson {
     param([string]$Path)
 
@@ -2831,11 +3684,17 @@ function Import-CollectionJson {
     }
 
     $Global:Assessment.CollectionData = $Json
+    if (-not $Global:Assessment.PSObject.Properties['MachineResults'] -or $null -eq $Global:Assessment.MachineResults) {
+        $Global:Assessment | Add-Member -NotePropertyName MachineResults -NotePropertyValue @{} -Force
+    }
 
     # Track this machine in the multi-machine list
     $machineName = if ($Json.systemInfo.hostname) { $Json.systemInfo.hostname }
                    elseif ($Json.systemInfo.ComputerName) { $Json.systemInfo.ComputerName }
                    else { 'Unknown' }
+    $osBuild = 0
+    [void][int]::TryParse("$($Json.systemInfo.osBuild)", [ref]$osBuild)
+
     $machineEntry = @{
         Hostname      = $machineName
         ImportedAt    = (Get-Date).ToString('o')
@@ -2846,7 +3705,7 @@ function Import-CollectionJson {
         IsSupported   = $Json.systemInfo.isSupported
         CollectedAt   = $Json._metadata.timestamp
     }
-    # Check if machine already imported (by hostname) — replace if so
+    # Re-importing the same hostname replaces that machine's entry + results
     $existingIdx = -1
     for ($mi = 0; $mi -lt $Global:Assessment.Machines.Count; $mi++) {
         if ($Global:Assessment.Machines[$mi].Hostname -eq $machineName) { $existingIdx = $mi; break }
@@ -2859,6 +3718,16 @@ function Import-CollectionJson {
         Write-DebugLog "Added new machine: $machineName (total: $($Global:Assessment.Machines.Count))" -Level 'INFO'
     }
     $Global:Assessment.MachineCount = $Global:Assessment.Machines.Count
+    $Global:Assessment.MachineResults[$machineName] = @{}
+    $thisMachine = $Global:Assessment.MachineResults[$machineName]
+
+    # Surface truncated event queries (collector caps per-query event volume)
+    try {
+        $tq = $Json.eventData._queryMeta.truncatedQueries
+        if ($tq -and @($tq).Count -gt 0) {
+            Write-DebugLog "Event queries truncated at collection cap: $(@($tq) -join ', ') — event counts are lower bounds" -Level 'WARN'
+        }
+    } catch { }
 
     # Detect join type (collection stores booleans: azureAdJoined=true/false)
     $JT = $Json.joinType
@@ -2885,11 +3754,8 @@ function Import-CollectionJson {
         $lblJoinTypeIcon.Text = [char]0xE8AF
     }
 
-    # Auto-evaluate checks against collection data
-    # Determine applicability based on join type
     $IsEntraOnly = $Global:Assessment.JoinType -match 'Entra'
     $IsADDS      = $Global:Assessment.JoinType -match 'AD DS'
-    $IsHybrid    = $Global:Assessment.JoinType -match 'Hybrid'
 
     $EvalCount = 0
     $SkipCount = 0
@@ -2901,27 +3767,6 @@ function Import-CollectionJson {
         if (-not $Chk.CollectionKeys) { continue }
         $Step++
 
-        # Join type applicability filtering:
-        # - Entra ID only: skip GPO-only checks (no domain controller, no GPOs applied)
-        # - AD DS only: skip Intune-only checks (no MDM enrollment)
-        # - Hybrid: evaluate everything
-        if ($Chk.applicableTo -and $Chk.applicableTo.Count -gt 0) {
-            $applicable = $false
-            if ($IsEntraOnly) {
-                $applicable = 'intune' -in $Chk.applicableTo
-            } elseif ($IsADDS) {
-                $applicable = 'gpo' -in $Chk.applicableTo
-            } else {
-                $applicable = $true  # Hybrid or Workgroup — check everything
-            }
-            if (-not $applicable) {
-                $Chk.Status = 'N/A'
-                $Chk.Details = "Not applicable — $($Global:Assessment.JoinType) device (requires $(($Chk.applicableTo | Where-Object { $_ -ne 'intune' -and $_ -ne 'gpo' }) -join ', ')$(if ('gpo' -in $Chk.applicableTo -and 'intune' -notin $Chk.applicableTo) { 'GPO/domain join' } elseif ('intune' -in $Chk.applicableTo -and 'gpo' -notin $Chk.applicableTo) { 'Intune/MDM' }))"
-                $SkipCount++
-                continue
-            }
-        }
-
         # Update progress bar every 10 checks
         if ($Step % 10 -eq 0 -and $barProgress) {
             $barProgress.Maximum = $TotalAuto
@@ -2932,305 +3777,88 @@ function Import-CollectionJson {
             )
         }
 
-        foreach ($Key in $Chk.CollectionKeys) {
-            $ActualValue = Resolve-CollectionKey -Json $Json -Key $Key
-            if ($null -ne $ActualValue) {
-                $Chk.ActualValue = $ActualValue
-                # Evaluate against baseline value if defined
-                if ($null -ne $Chk.BaselineValue) {
-                    $Expected = "$($Chk.BaselineValue)"
-                    $Actual   = "$ActualValue"
-                    if ($Actual -eq $Expected) {
-                        $Chk.Status = 'Pass'
-                    } else {
-                        $Chk.Status = 'Fail'
-                    }
-                } else {
-                    # No baseline value — check for numeric thresholds first
-                    $thresholdHandled = $false
-
-                    # Pre-process: if value is an array of boot/logon events and threshold expects ms, extract durations
-                    if ($Chk.threshold -and ($null -ne $Chk.threshold.maxBootMs -or $null -ne $Chk.threshold.maxLogonMs) -and
-                        ($ActualValue -is [System.Object[]] -or $ActualValue -is [System.Collections.ArrayList])) {
-                        $boots = @($ActualValue)
-                        $durations = @($boots | ForEach-Object { $_.BootDurationMs } | Where-Object { $null -ne $_ })
-                        $bootCount = $boots.Count
-                        if ($durations.Count -gt 0) {
-                            $maxMs = ($durations | Measure-Object -Maximum).Maximum
-                            $avgMs = [math]::Round(($durations | Measure-Object -Average).Average, 0)
-                            $limitMs = if ($Chk.threshold.maxBootMs) { [double]$Chk.threshold.maxBootMs } else { [double]$Chk.threshold.maxLogonMs }
-                            $limitLabel = if ($Chk.threshold.maxBootMs) { 'Boot' } else { 'Logon' }
-                            $exceeded = @($durations | Where-Object { $_ -gt $limitMs }).Count
-                            $Chk.ActualValue = "$([math]::Round($maxMs/1000,1))s max, $([math]::Round($avgMs/1000,1))s avg ($bootCount boots)"
-                            if ($exceeded -gt 0) {
-                                $Chk.Status = 'Fail'
-                                $Chk.Details = "$exceeded of $($durations.Count) $($limitLabel.ToLower()) times exceed $([int]($limitMs/1000))s limit"
-                            } else {
-                                $Chk.Status = 'Pass'
-                            }
-                        } else {
-                            # No duration data available — report boot count only
-                            $dates = @($boots | ForEach-Object { $_.TimeCreated } | Where-Object { $_ })
-                            $dateRange = if ($dates.Count -ge 2) { "$("$($dates[-1])".Substring(0,10)) to $("$($dates[0])".Substring(0,10))" } elseif ($dates.Count -eq 1) { "$($dates[0])".Substring(0,10) } else { '' }
-                            $Chk.ActualValue = "$bootCount boot events (no duration data)"
-                            $Chk.Status = 'Warning'
-                            $Chk.Details = "Boot events found but BootDuration not recorded by OS$(if ($dateRange) { " ($dateRange)" })"
-                        }
-                        $thresholdHandled = $true
-                    }
-
-                    if (-not $thresholdHandled -and $Chk.threshold -and ($ActualValue -is [int] -or $ActualValue -is [long] -or $ActualValue -is [double])) {
-                        $numVal = [double]$ActualValue
-                        if ($null -ne $Chk.threshold.maxDays) {
-                            # "days since X" — fail if over threshold
-                            $limit = [double]$Chk.threshold.maxDays
-                            $Chk.ActualValue = "$([int]$numVal) days"
-                            if ($numVal -gt $limit) { $Chk.Status = 'Fail'; $Chk.Details = "Exceeds ${limit}-day limit" }
-                            elseif ($numVal -gt ($limit * 0.8)) { $Chk.Status = 'Warning'; $Chk.Details = "Approaching ${limit}-day limit" }
-                            else { $Chk.Status = 'Pass' }
-                            $thresholdHandled = $true
-                        } elseif ($null -ne $Chk.threshold.maxAge) {
-                            # "age in days" — fail if stale
-                            $limit = [double]$Chk.threshold.maxAge
-                            $Chk.ActualValue = "$([int]$numVal) days old"
-                            if ($numVal -gt $limit) { $Chk.Status = 'Fail'; $Chk.Details = "Stale — exceeds ${limit}-day max age" }
-                            else { $Chk.Status = 'Pass' }
-                            $thresholdHandled = $true
-                        } elseif ($null -ne $Chk.threshold.minGB) {
-                            # "minimum free space" — fail if below
-                            $limit = [double]$Chk.threshold.minGB
-                            $Chk.ActualValue = "$([math]::Round($numVal,1)) GB free"
-                            if ($numVal -lt $limit) { $Chk.Status = 'Fail'; $Chk.Details = "Below ${limit} GB minimum" }
-                            elseif ($numVal -lt ($limit * 2)) { $Chk.Status = 'Warning'; $Chk.Details = "Low — approaching ${limit} GB minimum" }
-                            else { $Chk.Status = 'Pass' }
-                            $thresholdHandled = $true
-                        } elseif ($null -ne $Chk.threshold.maxBootMs) {
-                            # "boot time in ms" — fail if slow
-                            $limit = [double]$Chk.threshold.maxBootMs
-                            $Chk.ActualValue = "$([math]::Round($numVal/1000,1))s"
-                            if ($numVal -gt $limit) { $Chk.Status = 'Fail'; $Chk.Details = "Boot time exceeds $([int]($limit/1000))s limit" }
-                            else { $Chk.Status = 'Pass' }
-                            $thresholdHandled = $true
-                        } elseif ($null -ne $Chk.threshold.maxLogonMs) {
-                            # "logon time in ms" — fail if slow
-                            $limit = [double]$Chk.threshold.maxLogonMs
-                            $Chk.ActualValue = "$([math]::Round($numVal/1000,1))s"
-                            if ($numVal -gt $limit) { $Chk.Status = 'Fail'; $Chk.Details = "Logon time exceeds $([int]($limit/1000))s limit" }
-                            else { $Chk.Status = 'Pass' }
-                            $thresholdHandled = $true
-                        }
-                    }
-                    if (-not $thresholdHandled) {
-                    # No baseline value — use heuristic evaluation
-                    if ($ActualValue -is [bool]) {
-                        $Chk.Status = if ($ActualValue) { 'Pass' } else { 'Fail' }
-                    } elseif ($ActualValue -is [int] -or $ActualValue -is [long]) {
-                        $Chk.Status = 'Warning'
-                        $Chk.Details = "Value=$ActualValue (no baseline to compare)"
-                    } elseif ($ActualValue -is [string] -and $ActualValue -eq '') {
-                        $Chk.Status = 'Warning'
-                        $Chk.Details = 'Not configured (empty)'
-                    } elseif ($ActualValue -is [string] -and $ActualValue -match 'No Auditing') {
-                        $Chk.Status = 'Fail'
-                    } elseif ($ActualValue -is [string] -and $ActualValue -match 'Success') {
-                        $Chk.Status = 'Pass'
-                    } elseif ($ActualValue -is [System.Object[]] -or $ActualValue -is [System.Collections.ArrayList]) {
-                        # Array-based checks (drivers.unsigned, scheduledTasks.failedTasks, event arrays, etc.)
-                        $filteredArr = @($ActualValue)
-
-                        # Filter by eventIds if specified in check definition
-                        if ($Chk.eventIds -and $Chk.eventIds.Count -gt 0) {
-                            $eids = @($Chk.eventIds)
-                            $filteredArr = @($filteredArr | Where-Object { $_.id -in $eids })
-                        }
-
-                        # Filter by filterField/filterValues if specified (e.g., LOLBin process names)
-                        if ($Chk.filterField -and $Chk.filterValues -and $Chk.filterValues.Count -gt 0) {
-                            $fField  = $Chk.filterField
-                            $fValues = @($Chk.filterValues)
-                            $filteredArr = @($filteredArr | Where-Object {
-                                $val = if ($fField -like 'props.*') { $_.props.($fField -replace '^props\.','') } else { $_.$fField }
-                                if ($val) {
-                                    $leaf = [System.IO.Path]::GetFileName($val)
-                                    $leaf -in $fValues
-                                }
-                            })
-                        }
-
-                        $arrCount = $filteredArr.Count
-
-                        # Check for count-based threshold (evalMode: count)
-                        if ($Chk.threshold -and $Chk.threshold.evalMode -eq 'count' -and $null -ne $Chk.threshold.count) {
-                            $limit = [int]$Chk.threshold.count
-                            $Chk.ActualValue = "$arrCount events"
-                            if ($arrCount -gt $limit) {
-                                $Chk.Status = 'Fail'
-                                $Chk.Details = "$arrCount events exceed threshold of $limit in $($Chk.threshold.windowDays) days"
-                            } elseif ($arrCount -gt 0) {
-                                $Chk.Status = 'Warning'
-                                $Chk.Details = "$arrCount events (threshold: $limit)"
-                            } else {
-                                $Chk.Status = 'Pass'
-                                $Chk.Details = 'No events found'
-                            }
-                        } else {
-                            $Chk.ActualValue = "$arrCount items"
-                            if ($arrCount -eq 0) {
-                                $Chk.Status = 'Pass'
-                                $Chk.Details = 'None found'
-                            } else {
-                                $Chk.Status = 'Fail'
-                                # Build summary from first few items
-                                $preview = @($ActualValue | Select-Object -First 3 | ForEach-Object {
-                                    if ($_.Name) { $_.Name } elseif ($_.DeviceName) { $_.DeviceName } else { "$_" }
-                                }) -join ', '
-                                $Chk.Details = "$arrCount found: $preview$(if ($arrCount -gt 3) { '...' })"
-                            }
-                        }
-                    } elseif ($ActualValue -is [PSCustomObject] -or $ActualValue -is [hashtable]) {
-                        # Event log capacity check (evalMode: logCapacity)
-                        if ($Chk.threshold -and $Chk.threshold.evalMode -eq 'logCapacity' -and $null -ne $ActualValue.FileSize -and $null -ne $ActualValue.MaxSizeKB) {
-                            $fileSizeKB = [double]$ActualValue.FileSize
-                            $maxSizeKB  = [double]$ActualValue.MaxSizeKB
-                            $usagePct   = if ($maxSizeKB -gt 0) { [math]::Round(($fileSizeKB / $maxSizeKB) * 100, 1) } else { 0 }
-                            $maxPct     = if ($Chk.threshold.maxUsagePct) { [double]$Chk.threshold.maxUsagePct } else { 90 }
-                            $recordCount = if ($ActualValue.RecordCount) { [int]$ActualValue.RecordCount } else { 0 }
-                            $Chk.ActualValue = "$usagePct% full ($recordCount records, $([math]::Round($fileSizeKB/1024))/$([math]::Round($maxSizeKB/1024)) MB)"
-                            if ($usagePct -ge $maxPct) {
-                                $Chk.Status = 'Warning'
-                                $Chk.Details = "Log is ${usagePct}% full — risk of event loss. Overflow: $($ActualValue.OverflowAction)"
-                            } else {
-                                $Chk.Status = 'Pass'
-                                $Chk.Details = "Overflow: $($ActualValue.OverflowAction)"
-                            }
-                        }
-                        # Event data with threshold evaluation
-                        elseif ($null -ne $ActualValue.count -and $Chk.threshold) {
-                            $evtCount  = [int]$ActualValue.count
-                            $threshold = [int]$Chk.threshold.count
-                            $Chk.ActualValue = "$evtCount events"
-                            if ($ActualValue.topUsers) {
-                                $topList = ($ActualValue.topUsers | ForEach-Object { "$($_.user)($($_.count))" }) -join ', '
-                                $Chk.Details = "Top: $topList"
-                            }
-                            if ($ActualValue.firstEvent) {
-                                $span = "$($ActualValue.firstEvent.Substring(0,10)) – $($ActualValue.lastEvent.Substring(0,10))"
-                                $Chk.Details = if ($Chk.Details) { "$($Chk.Details) | $span" } else { $span }
-                            }
-                            if ($evtCount -gt $threshold) {
-                                $Chk.Status = 'Fail'
-                            } elseif ($evtCount -gt 0) {
-                                $Chk.Status = 'Warning'
-                            } else {
-                                $Chk.Status = 'Pass'
-                            }
-                        }
-                        # Event data without threshold — report count, flag for review
-                        elseif ($null -ne $ActualValue.count) {
-                            $evtCount = [int]$ActualValue.count
-                            $Chk.ActualValue = "$evtCount events"
-                            if ($evtCount -gt 0) {
-                                $Chk.Status = 'Warning'
-                                $Chk.Details = "$evtCount events collected — no threshold defined"
-                            } else {
-                                $Chk.Status = 'Pass'
-                            }
-                        }
-                        # Service or other complex object
-                        else {
-                            $svcStatus = $ActualValue.Status
-                            $svcStart  = $ActualValue.StartType
-                            $enabled   = $ActualValue.Enabled
-                            if ($svcStatus) {
-                                $Chk.ActualValue = "$svcStatus ($svcStart)"
-                            } elseif (-not $svcStatus -and -not $enabled) {
-                                # Whole-section object without Status/Enabled — summarize key properties
-                                $props = @($ActualValue.PSObject.Properties | Where-Object { $_.Value -ne $null -and $_.Value -isnot [System.Object[]] -and $_.Value -isnot [PSCustomObject] } | Select-Object -First 6)
-                                if ($props.Count -gt 0) {
-                                    $summary = ($props | ForEach-Object { "$($_.Name)=$($_.Value)" }) -join '; '
-                                    $Chk.ActualValue = $summary
-                                } else {
-                                    $propCount = @($ActualValue.PSObject.Properties).Count
-                                    $Chk.ActualValue = "$propCount properties collected"
-                                }
-                            }
-                            if ($svcStatus -eq 'Running' -or $enabled -eq $true) { $Chk.Status = 'Pass' }
-                            elseif ($svcStatus -eq 'Stopped' -or $enabled -eq $false) { $Chk.Status = 'Warning' }
-                            else { $Chk.Status = 'Warning'; $Chk.Details = 'Collected but needs manual review' }
-                        }
-                    } else {
-                        $Chk.Status = 'Warning'
-                        $Chk.Details = 'Collected but needs manual review'
-                    }
-                    } # end if (-not $thresholdHandled)
-                }
-                $EvalCount++
-                break  # Use first matching key
+        # Join type applicability filtering (recorded per machine)
+        $isApplicable = $true
+        $naReason = ''
+        if ($Chk.applicableTo -and $Chk.applicableTo.Count -gt 0) {
+            if ($IsEntraOnly)  { $isApplicable = ('intune' -in $Chk.applicableTo) }
+            elseif ($IsADDS)   { $isApplicable = ('gpo' -in $Chk.applicableTo) }
+            else               { $isApplicable = $true }  # Hybrid or Workgroup — check everything
+            if (-not $isApplicable) {
+                $reqLabel = if ('gpo' -in $Chk.applicableTo -and 'intune' -notin $Chk.applicableTo) { 'GPO/domain join' }
+                            elseif ('intune' -in $Chk.applicableTo -and 'gpo' -notin $Chk.applicableTo) { 'Intune/MDM' }
+                            else { ($Chk.applicableTo -join ', ') }
+                $naReason = "Not applicable — $($Global:Assessment.JoinType) device (requires $reqLabel)"
             }
         }
 
-        # MDM precedence: if registry value is null but device is MDM-enrolled,
-        # check if the corresponding CSP area is managed by Intune.
-        # If so, the setting may be configured via MDM (different registry path).
-        if ($Chk.Status -eq 'Not Assessed' -and $Json.mdmEnrollment.mdmEnrolled -and $Json.mdmEnrollment.managedAreas) {
-            $cspArea = $null
-            # Derive CSP area from cspPath (e.g., "Defender/AllowRealtimeMonitoring" -> "Defender")
-            if ($Chk.CspPath) {
-                $cspArea = ($Chk.CspPath -split '/')[0]
+        if (-not $isApplicable) {
+            $thisMachine[$Chk.Id] = @{ Status='N/A'; ActualValue='N/A'; Details=$naReason; Timestamp=(Get-Date).ToString('o') }
+            $SkipCount++
+        } else {
+            $res = Get-CheckEvaluation -Chk $Chk -Json $Json -OsBuild $osBuild
+            $thisMachine[$Chk.Id] = @{
+                Status      = $res.Status
+                ActualValue = if ($null -ne $res.ActualValue) { "$($res.ActualValue)" } else { $null }
+                Details     = "$($res.Details)"
+                Timestamp   = (Get-Date).ToString('o')
             }
-            # Or from collectionKey to CSP area mapping
-            if (-not $cspArea -and $Chk.CollectionKeys) {
-                $keyHints = @{
-                    'defender'   = 'Defender'
-                    'firewall'   = 'WindowsFirewall'
-                    'bitlocker'  = 'BitLocker'
-                    'winrmConfig' = 'RemoteManagement'
-                }
-                foreach ($Key in $Chk.CollectionKeys) {
-                    $section = ($Key -split '\.')[0]
-                    if ($keyHints.ContainsKey($section)) { $cspArea = $keyHints[$section]; break }
-                }
-            }
-
-            if ($cspArea -and $Json.mdmEnrollment.managedAreas.$cspArea) {
-                $mdmArea = $Json.mdmEnrollment.managedAreas.$cspArea
-                $Chk.Status = 'Warning'
-                $Chk.ActualValue = 'Managed via Intune'
-                $Chk.Details = "Setting managed by MDM ($($mdmArea.settingCount) settings in $cspArea area). GPO registry path is null — verify correct value in Intune portal."
-                $EvalCount++
-            }
-        }
-
-        # "Not configured" = Fail for baseline checks:
-        # If the check is still Not Assessed, all collectionKeys resolved to null.
-        # For checks with a baselineValue, null means "not configured" which means
-        # the insecure default is in effect — this is a finding (Fail).
-        # For checks without a baselineValue, null means we can't assess — leave as Not Assessed.
-        if ($Chk.Status -eq 'Not Assessed' -and $null -ne $Chk.BaselineValue) {
-            $Chk.Status = 'Fail'
-            $Chk.ActualValue = 'Not configured'
-            $Chk.Details = "Registry/policy value not found — setting uses insecure Windows default. Expected: $($Chk.BaselineValue)"
-            $EvalCount++
+            if ($res.Status -ne 'Not Assessed') { $EvalCount++ }
         }
     }
 
     # Reset progress bar
     if ($barProgress) { $barProgress.Value = 0 }
 
+    # ── A-6: aggregate per-machine results into the displayed check state ──
+    # Displayed Status = WORST across imported machines; AffectedMachines rebuilt (not
+    # appended) from the store; manual governance statuses are never overwritten.
+    $machineTotal = @($Global:Assessment.MachineResults.Keys).Count
+    $manualStatuses = @('Accepted Risk','Deferred')
+    foreach ($Chk in $Global:Assessment.Checks) {
+        $results = @()
+        foreach ($mHost in @($Global:Assessment.MachineResults.Keys)) {
+            $mr = $Global:Assessment.MachineResults[$mHost]
+            $entry = $null
+            if ($mr -is [hashtable]) { if ($mr.ContainsKey($Chk.Id)) { $entry = $mr[$Chk.Id] } }
+            else { try { $entry = $mr.($Chk.Id) } catch { $entry = $null } }
+            if ($entry) {
+                $results += , @{ Hostname=$mHost; Status=$entry.Status; ActualValue=$entry.ActualValue; Details=$entry.Details }
+            }
+        }
+        if ($results.Count -eq 0) { continue }
+
+        $assessedCount = @($results | Where-Object { $_.Status -in @('Fail','Warning','Pass') }).Count
+
+        # Rebuild AffectedMachines from the store (stale entries pruned on clean re-import)
+        $al = [System.Collections.ArrayList]::new()
+        foreach ($r in @($results | Where-Object { $_.Status -in @('Fail','Warning') })) { [void]$al.Add($r.Hostname) }
+        $Chk.AffectedMachines = $al
+
+        # Compact per-machine breakdown for the check card
+        $Chk.MachineBreakdown = ((@($results) | Sort-Object { $_.Hostname } | ForEach-Object { "$($_.Hostname): $($_.Status)" }) -join '  |  ')
+
+        # Manual governance decisions are NOT overwritten by imports (still recorded above)
+        if (($Chk.Status -in $manualStatuses) -or ($Chk.Decision -in @('AcceptRisk','NA','Defer'))) { continue }
+
+        $worst = Get-WorstMachineStatus -Results $results
+        $Chk.Status = $worst.Status
+        if ($machineTotal -gt 1 -and $assessedCount -gt 0) {
+            $Chk.ActualValue = "$($worst.Hostname): $($worst.ActualValue) ($assessedCount of $machineTotal machines assessed)"
+            $Chk.Details = if ("$($worst.Details)") { "$($worst.Hostname): $($worst.Details)" } else { '' }
+        } else {
+            $Chk.ActualValue = $worst.ActualValue
+            $Chk.Details = $worst.Details
+        }
+    }
+
     # Snapshot auto-evaluated status so users can Undo manual overrides
     foreach ($Chk in $Global:Assessment.Checks) {
         $Chk.AutoStatus = $Chk.Status
     }
 
-    # Track affected machines for each finding (multi-machine support)
-    foreach ($Chk in $Global:Assessment.Checks) {
-        if ($Chk.Status -in @('Fail','Warning') -and $machineName -notin $Chk.AffectedMachines) {
-            [void]$Chk.AffectedMachines.Add($machineName)
-        }
-    }
-
     $machineNote = if ($Global:Assessment.MachineCount -gt 1) { " ($($Global:Assessment.MachineCount) machines total)" } else { " (import more machines for aggregate view)" }
-    Write-DebugLog "Collection imported: $machineName — $EvalCount checks evaluated, $SkipCount skipped$machineNote" -Level 'SUCCESS'
+    Write-DebugLog "Collection imported: $machineName — $EvalCount checks evaluated, $SkipCount N/A$machineNote" -Level 'SUCCESS'
     Show-Toast "${machineName}: $EvalCount evaluated ($SkipCount N/A)$machineNote" -Type 'Success'
 
     Set-Dirty
@@ -3347,6 +3975,7 @@ function Clear-Dirty {
 
 function AutoSave-Assessment {
     if (-not $Global:AutoSaveEnabled) { return }
+    if (-not $Global:IsDirty) { return }   # E-9: skip serialize+backup+prune when clean
     try {
         Sync-AssessmentFromUI
         $JsonStr = $Global:Assessment | ConvertTo-Json -Depth 10
@@ -3453,20 +4082,13 @@ function Reset-Assessment {
     $Global:Assessment.ManualOverrides = @{}
     $Global:Assessment.Machines.Clear()
     $Global:Assessment.MachineCount = 0
+    $Global:Assessment.MachineResults = @{}
+    $Global:Assessment.CatalogVersion = $Global:CatalogVersion
     $Global:ActiveFilePath = $null
 
     $Global:Assessment.Checks.Clear()
     foreach ($Def in $Global:CheckDefinitions) {
-        [void]$Global:Assessment.Checks.Add([PSCustomObject]@{
-            Id=$Def.id;Category=$Def.category;Name=$Def.name;Description=$Def.description
-            Severity=$Def.severity;Type=$Def.type;Weight=[int]$Def.weight;Priority=$Def.priority
-            Origin=$Def.origin;Effort=$Def.effort;Impact=$Def.impact;Remediation=$Def.remediation
-            Reference=$Def.reference;CollectionKeys=$Def.collectionKeys;BaselineValue=$Def.baselineValue
-            CspPath=$Def.cspPath;Rationale=$Def.rationale;applicableTo=$Def.applicableTo;threshold=$Def.threshold
-            eventIds=$Def.eventIds;filterField=$Def.filterField;filterValues=$Def.filterValues
-            ActualValue=$null;Status='Not Assessed';AutoStatus=$null;Excluded=$false;Details='';Notes='';Source=$Def.type
-            AffectedMachines=[System.Collections.ArrayList]::new()
-        })
+        [void]$Global:Assessment.Checks.Add((New-CheckObject $Def))
     }
 
     $txtCustomerName.Text   = ''
@@ -3488,62 +4110,97 @@ function Reset-Assessment {
     Show-Toast "New assessment created" -Type 'Info'
 }
 
-function Load-Assessment {
-    $dlg = New-Object Microsoft.Win32.OpenFileDialog
-    $dlg.Filter = 'JSON Files (*.json)|*.json'
-    $dlg.InitialDirectory = $Global:AssessmentDir
-    $dlg.Title = 'Load Assessment or Collection JSON'
+# Single load path (E-7): handles both collection files and saved assessments.
+# Used by the saved-assessments double-click handler; the dead Load-Assessment twin was removed.
+function Load-AssessmentFromPath {
+    param([string]$Path)
+    if (-not (Confirm-OverwriteAssessment -Action 'loading a saved file')) { return }
+    try {
+        $Json = Get-Content $Path -Raw -Encoding UTF8 | ConvertFrom-Json
 
-    if ($dlg.ShowDialog() -eq $true) {
-        if (-not (Confirm-OverwriteAssessment -Action 'loading a file')) { return }
-        try {
-            $Json = Get-Content $dlg.FileName -Raw -Encoding UTF8 | ConvertFrom-Json
-
-            if ($Json._metadata -and $Json.systemInfo) {
-                # Collection JSON — create fresh assessment, then import
-                Reset-Assessment
-                Import-CollectionJson -Path $dlg.FileName
-            } elseif ($Json.Checks) {
-                # Saved assessment — restore
-                $Global:Assessment = $Json
-                $Global:Assessment.Checks = [System.Collections.ArrayList]@($Json.Checks)
-                # Merge new checks from checks.json
-                $ExIds = @($Json.Checks | ForEach-Object { $_.Id })
-                foreach ($Def in $Global:CheckDefinitions) {
-                    if ($Def.id -notin $ExIds) {
-                        [void]$Global:Assessment.Checks.Add([PSCustomObject]@{
-                            Id=$Def.id;Category=$Def.category;Name=$Def.name;Description=$Def.description
-                            Severity=$Def.severity;Type=$Def.type;Weight=[int]$Def.weight;Priority=$Def.priority
-                            Origin=$Def.origin;Effort=$Def.effort;Impact=$Def.impact;Remediation=$Def.remediation
-                            Reference=$Def.reference;CollectionKeys=$Def.collectionKeys;BaselineValue=$Def.baselineValue
-                            CspPath=$Def.cspPath;Rationale=$Def.rationale
-                            applicableTo=$Def.applicableTo;threshold=$Def.threshold
-                            eventIds=$Def.eventIds;filterField=$Def.filterField;filterValues=$Def.filterValues
-                            ActualValue=$null;Status='Not Assessed';AutoStatus=$null;Excluded=$false;Details='';Notes='';Source=$Def.type
-                            AffectedMachines=[System.Collections.ArrayList]::new()
-                        })
-                    }
-                }
-                $txtCustomerName.Text   = $Json.CustomerName
-                $txtAssessorName.Text   = $Json.AssessorName
-                $txtAssessmentDate.Text = $Json.Date
-                if ($txtNotes) { $txtNotes.Text = $Json.Notes }
-
-                Update-Dashboard
-                Update-Progress
-                Render-BaselineChecks
-                Render-Findings
-                $Global:ActiveFilePath = $dlg.FileName
-                Clear-Dirty
-                Write-DebugLog "Assessment loaded: $($dlg.FileName)" -Level 'SUCCESS'
-                Show-Toast "Assessment loaded: $($Json.Checks.Count) checks" -Type 'Success'
-            } else {
-                Show-Toast "Unrecognized JSON format" -Type 'Error'
-            }
-        } catch {
-            Write-DebugLog "Load failed: $($_.Exception.Message)" -Level 'ERROR'
-            Show-Toast "Load failed: $($_.Exception.Message)" -Type 'Error'
+        if ($Json._metadata -and $Json.systemInfo) {
+            # Collection JSON — create fresh assessment, then import
+            Reset-Assessment
+            Import-CollectionJson -Path $Path
+            $Global:ActiveFilePath = $Path
+            Refresh-AssessmentList
+            return
         }
+        if (-not $Json.Checks) {
+            Show-Toast "Unrecognized JSON format" -Type 'Error'
+            return
+        }
+
+        # Saved assessment — restore
+        $Global:Assessment = $Json
+        $Global:Assessment.Checks = [System.Collections.ArrayList]@($Json.Checks)
+
+        # Re-hydrate structural members that don't survive JSON round-trip
+        $mr = @{}
+        if ($Json.MachineResults) {
+            foreach ($hp in $Json.MachineResults.PSObject.Properties) {
+                $inner = @{}
+                foreach ($cp in $hp.Value.PSObject.Properties) { $inner[$cp.Name] = $cp.Value }
+                $mr[$hp.Name] = $inner
+            }
+        }
+        $Global:Assessment | Add-Member -NotePropertyName MachineResults -NotePropertyValue $mr -Force
+        if (-not $Global:Assessment.PSObject.Properties['ManualOverrides']) {
+            $Global:Assessment | Add-Member -NotePropertyName ManualOverrides -NotePropertyValue @{} -Force
+        }
+        # Machines must be a live ArrayList (JSON round-trip yields a fixed array)
+        $machList = [System.Collections.ArrayList]::new()
+        if ($Json.Machines) { foreach ($m in @($Json.Machines)) { [void]$machList.Add($m) } }
+        $Global:Assessment | Add-Member -NotePropertyName Machines -NotePropertyValue $machList -Force
+        $Global:Assessment | Add-Member -NotePropertyName MachineCount -NotePropertyValue $machList.Count -Force
+
+        # Catalog-version stamping + retired-id pruning (E-7)
+        $CurIds = @($Global:CheckDefinitions | ForEach-Object { $_.id })
+        $Retired = @($Global:Assessment.Checks | Where-Object { $_.Id -notin $CurIds })
+        if ($Retired.Count -gt 0) {
+            foreach ($R in $Retired) { $Global:Assessment.Checks.Remove($R) }
+        }
+        $LoadedCatVer = if ($Json.CatalogVersion) { "$($Json.CatalogVersion)" } else { '(unstamped)' }
+        $Global:Assessment | Add-Member -NotePropertyName CatalogVersion -NotePropertyValue $Global:CatalogVersion -Force
+
+        # Merge newly-added checks from checks.json (rebuild AffectedMachines ArrayList too)
+        $ExIds = @($Global:Assessment.Checks | ForEach-Object { $_.Id })
+        foreach ($Def in $Global:CheckDefinitions) {
+            if ($Def.id -notin $ExIds) {
+                [void]$Global:Assessment.Checks.Add((New-CheckObject $Def))
+            }
+        }
+        # Restore AffectedMachines to a live ArrayList for every check (JSON gives arrays)
+        foreach ($C in $Global:Assessment.Checks) {
+            $existing = @()
+            if ($C.PSObject.Properties['AffectedMachines'] -and $C.AffectedMachines) { $existing = @($C.AffectedMachines) }
+            $al = [System.Collections.ArrayList]::new()
+            foreach ($m in $existing) { [void]$al.Add($m) }
+            $C | Add-Member -NotePropertyName AffectedMachines -NotePropertyValue $al -Force
+        }
+
+        $txtCustomerName.Text   = $Json.CustomerName
+        $txtAssessorName.Text   = $Json.AssessorName
+        $txtAssessmentDate.Text = $Json.Date
+        if ($txtNotes) { $txtNotes.Text = $Json.Notes }
+
+        Update-Dashboard
+        Update-Progress
+        Render-BaselineChecks
+        Render-Findings
+        $Global:ActiveFilePath = $Path
+        Clear-Dirty
+
+        $pruneNote = if ($Retired.Count -gt 0) { " ($($Retired.Count) retired check(s) pruned)" } else { '' }
+        if ($Retired.Count -gt 0) {
+            Show-Toast "Loaded $($Global:Assessment.Checks.Count) checks$pruneNote" -Type 'Warning'
+        } else {
+            Show-Toast "Assessment loaded: $($Global:Assessment.Checks.Count) checks" -Type 'Success'
+        }
+        Write-DebugLog "Assessment loaded: $Path — catalog was $LoadedCatVer, now v$($Global:CatalogVersion)$pruneNote" -Level 'SUCCESS'
+    } catch {
+        Write-DebugLog "Load failed: $($_.Exception.Message)" -Level 'ERROR'
+        Show-Toast "Load failed: $($_.Exception.Message)" -Type 'Error'
     }
 }
 
@@ -3583,7 +4240,9 @@ function Refresh-AssessmentList {
                 $DisplayName = if ($Peek.CustomerName) { $Peek.CustomerName } else { 'Untitled Assessment' }
                 $Assessed = @($Peek.Checks | Where-Object { $_.Status -ne 'Not Assessed' }).Count
                 if ($Assessed -gt 0) {
-                    $ScoringChecks = @($Peek.Checks | Where-Object { $_.Status -ne 'N/A' })
+                    # E-6: same semantics as Get-OverallScore — exclude N/A, Accepted Risk
+                    # and Excluded; Not Assessed / Deferred / Fail score 0 at full weight.
+                    $ScoringChecks = @($Peek.Checks | Where-Object { $_.Status -notin @('N/A','Accepted Risk') -and -not $_.Excluded })
                     $WSum = 0; $TW = 0
                     foreach ($SC in $ScoringChecks) {
                         $W = [math]::Max(1, [int]$SC.Weight)
@@ -3856,7 +4515,17 @@ function Export-CsvReport {
 
     if ($dlg.ShowDialog() -eq $true) {
         try {
-            $Global:Assessment.Checks | Select-Object Id, Category, Name, Description, Status, Severity, Weight, Priority, Origin, Effort, Excluded, Details, Notes |
+            # E-11: neutralize CSV formula injection — prefix leading = + - @ with '
+            $csvSafe = { param($s) $t = "$s"; if ($t -match '^[=+\-@]') { "'$t" } else { $t } }
+            $Global:Assessment.Checks | Select-Object Id, Category,
+                @{ N='Name';        E={ & $csvSafe $_.Name } },
+                @{ N='Description'; E={ & $csvSafe $_.Description } },
+                Status, Severity, Weight, Priority, Origin, Effort, Excluded,
+                @{ N='ActualValue'; E={ & $csvSafe $_.ActualValue } },
+                @{ N='Details';     E={ & $csvSafe $_.Details } },
+                @{ N='Decision';    E={ & $csvSafe $_.Decision } },
+                @{ N='Notes';       E={ & $csvSafe $_.Notes } },
+                @{ N='AffectedMachines'; E={ & $csvSafe (@($_.AffectedMachines) -join '; ') } } |
                 Export-Csv -Path $dlg.FileName -NoTypeInformation -Encoding UTF8
             Write-DebugLog "CSV exported: $($dlg.FileName)" -Level 'SUCCESS'
             Unlock-Achievement 'export_csv'
@@ -3983,9 +4652,17 @@ function Export-HtmlReport {
                 if ($Chk.Notes) {
                     $DetailHtml += "<div style='margin-top:4px;font-size:10px;color:var(--text-dim);font-style:italic'>Note: $(& $enc $Chk.Notes)</div>"
                 }
-                if ($Chk.Details -and $Chk.Details -in @('Remediate','AcceptRisk','Defer')) {
-                    $DecColor = switch ($Chk.Details) { 'Remediate' { 'var(--green-text)' } 'AcceptRisk' { 'var(--orange-text)' } default { 'var(--text-dim)' } }
-                    $DetailHtml += "<div style='margin-top:4px;font-size:10px'><span style='color:$DecColor;font-weight:600'>Decision: $($Chk.Details)</span></div>"
+                # E-3: decision tag lives in the Decision field (Details fallback for old saves)
+                $DecTag = if ($Chk.Decision) { "$($Chk.Decision)" }
+                          elseif ($Chk.Details -in @('Remediate','AcceptRisk','NA','Defer')) { "$($Chk.Details)" }
+                          else { '' }
+                if ($DecTag) {
+                    $DecColor = switch ($DecTag) { 'Remediate' { 'var(--green-text)' } 'AcceptRisk' { 'var(--orange-text)' } default { 'var(--text-dim)' } }
+                    $DetailHtml += "<div style='margin-top:4px;font-size:10px'><span style='color:$DecColor;font-weight:600'>Decision: $DecTag</span></div>"
+                }
+                # A-6: affected machines in the HTML export
+                if ($Chk.AffectedMachines -and @($Chk.AffectedMachines).Count -gt 0) {
+                    $DetailHtml += "<div style='margin-top:4px;font-size:10px;color:var(--text-dim)'>Affected machines: $(& $enc (@($Chk.AffectedMachines) -join ', '))</div>"
                 }
 
                 $RefLink = if ($Chk.Reference) { "<a href='$(& $enc $Chk.Reference)' target='_blank' style='color:var(--accent-text);text-decoration:none;font-size:10px'>Docs</a>" } else { '' }
@@ -4154,6 +4831,7 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);line-height:
     <div class='score-block'><div class='val $ScoreClass'>$(if ($Compliance -ge 0) { "$Compliance%" } else { [string][char]0x2014 })</div><div class='lbl'>Baseline Compliance</div></div>
     <div class='score-block'><div class='val $RiskClass'>$(if ($Score -ge 0) { "$Score" } else { [string][char]0x2014 })</div><div class='lbl'>Weighted Risk Score</div></div>
   </div>
+  <div style='font-size:10px;color:var(--text-dim);margin-top:8px'>Compliance% counts only reviewed checks; the Risk Score also scores Not Assessed checks as 0 &#8212; the two can differ. Accepted Risk items are excluded from both scores.</div>
 </div>
 <div class='summary'>
   <div class='stat-card pass'><div class='accent-bar'></div><div class='num'>$Pass</div><div class='label'>Pass</div></div>
@@ -4350,43 +5028,12 @@ $btnNewAssessment.Add_Click({ Reset-Assessment; Refresh-AssessmentList })
 # Quick save in title bar
 $btnQuickSave.Add_Click({ Save-Assessment; Refresh-AssessmentList })
 
-# Saved assessments list — double-click to load
+# Saved assessments list — double-click to load (single load path, E-7)
 $lstSavedAssessments.Add_MouseDoubleClick({
     $Sel = $lstSavedAssessments.SelectedItem
     if ($Sel -and $Sel.Tag) {
-        if (-not (Confirm-OverwriteAssessment -Action 'loading a saved file')) { return }
-        try {
-            $Json = Get-Content $Sel.Tag -Raw -Encoding UTF8 | ConvertFrom-Json
-            if ($Json.Checks) {
-                $Global:Assessment = $Json
-                $Global:Assessment.Checks = [System.Collections.ArrayList]@($Json.Checks)
-                $ExIds = @($Json.Checks | ForEach-Object { $_.Id })
-                foreach ($Def in $Global:CheckDefinitions) {
-                    if ($Def.id -notin $ExIds) {
-                        [void]$Global:Assessment.Checks.Add([PSCustomObject]@{
-                            Id=$Def.id;Category=$Def.category;Name=$Def.name;Description=$Def.description
-                            Severity=$Def.severity;Type=$Def.type;Weight=[int]$Def.weight;Priority=$Def.priority
-                            Origin=$Def.origin;Effort=$Def.effort;Impact=$Def.impact;Remediation=$Def.remediation
-                            Reference=$Def.reference;CollectionKeys=$Def.collectionKeys;BaselineValue=$Def.baselineValue
-                            CspPath=$Def.cspPath;Rationale=$Def.rationale;applicableTo=$Def.applicableTo;threshold=$Def.threshold
-                            eventIds=$Def.eventIds;filterField=$Def.filterField;filterValues=$Def.filterValues
-                            ActualValue=$null;Status='Not Assessed';AutoStatus=$null;Excluded=$false;Details='';Notes='';Source=$Def.type
-                            AffectedMachines=[System.Collections.ArrayList]::new()
-                        })
-                    }
-                }
-                $txtCustomerName.Text   = $Json.CustomerName
-                $txtAssessorName.Text   = $Json.AssessorName
-                $txtAssessmentDate.Text = $Json.Date
-                if ($txtNotes) { $txtNotes.Text = $Json.Notes }
-                Update-Dashboard; Update-Progress; Render-BaselineChecks; Render-Findings
-                $Global:ActiveFilePath = $Sel.Tag
-                Clear-Dirty
-                Show-Toast "Loaded: $(Split-Path $Sel.Tag -Leaf)" -Type 'Success'
-            }
-        } catch {
-            Show-Toast "Load failed: $($_.Exception.Message)" -Type 'Error'
-        }
+        Load-AssessmentFromPath -Path $Sel.Tag
+        Refresh-AssessmentList
     }
 })
 
@@ -4414,6 +5061,9 @@ $cmbFilterPriority.Add_SelectionChanged({ Invoke-DeferredRender { Render-Finding
 $cmbFilterOrigin.Add_SelectionChanged({ Invoke-DeferredRender { Render-Findings } })
 $cmbFilterEffort.Add_SelectionChanged({ Invoke-DeferredRender { Render-Findings } })
 $txtFindingsSearch.Add_TextChanged({ Invoke-DeferredRender { Render-Findings } })
+
+# E-5: score-view toggle in the Report sidebar
+if ($cmbScoreView) { $cmbScoreView.Add_SelectionChanged({ Update-OverallScoreDisplay }) }
 
 # Baseline sidebar filter changes
 $chkShowDeviationsOnly.Add_Checked({ Invoke-DeferredRender { Render-BaselineChecks } })
@@ -4446,44 +5096,10 @@ $txtCustomerName.Add_TextChanged({ Set-Dirty })
 $txtAssessorName.Add_TextChanged({ Set-Dirty })
 
 # ===============================================================================
-# SECTION 18: BACKGROUND JOB POLLING TIMER
+# SECTION 18: AUTO-SAVE TIMER
 # ===============================================================================
-
-$Timer = New-Object System.Windows.Threading.DispatcherTimer
-$Timer.Interval = [TimeSpan]::FromMilliseconds($Script:TIMER_INTERVAL_MS)
-$Timer.Add_Tick({
-    if ($Global:TimerProcessing) { return }
-    $Global:TimerProcessing = $true
-    try {
-        $Completed = @($Global:BgJobs | Where-Object { $_.Handle.IsCompleted })
-        foreach ($Job in $Completed) {
-            try {
-                $Results = $Job.PS.EndInvoke($Job.Handle)
-                $Errors  = $Job.PS.Streams.Error
-                if ($Job.OnComplete) {
-                    & $Job.OnComplete $Results $Errors $Job.Context
-                }
-            } catch {
-                Write-DebugLog "BgJob [$($Job.Name)] error: $($_.Exception.Message)" -Level 'ERROR'
-            } finally {
-                $Job.PS.Dispose()
-                $Job.RS.Dispose()
-                [void]$Global:BgJobs.Remove($Job)
-            }
-        }
-
-        while ($Global:SyncHash.LogQueue.Count -gt 0) {
-            $Msg = $Global:SyncHash.LogQueue.Dequeue()
-            Write-DebugLog $Msg.Message -Level $Msg.Level
-        }
-        while ($Global:SyncHash.StatusQueue.Count -gt 0) {
-            $null = $Global:SyncHash.StatusQueue.Dequeue()
-        }
-    } finally {
-        $Global:TimerProcessing = $false
-    }
-})
-$Timer.Start()
+# (Background job polling timer removed — AUDIT E-8: the 50ms DispatcherTimer drained
+#  always-empty queues with no producers; Start-BackgroundWork had no callers.)
 
 # Auto-save timer
 $Global:AutoSaveTimer = New-Object System.Windows.Threading.DispatcherTimer
@@ -4500,6 +5116,8 @@ Write-DebugLog "[INIT] Root: $Global:Root" -Level 'DEBUG'
 
 $txtAssessmentDate.Text = (Get-Date -Format 'yyyy-MM-dd')
 $lblSplashVersion.Text = "v$Global:AppVersion"
+if ($lblTitleVersion)    { $lblTitleVersion.Text    = "v$Global:AppVersion" }
+if ($lblSettingsVersion) { $lblSettingsVersion.Text = "v$Global:AppVersion" }
 $txtExportPath.Text = $Global:ReportDir
 
 # Splash step 1
@@ -4581,11 +5199,7 @@ $Window.Add_Closing({
 
     # Cleanup
     Save-UserPrefs
-    $Timer.Stop()
     $Global:AutoSaveTimer.Stop()
-    foreach ($Job in @($Global:BgJobs)) {
-        try { $Job.PS.Stop(); $Job.PS.Dispose(); $Job.RS.Dispose() } catch { }
-    }
     Write-DebugLog "BaselinePilot closed" -Level 'INFO'
 })
 
