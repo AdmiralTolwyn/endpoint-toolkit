@@ -50,15 +50,22 @@ param runElevated bool = true
 param runAsSystem bool = false
 param windowsUpdate bool = true
 
+@description('Seconds to wait before the WindowsUpdate customizer. Deliberate buffer to avoid the AIB WindowsUpdate customizer race where the update service is not yet ready after prior customizers.')
+param windowsUpdateWaitSeconds int = 300
+
 // === DISTRIBUTE PARAMETERS ===
 @allowed(['SharedImage', 'ManagedImage', 'VHD'])
 param distributeType string = 'SharedImage'
 
-@description('For SharedImage: gallery image definition resource ID (without /versions)')
+@description('For SharedImage: gallery image definition resource ID (without /versions). REQUIRED when distributeType == \'SharedImage\' — Bicep cannot conditionally mark a param required, so this is enforced by convention/caller.')
 param galleryImageId string = ''
 
 @description('Comma-separated target regions for gallery replication')
+@minLength(1)
 param targetRegions string = 'westeurope'
+
+@description('Number of replicas per target region for the distributed gallery image version')
+param regionalReplicaCount int = 1
 
 @description('Storage account type for gallery image version per target region')
 @allowed(['', 'Standard_LRS', 'Standard_ZRS', 'Premium_LRS'])
@@ -85,6 +92,10 @@ param vhdUri string = ''
 
 // === OPTIONAL SETTINGS ===
 param vmSize string = 'Standard_D4_v5'
+
+@description('AIB build timeout in minutes (platform limits: 30–960)')
+@minValue(30)
+@maxValue(960)
 param buildTimeoutInMinutes int = 150
 param osDiskSizeGB int = 0
 
@@ -193,12 +204,14 @@ var inlineCustomizer = provisioner == 'powershell' ? {
 }
 
 // Step 3: Windows Update (optional, PowerShell only)
+// Deliberate buffer before the WindowsUpdate customizer to avoid the known AIB
+// race where the Windows Update service is not yet ready after prior customizers.
 var windowsUpdateWait = {
   type: 'PowerShell'
   name: 'PreWindowsUpdateWait'
   runElevated: true
   inline: [
-    'Start-Sleep -Seconds 300'
+    'Start-Sleep -Seconds ${windowsUpdateWaitSeconds}'
   ]
 }
 
@@ -224,9 +237,12 @@ var customizers = windowsUpdate && provisioner == 'powershell' ? concat(baseCust
 // === DISTRIBUTE CONSTRUCTION ===
 var regionNames = split(targetRegions, ',')
 
-// Build targetRegions array with optional storageAccountType
+// Build targetRegions array with optional storageAccountType and per-region replica count
 var targetRegionsArray = [for region in regionNames: union(
-  { name: trim(region) },
+  {
+    name: trim(region)
+    replicaCount: regionalReplicaCount
+  },
   !empty(distributeStorageAccountType) ? { storageAccountType: distributeStorageAccountType } : {}
 )]
 

@@ -15,7 +15,7 @@ avd/
 └── scripts/        # PowerShell scripts used by pipelines
 
 devops/
-└── aib-task-v1-patched/   # Patched Azure Image Builder DevOps task (v2)
+└── aib-task-v2/           # Azure Image Builder DevOps task (v2)
 
 intune/
 ├── bitlocker/        # BitLocker detection & remediation scripts for Intune

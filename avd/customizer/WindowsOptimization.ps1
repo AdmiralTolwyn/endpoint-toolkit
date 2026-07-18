@@ -264,7 +264,7 @@ function Get-VdotConfig {
         try {
             Write-Log "Downloading $Key config: $url"
             [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
-            Invoke-WebRequest -Uri $url -OutFile $localCopy -UseBasicParsing -ErrorAction Stop
+            Invoke-WebRequest -Uri $url -OutFile $localCopy -UseBasicParsing -ErrorAction Stop -TimeoutSec 60
         }
         catch {
             Write-Log "Failed to download '$url': $($_.Exception.Message)" -Level WARN
@@ -647,21 +647,6 @@ if ($All -or $Optimizations -contains 'Edge') {
         $list = @($cfg | Where-Object VDIState -EQ 'Enabled')
         Write-Log "Edge policy entries to apply: $($list.Count)"
         foreach ($key in $list) {
-            if ($key.RegItemValueName -eq 'DefaultAssociationsConfiguration') {
-                # Original VDOT script copies a local XML asset here. We only support
-                # this side-effect when the asset is co-located with this script.
-                $assoc = Join-Path $PSScriptRoot 'ConfigurationFiles\DefaultAssociationsConfiguration.xml'
-                if (Test-Path -LiteralPath $assoc) {
-                    try {
-                        Copy-Item -LiteralPath $assoc -Destination $key.RegItemValue -Force
-                        Write-Log "Copied DefaultAssociationsConfiguration -> $($key.RegItemValue)"
-                    } catch {
-                        Write-Log "Copy DefaultAssociationsConfiguration: $($_.Exception.Message)" -Level WARN
-                    }
-                } else {
-                    Write-Log "DefaultAssociationsConfiguration.xml not co-located - skipping copy"
-                }
-            }
             $kind = [Microsoft.Win32.RegistryValueKind]::DWord
             if ($key.RegItemValueType) {
                 try { $kind = [Microsoft.Win32.RegistryValueKind]::Parse([Microsoft.Win32.RegistryValueKind], $key.RegItemValueType, $true) } catch { }

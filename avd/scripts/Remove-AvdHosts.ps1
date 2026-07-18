@@ -53,13 +53,14 @@
                           -ImageDef "win11-25h2-ms-generic" `
                           -Simulate $true
 #>
+#Requires -Modules Az.Compute, Az.DesktopVirtualization, Az.Resources
 param(
-    [string]$HostPoolName,
-    [string]$HostPoolRg,
-    [string]$ComputeRg,
-    [string]$GalleryRg,
-    [string]$GalleryName,
-    [string]$ImageDef,
+    [Parameter(Mandatory = $true)] [string]$HostPoolName,
+    [Parameter(Mandatory = $true)] [string]$HostPoolRg,
+    [Parameter(Mandatory = $true)] [string]$ComputeRg,
+    [Parameter(Mandatory = $true)] [string]$GalleryRg,
+    [Parameter(Mandatory = $true)] [string]$GalleryName,
+    [Parameter(Mandatory = $true)] [string]$ImageDef,
     [bool]$Simulate = $false,
     [int]$DrainGracePeriodHours = 24
 )
@@ -88,10 +89,16 @@ try {
                                              -ErrorAction Stop
 
     # Sort by PublishedDate (consistent with Get-AvdDetails.ps1), filter ExcludeFromLatest
-    $LatestVersionObj = $AllVersions | 
+    $LatestVersionObj = $AllVersions |
                         Where-Object { $_.PublishingProfile.ExcludeFromLatest -ne $true } |
-                        Sort-Object -Property @{Expression={$_.PublishingProfile.PublishedDate}; Descending=$true} | 
+                        Sort-Object -Property @{Expression={$_.PublishingProfile.PublishedDate}; Descending=$true} |
                         Select-Object -First 1
+
+    # Guard: never let $TargetVersion end up $null (mirrors Get-AvdDetails.ps1)
+    if (-not $LatestVersionObj) {
+        throw "CRITICAL: No eligible image version found for definition '$ImageDef'. Check Gallery/ImageDef names and ExcludeFromLatest flags."
+    }
+
     $TargetVersion = $LatestVersionObj.Name
     Write-Host " [INIT] Target Version: $TargetVersion" -ForegroundColor Cyan
 } catch {
@@ -118,8 +125,9 @@ foreach ($SessionHost in $Hosts) {
 
     # ── CHECK 1: IS DRAINED? ────────────────────────────────────────────────
     # Only process hosts that have been drained (AllowNewSession = false).
-    # Active hosts are never touched by this script.
-    if ($SessionHost.AllowNewSession -eq $true) {
+    # Fail-safe: require an EXPLICIT $false to proceed. $null/unexpected
+    # values are treated as NOT drained, so active hosts are never touched.
+    if ($SessionHost.AllowNewSession -ne $false) {
         $SkipCount++
         continue
     }
@@ -131,6 +139,13 @@ foreach ($SessionHost in $Hosts) {
 
     if ($null -eq $Vm) {
         Write-Host "   [STALE] AVD Record '$VmName' exists, but Azure VM is missing. Cleaning up registration." -ForegroundColor DarkYellow
+
+        if ($Simulate) {
+            Write-Host "   [DRY RUN] Would remove stale AVD record for '$VmName'." -ForegroundColor Cyan
+            $StaleCount++
+            continue
+        }
+
         try {
             Remove-AzWvdSessionHost -ResourceGroupName $HostPoolRg `
                                     -HostPoolName $HostPoolName `
@@ -147,18 +162,23 @@ foreach ($SessionHost in $Hosts) {
 
     # ── CHECK 3: ACTIVE SESSIONS + GRACE PERIOD ─────────────────────────────
     # If users are still connected, set a drain timestamp tag on first
-    # encounter. Subsequent runs check if the grace period has elapsed
-    # before proceeding with forced decommission.
-    if ($SessionHost.Sessions -gt 0) {
+    # encounter and warn them. Subsequent runs check if the grace period
+    # has elapsed; once expired, sessions are force-logged-off and the
+    # session count is re-verified before decommission proceeds.
+    if ($SessionHost.Session -gt 0) {
         $DrainTag = $Vm.Tags['PendingDrainTimestamp']
         if (-not $DrainTag) {
             # First encounter — stamp the VM with the current UTC time
-            Write-Host "   [DRAIN] $VmName has $($SessionHost.Sessions) sessions. Setting drain timestamp." -ForegroundColor Yellow
-            Update-AzTag -ResourceId $Vm.Id -Tag @{ PendingDrainTimestamp = (Get-Date -AsUTC).ToString('o') } -Operation Merge | Out-Null
+            Write-Host "   [DRAIN] $VmName has $($SessionHost.Session) sessions. Setting drain timestamp." -ForegroundColor Yellow
+            if ($Simulate) {
+                Write-Host "   [DRY RUN] Would set PendingDrainTimestamp tag on $VmName." -ForegroundColor Cyan
+            } else {
+                Update-AzTag -ResourceId $Vm.Id -Tag @{ PendingDrainTimestamp = (Get-Date -AsUTC).ToString('o') } -Operation Merge | Out-Null
+            }
             $SkipCount++
             continue
         }
-        
+
         try {
             $GraceExpiry = [DateTime]::Parse($DrainTag).AddHours($DrainGracePeriodHours)
         } catch {
@@ -166,12 +186,57 @@ foreach ($SessionHost in $Hosts) {
             $GraceExpiry = (Get-Date).AddHours($DrainGracePeriodHours)
         }
 
+        # Enumerate live sessions on this host (source of truth, not just the count)
+        $LiveSessions = @(Get-AzWvdUserSession -HostPoolName $HostPoolName `
+                                               -ResourceGroupName $HostPoolRg `
+                                               -SessionHostName $SessionHostLeaf `
+                                               -ErrorAction SilentlyContinue)
+
         if ((Get-Date) -lt $GraceExpiry) {
-            Write-Host "   [WAIT] $VmName has $($SessionHost.Sessions) sessions. Grace period until $($GraceExpiry.ToString('u'))." -ForegroundColor Yellow
+            Write-Host "   [WAIT] $VmName has $($SessionHost.Session) sessions. Grace period until $($GraceExpiry.ToString('u'))." -ForegroundColor Yellow
+            # Warn active users that the grace period is running
+            foreach ($US in $LiveSessions) {
+                $SessionId = $US.Name.Split('/')[-1]
+                try {
+                    Send-AzWvdUserSessionMessage -HostPoolName $HostPoolName `
+                        -ResourceGroupName $HostPoolRg `
+                        -SessionHostName $SessionHostLeaf `
+                        -UserSessionId $SessionId `
+                        -MessageTitle "Scheduled Maintenance" `
+                        -MessageBody "This desktop is being replaced with a new version. Please save your work and sign out. Your session will be available on a new host shortly." `
+                        -ErrorAction SilentlyContinue | Out-Null
+                } catch { }
+            }
             $SkipCount++
             continue
         }
-        Write-Host "   [EXPIRED] $VmName grace period exceeded. Proceeding with decommission despite $($SessionHost.Sessions) sessions." -ForegroundColor DarkYellow
+
+        # Grace period expired — force-logoff any remaining sessions before decommission
+        if ($LiveSessions.Count -gt 0) {
+            Write-Host "   [EXPIRED] $VmName grace period exceeded. Force-logging off $($LiveSessions.Count) session(s)." -ForegroundColor DarkYellow
+            foreach ($US in $LiveSessions) {
+                $SessionId = $US.Name.Split('/')[-1]
+                try {
+                    Remove-AzWvdUserSession -HostPoolName $HostPoolName `
+                        -ResourceGroupName $HostPoolRg `
+                        -SessionHostName $SessionHostLeaf `
+                        -Id $SessionId -Force -ErrorAction Stop
+                } catch {
+                    Write-Host "   [ERR] Failed to force-logoff session '$SessionId' on ${VmName}: $($_.Exception.Message)" -ForegroundColor Red
+                }
+            }
+
+            # Re-check: never decommission a host that still has live sessions
+            $RemainingSessions = @(Get-AzWvdUserSession -HostPoolName $HostPoolName `
+                                                         -ResourceGroupName $HostPoolRg `
+                                                         -SessionHostName $SessionHostLeaf `
+                                                         -ErrorAction SilentlyContinue)
+            if ($RemainingSessions.Count -gt 0) {
+                Write-Host "   [ERR] $VmName still has $($RemainingSessions.Count) session(s) after forced logoff. Skipping decommission." -ForegroundColor Red
+                $ErrorCount++
+                continue
+            }
+        }
     }
 
     # ── CHECK 4: OUTDATED IMAGE VERSION? ─────────────────────────────────────
@@ -211,7 +276,56 @@ foreach ($SessionHost in $Hosts) {
             }
         }
 
-        # ── B. REMOVE AVD HOST REGISTRATION ─────────────────────────────────
+        # ── B. DELETE AZURE RESOURCES (VM, NIC, OS Disk) ─────────────────────
+        # VM is deleted FIRST. The AVD host registration is only removed once
+        # the VM is confirmed gone, so a failed VM delete never leaves an
+        # invisible orphaned VM running outside the host pool's view.
+        # NIC/disk are resolved from the VM object's own profile references
+        # (not by name pattern) so a bicep naming convention change can't
+        # orphan resources.
+        $NicId = $Vm.NetworkProfile.NetworkInterfaces[0].Id
+        $OsDiskId = $Vm.StorageProfile.OsDisk.ManagedDisk.Id
+
+        Write-Host "   -> Deleting VM..." -NoNewline
+        $VmDeleted = $false
+        try {
+            Remove-AzVM -ResourceGroupName $ComputeRg -Name $VmName -Force -ErrorAction Stop | Out-Null
+            Write-Host " Done." -ForegroundColor Green
+            $VmDeleted = $true
+        } catch {
+            Write-Host " Failed: $($_.Exception.Message)" -ForegroundColor Red
+            $ErrorCount++
+        }
+
+        if (-not $VmDeleted) {
+            Write-Host " [ERROR] $VmName VM deletion failed. Leaving AVD registration intact to avoid an orphaned running VM." -ForegroundColor Red
+            continue
+        }
+
+        if ($NicId) {
+            Write-Host "   -> Deleting NIC..." -NoNewline
+            try {
+                Remove-AzResource -ResourceId $NicId -Force -ErrorAction Stop | Out-Null
+                Write-Host " Done." -ForegroundColor Green
+            } catch {
+                Write-Host " Failed: $($_.Exception.Message)" -ForegroundColor Red
+                $ErrorCount++
+            }
+        }
+
+        if ($OsDiskId) {
+            Write-Host "   -> Deleting OS Disk..." -NoNewline
+            try {
+                Remove-AzResource -ResourceId $OsDiskId -Force -ErrorAction Stop | Out-Null
+                Write-Host " Done." -ForegroundColor Green
+            } catch {
+                Write-Host " Failed: $($_.Exception.Message)" -ForegroundColor Red
+                $ErrorCount++
+            }
+        }
+
+        # ── C. REMOVE AVD HOST REGISTRATION ─────────────────────────────────
+        # Only performed after the VM itself is confirmed deleted (see above).
         Write-Host "   -> Removing AVD Host Registration..." -NoNewline
         try {
             Remove-AzWvdSessionHost -ResourceGroupName $HostPoolRg `
@@ -220,28 +334,8 @@ foreach ($SessionHost in $Hosts) {
                                     -Force -ErrorAction Stop | Out-Null
             Write-Host " Done." -ForegroundColor Green
         } catch {
-            Write-Host " Failed/Already Gone." -ForegroundColor Yellow
-        }
-
-        # ── C. DELETE AZURE RESOURCES (VM, NIC, OS Disk) ─────────────────────
-        Write-Host "   -> Deleting VM..." -NoNewline
-        Remove-AzVM -ResourceGroupName $ComputeRg -Name $VmName -Force -ErrorAction SilentlyContinue | Out-Null
-        Write-Host " Done." -ForegroundColor Green
-
-        # Capture resource IDs before deletion (from the VM object we already have)
-        $NicId = $Vm.NetworkProfile.NetworkInterfaces[0].Id
-        $OsDiskId = $Vm.StorageProfile.OsDisk.ManagedDisk.Id
-
-        if ($NicId) {
-            Write-Host "   -> Deleting NIC..." -NoNewline
-            Remove-AzResource -ResourceId $NicId -Force -ErrorAction SilentlyContinue | Out-Null
-            Write-Host " Done." -ForegroundColor Green
-        }
-
-        if ($OsDiskId) {
-            Write-Host "   -> Deleting OS Disk..." -NoNewline
-            Remove-AzResource -ResourceId $OsDiskId -Force -ErrorAction SilentlyContinue | Out-Null
-            Write-Host " Done." -ForegroundColor Green
+            Write-Host " Failed: $($_.Exception.Message)" -ForegroundColor Red
+            $ErrorCount++
         }
 
         Write-Host " [SUCCESS] $VmName Retired." -ForegroundColor Green

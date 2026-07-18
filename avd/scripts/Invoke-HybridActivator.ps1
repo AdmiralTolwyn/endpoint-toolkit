@@ -23,6 +23,7 @@
 .LINK
     https://learn.microsoft.com/en-us/entra/identity/devices/hybrid-join-plan
 #>
+#Requires -Modules Az.Compute, Az.DesktopVirtualization, Az.Resources
 
 $ErrorActionPreference = "Stop"
 
@@ -30,8 +31,31 @@ Write-Host " [INIT] Scanning subscription for VMs with HybridStatus=Pending..." 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 1. DISCOVER: Find all VMs tagged HybridStatus=Pending (subscription-wide)
+#    Retried with exponential backoff since this is a subscription-wide call
+#    that is prone to ARM throttling (429). Retry-After is honored if present.
 # ─────────────────────────────────────────────────────────────────────────────
-$PendingVms = Get-AzVM -Status | Where-Object { $_.Tags['HybridStatus'] -eq 'Pending' }
+$MaxDiscoveryAttempts = 5
+$PendingVms = $null
+
+for ($Attempt = 1; $Attempt -le $MaxDiscoveryAttempts; $Attempt++) {
+    try {
+        $PendingVms = @(Get-AzVM -Status | Where-Object { $_.Tags['HybridStatus'] -eq 'Pending' })
+        break
+    } catch {
+        if ($Attempt -eq $MaxDiscoveryAttempts) {
+            Write-Host " [FATAL] Failed to discover pending VMs after $MaxDiscoveryAttempts attempts: $($_.Exception.Message)" -ForegroundColor Red
+            exit 1
+        }
+
+        # Respect Retry-After header if the exception carries one (429/throttling)
+        $RetryAfter = $null
+        try { $RetryAfter = $_.Exception.Response.Headers['Retry-After'] } catch { }
+
+        $BackoffSeconds = if ($RetryAfter) { [int]$RetryAfter } else { [Math]::Pow(2, $Attempt) }
+        Write-Host " [WARN] VM discovery attempt $Attempt/$MaxDiscoveryAttempts failed: $($_.Exception.Message). Retrying in ${BackoffSeconds}s..." -ForegroundColor Yellow
+        Start-Sleep -Seconds $BackoffSeconds
+    }
+}
 
 if ($PendingVms.Count -eq 0) {
     Write-Host " [OK] No pending VMs found. Nothing to do." -ForegroundColor Green
@@ -108,12 +132,29 @@ foreach ($Vm in $PendingVms) {
         cmd /c "dsregcmd /status"
     }
 
+    # Bound the run command with a hard timeout so one stuck VM agent can't
+    # block the whole 15-minute batch. Runs as a job and is force-cancelled
+    # if it doesn't complete within $RunCommandTimeoutSeconds.
+    $RunCommandTimeoutSeconds = 600
+    $Job = $null
     try {
-        $Result = Invoke-AzVMRunCommand -ResourceGroupName $ComputeRg `
-                                        -VMName $VmName `
-                                        -CommandId 'RunPowerShellScript' `
-                                        -ScriptBlock $ScriptBlock `
-                                        -ErrorAction Stop
+        $Job = Invoke-AzVMRunCommand -ResourceGroupName $ComputeRg `
+                                     -VMName $VmName `
+                                     -CommandId 'RunPowerShellScript' `
+                                     -ScriptBlock $ScriptBlock `
+                                     -AsJob -ErrorAction Stop
+
+        $Completed = Wait-Job -Job $Job -Timeout $RunCommandTimeoutSeconds
+
+        if (-not $Completed) {
+            Write-Host "   [ERR] Run Command timed out after ${RunCommandTimeoutSeconds}s on $VmName. Skipping this cycle." -ForegroundColor Red
+            Stop-Job -Job $Job -ErrorAction SilentlyContinue
+            Remove-Job -Job $Job -Force -ErrorAction SilentlyContinue
+            continue
+        }
+
+        $Result = Receive-Job -Job $Job -ErrorAction Stop
+        Remove-Job -Job $Job -Force -ErrorAction SilentlyContinue
 
         $Output = $Result.Value[0].Message
 
@@ -150,7 +191,7 @@ foreach ($Vm in $PendingVms) {
             Write-Host "          Retrying in next cycle."
         }
     } catch {
-        # VM agent may not be ready yet, or the Run Command timed out
-        Write-Host "   [ERR] VM Agent not reachable or Script failed." -ForegroundColor Red
+        # VM agent may not be ready yet, or the Run Command failed
+        Write-Host "   [ERR] VM Agent not reachable or Script failed: $($_.Exception.Message)" -ForegroundColor Red
     }
 }

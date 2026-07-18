@@ -21,26 +21,36 @@ All scripts in this folder follow the same conventions:
 | [DisableAutoUpdates.ps1](DisableAutoUpdates.ps1) | Blocks Store auto-downloads + Content Delivery Manager + WU Scheduled Start during bake | Early bake |
 | [InstallLanguagePacks.ps1](InstallLanguagePacks.ps1) | Installs one or more Windows Display Languages with retry + LanguageComponentsInstaller race-fix | Mid bake |
 | [InstallProvisionedAppxPackage.ps1](InstallProvisionedAppxPackage.ps1) | Side-loads a single LOB UWP / MSIX bundle as a provisioned package via `Add-AppxProvisionedPackage -Online`. Auto-discovers license + `Dependencies\`, snapshots and restores `AllowAllTrustedApps` (with `-KeepSideloadingEnabled` for chained installs), maps HRESULT 0x80073D02 (pending reboot) to success | Mid bake (admin context) |
-| [RemoveAppxPackages.ps1](RemoveAppxPackages.ps1) | De-provisions inbox AppX packages by wildcard name (`*Bing*`, `Microsoft.MSPaint`, …) | Mid bake |
-| [RemoveUserApps.ps1](RemoveUserApps.ps1) | Removes per-user AppX packages with no matching provisioned package — fixes Sysprep 0x80073CF2 | Late bake (just before AdminSysPrep) |
-| [ResetAutoUpdateSettings.ps1](ResetAutoUpdateSettings.ps1) | Reverts the bake-time hardening (Windows Update + Store + CDM) | Last AIB step OR post-deploy Run-Command |
+| [RemoveAppxPackages.ps1](RemoveAppxPackages.ps1) | De-provisions inbox AppX packages by wildcard name (`*Bing*`, `Microsoft.MSPaint`, …). Exits non-zero if any individual package/capability removal fails, unless `-ContinueOnError` is passed to fall back to best-effort (always exit 0) | Mid bake |
+| [RemoveUserApps.ps1](RemoveUserApps.ps1) | Removes per-user AppX packages with no matching provisioned package — fixes Sysprep 0x80073CF2 | Late bake (immediately before AdminSysPrep) |
+| [ResetAutoUpdateSettings.ps1](ResetAutoUpdateSettings.ps1) | Reverts the bake-time hardening (Windows Update + Store + CDM) | Post-deploy Run-Command only — **no longer part of the bake chain** |
 | [TimezoneRedirection.ps1](TimezoneRedirection.ps1) | Sets `fEnableTimeZoneRedirection = 1` for RDS / AVD time-zone follow | Anywhere |
 | [UpdateWinGet.ps1](UpdateWinGet.ps1) | Hardens, downloads + provisions WinGet, registers `-CustomSources`, optionally installs `-AppIds` with `--scope machine` (per-app source override supported) | Mid–late bake |
 | [WindowsOptimization.ps1](WindowsOptimization.ps1) | Hardened wrapper around the Virtual Desktop Optimization Tool (VDOT). Ships VDOT JSON in-repo under [ConfigurationFiles/](ConfigurationFiles/) so no internet egress is required at bake time. Resilient access-denied handling, file logger, `-ConfigBasePath` (override / air-gapped path), `-LogDirectory`, `-ContinueOnError` | Late bake |
 
 ## Recommended pipeline order
 
+This is the actual chain run by both [`img-build-custom-image.yml`](../pipelines/img-build-custom-image.yml)
+and [`img-build-bicep-only.yml`](../pipelines/img-build-bicep-only.yml) — the
+two pipelines are kept identical here by design (see
+[pipelines/README.md](../pipelines/README.md#image-build-approaches)). Every
+step is exit-code-checked; a non-zero exit from any customizer fails the build.
+
 1. `DisableAutoUpdates.ps1`
 2. `TimezoneRedirection.ps1`
-3. `InstallLanguagePacks.ps1` (if needed)
+3. `InstallLanguagePacks.ps1` (optional — commented out by default in both pipelines)
 4. `RemoveAppxPackages.ps1` (de-bloat)
-5. `UpdateWinGet.ps1` (provision WinGet + apps)
-6. `InstallProvisionedAppxPackage.ps1` (per LOB UWP / MSIX bundle, if any)
-7. `WindowsOptimization.ps1 -Optimizations All` (or selective)
-8. `RemoveUserApps.ps1` (Sysprep prep — must run AFTER any user-context installs)
-9. `AdminSysPrep.ps1`
+5. `UpdateWinGet.ps1` (provision WinGet + install `-AppIds`)
+6. `WindowsOptimization.ps1 -Optimizations <selective list>` (VDOT pass)
+7. `UpdateWinGet.ps1 -SkipApps -SkipUserRegistration` (provision-only re-run — re-registers WinGet after the VDOT pass, which can strip its AppX provisioning association)
+8. `RemoveUserApps.ps1` (Sysprep prep — must run immediately before AdminSysPrep)
+9. `AdminSysPrep.ps1` (must run **LAST**, immediately before Sysprep/capture)
 10. *Sysprep / capture step (handled by AIB)*
-11. *(optional)* `ResetAutoUpdateSettings.ps1` on deployed hosts that need updates re-enabled.
+11. *(optional, post-deploy only)* `ResetAutoUpdateSettings.ps1` on deployed hosts that need updates re-enabled — this is **no longer** run as an AIB bake step in either pipeline.
+
+`InstallProvisionedAppxPackage.ps1` is not wired into either pipeline by
+default — add it after `RemoveAppxPackages.ps1` / before `WindowsOptimization.ps1`
+for per-LOB UWP / MSIX sideloading if your image needs it.
 
 ## Companions outside this folder
 

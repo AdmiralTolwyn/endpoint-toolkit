@@ -16,7 +16,7 @@
         "Patch": 4
     },
     "instanceNameFormat": "Azure VM Image Builder Task",
-    "minimumAgentVersion": "2.144.0",
+    "minimumAgentVersion": "3.232.1",
     "execution": {
         "Node20_1": {
             "target": "index.js"

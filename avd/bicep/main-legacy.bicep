@@ -22,6 +22,9 @@ param osDiskType string = 'StandardSSD_LRS'
 param osDiskSizeGB int = 128
 param availabilityZones array = []                // Default: No zone pinning
 param acceleratedNetworking bool = false          // Default: Off
+// Version-less AVD DSC agent package; override from the pipeline to pin a build.
+#disable-next-line no-hardcoded-env-urls
+param avdAgentPackageUrl string = 'https://wvdportalstorageblob.blob.core.windows.net/galleryartifacts/Configuration.zip'
 
 // --- LEGACY AD PARAMS ---
 param domainName string
@@ -44,6 +47,7 @@ var defaultTags = {
   CreatedOn:    currentTimestamp
 }
 
+@batchSize(5)
 module sessionHosts 'modules/sessionHost-legacy.bicep' = [for (vmName, i) in vmList: {
   name: 'deploy-${vmName}'
   params: {
@@ -70,5 +74,7 @@ module sessionHosts 'modules/sessionHost-legacy.bicep' = [for (vmName, i) in vmL
     ouPath: ouPath
     domainJoinUser: domainJoinUser
     domainJoinPassword: domainJoinPassword
+
+    avdAgentPackageUrl: avdAgentPackageUrl
   }
 }]

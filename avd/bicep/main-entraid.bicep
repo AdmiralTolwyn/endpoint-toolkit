@@ -25,6 +25,9 @@ param osDiskSizeGB int = 128                      // Default: Your requested siz
 param availabilityZones array = []                // Default: No zone pinning
 param acceleratedNetworking bool = false          // Default: Off (enable for supported SKUs)
 param enableIntune bool = false                   // Default: No Intune auto-enrollment
+// Version-less AVD DSC agent package; override from the pipeline to pin a build.
+#disable-next-line no-hardcoded-env-urls
+param avdAgentPackageUrl string = 'https://wvdportalstorageblob.blob.core.windows.net/galleryartifacts/Configuration.zip'
 // ----------------------------------------------------------
 
 param imageName string
@@ -40,6 +43,7 @@ var defaultTags = {
   CreatedOn:    currentTimestamp
 }
 
+@batchSize(5)
 module sessionHosts 'modules/sessionHost-entraid.bicep' = [for (vmName, i) in vmList: {
   name: 'deploy-${vmName}'
   params: {
@@ -61,5 +65,6 @@ module sessionHosts 'modules/sessionHost-entraid.bicep' = [for (vmName, i) in vm
     availabilityZone: availabilityZones == [] ? '' : string(availabilityZones[i % length(availabilityZones)])
     acceleratedNetworking: acceleratedNetworking
     enableIntune: enableIntune
+    avdAgentPackageUrl: avdAgentPackageUrl
   }
 }]

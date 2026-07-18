@@ -1,4 +1,4 @@
-﻿[
+[
     {
         "Description": "Allows Microsoft Edge processes to start at OS sign-in and keep running after the last browser window is closed.",
         "RegItemPath": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge",
