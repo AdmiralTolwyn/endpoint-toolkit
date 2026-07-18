@@ -1,6 +1,7 @@
 name: $(Date:yyyyMMdd)$(Rev:.r)-AVD-Hybrid-Activator
 
 trigger: none
+pr: none
 
 # SCHEDULE: Runs every 15 minutes
 schedules:
@@ -17,11 +18,17 @@ pool:
 variables:
   serviceConnection: '<YOURSERVICECONNECTION>'
 
-steps:
-- task: AzurePowerShell@5
-  displayName: "Execute Activator Logic"
-  inputs:
-    azureSubscription: $(serviceConnection)
-    ScriptType: 'FilePath'
-    ScriptPath: '$(System.DefaultWorkingDirectory)/scripts/Invoke-HybridActivator.ps1'
-    azurePowerShellVersion: 'LatestVersion'
+jobs:
+  - job: Activate
+    displayName: "Hybrid Join Activator"
+    # Runs every 15 min - keep the timeout well below the interval so a stuck
+    # run cannot overlap the next scheduled trigger (default job timeout is 60).
+    timeoutInMinutes: 25
+    steps:
+      - task: AzurePowerShell@5
+        displayName: "Execute Activator Logic"
+        inputs:
+          azureSubscription: $(serviceConnection)
+          ScriptType: 'FilePath'
+          ScriptPath: '$(System.DefaultWorkingDirectory)/avd/scripts/Invoke-HybridActivator.ps1'
+          azurePowerShellVersion: 'LatestVersion'

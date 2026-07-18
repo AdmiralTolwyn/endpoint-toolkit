@@ -13,18 +13,25 @@
 .PARAMETER LookbackDays
     Event log query lookback window in days. Default: 30
 .PARAMETER MaxEventsPerQuery
-    Maximum events to retrieve per query group. Default: 10000
+    Maximum events to retrieve per query group. Default: 2000 (capped to protect
+    against multi-MB JSON / UI freeze on busy DCs). Raise explicitly if deeper
+    history is needed. Queries that hit the cap are flagged in eventData._queryMeta.truncatedQueries.
 .PARAMETER SkipEventCollection
     Skip event log collection entirely for faster runs (~30s total).
 .PARAMETER EventSummaryOnly
     Collect event counts and top-N stats only, not individual events.
+.PARAMETER IncludeGpoData
+    Opt-in: run gpresult / RSOP collection (Area 3, appliedGPOs/deniedGPOs). This is
+    the most expensive+fragile step (~120s) and nothing in the assessor consumes the
+    result today — it is collected only for manual review scenarios. Off by default.
 .PARAMETER Quiet
     Suppress console output (for automation).
 .NOTES
     Author : Anton Romanyuk
-    Version: 1.0.0
-    Date   : 2026-03-31
+    Version: 1.1.0
+    Date   : 2026-07-18
     Requires: PowerShell 5.1, Local Admin, No external modules
+    Runs headless on arbitrary Windows targets (client, member server, DC, Server Core).
 .EXAMPLE
     .\Invoke-BaselineCollection.ps1
     Runs full collection with defaults (30-day lookback, events included).
@@ -39,16 +46,20 @@
 param(
     [string]$OutputPath,
     [int]$LookbackDays       = 30,
-    [int]$MaxEventsPerQuery  = 10000,
+    [int]$MaxEventsPerQuery  = 2000,
     [switch]$SkipEventCollection,
     [switch]$EventSummaryOnly,
+    [switch]$IncludeGpoData,
     [switch]$Quiet
 )
 
 $ErrorActionPreference = 'Continue'
-$Script:CollectorVersion = '0.1.0'
+$Script:CollectorVersion = '1.1.0'
 $Script:StartTime        = [DateTime]::Now
-$Script:TotalAreas       = if ($SkipEventCollection) { 21 } else { 22 }
+# Area 3 (GPO/gpresult) only runs when -IncludeGpoData; Area 22 (events) only when not -SkipEventCollection.
+$Script:TotalAreas       = 20
+if (-not $SkipEventCollection) { $Script:TotalAreas++ }
+if ($IncludeGpoData)          { $Script:TotalAreas++ }
 $Script:AreaResults      = @{}
 $Script:Errors           = [System.Collections.ArrayList]::new()
 
@@ -253,14 +264,21 @@ function Write-CollectorProgress {
 .PARAMETER Script
     ScriptBlock containing the collection logic. Should return a hashtable with collected data
     and an optional '_detail' key for the progress summary.
+.PARAMETER Sections
+    Name(s) of the top-level output JSON section(s) this area populates. On failure these are
+    recorded in the structured _metadata.errors entry so the importer can map failed sections
+    to Not-Assessed instead of false-Fail.
 .OUTPUTS
-    [hashtable] The collection result, or $null if the script block threw an exception.
+    [hashtable] The collection result. On exception, returns a failure marker hashtable
+    @{ _collectionFailed = $true; _error = '<msg>' } (NOT $null) so consumers can distinguish
+    "collection failed" from "collected but empty".
 #>
 function Invoke-CollectionArea {
     param(
         [int]$Step,
         [string]$Name,
-        [ScriptBlock]$Script
+        [ScriptBlock]$Script,
+        [string[]]$Sections = @()
     )
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     Write-CollectorProgress -Step $Step -Total $Script:TotalAreas -Name $Name -Status 'start'
@@ -274,10 +292,13 @@ function Invoke-CollectionArea {
         return $result
     } catch {
         $sw.Stop()
+        $msg = $_.Exception.Message
         Write-CollectorProgress -Step $Step -Total $Script:TotalAreas -Name $Name -Status 'error' `
-            -ElapsedSec $sw.Elapsed.TotalSeconds -Detail $_.Exception.Message
-        [void]$Script:Errors.Add(@{ Area = $Name; Error = $_.Exception.Message })
-        return $null
+            -ElapsedSec $sw.Elapsed.TotalSeconds -Detail $msg
+        [void]$Script:Errors.Add([ordered]@{ area = $Name; error = $msg; sections = @($Sections) })
+        # Return a structured failure marker (not $null) so the section is distinguishable
+        # from a genuinely empty result by downstream consumers.
+        return @{ _collectionFailed = $true; _error = $msg }
     }
 }
 
@@ -366,29 +387,61 @@ if (-not $Quiet) {
 # AREA 1: SYSTEM INFORMATION
 # ═══════════════════════════════════════════════════════════════════════
 
-$systemInfo = Invoke-CollectionArea -Step 1 -Name 'System Information' -Script {
+$systemInfo = Invoke-CollectionArea -Step 1 -Name 'System Information' -Sections @('systemInfo') -Script {
     $os  = Get-CimInstance Win32_OperatingSystem
     $cs  = Get-CimInstance Win32_ComputerSystem
     $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
-    $tpm = try { Get-CimInstance -Namespace 'root\cimv2\Security\MicrosoftTpm' -ClassName Win32_Tpm -ErrorAction Stop } catch { $null }
-    $sb  = try { Confirm-SecureBootUEFI -ErrorAction Stop } catch { $null }
+
+    # TPM: distinguish "genuinely absent" ($false) from "could not determine" ($null on error).
+    # Get-CimInstance returns nothing (no throw) when the machine has no TPM.
+    $tpm = $null
+    $tpmPresent = $null
+    try { $tpm = Get-CimInstance -Namespace 'root\cimv2\Security\MicrosoftTpm' -ClassName Win32_Tpm -ErrorAction Stop; $tpmPresent = [bool]$tpm } catch { $tpmPresent = $null }
+
+    # Secure Boot: Confirm-SecureBootUEFI throws on legacy BIOS ("not supported on this platform").
+    # Distinguish NotSupported (BIOS) from Unknown (real error) from Enabled/Disabled.
+    $sb = $null
+    $sbState = 'Unknown'
+    try {
+        $sb = Confirm-SecureBootUEFI -ErrorAction Stop
+        $sbState = if ($sb) { 'Enabled' } else { 'Disabled' }
+    } catch {
+        if ($_.Exception.Message -match 'not supported|platform|not enabled|not available') { $sbState = 'NotSupported' } else { $sbState = 'Unknown' }
+    }
+
     $dv  = try {
         $reg = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction Stop
         $reg.DisplayVersion
     } catch { '' }
 
-    # Windows 11 build-to-version mapping with support status
+    # ProductType: 1 = Workstation (client), 2 = Domain Controller, 3 = Member/Standalone Server
+    $productType = try { [int]$os.ProductType } catch { 1 }
+    $isServer    = ($productType -ne 1)
+    $isDomainController = ($productType -eq 2)
+
+    # Build-to-version mapping with support status. Same build number can map to a client
+    # OR a server SKU (e.g. 26100 = Win11 24H2 client AND Server 2025) — disambiguate on ProductType.
     $buildNum = $os.BuildNumber.ToString()
     $versionName = $dv
     $isSupported = $null
     $endOfService = $null
     $isWindows11 = $os.Caption -match 'Windows 11'
-    switch ($buildNum) {
-        '22000' { $versionName = '21H2'; $endOfService = '2024-10-08'; $isSupported = $false }
-        '22621' { $versionName = '22H2'; $endOfService = '2025-10-14'; $isSupported = $true }
-        '22631' { $versionName = '23H2'; $endOfService = '2026-11-10'; $isSupported = $true }
-        '26100' { $versionName = '24H2'; $endOfService = '2027-11-09'; $isSupported = $true }
-        '26200' { $versionName = '25H2'; $endOfService = '2028-11-14'; $isSupported = $true }
+    if ($isServer) {
+        switch ($buildNum) {
+            '14393' { $versionName = 'Server 2016'; $endOfService = '2027-01-12'; $isSupported = $true }
+            '17763' { $versionName = 'Server 2019'; $endOfService = '2029-01-09'; $isSupported = $true }
+            '20348' { $versionName = 'Server 2022'; $endOfService = '2031-10-14'; $isSupported = $true }
+            '25398' { $versionName = 'Server 23H2'; $endOfService = '2025-10-24'; $isSupported = $true }
+            '26100' { $versionName = 'Server 2025'; $endOfService = '2034-10-10'; $isSupported = $true }
+        }
+    } else {
+        switch ($buildNum) {
+            '22000' { $versionName = '21H2'; $endOfService = '2024-10-08'; $isSupported = $false }
+            '22621' { $versionName = '22H2'; $endOfService = '2025-10-14'; $isSupported = $true }
+            '22631' { $versionName = '23H2'; $endOfService = '2026-11-10'; $isSupported = $true }
+            '26100' { $versionName = '24H2'; $endOfService = '2027-11-09'; $isSupported = $true }
+            '26200' { $versionName = '25H2'; $endOfService = '2028-11-14'; $isSupported = $true }
+        }
     }
     if (-not $versionName) { $versionName = 'Unknown' }
 
@@ -403,13 +456,18 @@ $systemInfo = Invoke-CollectionArea -Step 1 -Name 'System Information' -Script {
         isWindows11      = $isWindows11
         isSupported      = $isSupported
         endOfService     = $endOfService
+        productType      = $productType
+        isServer         = $isServer
+        isDomainController = $isDomainController
         hostname         = $env:COMPUTERNAME
         domain           = $cs.Domain
         ramGB            = [math]::Round($cs.TotalPhysicalMemory / 1GB, 1)
         cpuName          = $cpu.Name
         cpuCores         = $cpu.NumberOfCores
-        tpmVersion       = if ($tpm) { $tpm.SpecVersion -replace ',.*' } else { 'Not found' }
+        tpmPresent       = $tpmPresent
+        tpmVersion       = if ($tpm) { $tpm.SpecVersion -replace ',.*' } else { if ($tpmPresent -eq $false) { 'Not present' } else { 'Unknown' } }
         secureBootEnabled = $sb
+        secureBootState  = $sbState
         installDate      = $os.InstallDate.ToString('o')
     }
     try { $result['freeSpaceGB'] = [math]::Round((Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'" -EA Stop).FreeSpace / 1GB, 1) } catch { $result['freeSpaceGB'] = $null }
@@ -424,7 +482,7 @@ $systemInfo = Invoke-CollectionArea -Step 1 -Name 'System Information' -Script {
 # AREA 2: JOIN TYPE DETECTION
 # ═══════════════════════════════════════════════════════════════════════
 
-$joinType = Invoke-CollectionArea -Step 2 -Name 'Join Type Detection' -Script {
+$joinType = Invoke-CollectionArea -Step 2 -Name 'Join Type Detection' -Sections @('joinType') -Script {
     $dsreg = dsregcmd /status 2>&1
     $parse = { param($pattern) ($dsreg | Select-String $pattern) -match 'YES' }
     $aadJoined    = & $parse 'AzureAdJoined\s*:\s*YES'
@@ -439,10 +497,14 @@ $joinType = Invoke-CollectionArea -Step 2 -Name 'Join Type Detection' -Script {
 }
 
 # ═══════════════════════════════════════════════════════════════════════
-# AREA 3: APPLIED POLICIES (GPResult)
+# AREA 3: APPLIED POLICIES (GPResult)  —  OPT-IN (-IncludeGpoData)
 # ═══════════════════════════════════════════════════════════════════════
+# gpresult/RSOP is the most expensive+fragile collection step (~120s) and no check
+# consumes appliedGPOs/deniedGPOs today. Skipped unless -IncludeGpoData is supplied.
 
-$appliedGPOs = Invoke-CollectionArea -Step 3 -Name 'Applied Policies' -Script {
+$appliedGPOs = $null
+if ($IncludeGpoData) {
+$appliedGPOs = Invoke-CollectionArea -Step 3 -Name 'Applied Policies' -Sections @('appliedGPOs','deniedGPOs') -Script {
     # Check join type from Area 2 result to decide strategy
     $isDomainJoined = $joinType -and $joinType.domainJoined
     $isEntraOnly    = $joinType -and $joinType.azureAdJoined -and -not $joinType.domainJoined
@@ -595,12 +657,13 @@ $appliedGPOs = Invoke-CollectionArea -Step 3 -Name 'Applied Policies' -Script {
     if ($denied.Count -gt 0) { $result['deniedGPOs'] = @($denied) }
     $result
 }
+} # end if ($IncludeGpoData)
 
 # ═══════════════════════════════════════════════════════════════════════
 # AREA 4: MDM ENROLLMENT
 # ═══════════════════════════════════════════════════════════════════════
 
-$mdmEnrollment = Invoke-CollectionArea -Step 4 -Name 'MDM Enrollment' -Script {
+$mdmEnrollment = Invoke-CollectionArea -Step 4 -Name 'MDM Enrollment' -Sections @('mdmEnrollment') -Script {
     $enrolled = $false
     $provider = ''
     $regPath  = 'HKLM:\SOFTWARE\Microsoft\Enrollments'
@@ -624,8 +687,13 @@ $mdmEnrollment = Invoke-CollectionArea -Step 4 -Name 'MDM Enrollment' -Script {
         if ($mdmWinsReg) { $mdmWinsOverGP = [int]$mdmWinsReg.MDMWinsOverGP }
     } catch {}
 
-    # PolicyManager managed areas — shows which CSP areas have Intune policies applied
+    # PolicyManager managed areas — shows which CSP areas have Intune policies applied.
+    # C-5: also capture the ACTUAL policy values (not just area/setting names) for the areas
+    # the engine's keyHints map covers, so Intune-managed compliant settings resolve to Pass
+    # instead of a "verify in portal" Warning. Keep names aligned with app:keyHints.
+    $valueAreas = @('Defender','WindowsFirewall','BitLocker','RemoteManagement')
     $managedAreas = @{}
+    $policyValues = @{}
     $pmPath = 'HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device'
     if ($enrolled -and (Test-Path $pmPath)) {
         $areas = Get-ChildItem $pmPath -ErrorAction SilentlyContinue
@@ -647,6 +715,16 @@ $mdmEnrollment = Invoke-CollectionArea -Step 4 -Name 'MDM Enrollment' -Script {
                     settings     = $managedSettings
                 }
             }
+            # Capture real setting values for the mapped areas (skip _ProviderSet/_WinningProvider meta).
+            if ($valueAreas -contains $areaName) {
+                $vals = Read-RegistryValues -Path "HKLM\SOFTWARE\Microsoft\PolicyManager\current\device\$areaName"
+                $clean = @{}
+                foreach ($vn in $vals.Keys) {
+                    if ($vn -match '_ProviderSet$|_WinningProvider$|^_') { continue }
+                    $clean[$vn] = $vals[$vn]
+                }
+                if ($clean.Count -gt 0) { $policyValues[$areaName] = $clean }
+            }
         }
         Write-CollectorProgress -Step 4 -Total $Script:TotalAreas -Name 'PolicyManager scan' -Status 'info' `
             -Detail "$($managedAreas.Count) MDM-managed areas"
@@ -658,6 +736,7 @@ $mdmEnrollment = Invoke-CollectionArea -Step 4 -Name 'MDM Enrollment' -Script {
         mdmProvider    = $provider
         mdmWinsOverGP  = $mdmWinsOverGP
         managedAreas   = $managedAreas
+        policyValues   = $policyValues
         _detail        = $detail
     }
 }
@@ -666,7 +745,7 @@ $mdmEnrollment = Invoke-CollectionArea -Step 4 -Name 'MDM Enrollment' -Script {
 # AREA 5: SECURITY POLICY EXPORT (secedit)
 # ═══════════════════════════════════════════════════════════════════════
 
-$securityPolicy = Invoke-CollectionArea -Step 5 -Name 'Security Policy Export' -Script {
+$securityPolicy = Invoke-CollectionArea -Step 5 -Name 'Security Policy Export' -Sections @('securityPolicy') -Script {
     $tmpFile = Join-Path $env:TEMP "bp_secedit_$(Get-Random).inf"
     try {
         $null = secedit /export /cfg $tmpFile /quiet 2>&1
@@ -683,6 +762,11 @@ $securityPolicy = Invoke-CollectionArea -Step 5 -Name 'Security Policy Export' -
                 $result[$key] = $val
             }
         }
+        # AllowAdministratorLockout — [System Access] on 22H2+/Server 2022+. Emit an unprefixed
+        # alias so `securityPolicy.AllowAdministratorLockout` resolves. Absent → omit (no key).
+        if ($result.ContainsKey('System Access_AllowAdministratorLockout')) {
+            $result['AllowAdministratorLockout'] = $result['System Access_AllowAdministratorLockout']
+        }
         $result['_detail'] = "$($result.Count) settings"
         $result
     } finally {
@@ -694,10 +778,12 @@ $securityPolicy = Invoke-CollectionArea -Step 5 -Name 'Security Policy Export' -
 # AREA 6: AUDIT POLICY
 # ═══════════════════════════════════════════════════════════════════════
 
-$auditPolicy = Invoke-CollectionArea -Step 6 -Name 'Audit Policy' -Script {
+$auditPolicy = Invoke-CollectionArea -Step 6 -Name 'Audit Policy' -Sections @('auditPolicy') -Script {
     # Use /r (CSV) mode first - locale-independent column structure
     $rawCsv = auditpol /get /category:* /r 2>&1
     $result = @{}
+    # _names maps subcategory GUID -> display name (for consumers that want the reverse lookup).
+    $names  = @{}
 
     # Check if /r succeeded (requires admin; returns CSV with Machine Name,Policy Target,Subcategory,...)
     $csvLines = @($rawCsv | Where-Object { $_ -is [string] -and $_ -match ',' })
@@ -711,12 +797,10 @@ $auditPolicy = Invoke-CollectionArea -Step 6 -Name 'Audit Policy' -Script {
                 $guid    = $cols[3].Trim() -replace '[{}]', ''
                 $setting = $cols[4].Trim()
                 if ($subcat -and $setting) {
-                    # Use GUID as key for locale-independent matching, store display name alongside
-                    $key = if ($guid) { $guid } else { $subcat }
-                    $result[$key] = @{
-                        name    = $subcat
-                        setting = $setting
-                    }
+                    # A-1: emit BOTH keys (GUID + localized display name) with the PLAIN setting STRING
+                    # as value (e.g. "Success and Failure"), so MON-* checks keyed on either resolve.
+                    if ($guid)   { $result[$guid] = $setting; $names[$guid] = $subcat }
+                    $result[$subcat] = $setting
                 }
             }
         }
@@ -740,6 +824,7 @@ $auditPolicy = Invoke-CollectionArea -Step 6 -Name 'Audit Policy' -Script {
         }
     }
 
+    if ($names.Count -gt 0) { $result['_names'] = $names }
     $result['_detail'] = "$($result.Count) subcategories"
     $result
 }
@@ -748,7 +833,7 @@ $auditPolicy = Invoke-CollectionArea -Step 6 -Name 'Audit Policy' -Script {
 # AREA 7: REGISTRY BASELINES
 # ═══════════════════════════════════════════════════════════════════════
 
-$registryBaselines = Invoke-CollectionArea -Step 7 -Name 'Registry Baselines' -Script {
+$registryBaselines = Invoke-CollectionArea -Step 7 -Name 'Registry Baselines' -Sections @('registryBaselines') -Script {
     # Key registry paths from Intune + GPO security baselines
     # Both GPO (SOFTWARE\Policies\) and CSP/MDM (SOFTWARE\Microsoft\) paths are read
     # so the assessor can evaluate compliance regardless of delivery mechanism
@@ -890,6 +975,27 @@ $registryBaselines = Invoke-CollectionArea -Step 7 -Name 'Registry Baselines' -S
 
         # P2P Distribution
         @{ Path = 'HKLM\SOFTWARE\Policies\Microsoft\PeerDist\Service'; Values = @('HashPublicationForPeerCaching') }
+
+        # ── A-2: previously-dangling collectionKeys (exact paths per checks.json) ──
+        # Remote Assistance / Terminal Services solicited-help + clipboard redirect
+        @{ Path = 'HKLM\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'; Values = @('fAllowUnsolicited','fAllowToGetHelp','fDisableClip') }
+        # Include command line in process creation events (SEC-019 / 25H2)
+        @{ Path = 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit'; Values = @('ProcessCreationIncludeCmdLine_Enabled') }
+        # System policy: CAD requirement, connected-user block, PtH mitigation, UAC EPP (24H2)
+        @{ Path = 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'; Values = @('DisableCAD','NoConnectedUser','LocalAccountTokenFilterPolicy','TypeOfAdminApprovalMode') }
+        # SmartScreen: app install control
+        @{ Path = 'HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\SmartScreen'; Values = @('ConfigureAppInstallControl') }
+        # Windows Remote Shell access
+        @{ Path = 'HKLM\SOFTWARE\Policies\Microsoft\Windows\WinRM\Service\WinRS'; Values = @('AllowRemoteShellAccess') }
+        # LSA: cred manager autocomplete + NTLM outbound restriction
+        @{ Path = 'HKLM\SYSTEM\CurrentControlSet\Control\Lsa'; Values = @('DisableCredManagerAutocomplete') }
+        @{ Path = 'HKLM\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0'; Values = @('RestrictSendingNTLMTraffic') }
+        # IPv6 disabled-components (SEC-062 / NET-015) — casing matches checks.json (TCPIP6)
+        @{ Path = 'HKLM\SYSTEM\CurrentControlSet\Services\TCPIP6\Parameters'; Values = @('DisabledComponents') }
+
+        # ── Kerberos RC4->AES enctype readiness (enforcement Apr 2026 / audit removal Jul 2026) ──
+        @{ Path = 'HKLM\SYSTEM\CurrentControlSet\Services\Kdc'; Values = @('DefaultDomainSupportedEncTypes') }
+        @{ Path = 'HKLM\SYSTEM\CurrentControlSet\Control\Lsa\Kerberos\Parameters'; Values = @('DefaultEncryptionType') }
     )
 
     $result = @{}
@@ -918,11 +1024,16 @@ $registryBaselines = Invoke-CollectionArea -Step 7 -Name 'Registry Baselines' -S
 # AREA 8: DEFENDER CONFIGURATION
 # ═══════════════════════════════════════════════════════════════════════
 
-$defenderConfig = Invoke-CollectionArea -Step 8 -Name 'Defender Configuration' -Script {
+$defenderConfig = Invoke-CollectionArea -Step 8 -Name 'Defender Configuration' -Sections @('defender') -Script {
     $pref   = try { Get-MpPreference -ErrorAction Stop } catch { $null }
     $status = try { Get-MpComputerStatus -ErrorAction Stop } catch { $null }
 
-    if (-not $pref -and -not $status) { return @{ available = $false } }
+    # R-3: on Server SKUs without the Defender feature installed, both cmdlets are unavailable.
+    # Emit an explicit failure marker (distinct from null/"empty") so the importer maps Defender
+    # checks to Not-Assessed instead of ~40 false Fails.
+    if (-not $pref -and -not $status) {
+        return @{ _collectionFailed = $true; _error = 'Get-MpPreference / Get-MpComputerStatus unavailable (Microsoft Defender Antivirus feature not installed?)'; available = $false }
+    }
 
     $result = @{ available = $true }
     if ($pref) {
@@ -943,6 +1054,15 @@ $defenderConfig = Invoke-CollectionArea -Step 8 -Name 'Defender Configuration' -
         $result['DisableArchiveScanning']          = $pref.DisableArchiveScanning
         $result['DisableRemovableDriveScanning']   = $pref.DisableRemovableDriveScanning
         $result['DisableEmailScanning']            = $pref.DisableEmailScanning
+        # A-2: previously-dangling Defender properties
+        $result['ScheduleDay']                     = $pref.ScanScheduleDay   # DEF-024 alias
+        $result['ScheduleTime']                    = $pref.ScanScheduleTime  # DEF-024 alias
+        $result['SignatureUpdateInterval']         = $pref.SignatureUpdateInterval
+        $result['DisableScriptScanning']           = $pref.DisableScriptScanning
+        $result['DisableScanningMappedNetworkDrivesForFullScan'] = $pref.DisableScanningMappedNetworkDrivesForFullScan
+        # ExclusionPath: always emit as an array (empty when none configured) so DEF-042 assesses.
+        # Guard against $null, which @() would otherwise wrap into a 1-element [$null] array.
+        $result['ExclusionPath']                   = if ($null -ne $pref.ExclusionPath) { @($pref.ExclusionPath) } else { @() }
     }
     if ($status) {
         $result['AMServiceEnabled']                = $status.AMServiceEnabled
@@ -966,7 +1086,7 @@ $defenderConfig = Invoke-CollectionArea -Step 8 -Name 'Defender Configuration' -
 # AREA 9: FIREWALL PROFILES
 # ═══════════════════════════════════════════════════════════════════════
 
-$firewallProfiles = Invoke-CollectionArea -Step 9 -Name 'Firewall Profiles' -Script {
+$firewallProfiles = Invoke-CollectionArea -Step 9 -Name 'Firewall Profiles' -Sections @('firewall') -Script {
     $result = @{}
     try {
         $profiles = Get-NetFirewallProfile -ErrorAction Stop
@@ -994,7 +1114,7 @@ $firewallProfiles = Invoke-CollectionArea -Step 9 -Name 'Firewall Profiles' -Scr
 # AREA 10: SERVICES
 # ═══════════════════════════════════════════════════════════════════════
 
-$services = Invoke-CollectionArea -Step 10 -Name 'Services' -Script {
+$services = Invoke-CollectionArea -Step 10 -Name 'Services' -Sections @('services') -Script {
     # Baseline-relevant services to check
     $targets = @(
         'XboxGipSvc', 'XblAuthManager', 'XblGameSave', 'XboxNetApiSvc',
@@ -1023,7 +1143,7 @@ $services = Invoke-CollectionArea -Step 10 -Name 'Services' -Script {
 # AREA 11: BITLOCKER STATUS
 # ═══════════════════════════════════════════════════════════════════════
 
-$bitlocker = Invoke-CollectionArea -Step 11 -Name 'BitLocker Status' -Script {
+$bitlocker = Invoke-CollectionArea -Step 11 -Name 'BitLocker Status' -Sections @('bitlocker') -Script {
     $result = @{}
     try {
         $volumes = Get-BitLockerVolume -ErrorAction Stop
@@ -1053,7 +1173,7 @@ $bitlocker = Invoke-CollectionArea -Step 11 -Name 'BitLocker Status' -Script {
 # AREA 12: CREDENTIAL GUARD / VBS
 # ═══════════════════════════════════════════════════════════════════════
 
-$credentialGuard = Invoke-CollectionArea -Step 12 -Name 'Credential Guard' -Script {
+$credentialGuard = Invoke-CollectionArea -Step 12 -Name 'Credential Guard' -Sections @('credentialGuard') -Script {
     $dg = try { Get-CimInstance -ClassName Win32_DeviceGuard -Namespace 'root\Microsoft\Windows\DeviceGuard' -ErrorAction Stop } catch { $null }
 
     # Human-readable labels for DeviceGuard enum values
@@ -1086,7 +1206,7 @@ $credentialGuard = Invoke-CollectionArea -Step 12 -Name 'Credential Guard' -Scri
 # AREA 13: WINDOWS UPDATE HISTORY
 # ═══════════════════════════════════════════════════════════════════════
 
-$windowsUpdate = Invoke-CollectionArea -Step 13 -Name 'Windows Update History' -Script {
+$windowsUpdate = Invoke-CollectionArea -Step 13 -Name 'Windows Update History' -Sections @('windowsUpdate') -Script {
     $hotfixes = @(Get-HotFix -ErrorAction SilentlyContinue | Sort-Object InstalledOn -Descending -ErrorAction SilentlyContinue)
     $latest   = if ($hotfixes.Count -gt 0 -and $hotfixes[0].InstalledOn) { $hotfixes[0].InstalledOn } else { $null }
     $daysSince = if ($latest) { [math]::Round(([DateTime]::Now - $latest).TotalDays, 0) } else { -1 }
@@ -1105,7 +1225,7 @@ $windowsUpdate = Invoke-CollectionArea -Step 13 -Name 'Windows Update History' -
 # AREA 14: DRIVER INVENTORY
 # ═══════════════════════════════════════════════════════════════════════
 
-$drivers = Invoke-CollectionArea -Step 14 -Name 'Driver Inventory' -Script {
+$drivers = Invoke-CollectionArea -Step 14 -Name 'Driver Inventory' -Sections @('drivers') -Script {
     $allDrivers = Get-CimInstance Win32_PnPSignedDriver -ErrorAction SilentlyContinue |
         Where-Object { $_.DriverProviderName -and $_.DeviceName }
     $unsigned = @($allDrivers | Where-Object { $_.IsSigned -eq $false } | ForEach-Object {
@@ -1127,7 +1247,7 @@ $drivers = Invoke-CollectionArea -Step 14 -Name 'Driver Inventory' -Script {
 # AREA 15: STARTUP PERFORMANCE
 # ═══════════════════════════════════════════════════════════════════════
 
-$startupPerf = Invoke-CollectionArea -Step 15 -Name 'Startup Performance' -Script {
+$startupPerf = Invoke-CollectionArea -Step 15 -Name 'Startup Performance' -Sections @('startupPerf') -Script {
     $bootEvents = try {
         Get-WinEvent -FilterHashtable @{ LogName='Microsoft-Windows-Diagnostics-Performance/Operational'; Id=100 } -MaxEvents 5 -ErrorAction Stop |
             ForEach-Object {
@@ -1166,7 +1286,7 @@ $startupPerf = Invoke-CollectionArea -Step 15 -Name 'Startup Performance' -Scrip
 # AREA 16: SCHEDULED TASKS
 # ═══════════════════════════════════════════════════════════════════════
 
-$scheduledTasks = Invoke-CollectionArea -Step 16 -Name 'Scheduled Tasks' -Script {
+$scheduledTasks = Invoke-CollectionArea -Step 16 -Name 'Scheduled Tasks' -Sections @('scheduledTasks') -Script {
     # Single call to Get-ScheduledTask (slow COM init) — filter results in memory
     $allTasks = @(Get-ScheduledTask -ErrorAction SilentlyContinue)
     $result = @{
@@ -1211,7 +1331,7 @@ $scheduledTasks = Invoke-CollectionArea -Step 16 -Name 'Scheduled Tasks' -Script
 # AREA 17: SMB CONFIGURATION
 # ═══════════════════════════════════════════════════════════════════════
 
-$smbConfig = Invoke-CollectionArea -Step 17 -Name 'SMB Configuration' -Script {
+$smbConfig = Invoke-CollectionArea -Step 17 -Name 'SMB Configuration' -Sections @('smbConfig') -Script {
     $server = try { Get-SmbServerConfiguration -ErrorAction Stop } catch { $null }
     $client = try { Get-SmbClientConfiguration -ErrorAction Stop } catch { $null }
     @{
@@ -1223,6 +1343,8 @@ $smbConfig = Invoke-CollectionArea -Step 17 -Name 'SMB Configuration' -Script {
                 EnableSecuritySignature  = $server.EnableSecuritySignature
                 EncryptData              = $server.EncryptData
                 RejectUnencryptedAccess  = $server.RejectUnencryptedAccess
+                # SMB auth rate limiter (2025 baseline) — property absent on older builds -> $null
+                InvalidAuthenticationDelayTimeInMs = try { $server.InvalidAuthenticationDelayTimeInMs } catch { $null }
             }
         } else { @{ error = 'Not available' } }
         client = if ($client) {
@@ -1239,7 +1361,7 @@ $smbConfig = Invoke-CollectionArea -Step 17 -Name 'SMB Configuration' -Script {
 # AREA 18: TLS CONFIGURATION
 # ═══════════════════════════════════════════════════════════════════════
 
-$tlsConfig = Invoke-CollectionArea -Step 18 -Name 'TLS Configuration' -Script {
+$tlsConfig = Invoke-CollectionArea -Step 18 -Name 'TLS Configuration' -Sections @('tlsConfig') -Script {
     $protocols = @('SSL 2.0', 'SSL 3.0', 'TLS 1.0', 'TLS 1.1', 'TLS 1.2', 'TLS 1.3')
     $result = @{}
     foreach ($proto in $protocols) {
@@ -1259,7 +1381,7 @@ $tlsConfig = Invoke-CollectionArea -Step 18 -Name 'TLS Configuration' -Script {
 # AREA 19: POWERSHELL CONFIGURATION
 # ═══════════════════════════════════════════════════════════════════════
 
-$powershellConfig = Invoke-CollectionArea -Step 19 -Name 'PowerShell Configuration' -Script {
+$powershellConfig = Invoke-CollectionArea -Step 19 -Name 'PowerShell Configuration' -Sections @('powershellConfig') -Script {
     @{
         ScriptBlockLogging          = Read-RegistryValue -Path 'HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging' -Name 'EnableScriptBlockLogging'
         ScriptBlockInvocationLogging = Read-RegistryValue -Path 'HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging' -Name 'EnableScriptBlockInvocationLogging'
@@ -1275,21 +1397,23 @@ $powershellConfig = Invoke-CollectionArea -Step 19 -Name 'PowerShell Configurati
 # AREA 20: WINRM CONFIGURATION
 # ═══════════════════════════════════════════════════════════════════════
 
-$winrmConfig = Invoke-CollectionArea -Step 20 -Name 'WinRM Configuration' -Script {
+$winrmConfig = Invoke-CollectionArea -Step 20 -Name 'WinRM Configuration' -Sections @('winrmConfig') -Script {
     $svc = Get-Service WinRM -ErrorAction SilentlyContinue
     $result = @{
         ServiceStatus = if ($svc) { $svc.Status.ToString() } else { 'NotInstalled' }
         ServiceStartType = if ($svc) { $svc.StartType.ToString() } else { 'N/A' }
     }
+    # R-4: WinRM policy registry values must be read regardless of service state. A stopped WinRM
+    # service is the compliant posture; gating these reads on "Running" made SEC-007/008/038/039
+    # false-Fail on hardened machines. Only the live `winrm get` call needs the service running.
+    $result['AllowBasicClient']       = Read-RegistryValue -Path 'HKLM\SOFTWARE\Policies\Microsoft\Windows\WinRM\Client' -Name 'AllowBasic'
+    $result['AllowUnencryptedClient']  = Read-RegistryValue -Path 'HKLM\SOFTWARE\Policies\Microsoft\Windows\WinRM\Client' -Name 'AllowUnencryptedTraffic'
+    $result['AllowDigestClient']       = Read-RegistryValue -Path 'HKLM\SOFTWARE\Policies\Microsoft\Windows\WinRM\Client' -Name 'AllowDigest'
+    $result['AllowBasicService']       = Read-RegistryValue -Path 'HKLM\SOFTWARE\Policies\Microsoft\Windows\WinRM\Service' -Name 'AllowBasic'
+    $result['AllowUnencryptedService'] = Read-RegistryValue -Path 'HKLM\SOFTWARE\Policies\Microsoft\Windows\WinRM\Service' -Name 'AllowUnencryptedTraffic'
     if ($svc -and $svc.Status -eq 'Running') {
-        try {
-            $raw = winrm get winrm/config 2>&1 | Out-String
-            $result['AllowBasicClient']       = Read-RegistryValue -Path 'HKLM\SOFTWARE\Policies\Microsoft\Windows\WinRM\Client' -Name 'AllowBasic'
-            $result['AllowUnencryptedClient']  = Read-RegistryValue -Path 'HKLM\SOFTWARE\Policies\Microsoft\Windows\WinRM\Client' -Name 'AllowUnencryptedTraffic'
-            $result['AllowDigestClient']       = Read-RegistryValue -Path 'HKLM\SOFTWARE\Policies\Microsoft\Windows\WinRM\Client' -Name 'AllowDigest'
-            $result['AllowBasicService']       = Read-RegistryValue -Path 'HKLM\SOFTWARE\Policies\Microsoft\Windows\WinRM\Service' -Name 'AllowBasic'
-            $result['AllowUnencryptedService'] = Read-RegistryValue -Path 'HKLM\SOFTWARE\Policies\Microsoft\Windows\WinRM\Service' -Name 'AllowUnencryptedTraffic'
-        } catch { }
+        # Touch the live provider (kept for parity/diagnostics); output intentionally discarded.
+        try { $null = winrm get winrm/config 2>&1 | Out-String } catch { }
     }
     $result
 }
@@ -1298,7 +1422,7 @@ $winrmConfig = Invoke-CollectionArea -Step 20 -Name 'WinRM Configuration' -Scrip
 # AREA 21: EVENT LOG METADATA
 # ═══════════════════════════════════════════════════════════════════════
 
-$eventLogMetadata = Invoke-CollectionArea -Step 21 -Name 'Event Log Metadata' -Script {
+$eventLogMetadata = Invoke-CollectionArea -Step 21 -Name 'Event Log Metadata' -Sections @('eventLogMetadata') -Script {
     $logNames = @('Security', 'System', 'Application',
                   'Microsoft-Windows-PowerShell/Operational',
                   'Microsoft-Windows-Sysmon/Operational',
@@ -1335,13 +1459,15 @@ $eventLogMetadata = Invoke-CollectionArea -Step 21 -Name 'Event Log Metadata' -S
 # ═══════════════════════════════════════════════════════════════════════
 
 if (-not $SkipEventCollection) {
-    $eventData = Invoke-CollectionArea -Step 22 -Name 'Security Event Collection' -Script {
+    $eventData = Invoke-CollectionArea -Step 22 -Name 'Security Event Collection' -Sections @('eventData') -Script {
         $cutoff  = (Get-Date).AddDays(-$LookbackDays)
         $result  = @{ _queryMeta = @{
             lookbackDays          = $LookbackDays
             queryTimestamp        = (Get-Date).ToString('o')
             totalEventsCollected  = 0
             queryDurationSec      = 0
+            maxEventsPerQuery     = $MaxEventsPerQuery
+            truncatedQueries      = @()
         }}
         $totalEvents = 0
         $querySw     = [System.Diagnostics.Stopwatch]::StartNew()
@@ -1373,6 +1499,9 @@ if (-not $SkipEventCollection) {
                 }
                 $events = @(Get-WinEvent -FilterHashtable $filter -MaxEvents $MaxEventsPerQuery -ErrorAction Stop)
                 $count  = $events.Count
+                # R-2: flag queries that hit the cap so consumers know the window was truncated.
+                $isTruncated = ($count -ge $MaxEventsPerQuery)
+                if ($isTruncated) { $result['_queryMeta']['truncatedQueries'] += $q.Key }
 
                 if ($EventSummaryOnly) {
                     # Summary mode: counts + top users only
@@ -1381,6 +1510,7 @@ if (-not $SkipEventCollection) {
                         firstEvent = if ($count -gt 0) { $events[-1].TimeCreated.ToString('o') } else { $null }
                         lastEvent  = if ($count -gt 0) { $events[0].TimeCreated.ToString('o') } else { $null }
                     }
+                    if ($isTruncated) { $summary['truncated'] = $true }
                     # Top users for security events
                     if ($q.Log -eq 'Security' -and $count -gt 0 -and $q.Props -contains 'TargetUserName') {
                         $topUsers = $events | ForEach-Object {
@@ -1399,14 +1529,15 @@ if (-not $SkipEventCollection) {
                             time = $evt.TimeCreated.ToString('o')
                         }
                         if ($q.Props.Count -gt 0) {
+                            # R-2: parse the event XML ONCE per event (was re-parsed per property).
+                            $dataNodes = $null
+                            try { $dataNodes = ([xml]$evt.ToXml()).Event.EventData.Data } catch { $dataNodes = $null }
                             $props = @{}
-                            foreach ($propName in $q.Props) {
-                                try {
-                                    # Use XPath property names mapped to indices
-                                    $xml = [xml]$evt.ToXml()
-                                    $node = $xml.Event.EventData.Data | Where-Object { $_.Name -eq $propName }
+                            if ($dataNodes) {
+                                foreach ($propName in $q.Props) {
+                                    $node = $dataNodes | Where-Object { $_.Name -eq $propName }
                                     if ($node) { $props[$propName] = $node.'#text' }
-                                } catch { }
+                                }
                             }
                             if ($props.Count -gt 0) { $entry['props'] = $props }
                         } else {
@@ -1497,11 +1628,12 @@ $output = [ordered]@{
             maxEventsPerQuery  = $MaxEventsPerQuery
             skipEventCollection = [bool]$SkipEventCollection
             eventSummaryOnly   = [bool]$EventSummaryOnly
+            includeGpoData     = [bool]$IncludeGpoData
         }
     }
     systemInfo        = $systemInfo
     joinType          = $joinType
-    appliedGPOs       = if ($appliedGPOs) { $appliedGPOs.appliedGPOs } else { @() }
+    appliedGPOs       = if ($appliedGPOs -and $appliedGPOs.appliedGPOs) { $appliedGPOs.appliedGPOs } else { @() }
     deniedGPOs        = if ($appliedGPOs -and $appliedGPOs.deniedGPOs) { $appliedGPOs.deniedGPOs } else { @() }
     mdmEnrollment     = $mdmEnrollment
     securityPolicy    = $securityPolicy

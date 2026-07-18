@@ -470,7 +470,7 @@
                     </Border>
                     <TextBlock x:Name="lblTitle" Text="BaselinePilot" FontSize="12" FontWeight="SemiBold"
                                Foreground="{DynamicResource ThemeTextPrimary}"/>
-                    <TextBlock x:Name="lblTitleVersion" Text="v0.1.0" FontSize="12" Margin="8,1,0,0"
+                    <TextBlock x:Name="lblTitleVersion" Text="v0.2.0" FontSize="12" Margin="8,1,0,0"
                                Foreground="{DynamicResource ThemeTextMuted}" VerticalAlignment="Center"/>
                     <Border CornerRadius="4" Padding="6,1" Margin="10,0,0,0" VerticalAlignment="Center"
                             BorderBrush="{DynamicResource ThemeWarning}" BorderThickness="1">
@@ -528,7 +528,7 @@
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="46"/>  <!-- Icon rail -->
-                    <ColumnDefinition x:Name="colLeftPanel" Width="260"/>  <!-- Sidebar -->
+                    <ColumnDefinition Width="260"/>  <!-- Sidebar -->
                     <ColumnDefinition Width="*"/>   <!-- Content -->
                 </Grid.ColumnDefinitions>
 
@@ -730,7 +730,6 @@
                                 <ComboBox x:Name="cmbScoreView" Style="{StaticResource DarkComboBox}" SelectedIndex="0" Margin="0,0,0,16">
                                     <ComboBoxItem Content="Baseline Compliance"/>
                                     <ComboBoxItem Content="Weighted Risk Score"/>
-                                    <ComboBoxItem Content="Projected (with remediations)"/>
                                 </ComboBox>
 
                                 <TextBlock x:Name="lblOverallScore" Text="—%" FontSize="32" FontWeight="Bold" Foreground="{DynamicResource ThemeAccent}" HorizontalAlignment="Center" Margin="0,0,0,4"/>
@@ -801,6 +800,8 @@
                                         </StackPanel>
                                         <!-- Legend (populated by code) -->
                                         <StackPanel x:Name="pnlHeroLegend"/>
+                                        <TextBlock Text="Compliance% counts only reviewed checks; Risk Score also scores Not Assessed as 0 — the two can differ."
+                                                   FontSize="10" Foreground="{DynamicResource ThemeTextMuted}" TextWrapping="Wrap" MaxWidth="230" Margin="0,8,0,0"/>
                                     </StackPanel>
 
                                     <!-- System Info -->
@@ -914,14 +915,6 @@
                                              Foreground="{DynamicResource ThemeTextBody}" BorderBrush="{DynamicResource ThemeBorderSubtle}"
                                              BorderThickness="1" Padding="8,4" Margin="0,0,0,16"/>
 
-                                    <TextBlock Text="Baseline Version" FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource ThemeTextBody}" Margin="0,0,0,2"/>
-                                    <TextBlock Text="Select the baseline version to compare against. This is auto-detected from collection data but can be overridden." FontSize="11" Foreground="{DynamicResource ThemeTextMuted}" TextWrapping="Wrap" Margin="0,0,0,6"/>
-                                    <ComboBox x:Name="cmbBaselineVersion" Style="{StaticResource DarkComboBox}" Margin="0,0,0,16">
-                                        <ComboBoxItem Content="Auto-detect from collection" IsSelected="True"/>
-                                        <ComboBoxItem Content="Intune MDM 24H2"/>
-                                        <ComboBoxItem Content="GPO SCT 25H2"/>
-                                    </ComboBox>
-
                                     <TextBlock Text="Assessment Notes Template" FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource ThemeTextBody}" Margin="0,0,0,2"/>
                                     <TextBlock Text="Default text added to the Notes field of every new assessment. Useful for standard disclaimers or methodology references." FontSize="11" Foreground="{DynamicResource ThemeTextMuted}" TextWrapping="Wrap" Margin="0,0,0,6"/>
                                     <TextBox x:Name="txtNotes" Height="90" FontSize="12" Background="{DynamicResource ThemeInputBg}"
@@ -1032,7 +1025,7 @@
                                     <TextBlock Text="ABOUT" FontSize="11" FontWeight="Bold" Foreground="{DynamicResource ThemeAccent}" Margin="0,0,0,8"/>
                                     <TextBlock FontSize="12" Foreground="{DynamicResource ThemeTextBody}">
                                         <Run Text="BaselinePilot" FontWeight="SemiBold"/>
-                                        <Run x:Name="lblSettingsVersion" Text="v0.1.0" Foreground="{DynamicResource ThemeTextMuted}"/>
+                                        <Run x:Name="lblSettingsVersion" Text="v0.2.0" Foreground="{DynamicResource ThemeTextMuted}"/>
                                     </TextBlock>
                                     <TextBlock Text="Windows 11 client security baseline assessment tool combining Microsoft Security Baselines (Intune MDM + GPO SCT) with operational health and stability checks." FontSize="11" Foreground="{DynamicResource ThemeTextMuted}" TextWrapping="Wrap" Margin="0,4,0,0"/>
                                 </StackPanel>
@@ -1046,7 +1039,7 @@
                         <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
                             <TextBlock Text="BaselinePilot" FontSize="32" FontWeight="Bold"
                                        Foreground="{DynamicResource ThemeTextPrimary}" HorizontalAlignment="Center" Margin="0,0,0,4"/>
-                            <TextBlock x:Name="lblSplashVersion" Text="v0.1.0" FontSize="14"
+                            <TextBlock x:Name="lblSplashVersion" Text="v0.2.0" FontSize="14"
                                        Foreground="{DynamicResource ThemeTextMuted}" HorizontalAlignment="Center" Margin="0,0,0,8"/>
                             <TextBlock Text="Security Baseline  ·  Operational Health  ·  Windows 11" FontSize="13"
                                        Foreground="{DynamicResource ThemeTextSecondary}" HorizontalAlignment="Center" Margin="0,0,0,32"/>

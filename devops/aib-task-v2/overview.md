@@ -2,6 +2,11 @@
 
 A community-maintained Azure DevOps pipeline task for [Azure Image Builder](https://learn.microsoft.com/en-us/azure/virtual-machines/image-builder-overview), updated to the latest API and modern Node.js runtime.
 
+> [`DIFF-microsoft-v1-vs-v2.patch`](DIFF-microsoft-v1-vs-v2.patch) is a
+> historical snapshot of the original Microsoft v1 → v2 rewrite, taken at
+> v2.2.1. The current source in this folder is v2.2.4 — treat the diff as a
+> record of the initial rewrite, not a live diff against `src/`.
+
 ## Why v2?
 
 The original Microsoft-published task uses API `2020-02-14`, Node 10 (EOL), and the deprecated `azure-storage` SDK. This v2 update brings:
@@ -72,7 +77,7 @@ The original Microsoft-published task uses API `2020-02-14`, Node 10 (EOL), and 
 
 ## Requirements
 
-- Azure DevOps agent 2.144.0+
+- Azure DevOps agent 3.232.1+ (the first agent version with the Node 20 task handler)
 - A user-assigned managed identity with appropriate RBAC roles
 - A storage account for customizer package upload (if using package-based customizers)
 

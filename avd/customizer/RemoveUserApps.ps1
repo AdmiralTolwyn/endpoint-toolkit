@@ -62,6 +62,7 @@ try {
     Write-Log "Found $($provisioned.Count) provisioned package(s)"
 
     $removedCount = 0
+    $failedCount  = 0
     for ($pass = 1; $pass -le 2; $pass++) {
         Write-Log "Removal pass $pass of 2"
         $userPackages = Get-AppxPackage | Where-Object { $_.SignatureKind -ne 'System' }
@@ -79,16 +80,26 @@ try {
                     Write-Log "Removed $($app.Name)" -Level SUCCESS
                 }
                 catch {
-                    Write-Log "Failed to remove $($app.Name): $($_.Exception.Message)" -Level WARN
+                    # Per-item isolation: log and keep going so one stuck package
+                    # doesn't stop the sweep of the rest. The failure is still
+                    # counted below so the build fails if Sysprep is now at risk.
+                    $failedCount++
+                    Write-Log "Failed to remove $($app.Name): $($_.Exception.Message)" -Level ERROR
                 }
             }
         }
     }
 
-    if ($removedCount -eq 0) {
+    if ($removedCount -eq 0 -and $failedCount -eq 0) {
         Write-Log "Image is clean - no non-provisioned user apps found" -Level SUCCESS
     } else {
         Write-Log "Cleanup complete - removed $removedCount package(s)" -Level SUCCESS
+    }
+
+    if ($failedCount -gt 0) {
+        Write-Log "SUMMARY: $failedCount package(s) could not be removed - Sysprep may fail with 0x80073CF2. Failing the build." -Level ERROR
+        $stopwatch.Stop()
+        exit 1
     }
 }
 catch {

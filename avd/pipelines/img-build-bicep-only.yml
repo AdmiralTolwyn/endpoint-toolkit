@@ -2,6 +2,8 @@ name: $(Date:yyyyMMdd)$(Rev:.r)-AVD-ImageBuild
 
 trigger: none # Run manually
 
+pr: none
+
 # =============================================================================
 # Azure Image Builder - Bicep-Only Pipeline (No Extension Required)
 # =============================================================================
@@ -12,7 +14,7 @@ trigger: none # Run manually
 #   - No marketplace extension dependency
 #
 # Stages:
-#   1. Prepare  — Checkout, fetch secrets, zip & upload artifacts to staging blob
+#   1. Prepare  — Checkout, zip & upload artifacts to staging blob
 #   2. Build    — Deploy AIB template via Bicep, trigger build, poll for completion
 #   3. Cleanup  — Delete template + staging container (runs always)
 # =============================================================================
@@ -53,8 +55,6 @@ variables:
     value: 'win11-25h2-avd-m365'
   - name: storageAccountName
     value: '<YOURSTORAGEACCOUNT>'
-  - name: aibCheckoutDir
-    value: '_<YOURREPOSITORYNAME>'
 
   # ── STATIC / DERIVED (no changes needed) ──────────────────────────────────
   - name: baseImagePublisher
@@ -62,26 +62,26 @@ variables:
   - name: baseImageOffer
     value: 'office-365'
   - name: targetRegions
-    value: 'westeurope'
+    value: 'westeurope,northeurope'
   - name: vmSize
     value: 'Standard_D4_v5'
   - name: buildTimeout
     value: 150
-  - name: cleanupScriptPath
-    value: '$(System.DefaultWorkingDirectory)/valueadd/CleanupAIBstorage.ps1'
   - name: bicepTemplatePath
     value: '$(System.DefaultWorkingDirectory)/bicep/modules/imageTemplate.bicep'
   - name: managedIdentity
     value: '/subscriptions/$(subscriptionId)/resourceGroups/$(resourceGroup)/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$(managedIdentityName)'
   - name: galleryImageId
     value: '/subscriptions/$(subscriptionId)/resourceGroups/$(resourceGroup)/providers/Microsoft.Compute/galleries/$(galleryName)/images/$(imageDefinitionName)'
+  # The zip step archives $sourcePath\* flat and the bicep extracts flat to
+  # C:\BuildArtifacts, so the customizer folder lands directly under it.
   - name: aibInternalScriptBasePath
-    value: 'C:\BuildArtifacts\$(aibCheckoutDir)\customizer'
+    value: 'C:\BuildArtifacts\customizer'
 
 stages:
   # ---------------------------------------------------------------------------
   # STAGE 1: PREPARE
-  # Checks out sources, fetches secrets, uploads build artifacts to blob.
+  # Checks out sources and uploads build artifacts to a staging blob.
   # ---------------------------------------------------------------------------
   - stage: Prepare
     displayName: "Prepare Build"
@@ -103,16 +103,7 @@ stages:
                 Get-ChildItem -Path "$(System.DefaultWorkingDirectory)" -Recurse -Depth 2 |
                   Select-Object FullName, Mode, LastWriteTime | Format-Table -AutoSize
 
-          # ── 3. Download secrets from Key Vault ─────────────────────────────
-          - task: AzureKeyVault@2
-            displayName: "Fetch Secrets"
-            inputs:
-              azureSubscription: $(serviceConnection)
-              KeyVaultName: $(keyVaultName)
-              SecretsFilter: '<YOURSTORAGEACCOUNT>'
-              RunAsPreJob: false
-
-          # ── 4. Upload build artifacts to staging blob ──────────────────────
+          # ── 3. Upload build artifacts to staging blob ──────────────────────
           - task: AzureCLI@2
             displayName: 'Upload Artifacts to Staging Blob'
             name: upload
@@ -141,6 +132,7 @@ stages:
                   --name $container `
                   --auth-mode login `
                   --output none
+                if ($LASTEXITCODE -ne 0) { throw "az storage container create failed with exit code $LASTEXITCODE" }
 
                 Write-Host "=== Uploading artifacts ==="
                 az storage blob upload `
@@ -150,8 +142,9 @@ stages:
                   --name $blobName `
                   --auth-mode login `
                   --output none
+                if ($LASTEXITCODE -ne 0) { throw "az storage blob upload failed with exit code $LASTEXITCODE" }
 
-                Write-Host "=== Generating SAS token (4 hour expiry) ==="
+                Write-Host "=== Generating user-delegation SAS token (4 hour expiry) ==="
                 $expiry = (Get-Date).AddHours(4).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
                 $sas = az storage blob generate-sas `
                   --account-name $(storageAccountName) `
@@ -160,7 +153,9 @@ stages:
                   --permissions r `
                   --expiry $expiry `
                   --auth-mode login `
+                  --as-user `
                   -o tsv
+                if ($LASTEXITCODE -ne 0) { throw "az storage blob generate-sas failed with exit code $LASTEXITCODE" }
 
                 $blobUrl = "https://$(storageAccountName).blob.core.windows.net/$container/$blobName`?$sas"
                 Write-Host "Artifact URL generated (expires: $expiry)"
@@ -186,13 +181,18 @@ stages:
     jobs:
       - job: DeployAndRun
         displayName: "Deploy Template & Run Build"
-        timeoutInMinutes: 180
+        # Job cap must be >= the run step (buildTimeout + 30) plus the deploy step.
+        timeoutInMinutes: 210
         steps:
-          # ── 5. Deploy AIB image template via Bicep ─────────────────────────
+          # ── 4. Deploy AIB image template via Bicep ─────────────────────────
           - task: AzureCLI@2
             displayName: 'Deploy AIB Image Template (Bicep)'
             name: deploy
             timeoutInMinutes: 15
+            # Secret pipeline vars are not macro-substituted into scripts; pass
+            # the SAS blob URL via the environment instead.
+            env:
+              ARTIFACT_BLOB_URL: $(artifactBlobUrl)
             inputs:
               azureSubscription: $(serviceConnection)
               scriptType: pscore
@@ -205,22 +205,107 @@ stages:
                 Write-Host "=== Deploying image template: $templateName ==="
 
                 # ── Inline customizer script ────────────────────────────────
-                # Customize this section to match your image build requirements.
-                # Scripts referenced here must exist in the checked-out repository
-                # under the customizer/ folder.
+                # Single-quoted here-string: only ADO $(...) macros expand
+                # pipeline-side (e.g. aibInternalScriptBasePath); everything
+                # else stays literal and runs inside the build VM.
                 $inlineScript = @'
                 Write-Host "*** AVD AIB CUSTOMIZER PHASE : Checking for artifacts...***"
                 Get-ChildItem -Path "C:\BuildArtifacts" -Recurse | ForEach-Object { Write-Host $_.FullName }
 
                 $ScriptBaseFolder = "$(aibInternalScriptBasePath)"
 
-                # Example customization steps (update to match your scripts):
-                # & "$ScriptBaseFolder\DisableAutoUpdates.ps1" -Verbose
-                # & "$ScriptBaseFolder\Install-Applications.ps1" -Verbose
-                # & "$ScriptBaseFolder\WindowsOptimization.ps1" -Verbose
-                # & "$ScriptBaseFolder\AdminSysPrep.ps1" -Verbose
+                # 1. DisableAutoUpdates.ps1
+                Write-Host "*** AVD AIB CUSTOMIZER PHASE : Executing DisableAutoUpdates.ps1... ***"
+                & "$ScriptBaseFolder\DisableAutoUpdates.ps1" -Verbose
+                if ($LASTEXITCODE -ne 0) { Write-Host "##[error] DisableAutoUpdates.ps1 failed with exit code $LASTEXITCODE"; exit $LASTEXITCODE }
 
-                Write-Host "*** AVD AIB CUSTOMIZER PHASE : Customization complete.***"
+                # 2. TimezoneRedirection.ps1
+                Write-Host "*** AVD AIB CUSTOMIZER PHASE : Executing TimezoneRedirection.ps1...***"
+                & "$ScriptBaseFolder\TimezoneRedirection.ps1" -Verbose
+                if ($LASTEXITCODE -ne 0) { Write-Host "##[error] TimezoneRedirection.ps1 failed with exit code $LASTEXITCODE"; exit $LASTEXITCODE }
+
+                # 3. InstallLanguagePacks.ps1 (optional — uncomment to enable)
+                # Write-Host "*** AVD AIB CUSTOMIZER PHASE : Executing InstallLanguagePacks.ps1...***"
+                # & "$ScriptBaseFolder\InstallLanguagePacks.ps1" -LanguageList "German (Germany)" -Verbose
+                # if ($LASTEXITCODE -ne 0) { Write-Host "##[error] InstallLanguagePacks.ps1 failed with exit code $LASTEXITCODE"; exit $LASTEXITCODE }
+
+                # 4. RemoveAppxPackages.ps1
+                Write-Host "*** AVD AIB CUSTOMIZER PHASE : Executing RemoveAppxPackages.ps1... ***"
+                $packagesToRemove = @(
+                    "Clipchamp.Clipchamp",
+                    "Microsoft.BingNews",
+                    "Microsoft.BingSearch",
+                    "Microsoft.BingWeather",
+                    "Microsoft.GamingApp",
+                    "Microsoft.GetHelp",
+                    "Microsoft.MicrosoftSolitaireCollection",
+                    "Microsoft.Windows.DevHome",
+                    "Microsoft.WindowsSoundRecorder",
+                    "Microsoft.Xbox.TCUI",
+                    "Microsoft.XboxGamingOverlay",
+                    "Microsoft.XboxIdentityProvider",
+                    "Microsoft.XboxSpeechToTextOverlay",
+                    "Microsoft.YourPhone",
+                    "Microsoft.ZuneMusic",
+                    "MicrosoftWindows.CrossDevice"
+                )
+                & "$ScriptBaseFolder\RemoveAppxPackages.ps1" -AppxPackages $packagesToRemove -Verbose
+                if ($LASTEXITCODE -ne 0) { Write-Host "##[error] RemoveAppxPackages.ps1 failed with exit code $LASTEXITCODE"; exit $LASTEXITCODE }
+
+                # 5. UpdateWinGet.ps1
+                Write-Host "*** AVD AIB CUSTOMIZER PHASE : Executing UpdateWinGet.ps1...***"
+                $myAppList = @(
+                      "7zip.7zip",
+                      "Notepad++.Notepad++",
+                      "Adobe.Acrobat.Reader.64-bit",
+                      "Microsoft.RemoteHelp",
+                      "Google.Chrome",
+                      "Mozilla.Firefox",
+                      "DuongDieuPhap.ImageGlass",
+                      "Microsoft.PowerToys",
+                      "geeksoftwareGmbH.PDF24Creator",
+                      "Microsoft.VisualStudioCode",
+                      "Git.Git",
+                      "WinSCP.WinSCP",
+                      "PuTTY.PuTTY",
+                      "Microsoft.Sysinternals.Suite"
+                  )
+                Write-Host "*** AVD AIB CUSTOMIZER PHASE : Running Winget installation for $($myAppList.Count) apps...***"
+                & "$ScriptBaseFolder\UpdateWinGet.ps1" -AppIds $myAppList -Verbose
+                if ($LASTEXITCODE -ne 0) { Write-Host "##[error] UpdateWinGet.ps1 failed with exit code $LASTEXITCODE"; exit $LASTEXITCODE }
+
+                # 6. WindowsOptimization.ps1
+                $specificOptimizations = @(
+                    "ScheduledTasks",
+                    "DefaultUserSettings",
+                    "Autologgers",
+                    "Services",
+                    "NetworkOptimizations",
+                    "LGPO",
+                    "DiskCleanup",
+                    "Edge"
+                )
+                Write-Host "*** AVD AIB CUSTOMIZER PHASE : Executing WindowsOptimization.ps1 with specific optimizations...***"
+                & "$ScriptBaseFolder\WindowsOptimization.ps1" -Optimizations $specificOptimizations -Verbose
+                if ($LASTEXITCODE -ne 0) { Write-Host "##[error] WindowsOptimization.ps1 failed with exit code $LASTEXITCODE"; exit $LASTEXITCODE }
+
+                # 7. UpdateWinGet.ps1 (provision-only re-run)
+                Write-Host "*** AVD AIB CUSTOMIZER PHASE : Executing UpdateWinGet.ps1 (provision-only re-run)...***"
+                & "$ScriptBaseFolder\UpdateWinGet.ps1" -SkipApps -SkipUserRegistration -Verbose
+                if ($LASTEXITCODE -ne 0) { Write-Host "##[error] UpdateWinGet.ps1 (provision-only re-run) failed with exit code $LASTEXITCODE"; exit $LASTEXITCODE }
+
+                # 8. RemoveUserApps.ps1
+                Write-Host "*** AVD AIB CUSTOMIZER PHASE : Executing RemoveUserApps.ps1...***"
+                & "$ScriptBaseFolder\RemoveUserApps.ps1" -Verbose
+                if ($LASTEXITCODE -ne 0) { Write-Host "##[error] RemoveUserApps.ps1 failed with exit code $LASTEXITCODE"; exit $LASTEXITCODE }
+
+                # 9. AdminSysPrep.ps1 (must run LAST, immediately before Sysprep/capture)
+                Write-Host "*** AVD AIB CUSTOMIZER PHASE : Executing AdminSysPrep.ps1...***"
+                & "$ScriptBaseFolder\AdminSysPrep.ps1" -Verbose
+                if ($LASTEXITCODE -ne 0) { Write-Host "##[error] AdminSysPrep.ps1 failed with exit code $LASTEXITCODE"; exit $LASTEXITCODE }
+
+                Write-Host "*** AVD AIB CUSTOMIZER PHASE : All scripts executed.***"
+                Write-Host "*** AVD AIB CUSTOMIZER PHASE : Customization script finished.***"
                 '@
 
                 az deployment group create `
@@ -234,7 +319,7 @@ stages:
                     imagePublisher=$(baseImagePublisher) `
                     imageOffer=$(baseImageOffer) `
                     imageSku=$(baseImageSku) `
-                    artifactsBlobUrl="$(artifactBlobUrl)" `
+                    artifactsBlobUrl="$env:ARTIFACT_BLOB_URL" `
                     inlineCustomizerScript="$inlineScript" `
                     provisioner=powershell `
                     runElevated=true `
@@ -242,17 +327,24 @@ stages:
                     distributeType=SharedImage `
                     galleryImageId="$(galleryImageId)" `
                     targetRegions="$(targetRegions)" `
+                    distributeStorageAccountType=Standard_LRS `
+                    distributeVersioningScheme=Latest `
+                    excludeFromLatest=false `
+                    optimizeVmBoot=true `
+                    errorHandlingOnCustomizerError=cleanup `
+                    errorHandlingOnValidationError=cleanup `
                     vmSize=$(vmSize) `
-                    buildTimeoutInMinutes=$(buildTimeout) `
-                  --verbose
+                    buildTimeoutInMinutes=$(buildTimeout)
+                if ($LASTEXITCODE -ne 0) { throw "az deployment group create failed with exit code $LASTEXITCODE" }
 
                 Write-Host "=== Image template deployed successfully ==="
 
-          # ── 6. Trigger the image build ─────────────────────────────────────
+          # ── 5. Trigger the image build ─────────────────────────────────────
           - task: AzureCLI@2
             displayName: 'Run AIB Image Build'
             name: run
-            timeoutInMinutes: 160
+            # Step cap is buildTimeout + 30 so AIB's own 150-min timeout surfaces first.
+            timeoutInMinutes: 180
             inputs:
               azureSubscription: $(serviceConnection)
               scriptType: pscore
@@ -270,19 +362,30 @@ stages:
                   --name $templateName `
                   --resource-group $(resourceGroup) `
                   --no-wait
+                if ($LASTEXITCODE -ne 0) { throw "az image builder run failed with exit code $LASTEXITCODE" }
 
-                # Poll for completion
+                # Poll for completion. Client-side timeout is buildTimeout + 10 so
+                # AIB's own build timeout reports a real error first.
                 Write-Host "=== Monitoring build progress ==="
                 $startTime = Get-Date
-                $timeoutMinutes = $(buildTimeout)
+                $timeoutMinutes = $(buildTimeout) + 10
 
                 while ($true) {
                   $elapsed = (Get-Date) - $startTime
-                  $status = az image builder show `
-                    --name $templateName `
-                    --resource-group $(resourceGroup) `
-                    --query "properties.lastRunStatus" `
-                    -o json 2>$null | ConvertFrom-Json
+
+                  # Transient CLI/parse noise must not kill a multi-hour build.
+                  try {
+                    $status = az image builder show `
+                      --name $templateName `
+                      --resource-group $(resourceGroup) `
+                      --query "properties.lastRunStatus" `
+                      -o json | ConvertFrom-Json
+                  }
+                  catch {
+                    Write-Host "##vso[task.logissue type=warning]Transient error querying build status: $($_.Exception.Message)"
+                    Start-Sleep -Seconds 30
+                    continue
+                  }
 
                   if ($status) {
                     $runState = $status.runState
@@ -315,6 +418,7 @@ stages:
                   --name $templateName `
                   --resource-group $(resourceGroup) `
                   -o json | ConvertFrom-Json
+                if ($LASTEXITCODE -ne 0) { Write-Host "##vso[task.logissue type=warning]Failed to retrieve run outputs (exit code $LASTEXITCODE)" }
 
                 if ($runOutputs -and $runOutputs.Count -gt 0) {
                   $artifactId = $runOutputs[0].artifactId
@@ -326,7 +430,7 @@ stages:
 
   # ---------------------------------------------------------------------------
   # STAGE 3: CLEANUP
-  # Always runs — deletes template, staging blob, and orphaned artifacts.
+  # Always runs — deletes the image template and staging container.
   # ---------------------------------------------------------------------------
   - stage: Cleanup
     displayName: "Cleanup"
@@ -339,7 +443,7 @@ stages:
       - job: CleanupResources
         displayName: "Delete Template & Staging"
         steps:
-          # ── 7. Delete image template + staging container ───────────────────
+          # ── 6. Delete image template + staging container ───────────────────
           - task: AzureCLI@2
             displayName: 'Delete AIB Template & Staging Blob'
             inputs:
@@ -353,34 +457,38 @@ stages:
                 $templateName = "$(templateName)"
                 $container = "$(stagingContainer)"
 
+                # AIB refuses template deletion while a run is in progress, so
+                # retry with backoff. Cleanup must not hard-fail the pipeline, but
+                # real errors are surfaced as warnings (never silently swallowed).
                 Write-Host "=== Deleting image template: $templateName ==="
-                az image builder delete `
-                  --name $templateName `
-                  --resource-group $(resourceGroup) `
-                  --output none 2>$null
-                Write-Host "Template deleted."
+                $maxRetries = 5
+                $deleted = $false
+                for ($i = 1; $i -le $maxRetries; $i++) {
+                  $deleteOutput = az image builder delete `
+                    --name $templateName `
+                    --resource-group $(resourceGroup) `
+                    --output none 2>&1
+                  if ($LASTEXITCODE -eq 0) {
+                    Write-Host "Template deleted."
+                    $deleted = $true
+                    break
+                  }
+                  Write-Host "Attempt $i/$maxRetries to delete template failed (exit $LASTEXITCODE); a run may still be in progress."
+                  if ($i -lt $maxRetries) { Start-Sleep -Seconds 60 }
+                }
+                if (-not $deleted) {
+                  Write-Host "##vso[task.logissue type=warning]Failed to delete image template $templateName after $maxRetries attempts: $deleteOutput"
+                }
 
                 Write-Host "=== Deleting staging container: $container ==="
-                az storage container delete `
+                $containerDeleteOutput = az storage container delete `
                   --account-name $(storageAccountName) `
                   --name $container `
                   --auth-mode login `
-                  --output none 2>$null
-                Write-Host "Staging container deleted."
-
-          # ── 8. Cleanup legacy AIB storage artifacts ────────────────────────
-          - task: AzureKeyVault@2
-            displayName: "Fetch Storage Key"
-            inputs:
-              azureSubscription: $(serviceConnection)
-              KeyVaultName: $(keyVaultName)
-              SecretsFilter: '<YOURSTORAGEACCOUNT>'
-
-          - task: AzurePowerShell@5
-            displayName: 'Cleanup AIB Storage Artifacts'
-            inputs:
-              azureSubscription: $(serviceConnection)
-              ScriptType: 'FilePath'
-              ScriptPath: $(cleanupScriptPath)
-              ScriptArguments: '-StorageAccountName $(storageAccountName) -StorageAccountKey $(<YOURSTORAGEACCOUNT>)'
-              azurePowerShellVersion: 'LatestVersion'
+                  --output none 2>&1
+                if ($LASTEXITCODE -ne 0) {
+                  Write-Host "##vso[task.logissue type=warning]Failed to delete staging container $container (exit $LASTEXITCODE): $containerDeleteOutput"
+                }
+                else {
+                  Write-Host "Staging container deleted."
+                }

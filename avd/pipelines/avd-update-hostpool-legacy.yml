@@ -1,6 +1,7 @@
 name: $(Date:yyyyMMdd)$(Rev:.r)-AVD-Legacy-Update
 
 trigger: none # Run manually
+pr: none
 
 pool:
   vmImage: 'windows-latest'
@@ -14,21 +15,21 @@ variables:
     value: '<YOURSERVICECONNECTION>'
   - name: subscriptionId
     value: '<YOURSUBSCRIPTIONID>'
-  
+
   # AVD Resource Details
   - name: resourceGroup
     value: '<YOURRESOURCEGROUP-CORE>' # Core RG (Host Pool Object location)
   - name: hostPoolName
-    value: '<YOURHOSTPOOLNAME>' 
+    value: '<YOURHOSTPOOLNAME>'
   - name: keyVaultName
     value: '<YOURKEYVAULTNAME>'
-  
+
   # Legacy AD Configuration
   - name: domainName
     value: '<YOURDOMAINNAME>' # e.g. contoso.com
   - name: ouPath
     value: '<YOUROUPATH>' # e.g. OU=AVD,DC=contoso,DC=com
-  
+
   # VM Specifications
   - name: vmSize
     value: 'Standard_B2as_v2'
@@ -62,7 +63,7 @@ variables:
     value: '<YOURVNETNAME>'
   - name: subnetName
     value: 'default'
-  
+
   # Advanced VM Options
   - name: availabilityZones
     value: '[1,2,3]'
@@ -83,21 +84,13 @@ stages:
       - job: CalculateContext
         displayName: "Calculate Parameters"
         steps:
-          - task: AzureKeyVault@2
-            displayName: "Fetch Secrets"
-            inputs:
-              azureSubscription: $(serviceConnection)
-              KeyVaultName: $(keyVaultName)
-              SecretsFilter: 'avd-local-admin-password,avd-domain-join-user,avd-domain-join-password'
-              RunAsPreJob: false
-
           - task: AzurePowerShell@5
             name: GetDetails
             displayName: "Execute Get-AvdDetails.ps1"
             inputs:
               azureSubscription: $(serviceConnection)
               ScriptType: 'FilePath'
-              ScriptPath: '$(System.DefaultWorkingDirectory)/scripts/Get-AvdDetails.ps1'
+              ScriptPath: '$(System.DefaultWorkingDirectory)/avd/scripts/Get-AvdDetails.ps1'
               ScriptArguments: >
                 -HostPoolName "$(hostPoolName)"
                 -ResourceGroupName "$(resourceGroup)"
@@ -120,7 +113,6 @@ stages:
       canaryList: $[ stageDependencies.Preparation.CalculateContext.outputs['GetDetails.CanaryList'] ]
       blastList: $[ stageDependencies.Preparation.CalculateContext.outputs['GetDetails.BlastList'] ]
       outdatedList: $[ stageDependencies.Preparation.CalculateContext.outputs['GetDetails.OutdatedHostsList'] ]
-      hpToken: $[ stageDependencies.Preparation.CalculateContext.outputs['GetDetails.HostPoolToken'] ]
     jobs:
       - job: AuditPlan
         displayName: "Audit Deployment Plan"
@@ -141,22 +133,280 @@ stages:
               echo "$(outdatedList)"
               echo "=========================================="
             displayName: "Log Deployment Plan"
-          
+
           - task: PowerShell@2
             displayName: "Assert Valid Plan"
             inputs:
               targetType: 'inline'
               script: |
+                # Registration tokens are now minted just-in-time inside each Deploy
+                # job, so this stage only validates the image plan itself.
                 if ("$(targetVer)" -eq "") { Write-Error "Failed to determine Target Image Version"; exit 1 }
-                if ("$(hpToken)".Length -eq 0) { Write-Error "Failed to retrieve Host Pool Token"; exit 1 }
+                if ("$(canaryList)" -eq "" -or "$(canaryList)" -eq "[]") { Write-Error "Plan produced no canary host to deploy"; exit 1 }
                 Write-Host "Plan is valid."
 
   # ---------------------------------------------------------------------------
-  # STAGE 3: MAINTENANCE (DRAIN OLD)
+  # STAGE 3: DEPLOY CANARY (PRODUCTION)
+  # Deploys the first VM, gates on real registration, then drains it.
+  # Old hosts are NOT touched until the canary proves out.
+  # ---------------------------------------------------------------------------
+  - stage: DeployCanary
+    displayName: "Deploy Canary (Production)"
+    dependsOn: [Preparation, Validate]
+    variables:
+      canaryList: $[ stageDependencies.Preparation.CalculateContext.outputs['GetDetails.CanaryList'] ]
+      targetImageId: $[ stageDependencies.Preparation.CalculateContext.outputs['GetDetails.TargetImageId'] ]
+      targetImageVersion: $[ stageDependencies.Preparation.CalculateContext.outputs['GetDetails.TargetImageVersion'] ]
+
+    jobs:
+      - job: DeployCanaryJob
+        displayName: "Deploy Canary VM"
+        steps:
+          - task: AzureKeyVault@2
+            displayName: "Fetch Secrets"
+            inputs:
+              azureSubscription: $(serviceConnection)
+              KeyVaultName: $(keyVaultName)
+              SecretsFilter: 'avd-local-admin-password,avd-domain-join-user,avd-domain-join-password,log-analytics-workspace-id,log-analytics-shared-key'
+              RunAsPreJob: false
+
+          # Mint a fresh registration token in-stage (no cross-stage secret hand-off).
+          - task: AzurePowerShell@5
+            displayName: "Mint Host Pool Registration Token"
+            inputs:
+              azureSubscription: $(serviceConnection)
+              ScriptType: 'InlineScript'
+              Inline: |
+                $reg = Get-AzWvdRegistrationInfo -ResourceGroupName "$(hostPoolRg)" -HostPoolName "$(hostPoolName)" -ErrorAction SilentlyContinue
+                $needNew = $true
+                if ($reg -and $reg.Token -and $reg.ExpirationTime) {
+                    $expiry = [DateTime]$reg.ExpirationTime
+                    if ($expiry.ToUniversalTime() -gt (Get-Date).ToUniversalTime().AddHours(6)) { $needNew = $false }
+                }
+                if ($needNew) {
+                    Write-Host "No usable token (missing or expiring within 6h). Minting a new 24h token..."
+                    $expiration = (Get-Date).ToUniversalTime().AddHours(24).ToString('o')
+                    $reg = New-AzWvdRegistrationInfo -ResourceGroupName "$(hostPoolRg)" -HostPoolName "$(hostPoolName)" -ExpirationTime $expiration
+                } else {
+                    Write-Host "Reusing existing registration token (valid > 6h)."
+                }
+                if ([string]::IsNullOrWhiteSpace($reg.Token)) { Write-Error "Failed to obtain a registration token."; exit 1 }
+                Write-Host "##vso[task.setvariable variable=HostPoolToken;issecret=true]$($reg.Token)"
+              azurePowerShellVersion: 'LatestVersion'
+
+          - task: AzureCLI@2
+            displayName: "Construct Network Context"
+            inputs:
+              azureSubscription: $(serviceConnection)
+              scriptType: 'pscore'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                $SubnetId = "/subscriptions/$(subscriptionId)/resourceGroups/$(networkRg)/providers/Microsoft.Network/virtualNetworks/$(vnetName)/subnets/$(subnetName)"
+                Write-Host "##vso[task.setvariable variable=constructedSubnetId]$SubnetId"
+
+          - task: AzureCLI@2
+            displayName: "Execute Bicep Deployment"
+            timeoutInMinutes: 60
+            inputs:
+              azureSubscription: $(serviceConnection)
+              scriptType: 'pscore'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                Write-Host "Starting Canary Deployment (Legacy AD)..." -ForegroundColor Cyan
+
+                $rawList = '$(canaryList)'
+                if ($rawList -notmatch '"') { $jsonString = $rawList -replace '([a-zA-Z0-9-]+)', '"$1"' } else { $jsonString = $rawList }
+                $vmArray = @($jsonString | ConvertFrom-Json)
+
+                # Parse availability zones
+                $zonesRaw = '$(availabilityZones)'
+                $zonesArr = @()
+                if ($zonesRaw -ne '[]' -and -not [string]::IsNullOrWhiteSpace($zonesRaw)) {
+                    $zonesArr = @($zonesRaw | ConvertFrom-Json)
+                }
+
+                # Secrets are read from the step's env: block, never macro-interpolated.
+                $params = @{
+                    "\$schema" = "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#"
+                    "contentVersion" = "1.0.0.0"
+                    "parameters" = @{
+                        "vmList" = @{ "value" = $vmArray }
+                        "imageResourceId" = @{ "value" = "$(targetImageId)" }
+                        "hostPoolName" = @{ "value" = "$(hostPoolName)" }
+                        "hostPoolRg" = @{ "value" = "$(hostPoolRg)" }
+                        "hostPoolToken" = @{ "value" = $env:HP_TOKEN }
+                        "localAdminUser" = @{ "value" = "$(vmLocalAdminUser)" }
+                        "localAdminPassword" = @{ "value" = $env:LOCAL_ADMIN_PASSWORD }
+                        "subnetId" = @{ "value" = "$(constructedSubnetId)" }
+                        "imageName" = @{ "value" = "$(imageDef)" }
+                        "imageVersion" = @{ "value" = "$(targetImageVersion)" }
+                        "vmSize" = @{ "value" = "$(vmSize)" }
+                        "osDiskType" = @{ "value" = "$(osDiskType)" }
+                        "osDiskSizeGB" = @{ "value" = $(osDiskSizeGB) }
+                        # Advanced Options
+                        "availabilityZones" = @{ "value" = $zonesArr }
+                        "acceleratedNetworking" = @{ "value" = ('$(acceleratedNetworking)' -eq 'true') }
+                        # LEGACY AD PARAMS
+                        "domainName" = @{ "value" = "$(domainName)" }
+                        "ouPath" = @{ "value" = "$(ouPath)" }
+                        "domainJoinUser" = @{ "value" = $env:DOMAIN_JOIN_USER }
+                        "domainJoinPassword" = @{ "value" = $env:DOMAIN_JOIN_PASSWORD }
+                    }
+                }
+                $params | ConvertTo-Json -Depth 10 | Out-File "canary.json" -Encoding UTF8
+
+                # -------------------------------------------------------------------
+                # ASYNC DEPLOY + DIAGNOSTIC POLL
+                # -------------------------------------------------------------------
+                # A blocking 'az deployment group create' prints nothing while ARM
+                # waits on the VM extension chain (domain join -> GuestAttestation ->
+                # AVD DSC agent). Extensions install serially and can stall for a long
+                # time, so the VM shows 'Succeeded' in the portal while the deployment
+                # stays 'Running' - i.e. it looks hung with no clue why.
+                #
+                # Instead we submit with --no-wait and poll every 30s, logging the
+                # deployment state AND per-VM extension provisioning state so a stuck
+                # extension is named in the log. An internal 55-min deadline (below the
+                # task's timeoutInMinutes: 60) dumps the in-flight operations before the
+                # task is hard-killed; Failed/Canceled dumps the failing operations.
+                # -------------------------------------------------------------------
+                $deployName = "canary-$(Build.BuildId)"
+                Write-Host "Submitting deployment '$deployName' (async)..." -ForegroundColor Cyan
+                az deployment group create `
+                  --resource-group "$(computeRg)" `
+                  --name $deployName `
+                  --template-file "$(System.DefaultWorkingDirectory)/avd/bicep/main-legacy.bicep" `
+                  --parameters "@canary.json" `
+                  --no-wait
+                if ($LASTEXITCODE -ne 0) { Write-Error "Failed to submit deployment '$deployName'."; exit 1 }
+
+                # Poll until the deployment reaches a terminal state or the deadline hits.
+                $rg = "$(computeRg)"
+                $timeoutMinutes = 55                         # stay under the task's timeoutInMinutes: 60
+                $deadline = (Get-Date).AddMinutes($timeoutMinutes)
+                $emptyStreak = 0                             # consecutive empty provisioningState reads
+                while ($true) {
+                    Start-Sleep -Seconds 30
+                    # Overall provisioning state of the ARM deployment.
+                    $state = az deployment group show --resource-group $rg --name $deployName --query "properties.provisioningState" -o tsv 2>$null
+                    $ts = (Get-Date).ToString("HH:mm:ss")
+                    # FAIL-FAST: empty state = failing show call; bail after 5 in a row.
+                    if ([string]::IsNullOrWhiteSpace($state)) {
+                        $emptyStreak++
+                        Write-Host "[$ts] provisioningState query returned empty ($emptyStreak/5)." -ForegroundColor Yellow
+                        if ($emptyStreak -ge 5) {
+                            Write-Host "provisioningState empty for 5 consecutive polls; retrying 'show' with stderr visible:" -ForegroundColor Red
+                            az deployment group show --resource-group $rg --name $deployName --query "properties.provisioningState" -o tsv
+                            Write-Error "Deployment '$deployName' state unresolvable after 5 consecutive empty polls."
+                            exit 1
+                        }
+                        continue
+                    }
+                    $emptyStreak = 0
+                    Write-Host "[$ts] Deployment '$deployName' state: $state"
+                    # Per-VM extension status - reveals which extension (if any) is stuck.
+                    foreach ($vmName in $vmArray) {
+                        Write-Host "  Extensions on ${vmName}:"
+                        az vm extension list --resource-group $rg --vm-name $vmName --query "[].{Name:name, State:provisioningState}" -o table 2>$null
+                    }
+                    # Terminal success.
+                    if ($state -eq "Succeeded") { Write-Host "Deployment '$deployName' succeeded." -ForegroundColor Green; break }
+                    # Terminal failure - surface the specific failed resource(s) and fail the task.
+                    if ($state -eq "Failed" -or $state -eq "Canceled") {
+                        Write-Host "Deployment '$deployName' $state. Failed operations:" -ForegroundColor Red
+                        az deployment operation group list --resource-group $rg --name $deployName --query "[?properties.provisioningState=='Failed'].{Resource:properties.targetResource.resourceName, Type:properties.targetResource.resourceType, Status:properties.statusMessage}" -o json
+                        exit 1
+                    }
+                    # Safety net - dump whatever is still Running so the hang is diagnosable.
+                    if ((Get-Date) -gt $deadline) {
+                        Write-Host "TIMEOUT after $timeoutMinutes min; deployment still '$state'. In-flight operations:" -ForegroundColor Red
+                        az deployment operation group list --resource-group $rg --name $deployName --query "[?properties.provisioningState=='Running'].{Resource:properties.targetResource.resourceName, Type:properties.targetResource.resourceType}" -o json
+                        exit 1
+                    }
+                }
+            env:
+              HP_TOKEN: $(HostPoolToken)
+              LOCAL_ADMIN_PASSWORD: $(avd-local-admin-password)
+              DOMAIN_JOIN_USER: $(avd-domain-join-user)
+              DOMAIN_JOIN_PASSWORD: $(avd-domain-join-password)
+
+          # CANARY HEALTH GATE: ARM 'Succeeded' only means the extensions installed;
+          # it does not prove the host actually registered. Wait up to ~10 min for the
+          # canary to appear in the pool as 'Available' before we risk the blast.
+          - task: AzurePowerShell@5
+            displayName: "Canary Health Gate (Await Available)"
+            inputs:
+              azureSubscription: $(serviceConnection)
+              ScriptType: 'InlineScript'
+              Inline: |
+                $rawList = '$(canaryList)'
+                if ($rawList -notmatch '"') { $jsonString = $rawList -replace '([a-zA-Z0-9-]+)', '"$1"' } else { $jsonString = $rawList }
+                $vmArray = @($jsonString | ConvertFrom-Json)
+                $canaryVm = $vmArray[0]
+                Write-Host "Waiting for canary '$canaryVm' to register as 'Available'..."
+                $deadline = (Get-Date).AddMinutes(10)
+                $available = $false
+                while ((Get-Date) -lt $deadline) {
+                    $hosts = Get-AzWvdSessionHost -ResourceGroupName "$(hostPoolRg)" -HostPoolName "$(hostPoolName)" -ErrorAction SilentlyContinue
+                    $match = $hosts | Where-Object { $_.Name.Split('/')[-1].Split('.')[0] -eq $canaryVm }
+                    if ($match) {
+                        Write-Host "  Canary status: $($match.Status)"
+                        if ($match.Status -eq 'Available') { $available = $true; break }
+                    } else {
+                        Write-Host "  Canary not yet registered..."
+                    }
+                    Start-Sleep -Seconds 30
+                }
+                if (-not $available) { Write-Error "Canary '$canaryVm' did not reach 'Available' within 10 minutes."; exit 1 }
+                Write-Host "Canary is Available. Blast gate passed." -ForegroundColor Green
+              azurePowerShellVersion: 'LatestVersion'
+
+          # DRAIN THE CANARY (lock it down for validation before the blast).
+          - task: AzurePowerShell@5
+            displayName: "Lock Down Canary (Drain)"
+            inputs:
+              azureSubscription: $(serviceConnection)
+              ScriptType: 'FilePath'
+              ScriptPath: '$(System.DefaultWorkingDirectory)/avd/scripts/Set-AvdDrainMode.ps1'
+              ScriptArguments: >
+                -HostPoolName "$(hostPoolName)"
+                -ResourceGroupName "$(hostPoolRg)"
+              azurePowerShellVersion: 'LatestVersion'
+            env:
+              HOST_LIST_JSON: $(canaryList)
+
+          # OPTIONAL: Deployment Telemetry
+          - task: AzurePowerShell@5
+            displayName: "Telemetry → Canary Deploy"
+            condition: and(succeeded(), eq(variables['enableTelemetry'], 'true'))
+            continueOnError: true
+            inputs:
+              azureSubscription: $(serviceConnection)
+              ScriptType: 'FilePath'
+              ScriptPath: '$(System.DefaultWorkingDirectory)/avd/scripts/Write-DeploymentTelemetry.ps1'
+              azurePowerShellVersion: 'LatestVersion'
+            env:
+              WORKSPACE_ID: $(log-analytics-workspace-id)
+              SHARED_KEY: $(log-analytics-shared-key)
+              EVENT_DATA_JSON: '{"HostPoolName":"$(hostPoolName)","Stage":"Canary","Action":"Deploy","VMCount":1,"ImageVersion":"$(targetImageVersion)","Status":"Success","PipelineRunId":"$(Build.BuildId)"}'
+
+          # Always remove the generated parameter file.
+          - task: PowerShell@2
+            displayName: "Cleanup Param File"
+            condition: always()
+            inputs:
+              targetType: 'inline'
+              script: |
+                Remove-Item -Path "canary.json" -Force -ErrorAction SilentlyContinue
+
+  # ---------------------------------------------------------------------------
+  # STAGE 4: MAINTENANCE (DRAIN OLD)
+  # Old hosts are drained only AFTER the canary proves out.
   # ---------------------------------------------------------------------------
   - stage: DrainOld
     displayName: "Drain Outdated"
-    dependsOn: [Preparation, Validate]
+    dependsOn: [Preparation, DeployCanary]
+    condition: succeeded()
     variables:
       outdatedList: $[ stageDependencies.Preparation.CalculateContext.outputs['GetDetails.OutdatedHostsList'] ]
       targetVer: $[ stageDependencies.Preparation.CalculateContext.outputs['GetDetails.TargetImageVersion'] ]
@@ -169,7 +419,7 @@ stages:
             inputs:
               azureSubscription: $(serviceConnection)
               ScriptType: 'FilePath'
-              ScriptPath: '$(System.DefaultWorkingDirectory)/scripts/Set-AvdDrainMode.ps1'
+              ScriptPath: '$(System.DefaultWorkingDirectory)/avd/scripts/Set-AvdDrainMode.ps1'
               ScriptArguments: >
                 -HostPoolName "$(hostPoolName)"
                 -ResourceGroupName "$(hostPoolRg)"
@@ -194,208 +444,24 @@ stages:
             inputs:
               azureSubscription: $(serviceConnection)
               ScriptType: 'FilePath'
-              ScriptPath: '$(System.DefaultWorkingDirectory)/scripts/Write-DeploymentTelemetry.ps1'
-              ScriptArguments: >
-                -WorkspaceId "$(log-analytics-workspace-id)"
-                -SharedKey "$(log-analytics-shared-key)"
-                -EventData @{
-                  HostPoolName  = '$(hostPoolName)';
-                  Stage         = 'Maintenance';
-                  Action        = 'Drain';
-                  ImageVersion  = '$(targetVer)';
-                  Status        = 'Success';
-                  PipelineRunId = '$(Build.BuildId)'
-                }
-              azurePowerShellVersion: 'LatestVersion'
-
-  # ---------------------------------------------------------------------------
-  # STAGE 4: DEPLOY CANARY (PRODUCTION)
-  # ---------------------------------------------------------------------------
-  - stage: DeployCanary
-    displayName: "Deploy Canary (Production)"
-    dependsOn: [Preparation, Validate]
-    variables:
-      canaryList: $[ stageDependencies.Preparation.CalculateContext.outputs['GetDetails.CanaryList'] ]
-      targetImageId: $[ stageDependencies.Preparation.CalculateContext.outputs['GetDetails.TargetImageId'] ]
-      hpToken: $[ stageDependencies.Preparation.CalculateContext.outputs['GetDetails.HostPoolToken'] ]
-      targetImageVersion: $[ stageDependencies.Preparation.CalculateContext.outputs['GetDetails.TargetImageVersion'] ]
-
-    jobs:
-      - job: DeployCanaryJob
-        displayName: "Deploy Canary VM"
-        steps:
-          - task: AzureKeyVault@2
-            displayName: "Fetch Secrets"
-            inputs:
-              azureSubscription: $(serviceConnection)
-              KeyVaultName: $(keyVaultName)
-              SecretsFilter: 'avd-local-admin-password,avd-domain-join-user,avd-domain-join-password,log-analytics-workspace-id,log-analytics-shared-key'
-              RunAsPreJob: false
-
-          - task: AzureCLI@2
-            displayName: "Construct Network Context"
-            inputs:
-              azureSubscription: $(serviceConnection)
-              scriptType: 'pscore'
-              scriptLocation: 'inlineScript'
-              inlineScript: |
-                $SubnetId = "/subscriptions/$(subscriptionId)/resourceGroups/$(networkRg)/providers/Microsoft.Network/virtualNetworks/$(vnetName)/subnets/$(subnetName)"
-                Write-Host "##vso[task.setvariable variable=constructedSubnetId]$SubnetId"
-
-          - task: AzureCLI@2
-            displayName: "Execute Bicep Deployment"
-            timeoutInMinutes: 60
-            inputs:
-              azureSubscription: $(serviceConnection)
-              scriptType: 'pscore'
-              scriptLocation: 'inlineScript'
-              inlineScript: |
-                Write-Host "Starting Canary Deployment (Legacy AD)..." -ForegroundColor Cyan
-                
-                $rawList = '$(canaryList)'
-                if ($rawList -notmatch '"') { $jsonString = $rawList -replace '([a-zA-Z0-9-]+)', '"$1"' } else { $jsonString = $rawList }
-                $vmArray = @($jsonString | ConvertFrom-Json)
-
-                # Parse availability zones
-                $zonesRaw = '$(availabilityZones)'
-                $zonesArr = @()
-                if ($zonesRaw -ne '[]' -and -not [string]::IsNullOrWhiteSpace($zonesRaw)) {
-                    $zonesArr = @($zonesRaw | ConvertFrom-Json)
-                }
-
-                $params = @{
-                    "\$schema" = "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#"
-                    "contentVersion" = "1.0.0.0"
-                    "parameters" = @{
-                        "vmList" = @{ "value" = $vmArray } 
-                        "imageResourceId" = @{ "value" = "$(targetImageId)" }
-                        "hostPoolName" = @{ "value" = "$(hostPoolName)" }
-                        "hostPoolRg" = @{ "value" = "$(hostPoolRg)" }
-                        "hostPoolToken" = @{ "value" = "$(hpToken)" }
-                        "localAdminUser" = @{ "value" = "$(vmLocalAdminUser)" }
-                        "localAdminPassword" = @{ "value" = "$(avd-local-admin-password)" }
-                        "subnetId" = @{ "value" = "$(constructedSubnetId)" }
-                        "imageName" = @{ "value" = "$(imageDef)" }
-                        "imageVersion" = @{ "value" = "$(targetImageVersion)" }
-                        "vmSize" = @{ "value" = "$(vmSize)" }
-                        "osDiskType" = @{ "value" = "$(osDiskType)" }
-                        "osDiskSizeGB" = @{ "value" = $(osDiskSizeGB) }
-                        # Advanced Options
-                        "availabilityZones" = @{ "value" = $zonesArr }
-                        "acceleratedNetworking" = @{ "value" = ('$(acceleratedNetworking)' -eq 'true') }
-                        # LEGACY AD PARAMS
-                        "domainName" = @{ "value" = "$(domainName)" }
-                        "ouPath" = @{ "value" = "$(ouPath)" }
-                        "domainJoinUser" = @{ "value" = "$(avd-domain-join-user)" }
-                        "domainJoinPassword" = @{ "value" = "$(avd-domain-join-password)" }
-                    }
-                }
-                $params | ConvertTo-Json -Depth 10 | Out-File "canary.json" -Encoding UTF8
-                
-                # -------------------------------------------------------------------
-                # ASYNC DEPLOY + DIAGNOSTIC POLL
-                # -------------------------------------------------------------------
-                # A blocking 'az deployment group create' prints nothing while ARM
-                # waits on the VM extension chain (domain join -> GuestAttestation ->
-                # AVD DSC agent). Extensions install serially and can stall for a long
-                # time, so the VM shows 'Succeeded' in the portal while the deployment
-                # stays 'Running' - i.e. it looks hung with no clue why.
-                #
-                # Instead we submit with --no-wait and poll every 30s, logging the
-                # deployment state AND per-VM extension provisioning state so a stuck
-                # extension is named in the log. An internal 55-min deadline (below the
-                # task's timeoutInMinutes: 60) dumps the in-flight operations before the
-                # task is hard-killed; Failed/Canceled dumps the failing operations.
-                # -------------------------------------------------------------------
-                $deployName = "canary-$(Build.BuildId)"
-                Write-Host "Submitting deployment '$deployName' (async)..." -ForegroundColor Cyan
-                az deployment group create `
-                  --resource-group "$(computeRg)" `
-                  --name $deployName `
-                  --template-file "$(System.DefaultWorkingDirectory)/bicep/main-legacy.bicep" `
-                  --parameters "@canary.json" `
-                  --no-wait
-                if ($LASTEXITCODE -ne 0) { Write-Error "Failed to submit deployment '$deployName'."; exit 1 }
-
-                # Poll until the deployment reaches a terminal state or the deadline hits.
-                $rg = "$(computeRg)"
-                $timeoutMinutes = 55                         # stay under the task's timeoutInMinutes: 60
-                $deadline = (Get-Date).AddMinutes($timeoutMinutes)
-                while ($true) {
-                    Start-Sleep -Seconds 30
-                    # Overall provisioning state of the ARM deployment.
-                    $state = az deployment group show --resource-group $rg --name $deployName --query "properties.provisioningState" -o tsv 2>$null
-                    $ts = (Get-Date).ToString("HH:mm:ss")
-                    Write-Host "[$ts] Deployment '$deployName' state: $state"
-                    # Per-VM extension status - reveals which extension (if any) is stuck.
-                    foreach ($vmName in $vmArray) {
-                        Write-Host "  Extensions on ${vmName}:"
-                        az vm extension list --resource-group $rg --vm-name $vmName --query "[].{Name:name, State:provisioningState}" -o table 2>$null
-                    }
-                    # Terminal success.
-                    if ($state -eq "Succeeded") { Write-Host "Deployment '$deployName' succeeded." -ForegroundColor Green; break }
-                    # Terminal failure - surface the specific failed resource(s) and fail the task.
-                    if ($state -eq "Failed" -or $state -eq "Canceled") {
-                        Write-Host "Deployment '$deployName' $state. Failed operations:" -ForegroundColor Red
-                        az deployment operation group list --resource-group $rg --name $deployName --query "[?properties.provisioningState=='Failed'].{Resource:properties.targetResource.resourceName, Type:properties.targetResource.resourceType, Status:properties.statusMessage}" -o json
-                        exit 1
-                    }
-                    # Safety net - dump whatever is still Running so the hang is diagnosable.
-                    if ((Get-Date) -gt $deadline) {
-                        Write-Host "TIMEOUT after $timeoutMinutes min; deployment still '$state'. In-flight operations:" -ForegroundColor Red
-                        az deployment operation group list --resource-group $rg --name $deployName --query "[?properties.provisioningState=='Running'].{Resource:properties.targetResource.resourceName, Type:properties.targetResource.resourceType}" -o json
-                        exit 1
-                    }
-                }
-
-          # FIX: USING SCRIPT FILE TO DRAIN CANARY
-          - task: AzurePowerShell@5
-            displayName: "Lock Down Canary (Drain)"
-            inputs:
-              azureSubscription: $(serviceConnection)
-              ScriptType: 'FilePath'
-              ScriptPath: '$(System.DefaultWorkingDirectory)/scripts/Set-AvdDrainMode.ps1'
-              ScriptArguments: >
-                -HostPoolName "$(hostPoolName)"
-                -ResourceGroupName "$(hostPoolRg)"
+              ScriptPath: '$(System.DefaultWorkingDirectory)/avd/scripts/Write-DeploymentTelemetry.ps1'
               azurePowerShellVersion: 'LatestVersion'
             env:
-              HOST_LIST_JSON: $(canaryList)
-
-          # OPTIONAL: Deployment Telemetry
-          - task: AzurePowerShell@5
-            displayName: "Telemetry → Canary Deploy"
-            condition: and(succeeded(), eq(variables['enableTelemetry'], 'true'))
-            continueOnError: true
-            inputs:
-              azureSubscription: $(serviceConnection)
-              ScriptType: 'FilePath'
-              ScriptPath: '$(System.DefaultWorkingDirectory)/scripts/Write-DeploymentTelemetry.ps1'
-              ScriptArguments: >
-                -WorkspaceId "$(log-analytics-workspace-id)"
-                -SharedKey "$(log-analytics-shared-key)"
-                -EventData @{
-                  HostPoolName  = '$(hostPoolName)';
-                  Stage         = 'Canary';
-                  Action        = 'Deploy';
-                  VMCount       = 1;
-                  ImageVersion  = '$(targetImageVersion)';
-                  Status        = 'Success';
-                  PipelineRunId = '$(Build.BuildId)'
-                }
-              azurePowerShellVersion: 'LatestVersion'
+              WORKSPACE_ID: $(log-analytics-workspace-id)
+              SHARED_KEY: $(log-analytics-shared-key)
+              EVENT_DATA_JSON: '{"HostPoolName":"$(hostPoolName)","Stage":"Maintenance","Action":"Drain","ImageVersion":"$(targetVer)","Status":"Success","PipelineRunId":"$(Build.BuildId)"}'
 
   # ---------------------------------------------------------------------------
   # STAGE 5: DEPLOY BLAST (PRODUCTION)
+  # Deploys remainder of fleet. Only runs if Canary + Drain succeed.
   # ---------------------------------------------------------------------------
   - stage: DeployBlast
     displayName: "Deploy Blast (Production)"
-    dependsOn: [Preparation, DeployCanary]
+    dependsOn: [Preparation, DeployCanary, DrainOld]
     condition: succeeded()
     variables:
       blastList: $[ stageDependencies.Preparation.CalculateContext.outputs['GetDetails.BlastList'] ]
       targetImageId: $[ stageDependencies.Preparation.CalculateContext.outputs['GetDetails.TargetImageId'] ]
-      hpToken: $[ stageDependencies.Preparation.CalculateContext.outputs['GetDetails.HostPoolToken'] ]
       targetImageVersion: $[ stageDependencies.Preparation.CalculateContext.outputs['GetDetails.TargetImageVersion'] ]
 
     jobs:
@@ -408,10 +474,13 @@ stages:
               targetType: 'inline'
               script: |
                 $List = '$(blastList)'
-                if ($List -eq "[]" -or [string]::IsNullOrWhiteSpace($List)) { 
-                    Write-Host "##vso[task.setvariable variable=skipBlast]true" 
+                if ($List -eq "[]" -or [string]::IsNullOrWhiteSpace($List)) {
+                    Write-Host "##vso[task.setvariable variable=skipBlast]true"
+                    Write-Host "##vso[task.setvariable variable=blastCount]0"
                 } else {
                     Write-Host "##vso[task.setvariable variable=skipBlast]false"
+                    $count = @($List | ConvertFrom-Json).Count
+                    Write-Host "##vso[task.setvariable variable=blastCount]$count"
                 }
 
           - task: AzureKeyVault@2
@@ -421,6 +490,31 @@ stages:
               azureSubscription: $(serviceConnection)
               KeyVaultName: $(keyVaultName)
               SecretsFilter: 'avd-local-admin-password,avd-domain-join-user,avd-domain-join-password,log-analytics-workspace-id,log-analytics-shared-key'
+
+          # Mint a fresh registration token in-stage.
+          - task: AzurePowerShell@5
+            displayName: "Mint Host Pool Registration Token"
+            condition: and(succeeded(), eq(variables['skipBlast'], 'false'))
+            inputs:
+              azureSubscription: $(serviceConnection)
+              ScriptType: 'InlineScript'
+              Inline: |
+                $reg = Get-AzWvdRegistrationInfo -ResourceGroupName "$(hostPoolRg)" -HostPoolName "$(hostPoolName)" -ErrorAction SilentlyContinue
+                $needNew = $true
+                if ($reg -and $reg.Token -and $reg.ExpirationTime) {
+                    $expiry = [DateTime]$reg.ExpirationTime
+                    if ($expiry.ToUniversalTime() -gt (Get-Date).ToUniversalTime().AddHours(6)) { $needNew = $false }
+                }
+                if ($needNew) {
+                    Write-Host "No usable token (missing or expiring within 6h). Minting a new 24h token..."
+                    $expiration = (Get-Date).ToUniversalTime().AddHours(24).ToString('o')
+                    $reg = New-AzWvdRegistrationInfo -ResourceGroupName "$(hostPoolRg)" -HostPoolName "$(hostPoolName)" -ExpirationTime $expiration
+                } else {
+                    Write-Host "Reusing existing registration token (valid > 6h)."
+                }
+                if ([string]::IsNullOrWhiteSpace($reg.Token)) { Write-Error "Failed to obtain a registration token."; exit 1 }
+                Write-Host "##vso[task.setvariable variable=HostPoolToken;issecret=true]$($reg.Token)"
+              azurePowerShellVersion: 'LatestVersion'
 
           - task: AzureCLI@2
             displayName: "Construct Network Context"
@@ -443,7 +537,7 @@ stages:
               scriptLocation: 'inlineScript'
               inlineScript: |
                 Write-Host "Starting Blast Deployment (Legacy AD)..." -ForegroundColor Cyan
-                
+
                 $rawList = '$(blastList)'
                 if ($rawList -notmatch '"') { $jsonString = $rawList -replace '([a-zA-Z0-9-]+)', '"$1"' } else { $jsonString = $rawList }
                 $vmArray = @($jsonString | ConvertFrom-Json)
@@ -455,17 +549,18 @@ stages:
                     $zonesArr = @($zonesRaw | ConvertFrom-Json)
                 }
 
+                # Secrets from env: block, never macro-interpolated.
                 $params = @{
                     "\$schema" = "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#"
                     "contentVersion" = "1.0.0.0"
                     "parameters" = @{
-                        "vmList" = @{ "value" = $vmArray } 
+                        "vmList" = @{ "value" = $vmArray }
                         "imageResourceId" = @{ "value" = "$(targetImageId)" }
                         "hostPoolName" = @{ "value" = "$(hostPoolName)" }
                         "hostPoolRg" = @{ "value" = "$(hostPoolRg)" }
-                        "hostPoolToken" = @{ "value" = "$(hpToken)" }
+                        "hostPoolToken" = @{ "value" = $env:HP_TOKEN }
                         "localAdminUser" = @{ "value" = "$(vmLocalAdminUser)" }
-                        "localAdminPassword" = @{ "value" = "$(avd-local-admin-password)" }
+                        "localAdminPassword" = @{ "value" = $env:LOCAL_ADMIN_PASSWORD }
                         "subnetId" = @{ "value" = "$(constructedSubnetId)" }
                         "imageName" = @{ "value" = "$(imageDef)" }
                         "imageVersion" = @{ "value" = "$(targetImageVersion)" }
@@ -478,8 +573,8 @@ stages:
                         # LEGACY PARAMS
                         "domainName" = @{ "value" = "$(domainName)" }
                         "ouPath" = @{ "value" = "$(ouPath)" }
-                        "domainJoinUser" = @{ "value" = "$(avd-domain-join-user)" }
-                        "domainJoinPassword" = @{ "value" = "$(avd-domain-join-password)" }
+                        "domainJoinUser" = @{ "value" = $env:DOMAIN_JOIN_USER }
+                        "domainJoinPassword" = @{ "value" = $env:DOMAIN_JOIN_PASSWORD }
                     }
                 }
                 $params | ConvertTo-Json -Depth 10 | Out-File "blast.json" -Encoding UTF8
@@ -496,7 +591,7 @@ stages:
                 az deployment group create `
                   --resource-group "$(computeRg)" `
                   --name $deployName `
-                  --template-file "$(System.DefaultWorkingDirectory)/bicep/main-legacy.bicep" `
+                  --template-file "$(System.DefaultWorkingDirectory)/avd/bicep/main-legacy.bicep" `
                   --parameters "@blast.json" `
                   --no-wait
                 if ($LASTEXITCODE -ne 0) { Write-Error "Failed to submit deployment '$deployName'."; exit 1 }
@@ -505,11 +600,25 @@ stages:
                 $rg = "$(computeRg)"
                 $timeoutMinutes = 55                         # stay under the task's timeoutInMinutes: 60
                 $deadline = (Get-Date).AddMinutes($timeoutMinutes)
+                $emptyStreak = 0                             # consecutive empty provisioningState reads
                 while ($true) {
                     Start-Sleep -Seconds 30
                     # Overall provisioning state of the ARM deployment.
                     $state = az deployment group show --resource-group $rg --name $deployName --query "properties.provisioningState" -o tsv 2>$null
                     $ts = (Get-Date).ToString("HH:mm:ss")
+                    # FAIL-FAST: empty state = failing show call; bail after 5 in a row.
+                    if ([string]::IsNullOrWhiteSpace($state)) {
+                        $emptyStreak++
+                        Write-Host "[$ts] provisioningState query returned empty ($emptyStreak/5)." -ForegroundColor Yellow
+                        if ($emptyStreak -ge 5) {
+                            Write-Host "provisioningState empty for 5 consecutive polls; retrying 'show' with stderr visible:" -ForegroundColor Red
+                            az deployment group show --resource-group $rg --name $deployName --query "properties.provisioningState" -o tsv
+                            Write-Error "Deployment '$deployName' state unresolvable after 5 consecutive empty polls."
+                            exit 1
+                        }
+                        continue
+                    }
+                    $emptyStreak = 0
                     Write-Host "[$ts] Deployment '$deployName' state: $state"
                     # Per-VM extension status - reveals which extension (if any) is stuck.
                     foreach ($vmName in $vmArray) {
@@ -531,15 +640,20 @@ stages:
                         exit 1
                     }
                 }
+            env:
+              HP_TOKEN: $(HostPoolToken)
+              LOCAL_ADMIN_PASSWORD: $(avd-local-admin-password)
+              DOMAIN_JOIN_USER: $(avd-domain-join-user)
+              DOMAIN_JOIN_PASSWORD: $(avd-domain-join-password)
 
-          # FIX: USING SCRIPT FILE TO DRAIN BLAST
+          # DRAIN MODE IMMEDIATELY
           - task: AzurePowerShell@5
             displayName: "Lock Down Blast (Drain)"
             condition: and(succeeded(), eq(variables['skipBlast'], 'false'))
             inputs:
               azureSubscription: $(serviceConnection)
               ScriptType: 'FilePath'
-              ScriptPath: '$(System.DefaultWorkingDirectory)/scripts/Set-AvdDrainMode.ps1'
+              ScriptPath: '$(System.DefaultWorkingDirectory)/avd/scripts/Set-AvdDrainMode.ps1'
               ScriptArguments: >
                 -HostPoolName "$(hostPoolName)"
                 -ResourceGroupName "$(hostPoolRg)"
@@ -555,17 +669,61 @@ stages:
             inputs:
               azureSubscription: $(serviceConnection)
               ScriptType: 'FilePath'
-              ScriptPath: '$(System.DefaultWorkingDirectory)/scripts/Write-DeploymentTelemetry.ps1'
-              ScriptArguments: >
-                -WorkspaceId "$(log-analytics-workspace-id)"
-                -SharedKey "$(log-analytics-shared-key)"
-                -EventData @{
-                  HostPoolName  = '$(hostPoolName)';
-                  Stage         = 'Blast';
-                  Action        = 'Deploy';
-                  VMCount       = (('$(blastList)' | ConvertFrom-Json).Count);
-                  ImageVersion  = '$(targetImageVersion)';
-                  Status        = 'Success';
-                  PipelineRunId = '$(Build.BuildId)'
-                }
+              ScriptPath: '$(System.DefaultWorkingDirectory)/avd/scripts/Write-DeploymentTelemetry.ps1'
               azurePowerShellVersion: 'LatestVersion'
+            env:
+              WORKSPACE_ID: $(log-analytics-workspace-id)
+              SHARED_KEY: $(log-analytics-shared-key)
+              EVENT_DATA_JSON: '{"HostPoolName":"$(hostPoolName)","Stage":"Blast","Action":"Deploy","VMCount":$(blastCount),"ImageVersion":"$(targetImageVersion)","Status":"Success","PipelineRunId":"$(Build.BuildId)"}'
+
+          # Always remove the generated parameter file.
+          - task: PowerShell@2
+            displayName: "Cleanup Param File"
+            condition: always()
+            inputs:
+              targetType: 'inline'
+              script: |
+                Remove-Item -Path "blast.json" -Force -ErrorAction SilentlyContinue
+
+  # ---------------------------------------------------------------------------
+  # STAGE 6: ROLLBACK (UN-DRAIN OLD HOSTS)
+  # Runs only if a production stage failed. Restores AllowNewSession on the old
+  # fleet so users are not stranded on a half-replaced pool.
+  # ---------------------------------------------------------------------------
+  - stage: Rollback
+    displayName: "Rollback (Restore Old Hosts)"
+    dependsOn: [Preparation, DeployCanary, DrainOld, DeployBlast]
+    condition: and(not(canceled()), or(failed('DeployCanary'), failed('DrainOld'), failed('DeployBlast')))
+    variables:
+      outdatedList: $[ stageDependencies.Preparation.CalculateContext.outputs['GetDetails.OutdatedHostsList'] ]
+    jobs:
+      - job: UndrainOld
+        displayName: "Restore Old Hosts (AllowNewSession)"
+        steps:
+          # Set-AvdDrainMode.ps1 only drains (AllowNewSession=$false) and has no
+          # direction switch, so the un-drain is done inline with AllowNewSession=$true.
+          - task: AzurePowerShell@5
+            displayName: "Un-drain Outdated Hosts"
+            inputs:
+              azureSubscription: $(serviceConnection)
+              ScriptType: 'InlineScript'
+              Inline: |
+                $raw = $env:HOST_LIST_JSON
+                if ([string]::IsNullOrWhiteSpace($raw)) { Write-Host "No outdated hosts to restore."; exit 0 }
+                $clean = $raw.Trim("'").Trim('"')
+                if ([string]::IsNullOrWhiteSpace($clean) -or $clean -eq "[]") { Write-Host "No outdated hosts to restore."; exit 0 }
+                $hosts = $clean | ConvertFrom-Json
+                Write-Host "Restoring AllowNewSession on $($hosts.Count) host(s)..."
+                foreach ($h in $hosts) {
+                    $target = if ($h -like "*/*") { $h.Split("/")[-1] } else { $h }
+                    try {
+                        Update-AzWvdSessionHost -HostPoolName "$(hostPoolName)" -ResourceGroupName "$(hostPoolRg)" -Name $target -AllowNewSession:$true -ErrorAction Stop | Out-Null
+                        Write-Host "  Restored: $target"
+                    } catch {
+                        Write-Host "  WARN: failed to restore $target - $($_.Exception.Message)"
+                    }
+                }
+                Write-Host "Rollback un-drain complete."
+              azurePowerShellVersion: 'LatestVersion'
+            env:
+              HOST_LIST_JSON: $(outdatedList)

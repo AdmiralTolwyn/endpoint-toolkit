@@ -9,8 +9,8 @@
     Well-Architected Framework, and Landing Zone Accelerator best practices.
 .NOTES
     Author : Anton Romanyuk
-    Version: 0.1.0
-    Date   : 2026-03-26
+    Version: 0.2.0
+    Date   : 2026-07-18
 #>
 
 # ===============================================================================
@@ -29,7 +29,9 @@ $env:PSModulePath = ($env:PSModulePath -split ';' |
 $Global:Root = $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($Global:Root)) { $Global:Root = $PWD.Path }
 
-$Global:AppVersion       = "0.1.0-alpha"
+# E-h: single source of truth for the app version — header, title bar, splash, and the
+# Settings tab all render from this value (the XAML literals are fallbacks only).
+$Global:AppVersion       = "0.2.0"
 $Global:AppTitle         = "Windows 365 Assessor v$($Global:AppVersion)"
 $Global:PrefsPath        = Join-Path $Global:Root "user_prefs.json"
 $Global:AssessmentDir    = Join-Path $Global:Root "assessments"
@@ -53,7 +55,6 @@ foreach ($dir in @($Global:AssessmentDir, $Global:ReportDir)) {
 
 # Named constants
 $Script:LOG_MAX_LINES       = 500
-$Script:TIMER_INTERVAL_MS   = 50
 $Script:TOAST_DURATION_MS   = 4000
 $Script:CONFETTI_COUNT      = 80
 $Script:CLEANUP_DELAY_MS    = 5000
@@ -153,87 +154,10 @@ $Global:AnimationsDisabled  = $false
 $Global:SuppressThemeHandler = $false
 
 # ===============================================================================
-# SECTION 3: THREAD SYNCHRONIZATION BRIDGE
-# Synchronized hashtable with StatusQueue and LogQueue for cross-thread communication.
-# Start-BackgroundWork launches STA runspaces tracked in $Global:BgJobs ArrayList.
+# SECTION 3 (removed, E-g): the Start-BackgroundWork/SyncHash/BgJobs runspace scaffolding
+# was never invoked — discovery runs out-of-band via Invoke-W365Discovery.ps1 and results
+# are imported from JSON. Removed as dead code.
 # ===============================================================================
-
-$Global:SyncHash = [Hashtable]::Synchronized(@{
-    StatusQueue  = [System.Collections.Queue]::Synchronized([System.Collections.Queue]::new())
-    LogQueue     = [System.Collections.Queue]::Synchronized([System.Collections.Queue]::new())
-    StopFlag     = $false
-})
-
-$Global:BgJobs          = [System.Collections.ArrayList]::Synchronized([System.Collections.ArrayList]::new())
-$Global:TimerProcessing = $false
-
-<#
-.SYNOPSIS
-    Launches a PowerShell script block in a separate STA runspace for non-blocking execution.
-.DESCRIPTION
-    Creates and opens a new runspace with Bypass execution policy, injects specified variables
-    and the SyncHash for cross-thread communication, and begins asynchronous invocation. The
-    job is tracked in $Global:BgJobs and polled by the dispatcher timer for completion.
-.PARAMETER Name
-    Descriptive label for the background job (used in debug logging).
-.PARAMETER ScriptBlock
-    The work to execute in the background runspace.
-.PARAMETER OnComplete
-    Callback script block invoked on the UI thread when the job finishes.
-.PARAMETER Arguments
-    Positional arguments passed to the script block.
-.PARAMETER Variables
-    Hashtable of named variables injected into the runspace session state.
-.PARAMETER Context
-    Arbitrary hashtable stored with the job for use in OnComplete.
-#>
-function Start-BackgroundWork {
-    param(
-        [string]$Name = 'BgWork',
-        [ScriptBlock]$ScriptBlock,
-        [ScriptBlock]$OnComplete,
-        [array]$Arguments = @(),
-        [hashtable]$Variables = @{},
-        [hashtable]$Context   = @{}
-    )
-    $Work = $ScriptBlock
-    $ISS = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
-    $ISS.ExecutionPolicy = [Microsoft.PowerShell.ExecutionPolicy]::Bypass
-    $RS  = [RunspaceFactory]::CreateRunspace($ISS)
-    $RS.ApartmentState = 'STA'
-    $RS.ThreadOptions  = 'ReuseThread'
-    $RS.Open()
-
-    $CleanModulePath = ($env:PSModulePath -split ';' |
-        Where-Object { $_ -notlike '*OneDrive*' }) -join ';'
-
-    $PS = [PowerShell]::Create()
-    $PS.Runspace = $RS
-
-    $RS.SessionStateProxy.SetVariable('SyncHash', $Global:SyncHash)
-    $RS.SessionStateProxy.SetVariable('PSModulePath_Clean', $CleanModulePath)
-
-    foreach ($Key in $Variables.Keys) {
-        $RS.SessionStateProxy.SetVariable($Key, $Variables[$Key])
-    }
-
-    [void]$PS.AddScript($Work)
-    foreach ($Arg in $Arguments) { [void]$PS.AddArgument($Arg) }
-
-    $Handle = $PS.BeginInvoke()
-
-    [void]$Global:BgJobs.Add([PSCustomObject]@{
-        Name       = $Name
-        PS         = $PS
-        Handle     = $Handle
-        RS         = $RS
-        OnComplete = $OnComplete
-        Context    = $Context
-        StartTime  = [DateTime]::Now
-    })
-
-    Write-DebugLog "BgWork: launched '$Name'" -Level 'DEBUG'
-}
 
 # ===============================================================================
 # SECTION 4: XAML GUI LOAD
@@ -283,6 +207,7 @@ $btnQuickSave      = $Window.FindName("btnQuickSave")
 
 $Global:IsDirty = $false
 $Global:ActiveFilePath = $null   # Path to currently loaded/saved assessment file
+$Global:FirstStatusChangeTime = $null  # E-d: stamped on the first manual status change; drives speed_demon
 
 # Icon rail
 $railDashboard     = $Window.FindName("railDashboard")
@@ -445,7 +370,7 @@ function Write-DebugLog {
             [System.IO.File]::Move($Global:DebugLogFile, $Rotated)
         }
         [System.IO.File]::AppendAllText($Global:DebugLogFile, $line + "`r`n")
-    } catch { }
+    } catch { Write-Host "[LOG] Disk log write failed: $($_.Exception.Message)" -ForegroundColor DarkYellow }
 
     # Ring buffer
     [void]$Global:FullLogSB.AppendLine($line)
@@ -485,7 +410,7 @@ function Write-DebugLog {
             $Global:DebugLineCount--
         }
         $logScroller.ScrollToEnd()
-    } catch { }
+    } catch { Write-Host "[LOG] UI log append failed: $($_.Exception.Message)" -ForegroundColor DarkYellow }
 }
 
 # ===============================================================================
@@ -504,7 +429,7 @@ $ApplyTheme = {
             # Replace the resource entry — this triggers DynamicResource re-evaluation
             # Mutating .Color does NOT trigger DynamicResource/SetResourceReference updates
             $Window.Resources[$Key] = [System.Windows.Media.SolidColorBrush]::new($NewColor)
-        } catch { }
+        } catch { Write-DebugLog "Theme: failed to apply resource '$Key': $($_.Exception.Message)" -Level 'DEBUG' }
     }
     $Global:IsLightMode = $IsLight
 
@@ -668,7 +593,7 @@ function Show-Toast {
                 $ToastRef.BeginAnimation([System.Windows.UIElement]::OpacityProperty, $FadeOut)
                 $RemoveTimerRef.Start()
             }
-        } catch { }
+        } catch { Write-DebugLog "Toast dismiss failed: $($_.Exception.Message)" -Level 'DEBUG' }
     }.GetNewClosure())
     $DismissTimer.Start()
     Write-DebugLog "Toast [$Type]: $Message"
@@ -846,7 +771,7 @@ function Show-ThemedDialog {
 
     # Drag support
     $OuterBorder.Add_MouseLeftButtonDown({
-        try { $Dlg.DragMove() } catch { }
+        try { $Dlg.DragMove() } catch { Write-DebugLog "Dialog DragMove failed: $($_.Exception.Message)" -Level 'DEBUG' }
     }.GetNewClosure())
 
     $Dlg.ShowDialog() | Out-Null
@@ -993,6 +918,7 @@ $Global:Assessment = [PSCustomObject]@{
     Discovery     = $null   # Imported discovery JSON
     Checks        = [System.Collections.ArrayList]::new()
     ManualOverrides = @{}
+    CatalogVersion  = ''    # E-e: checks.json _metadata.version — stamped after catalog load
 }
 $Global:CatScoreRefs = @{}  # Category -> @{ ScoreTB; CountTB; DotEllipse; SbScoreTB; SbDot }
 
@@ -1008,7 +934,9 @@ if (-not (Test-Path $Global:ChecksJsonPath)) {
 try {
     $ChecksFile = Get-Content $Global:ChecksJsonPath -Raw -Encoding UTF8 | ConvertFrom-Json
     $Global:CheckDefinitions = $ChecksFile.checks
-    Write-Host "[INIT] Loaded $($Global:CheckDefinitions.Count) check definitions from checks.json" -ForegroundColor DarkGray
+    # E-e: catalog version from checks.json _metadata — stamped into saved assessments as CatalogVersion
+    $Global:ChecksCatalogVersion = if ($ChecksFile._metadata -and $ChecksFile._metadata.version) { [string]$ChecksFile._metadata.version } else { 'unknown' }
+    Write-Host "[INIT] Loaded $($Global:CheckDefinitions.Count) check definitions from checks.json (catalog v$Global:ChecksCatalogVersion)" -ForegroundColor DarkGray
 } catch {
     [System.Windows.MessageBox]::Show(
         "Failed to parse checks.json:`n$($_.Exception.Message)",
@@ -1041,6 +969,7 @@ foreach ($Def in $Global:CheckDefinitions) {
         AdditionalReferences = @($Def.additionalReferences) # Supplementary doc URLs
     })
 }
+$Global:Assessment.CatalogVersion = $Global:ChecksCatalogVersion
 
 # ===============================================================================
 # SECTION 11: ASSESSMENT LOGIC
@@ -1064,8 +993,9 @@ function Get-Categories {
     Calculates the weighted readiness score (0-100) for a single assessment category.
 .DESCRIPTION
     Scores all non-excluded checks in the category using weighted points: Pass=100,
-    Warning=50, Fail=0, Not Assessed=0. N/A scores the same as Pass. Excluded checks are removed from
-    scoring entirely. Returns -1 if no checks are assessable.
+    Warning=50, Fail=0, Not Assessed=0. N/A is excluded from both numerator and denominator
+    (not applicable = no points, no weight). Excluded checks are removed from scoring
+    entirely. Returns -1 if no checks are assessable.
 .PARAMETER Category
     The category name to score.
 .OUTPUTS
@@ -1073,11 +1003,13 @@ function Get-Categories {
 #>
 function Get-CategoryScore {
     param([string]$Category)
-    # Score ALL non-excluded checks in category. "Not Assessed" counts as 0 points
-    # but IS included in the denominator so partial completion shows honest scores.
-    # N/A scores the same as Pass (100 points). Excluded are removed from scoring.
+    # Scoring semantics (E-a):
+    #   Excluded  -> removed entirely (never scored).
+    #   N/A       -> truly excluded from BOTH numerator AND denominator (not applicable = no points, no weight).
+    #   Not Assessed -> 0 points but STAYS in the denominator (honest scores for partial completion).
+    #   Pass = 100, Warning = 50, Fail = 0.
     $Checks = @($Global:Assessment.Checks | Where-Object {
-        $_.Category -eq $Category -and -not $_.Excluded
+        $_.Category -eq $Category -and -not $_.Excluded -and $_.Status -ne 'N/A'
     })
     if ($Checks.Count -eq 0) { return -1 }
     # If nothing has been assessed at all, return -1 (not scored)
@@ -1088,7 +1020,6 @@ function Get-CategoryScore {
         $W = [math]::Max(1, [int]$C.Weight)
         $Points = switch ($C.Status) {
             'Pass'         { 100 }
-            'N/A'          { 100 }  # N/A = not applicable, scores same as Pass
             'Warning'      { 50 }
             'Fail'         { 0 }
             'Not Assessed' { 0 }   # Unreviewed = 0 points, still counts in denominator
@@ -1111,10 +1042,10 @@ function Get-CategoryScore {
     Integer score (0-100) or -1 if not scorable.
 #>
 function Get-OverallScore {
-    # Score across ALL non-excluded checks. "Not Assessed" = 0 points in denominator.
-    # N/A scores the same as Pass (100 points).
+    # Scoring semantics (E-a): Excluded removed entirely; N/A truly excluded from numerator AND
+    # denominator; Not Assessed = 0 points but stays in the denominator. Pass=100, Warning=50, Fail=0.
     $AllChecks = @($Global:Assessment.Checks | Where-Object {
-        -not $_.Excluded
+        -not $_.Excluded -and $_.Status -ne 'N/A'
     })
     if ($AllChecks.Count -eq 0) { return -1 }
     $AnyAssessed = @($AllChecks | Where-Object { $_.Status -ne 'Not Assessed' }).Count
@@ -1124,7 +1055,6 @@ function Get-OverallScore {
         $W = [math]::Max(1, [int]$C.Weight)
         $Points = switch ($C.Status) {
             'Pass'         { 100 }
-            'N/A'          { 100 }
             'Warning'      { 50 }
             'Fail'         { 0 }
             'Not Assessed' { 0 }
@@ -1165,8 +1095,10 @@ function Get-DimensionScore {
     param([string]$DimensionKey)
     $Dim = $Global:MaturityDimensions[$DimensionKey]
     if (-not $Dim) { return -1 }
+    # Scoring semantics (E-a): N/A truly excluded from numerator AND denominator; Not Assessed = 0
+    # points but stays in the denominator; Excluded removed entirely.
     $DimChecks = @($Global:Assessment.Checks | Where-Object {
-        $Id = $_.Id; -not $_.Excluded -and
+        $Id = $_.Id; -not $_.Excluded -and $_.Status -ne 'N/A' -and
         ($Dim.Prefixes | Where-Object { $Id -like "$_*" })
     })
     $Assessed = @($DimChecks | Where-Object { $_.Status -ne 'Not Assessed' })
@@ -1176,7 +1108,6 @@ function Get-DimensionScore {
         $W = [math]::Max(1, [int]$C.Weight)
         $Pts = switch ($C.Status) {
             'Pass'         { 100 }
-            'N/A'          { 100 }
             'Warning'      { 50 }
             'Fail'         { 0 }
             'Not Assessed' { 0 }
@@ -1206,6 +1137,36 @@ function Get-MaturityLevel {
         ($Score -ge 0)  { return 'Initial'    }
         default         { return 'Not Scored' }
     }
+}
+
+<#
+.SYNOPSIS
+    Canonical 5-tier maturity zone color for a score (E-b). Single source of truth so the
+    dashboard, HTML report, RTF, and email summary all agree on thresholds and colors.
+.DESCRIPTION
+    Tiers: 0-34 Initial, 35-54 Developing, 55-74 Defined, 75-89 Managed, 90-100 Optimized.
+    A negative score (not scored) returns a neutral gray. Returns a light-theme hex by default
+    (suitable for printed HTML/email documents); pass -DarkMode for the dark app theme palette.
+.PARAMETER Score
+    Numeric score (0-100), or negative for "not scored".
+.OUTPUTS
+    Hex color string (e.g. '#0D9488').
+#>
+function Get-MaturityZoneColor {
+    param([int]$Score, [switch]$DarkMode)
+    if ($Score -lt 0) { return '#8A8886' }  # Not scored
+    if ($DarkMode) {
+        if     ($Score -ge 90) { return '#00C853' }  # Optimized
+        elseif ($Score -ge 75) { return '#2DD4BF' }  # Managed
+        elseif ($Score -ge 55) { return '#FBBF24' }  # Defined
+        elseif ($Score -ge 35) { return '#F59E0B' }  # Developing
+        else                   { return '#FF5000' }  # Initial
+    }
+    if     ($Score -ge 90) { return '#15803D' }  # Optimized
+    elseif ($Score -ge 75) { return '#0D9488' }  # Managed
+    elseif ($Score -ge 55) { return '#CA8A04' }  # Defined
+    elseif ($Score -ge 35) { return '#C2410C' }  # Developing
+    else                   { return '#DC2626' }  # Initial
 }
 
 <#
@@ -1265,6 +1226,7 @@ function Reset-Assessment {
     $Global:Assessment.Date         = (Get-Date -Format 'yyyy-MM-dd')
     $Global:Assessment.Discovery    = $null
     $Global:ActiveFilePath          = $null
+    $Global:FirstStatusChangeTime   = $null   # E-d: fresh speed_demon window for the new assessment
 
     # Reset UI fields
     $txtCustomerName.Text = ''
@@ -1327,32 +1289,76 @@ function Import-DiscoveryJson {
         # Map discovery check results to assessment checks
         # Phase 1: collect all per-object results grouped by assessment check ID
         $CheckBuckets = @{}  # checkId → [list of {Status, Details, ObjectName}]
-        $StatusRank = @{ 'Fail' = 0; 'Error' = 0; 'Warning' = 1; 'Pass' = 2; 'N/A' = 3; 'Not Assessed' = 4 }
+        # Severity ranking for aggregating multiple per-object verdicts (lower = worse).
+        # M-3: 'Error' is handled separately and never ranked into a Fail/Warning verdict.
+        $StatusRank = @{ 'Fail' = 0; 'Warning' = 1; 'Pass' = 2; 'N/A' = 3; 'Not Assessed' = 4 }
         $Mapped = 0
+        $Unmapped = 0
+        $UnmappedIds = @{}   # distinct discovery IDs with no matching arm (M-3 / unmapped counter)
+        $SectionErrors = [System.Collections.Generic.List[string]]::new()  # W365-<SECTION>-ERROR collection-failure notices
         foreach ($DiscCheck in $Json.CheckResults) {
-            # Find matching assessment check by category pattern
+            # A-3: per-section collection-failure notices (W365-CLOUDPCS-ERROR etc.) have no
+            # catalog target — surface them as collection errors, never as unmapped noise.
+            if ($DiscCheck.Id -like 'W365-*-ERROR') {
+                $ErrTxt = "$($DiscCheck.Id): $($DiscCheck.Details)"
+                [void]$SectionErrors.Add($ErrTxt)
+                Write-DebugLog "Discovery section error — $ErrTxt" -Level 'WARN'
+                continue
+            }
+            # Find matching assessment check by category pattern.
+            # M-2: first-match — every arm ends with `break` so the switch stops at the first
+            # matching pattern (fixes last-match-wins + full-scan). Exact singletons (e.g.
+            # W365-IAM-010/011, tenant-level fixed IDs) are placed before wildcard families so
+            # they are never shadowed by broader prefixes.
             $Match = $null
             switch -Wildcard ($DiscCheck.Id) {
-                'W365-INV-001'      { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-INV-001' }
-                'W365-PROV-001-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-PROV-001' }
-                'W365-PROV-002-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-IAM-001' }
-                'W365-PROV-003-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-SEC-001' }
-                'W365-PROV-008-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-PROV-008' }
-                'W365-PROV-009-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-PROV-009' }
-                'W365-USER-001-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-USER-001' }
-                'W365-USER-002-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-USER-002' }
-                'W365-NET-001-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-NET-001' }
-                'W365-NET-009-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-NET-009' }
-                'W365-IMG-001-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-IMG-001' }
-                'W365-IMG-007-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-IMG-007' }
-                'W365-IMG-008-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-IMG-008' }
-                'W365-CPC-001-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-CPC-001' }
-                'W365-CPC-002-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-CPC-001' }
-                'W365-CPC-003-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-COST-001' }
-                'W365-CPC-004-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-CPC-004' }
-                'W365-SEC-010-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-SEC-010' }
-                'W365-MON-007'      { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-MON-007' }
-                'W365-GOV-009'      { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-GOV-009' }
+                # ── Tenant-level fixed IDs (exact match, discovery v0.2.0) ──
+                'W365-INV-001'      { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-INV-001'; break }
+                'W365-INV-003-MIX'  { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-INV-003'; break }
+                'W365-INV-004'      { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-INV-004'; break }
+                'W365-COST-002'     { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-COST-002'; break }
+                'W365-MON-001-EA'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-MON-001'; break }
+                'W365-MON-002-Q'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-MON-002'; break }
+                'W365-MON-005-UPD'  { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-MON-005'; break }
+                'W365-MON-007'      { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-MON-007'; break }
+                'W365-MON-008-REC'  { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-MON-008'; break }
+                'W365-MON-010-R'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-MON-010'; break }
+                'W365-UX-002-CONN'  { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-UX-002'; break }
+                'W365-SEC-002-MDE'  { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-SEC-002'; break }
+                'W365-SEC-003-BASE' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-SEC-003'; break }
+                'W365-SEC-004-COMP' { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-SEC-004'; break }
+                'W365-IAM-003-CA'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-IAM-003'; break }
+                'W365-IAM-004-MFA'  { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-IAM-004'; break }
+                'W365-IAM-010'      { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-IAM-010'; break }
+                'W365-IAM-011'      { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-IAM-011'; break }
+                'W365-GOV-009'      { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-GOV-009'; break }
+                # ── Per-resource wildcard families ──
+                'W365-PROV-001-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-PROV-001'; break }
+                'W365-PROV-002-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-PROV-002'; break }  # v0.2.0: naming template (was SSO)
+                'W365-PROV-003-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-SEC-001'; break }
+                'W365-PROV-004-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-PROV-004'; break }  # M-1: Autopatch
+                'W365-PROV-005-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-PROV-005'; break }  # M-1: Grace Period
+                'W365-PROV-006-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-PROV-006'; break }  # v0.2.0: domain-join config
+                'W365-PROV-007-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-PROV-007'; break }  # v0.2.0: windowsSetting locale
+                'W365-PROV-010-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-PROV-010'; break }  # v0.2.0
+                'W365-IAM-001-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-IAM-001'; break }   # v0.2.0: SSO per policy
+                'W365-USER-001-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-USER-001'; break }
+                'W365-USER-002-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-USER-002'; break }
+                'W365-USER-003-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-USER-003'; break }  # M-1: Restore Points
+                'W365-USER-004-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-USER-004'; break }  # M-1: Self-Service Reset
+                'W365-NET-001-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-NET-001'; break }
+                'W365-NET-009-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-NET-009'; break }
+                'W365-IMG-001-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-IMG-001'; break }
+                'W365-IMG-007-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-IMG-007'; break }
+                'W365-IMG-008-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-IMG-008'; break }
+                'W365-CPC-001-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-CPC-001'; break }
+                'W365-CPC-002-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-CPC-001'; break }
+                'W365-CPC-004-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-CPC-004'; break }
+                'W365-COST-001-*'   { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-COST-001'; break }  # v0.2.0: per-CPC inactivity + -REPORT tenant roll-up
+                'W365-SEC-010-*'    { $Match = $Global:Assessment.Checks | Where-Object Id -eq 'W365-SEC-010'; break }
+                # Retired emits (discovery v0.2.0 no longer produces): W365-PROV-008-*,
+                # W365-PROV-009-*, W365-CPC-003-* — arms removed; stragglers land in the
+                # unmapped counter below.
             }
 
             if ($Match) {
@@ -1376,34 +1382,46 @@ function Import-DiscoveryJson {
                     Object   = $ObjName
                 })
                 $Mapped++
+            } else {
+                # Unmapped-result counter: discovery result matched no arm — count + surface
+                # instead of dropping silently.
+                $Unmapped++
+                if (-not $UnmappedIds.ContainsKey($DiscCheck.Id)) { $UnmappedIds[$DiscCheck.Id] = $true }
             }
+        }
+        if ($Unmapped -gt 0) {
+            Write-DebugLog "Import: $Unmapped discovery results had no matching check definition ($($UnmappedIds.Keys -join ', '))" -Level 'WARN'
         }
 
         # Phase 2: aggregate per-object results into each assessment check
+        $ManualEvidenceCount = 0   # M-2: discovery data attached to Manual checks as evidence only
         foreach ($CheckId in $CheckBuckets.Keys) {
             $Results = $CheckBuckets[$CheckId]
             $Match = $Global:Assessment.Checks | Where-Object Id -eq $CheckId
             if (-not $Match) { continue }
 
-            # Determine worst status across all objects
+            # M-3: separate hard errors (discovery could not evaluate) from real verdicts.
+            $Errored   = @($Results | Where-Object { $_.Status -eq 'Error' })
+            $Evaluated = @($Results | Where-Object { $_.Status -ne 'Error' })
+
+            # Determine worst status across evaluated objects (errors excluded from ranking)
             $WorstRank = 4
-            foreach ($R in $Results) {
+            foreach ($R in $Evaluated) {
                 $Rank = if ($StatusRank.ContainsKey($R.Status)) { $StatusRank[$R.Status] } else { 4 }
                 if ($Rank -lt $WorstRank) { $WorstRank = $Rank }
             }
             $WorstStatus = switch ($WorstRank) { 0 { 'Fail' } 1 { 'Warning' } 2 { 'Pass' } 3 { 'N/A' } default { 'Not Assessed' } }
-            $Match.Status = $WorstStatus
-            $Match.Source  = 'Auto'
 
-            # Build aggregated details with per-object breakdown
+            # Build aggregated details with per-object breakdown (into $DetailText)
             $Total = $Results.Count
             if ($Total -eq 1) {
                 # Single object: show details directly with object name
                 $R = $Results[0]
-                $Match.Details = "[$($R.Object)] $($R.Details)"
+                $DetailText = "[$($R.Object)] $($R.Details)"
             } else {
-                # Multiple objects: show summary + list affected
-                $FailList    = @($Results | Where-Object { $_.Status -eq 'Fail' -or $_.Status -eq 'Error' })
+                # Multiple objects: show summary + list affected (errors reported separately, M-3)
+                $FailList    = @($Results | Where-Object { $_.Status -eq 'Fail' })
+                $ErrList     = @($Results | Where-Object { $_.Status -eq 'Error' })
                 $WarnList    = @($Results | Where-Object { $_.Status -eq 'Warning' })
                 $PassList    = @($Results | Where-Object { $_.Status -eq 'Pass' })
                 $NaList      = @($Results | Where-Object { $_.Status -eq 'N/A' })
@@ -1412,6 +1430,7 @@ function Import-DiscoveryJson {
                 if ($PassList.Count -gt 0) { [void]$Parts.Add("$([char]0x2713) $($PassList.Count) pass") }
                 if ($WarnList.Count -gt 0) { [void]$Parts.Add("$([char]0x26A0) $($WarnList.Count) warning") }
                 if ($FailList.Count -gt 0) { [void]$Parts.Add("$([char]0x2717) $($FailList.Count) fail") }
+                if ($ErrList.Count -gt 0)  { [void]$Parts.Add("$($ErrList.Count) error") }
                 if ($NaList.Count -gt 0)   { [void]$Parts.Add("$($NaList.Count) N/A") }
                 $Summary = "$Total objects: $($Parts -join ', ')"
 
@@ -1427,18 +1446,49 @@ function Import-DiscoveryJson {
                         $Remaining = $ObjLines.Count - 6
                         $ObjLines = @($ObjLines | Select-Object -First 6) + @("  ...and $Remaining more")
                     }
-                    $Match.Details = "$Summary`n$($ObjLines -join "`n")"
+                    $DetailText = "$Summary`n$($ObjLines -join "`n")"
                 } else {
-                    $Match.Details = $Summary
+                    $DetailText = $Summary
                 }
+            }
+
+            if ($Evaluated.Count -eq 0) {
+                # M-3: aggregated discovery status is Error — never let it masquerade as Fail/Warning.
+                $Match.Status  = 'Not Assessed'
+                $Match.Source  = 'Auto'
+                $Reason = if ($Errored.Count -gt 0 -and $Errored[0].Details) { $Errored[0].Details } else { 'discovery could not evaluate this check' }
+                $Match.Details = "Discovery error: $Reason`n$DetailText"
+            } elseif ($Match.Type -ne 'Auto') {
+                # M-2 importer type-guard: mapped to a Manual-type check. Do NOT overwrite Status/Source;
+                # attach discovery data as evidence only, and count it separately for the summary toast.
+                $Ev = "Discovery evidence: $DetailText"
+                $Match.Details = if ($Match.Details) { "$($Match.Details)`n$Ev" } else { $Ev }
+                $ManualEvidenceCount++
+            } else {
+                $Match.Status  = $WorstStatus
+                $Match.Source  = 'Auto'
+                $Match.Details = $DetailText
             }
         }
 
-        Write-DebugLog "Mapped $Mapped discovery checks to assessment" -Level 'SUCCESS'
-        Show-Toast "Imported discovery: $((@($Json.Inventory.CloudPCs)).Count) Cloud PCs, $((@($Json.Inventory.ProvisioningPolicies)).Count) provisioning policies, $Mapped checks mapped" -Type 'Success'
+        Write-DebugLog "Mapped $Mapped discovery results to assessment ($ManualEvidenceCount manual-evidence, $Unmapped unmapped)" -Level 'SUCCESS'
+        $ToastMsg = "Imported discovery: $((@($Json.Inventory.CloudPCs)).Count) Cloud PCs, $((@($Json.Inventory.ProvisioningPolicies)).Count) provisioning policies, $Mapped results mapped"
+        if ($ManualEvidenceCount -gt 0) { $ToastMsg += " ($ManualEvidenceCount attached as manual evidence)" }
+        if ($Unmapped -gt 0) { $ToastMsg += " · $Unmapped results had no matching check definition" }
+
+        # A-3 / M-3: surface the discovery Errors bucket the GUI previously ignored, plus any
+        # per-section W365-<SECTION>-ERROR notices captured during mapping.
+        $DiscErrors = @($Json.Errors)
+        foreach ($DErr in $DiscErrors) { Write-DebugLog "Discovery collection error: $DErr" -Level 'WARN' }
+        $TotalCollErrors = $DiscErrors.Count + $SectionErrors.Count
+        if ($TotalCollErrors -gt 0) {
+            $ToastMsg += " · $TotalCollErrors collection error(s) — see activity log"
+        }
+        Show-Toast $ToastMsg -Type 'Success'
 
         Unlock-Achievement 'first_discovery'
 
+        Set-Dirty   # E-c: imported results are unsaved changes; the autosave timer persists them
         Update-Dashboard
         Update-Progress
 
@@ -1459,6 +1509,30 @@ function Import-DiscoveryJson {
 function Sync-CheckDefinitions {
     $DefLookup = @{}
     foreach ($Def in $Global:CheckDefinitions) { $DefLookup[$Def.id] = $Def }
+
+    # E-e: catalog version reconciliation — saved assessments are stamped with the checks.json
+    # _metadata.version; if the loaded assessment was built against a different catalog, tell the user.
+    $SavedCatVer = if ($Global:Assessment.PSObject.Properties.Name -contains 'CatalogVersion') { [string]$Global:Assessment.CatalogVersion } else { '' }
+    if ($SavedCatVer -and $SavedCatVer -ne $Global:ChecksCatalogVersion) {
+        Show-Toast "Assessment was saved with check catalog v$SavedCatVer; current catalog is v$Global:ChecksCatalogVersion. Definitions have been synced." -Type 'Info'
+        Write-DebugLog "Catalog version changed: assessment=v$SavedCatVer, current=v$Global:ChecksCatalogVersion" -Level 'INFO'
+    }
+    if ($Global:Assessment.PSObject.Properties.Name -contains 'CatalogVersion') {
+        $Global:Assessment.CatalogVersion = $Global:ChecksCatalogVersion
+    } else {
+        $Global:Assessment | Add-Member -NotePropertyName 'CatalogVersion' -NotePropertyValue $Global:ChecksCatalogVersion -Force
+    }
+
+    # E-e: prune retired checks (present in the loaded assessment, absent from the catalog) —
+    # retired checks must not linger with frozen metadata and keep scoring. One toast lists them.
+    $Retired = @($Global:Assessment.Checks | Where-Object { -not $DefLookup.ContainsKey($_.Id) })
+    if ($Retired.Count -gt 0) {
+        foreach ($R in $Retired) { $Global:Assessment.Checks.Remove($R) }
+        $RetiredIds = ($Retired | ForEach-Object { $_.Id }) -join ', '
+        Write-DebugLog "Pruned $($Retired.Count) retired check(s) not in current catalog: $RetiredIds" -Level 'WARN'
+        Show-Toast "$($Retired.Count) retired checks removed: $RetiredIds" -Type 'Info'
+    }
+
     foreach ($Check in $Global:Assessment.Checks) {
         $Def = $DefLookup[$Check.Id]
         if (-not $Def) { continue }
@@ -1540,7 +1614,8 @@ function New-ScoreCard {
         $ScoreTB.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'ThemeTextMuted')
     } else {
         $ScoreTB.Text = "$Score%"
-        $ScoreTB.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, $(if ($Score -ge 80) { 'ThemeSuccess' } elseif ($Score -ge 50) { 'ThemeWarning' } else { 'ThemeError' }))
+        # E-b: canonical 5-tier maturity zone color
+        $ScoreTB.Foreground = $Global:CachedBC.ConvertFromString((Get-MaturityZoneColor $Score -DarkMode:(-not $Global:IsLightMode)))
     }
 
     [void]$SP.Children.Add($TitleTB)
@@ -1726,13 +1801,8 @@ function New-CategoryBar {
         $ScoreTB.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'ThemeTextMuted')
     } else {
         $ScoreTB.Text = "$Score%"
-        $ScoreTB.Foreground = if ($Score -ge 80) {
-            $Global:CachedBC.ConvertFromString($(if ($Global:IsLightMode) { '#15803D' } else { '#4ADE80' }))
-        } elseif ($Score -ge 50) {
-            $Global:CachedBC.ConvertFromString($(if ($Global:IsLightMode) { '#C2410C' } else { '#FBBF24' }))
-        } else {
-            $Global:CachedBC.ConvertFromString($(if ($Global:IsLightMode) { '#DC2626' } else { '#FB923C' }))
-        }
+        # E-b: canonical 5-tier maturity zone color
+        $ScoreTB.Foreground = $Global:CachedBC.ConvertFromString((Get-MaturityZoneColor $Score -DarkMode:(-not $Global:IsLightMode)))
     }
     [void]$ScoreSP.Children.Add($ScoreTB)
 
@@ -1787,13 +1857,14 @@ function Update-Dashboard {
     $CompositeScore = Get-CompositeMaturityScore
     $CompositeLevel = if ($CompositeScore -ge 0) { Get-MaturityLevel $CompositeScore } else { 'Not Scored' }
 
-    # Zone definitions: threshold, label, color
+    # Zone definitions: threshold, label, color (colors sourced from canonical Get-MaturityZoneColor, E-b)
+    $ZoneDark = -not $Global:IsLightMode
     $Zones = @(
-        @{ Min = 0;  Max = 34; Label = 'Initial';    Color = $(if ($Global:IsLightMode) { '#DC2626' } else { '#FF5000' }) }
-        @{ Min = 35; Max = 54; Label = 'Developing'; Color = $(if ($Global:IsLightMode) { '#C2410C' } else { '#F59E0B' }) }
-        @{ Min = 55; Max = 74; Label = 'Defined';    Color = $(if ($Global:IsLightMode) { '#CA8A04' } else { '#FBBF24' }) }
-        @{ Min = 75; Max = 89; Label = 'Managed';    Color = $(if ($Global:IsLightMode) { '#0D9488' } else { '#2DD4BF' }) }
-        @{ Min = 90; Max = 100; Label = 'Optimized'; Color = $(if ($Global:IsLightMode) { '#15803D' } else { '#00C853' }) }
+        @{ Min = 0;  Max = 34; Label = 'Initial';    Color = (Get-MaturityZoneColor 0  -DarkMode:$ZoneDark) }
+        @{ Min = 35; Max = 54; Label = 'Developing'; Color = (Get-MaturityZoneColor 35 -DarkMode:$ZoneDark) }
+        @{ Min = 55; Max = 74; Label = 'Defined';    Color = (Get-MaturityZoneColor 55 -DarkMode:$ZoneDark) }
+        @{ Min = 75; Max = 89; Label = 'Managed';    Color = (Get-MaturityZoneColor 75 -DarkMode:$ZoneDark) }
+        @{ Min = 90; Max = 100; Label = 'Optimized'; Color = (Get-MaturityZoneColor 90 -DarkMode:$ZoneDark) }
     )
 
     # Composite header card
@@ -2118,25 +2189,14 @@ function Update-Progress {
         $CatPass = $CS.Pass
         $CatTotalCount = $CS.Total
 
-        $DotColor = if ($CatScore -ge 80) {
-            if ($Global:IsLightMode) { '#15803D' } else { '#00C853' }
-        } elseif ($CatScore -ge 50) {
-            if ($Global:IsLightMode) { '#C2410C' } else { '#F59E0B' }
-        } elseif ($CatScore -ge 0) {
-            if ($Global:IsLightMode) { '#DC2626' } else { '#FF5000' }
-        } else { $null }
+        # E-b: canonical 5-tier maturity zone color
+        $DotColor = if ($CatScore -ge 0) { Get-MaturityZoneColor $CatScore -DarkMode:(-not $Global:IsLightMode) } else { $null }
 
         # Update main card score
         if ($Refs.ScoreTB) {
             if ($CatScore -ge 0) {
                 $Refs.ScoreTB.Text = "$CatScore%"
-                $Refs.ScoreTB.Foreground = if ($CatScore -ge 80) {
-                    $Global:CachedBC.ConvertFromString($(if ($Global:IsLightMode) { '#15803D' } else { '#4ADE80' }))
-                } elseif ($CatScore -ge 50) {
-                    $Global:CachedBC.ConvertFromString($(if ($Global:IsLightMode) { '#C2410C' } else { '#FBBF24' }))
-                } else {
-                    $Global:CachedBC.ConvertFromString($(if ($Global:IsLightMode) { '#DC2626' } else { '#FB923C' }))
-                }
+                $Refs.ScoreTB.Foreground = $Global:CachedBC.ConvertFromString($DotColor)
             } else {
                 $Refs.ScoreTB.Text = [string][char]0x2014
                 $Refs.ScoreTB.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'ThemeTextMuted')
@@ -2192,14 +2252,8 @@ function Render-AssessmentChecks {
         $ChecksContainer.Tag = "checks_$Cat"
         $ChecksContainer.Visibility = 'Collapsed'
 
-        # Category dot color
-        $SidebarDotColor = if ($CatScore -ge 80) {
-            if ($Global:IsLightMode) { '#15803D' } else { '#00C853' }
-        } elseif ($CatScore -ge 50) {
-            if ($Global:IsLightMode) { '#C2410C' } else { '#F59E0B' }
-        } elseif ($CatScore -ge 0) {
-            if ($Global:IsLightMode) { '#DC2626' } else { '#FF5000' }
-        } else { $null }
+        # Category dot color (E-b: canonical 5-tier maturity zone color)
+        $SidebarDotColor = if ($CatScore -ge 0) { Get-MaturityZoneColor $CatScore -DarkMode:(-not $Global:IsLightMode) } else { $null }
 
         # Category sidebar button with dot + name + score
         $CatBtn = New-Object System.Windows.Controls.Button
@@ -2257,13 +2311,8 @@ function Render-AssessmentChecks {
         [System.Windows.Controls.DockPanel]::SetDock($CatScoreTB, 'Right')
         if ($CatScore -ge 0) {
             $CatScoreTB.Text = "$CatScore%"
-            $CatScoreTB.Foreground = if ($CatScore -ge 80) {
-                $Global:CachedBC.ConvertFromString($(if ($Global:IsLightMode) { '#15803D' } else { '#4ADE80' }))
-            } elseif ($CatScore -ge 50) {
-                $Global:CachedBC.ConvertFromString($(if ($Global:IsLightMode) { '#C2410C' } else { '#FBBF24' }))
-            } else {
-                $Global:CachedBC.ConvertFromString($(if ($Global:IsLightMode) { '#DC2626' } else { '#FB923C' }))
-            }
+            # E-b: canonical 5-tier maturity zone color
+            $CatScoreTB.Foreground = $Global:CachedBC.ConvertFromString((Get-MaturityZoneColor $CatScore -DarkMode:(-not $Global:IsLightMode)))
         } else {
             $CatScoreTB.Text = '—'
             $CatScoreTB.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'ThemeTextMuted')
@@ -2301,12 +2350,9 @@ function Render-AssessmentChecks {
         $CatDot = New-Object System.Windows.Shapes.Ellipse
         $CatDot.Width = 10; $CatDot.Height = 10
         $CatDot.Margin = [System.Windows.Thickness]::new(0,0,10,0)
-        $CatDot.Fill = if ($CatScore -ge 80) {
-            $Global:CachedBC.ConvertFromString($(if ($Global:IsLightMode) { '#15803D' } else { '#00C853' }))
-        } elseif ($CatScore -ge 50) {
-            $Global:CachedBC.ConvertFromString($(if ($Global:IsLightMode) { '#C2410C' } else { '#F59E0B' }))
-        } elseif ($CatScore -ge 0) {
-            $Global:CachedBC.ConvertFromString($(if ($Global:IsLightMode) { '#DC2626' } else { '#FF5000' }))
+        # E-b: canonical 5-tier maturity zone color
+        $CatDot.Fill = if ($CatScore -ge 0) {
+            $Global:CachedBC.ConvertFromString((Get-MaturityZoneColor $CatScore -DarkMode:(-not $Global:IsLightMode)))
         } else {
             $Global:CachedBC.ConvertFromString($(if ($Global:IsLightMode) { '#595959' } else { '#82828C' }))
         }
@@ -2392,10 +2438,12 @@ function Render-AssessmentChecks {
             $Col1 = New-Object System.Windows.Controls.ColumnDefinition; $Col1.Width = [System.Windows.GridLength]::new(130)
             $Col2 = New-Object System.Windows.Controls.ColumnDefinition; $Col2.Width = [System.Windows.GridLength]::new(50)
             $Col3 = New-Object System.Windows.Controls.ColumnDefinition; $Col3.Width = [System.Windows.GridLength]::new(60)
+            $Col4 = New-Object System.Windows.Controls.ColumnDefinition; $Col4.Width = [System.Windows.GridLength]::new(76)  # E-d: Exclude checkbox
             [void]$Grid.ColumnDefinitions.Add($Col0)
             [void]$Grid.ColumnDefinitions.Add($Col1)
             [void]$Grid.ColumnDefinitions.Add($Col2)
             [void]$Grid.ColumnDefinitions.Add($Col3)
+            [void]$Grid.ColumnDefinitions.Add($Col4)
 
             # Left: Check info
             $InfoSP = New-Object System.Windows.Controls.StackPanel
@@ -2548,8 +2596,11 @@ function Render-AssessmentChecks {
                 $Target = $Global:Assessment.Checks | Where-Object Id -eq $CheckId
                 if ($Target) {
                     $Val = if ($this.Text -eq 'Add notes...') { '' } else { $this.Text }
-                    $Target.Notes = $Val
-                    if ($Val) { AutoSave-Assessment }
+                    if ($Val -ne $Target.Notes) {
+                        $Target.Notes = $Val
+                        # E-c: no direct AutoSave here — flag dirty and let the autosave timer persist
+                        Set-Dirty
+                    }
                 }
                 if (-not $this.Text) {
                     $this.SetResourceReference([System.Windows.Controls.TextBox]::ForegroundProperty, 'ThemeTextFaintest')
@@ -2583,6 +2634,10 @@ function Render-AssessmentChecks {
                 $NewStatus = $this.SelectedItem.Content
                 $Target = $Global:Assessment.Checks | Where-Object Id -eq $CheckId
                 if ($Target) {
+                    # E-d: speed_demon — stamp the first status change of this assessment session
+                    if (-not $Global:FirstStatusChangeTime -and $NewStatus -ne 'Not Assessed') {
+                        $Global:FirstStatusChangeTime = Get-Date
+                    }
                     $Target.Status = $NewStatus
                     $Target.Source = 'Manual'
                     # Repaint the left accent bar to reflect new status
@@ -2594,8 +2649,9 @@ function Render-AssessmentChecks {
                         default   { if ($Global:IsLightMode) { '#C0C0C4' } else { '#444448' } }
                     }
                     $Bar.Background = $Global:CachedBC.ConvertFromString($BarColor)
+                    # E-c: no direct AutoSave here — flag dirty and let the autosave timer persist
+                    Set-Dirty
                     Update-Progress
-                    AutoSave-Assessment
                 }
             })
             [System.Windows.Controls.Grid]::SetColumn($StatusCmb, 1)
@@ -2632,6 +2688,37 @@ function Render-AssessmentChecks {
             $SevPill.Child = $SevBadge
             [System.Windows.Controls.Grid]::SetColumn($SevPill, 3)
             [void]$Grid.Children.Add($SevPill)
+
+            # Col 4: Exclude-from-scoring checkbox (E-d)
+            $ExclCB = New-Object System.Windows.Controls.CheckBox
+            $ExclCB.Content = 'Excluded'
+            $ExclCB.FontSize = 11
+            $ExclCB.ToolTip = 'Exclude from scoring'
+            $ExclCB.Tag = $Check.Id
+            $ExclCB.IsChecked = [bool]$Check.Excluded
+            $ExclCB.HorizontalAlignment = 'Center'; $ExclCB.VerticalAlignment = 'Center'
+            $ExclCB.Margin = [System.Windows.Thickness]::new(8,0,0,0)
+            $ExclCB.SetResourceReference([System.Windows.Controls.CheckBox]::ForegroundProperty, 'ThemeTextMuted')
+            $ExclHandler = {
+                $CheckId = $this.Tag
+                $Target = $Global:Assessment.Checks | Where-Object Id -eq $CheckId
+                if ($Target) {
+                    $Target.Excluded = [bool]$this.IsChecked
+                    # Visually dim the whole row when excluded (CheckBox -> Grid -> CheckCard -> OuterGrid)
+                    $Row = $this.Parent.Parent.Parent
+                    $Row.Opacity = if ($Target.Excluded) { 0.45 } else { 1.0 }
+                    Set-Dirty
+                    Update-Progress
+                    Check-AssessmentAchievements
+                }
+            }
+            $ExclCB.Add_Checked($ExclHandler)
+            $ExclCB.Add_Unchecked($ExclHandler)
+            [System.Windows.Controls.Grid]::SetColumn($ExclCB, 4)
+            [void]$Grid.Children.Add($ExclCB)
+
+            # Dim excluded rows on initial render (E-d)
+            if ($Check.Excluded) { $OuterGrid.Opacity = 0.45 }
 
             $CheckCard.Child = $Grid
             [System.Windows.Controls.Grid]::SetColumn($CheckCard, 1)
@@ -2819,7 +2906,7 @@ function Update-ReportPreview {
     & $AddLine
 
     # Overall score
-    $ScoreColor = if ($Overall -ge 80) { $Green } elseif ($Overall -ge 50) { $Orange } else { $Red }
+    $ScoreColor = if ($Overall -ge 75) { $Green } elseif ($Overall -ge 35) { $Orange } else { $Red }  # E-b: tier boundaries aligned with Get-MaturityZoneColor
     & $AddText "OVERALL READINESS: " $Fg
     & $AddText "$(if ($Overall -ge 0) { "$Overall%" } else { 'Not scored' })" $ScoreColor
     & $AddLine; & $AddLine
@@ -2848,7 +2935,7 @@ function Update-ReportPreview {
         $CatChecks = @($Global:Assessment.Checks | Where-Object Category -eq $Cat)
         $CatAssessed = @($CatChecks | Where-Object { $_.Status -ne 'Not Assessed' -and -not $_.Excluded })
         $CatPass = @($CatAssessed | Where-Object { $_.Status -eq 'Pass' -or $_.Status -eq 'N/A' }).Count
-        $CatColor = if ($Score -ge 80) { $Green } elseif ($Score -ge 50) { $Orange } elseif ($Score -ge 0) { $Red } else { $Dim }
+        $CatColor = if ($Score -ge 75) { $Green } elseif ($Score -ge 35) { $Orange } elseif ($Score -ge 0) { $Red } else { $Dim }  # E-b: tier boundaries aligned with Get-MaturityZoneColor
 
         & $AddText "  $($Cat.PadRight(25))" $Fg
         & $AddText "$(if ($Score -ge 0) { "$Score%" } else { '---' })" $CatColor
@@ -2922,7 +3009,7 @@ function Build-HtmlReport {
     $WarnCount = @($Assessed | Where-Object Status -eq 'Warning').Count
     $FailCount = @($Assessed | Where-Object Status -eq 'Fail').Count
 
-    $OverallClass = if ($Overall -ge 80) { 'green' } elseif ($Overall -ge 50) { 'orange' } else { 'red' }
+    $OverallClass = if ($Overall -ge 75) { 'green' } elseif ($Overall -ge 35) { 'orange' } else { 'red' }  # E-b: tier boundaries aligned with Get-MaturityZoneColor
 
     [void]$html.Append(@"
 <!DOCTYPE html>
@@ -3232,7 +3319,7 @@ tr.filter-hidden{display:none}
     # ─── MATURITY RADAR ────────────────────────────────────────────────
     $Composite = Get-CompositeMaturityScore
     $MatLevel  = Get-MaturityLevel $Composite
-    $CompClass = if ($Composite -ge 80) { 'green' } elseif ($Composite -ge 50) { 'orange' } else { 'red' }
+    $CompClass = if ($Composite -ge 75) { 'green' } elseif ($Composite -ge 35) { 'orange' } else { 'red' }  # E-b: tier boundaries aligned with Get-MaturityZoneColor
     $DimKeys   = @($Global:MaturityDimensions.Keys)
     $DimScores = @{}
     foreach ($K in $DimKeys) { $DimScores[$K] = Get-DimensionScore $K }
@@ -3324,7 +3411,7 @@ tr.filter-hidden{display:none}
     foreach ($K in $DimKeys) {
         $DS = $DimScores[$K]
         $DLabel = $Global:MaturityDimensions[$K].Label
-        $DColor = if ($DS -ge 80) { 'var(--green)' } elseif ($DS -ge 50) { 'var(--orange)' } elseif ($DS -ge 0) { 'var(--red)' } else { 'var(--text-faint)' }
+        $DColor = if ($DS -ge 0) { Get-MaturityZoneColor $DS } else { 'var(--text-faint)' }  # E-b: 5-tier maturity zone color
         $DWidth = if ($DS -ge 0) { $DS } else { 0 }
         # Count pass/warn/fail in dimension
         $DimPrefixes = $Global:MaturityDimensions[$K].Prefixes
@@ -3375,8 +3462,9 @@ tr.filter-hidden{display:none}
         $CatChecks = @($Global:Assessment.Checks | Where-Object Category -eq $Cat)
         $CatAssessed = @($CatChecks | Where-Object { $_.Status -ne 'Not Assessed' -and -not $_.Excluded })
         $CatPass = @($CatAssessed | Where-Object { $_.Status -eq 'Pass' -or $_.Status -eq 'N/A' }).Count
-        $ScoreColor = if ($Score -ge 80) { 'var(--green)' } elseif ($Score -ge 50) { 'var(--orange)' } else { 'var(--red)' }
-        $DotColor = if ($Score -ge 80) { 'background:var(--green)' } elseif ($Score -ge 50) { 'background:var(--orange)' } elseif ($Score -ge 0) { 'background:var(--red)' } else { 'background:var(--text-faint)' }
+        # E-b: canonical 5-tier maturity zone color
+        $ScoreColor = if ($Score -ge 0) { Get-MaturityZoneColor $Score } else { 'var(--red)' }
+        $DotColor = if ($Score -ge 0) { "background:$(Get-MaturityZoneColor $Score)" } else { 'background:var(--text-faint)' }
         $BarWidth = if ($Score -ge 0) { $Score } else { 0 }
 
         [void]$html.Append(@"
@@ -3405,6 +3493,7 @@ tr.filter-hidden{display:none}
                         $CatSummary = "Found <strong>$CpcCount Cloud PC(s)</strong> across <strong>$PpCount provisioning policy/policies</strong>, with <strong>$UsCount user settings</strong> and <strong>$AncCount network connection(s)</strong>."
                         if ($StatusGroups) { $CatSummary += " Cloud PC status mix: $StatusGroups." }
                     }
+                    break
                 }
                 'Provisioning*' {
                     $PpCount = @($Inv.ProvisioningPolicies).Count
@@ -3417,6 +3506,7 @@ tr.filter-hidden{display:none}
                         if ($Unassigned -gt 0)  { $CatSummary += " <strong>$Unassigned</strong> have no assignment." }
                         if ($LocalAdmin -gt 0) { $CatSummary += " <strong>$LocalAdmin</strong> grant local admin to users." }
                     }
+                    break
                 }
                 'User Settings*' {
                     $UsCount = @($Inv.UserSettings).Count
@@ -3429,6 +3519,7 @@ tr.filter-hidden{display:none}
                         $CatSummary = "<strong>$UsCount user settings policy/policies</strong>. <strong>$DrEnabled</strong> have cross-region DR configured."
                         if ($Unassigned -gt 0) { $CatSummary += " <strong>$Unassigned</strong> have no assignment." }
                     }
+                    break
                 }
                 'Network*' {
                     $AncCount = @($Inv.AzureNetworkConnections).Count
@@ -3442,6 +3533,7 @@ tr.filter-hidden{display:none}
                     } else {
                         $CatSummary = "<strong>No Azure Network Connections found</strong> &mdash; the tenant is using Microsoft-hosted networking only, or no ANCs have been provisioned yet."
                     }
+                    break
                 }
                 'Images*' {
                     $DiCount = @($Inv.DeviceImages).Count
@@ -3454,6 +3546,7 @@ tr.filter-hidden{display:none}
                         }).Count
                         if ($Stale -gt 0) { $CatSummary += " <strong>$Stale custom image(s)</strong> are &gt;90 days old." }
                     }
+                    break
                 }
                 'Identity*' {
                     $PpCount = @($Inv.ProvisioningPolicies).Count
@@ -3466,6 +3559,7 @@ tr.filter-hidden{display:none}
                         $CatSummary = "<strong>$SsoOn/$PpCount</strong> provisioning policies have SSO enabled."
                         if ($HybridJoin -gt 0) { $CatSummary += " <strong>$HybridJoin</strong> use Hybrid Entra Join (legacy path)." }
                     }
+                    break
                 }
                 'Security*' {
                     $PpCount = @($Inv.ProvisioningPolicies).Count
@@ -3474,6 +3568,7 @@ tr.filter-hidden{display:none}
                         $CatSummary = "<strong>$LocalAdmin/$PpCount</strong> provisioning policies grant local admin to end users."
                         if ($LocalAdmin -gt 0) { $CatSummary += " Local admin should be a documented exception, not the default." }
                     }
+                    break
                 }
                 'Cost*' {
                     $CpcCount = @($Inv.CloudPCs).Count
@@ -3485,21 +3580,25 @@ tr.filter-hidden{display:none}
                         if ($Grace -gt 0)  { $parts += "<strong>$Grace in grace period</strong>" }
                         $CatSummary = ($parts -join ' &middot; ') + '.'
                     }
+                    break
                 }
                 'Monitor*' {
                     $AeCount = @($Inv.AuditEvents).Count
                     $CatSummary = "<strong>$AeCount audit event(s)</strong> in last 30 days. Forward to Log Analytics / Sentinel for long-term retention."
+                    break
                 }
                 'Governance*' {
                     $UsCount = @($Inv.UserSettings).Count
                     $PpCount = @($Inv.ProvisioningPolicies).Count
                     $CatSummary = "Governance scope: <strong>$PpCount provisioning</strong> + <strong>$UsCount user settings</strong> policies. Each requires documented owner, change-control, and review cadence."
+                    break
                 }
                 'End-User*' {
                     $CpcCount = @($Inv.CloudPCs).Count
                     if ($CpcCount -gt 0) {
                         $CatSummary = "<strong>$CpcCount Cloud PC(s)</strong> in scope for end-user experience checks. Use Endpoint Analytics to validate startup performance and connection quality."
                     }
+                    break
                 }
                 'Landing*' {
                     $AncCount = @($Inv.AzureNetworkConnections).Count
@@ -3509,6 +3608,7 @@ tr.filter-hidden{display:none}
                     } else {
                         $CatSummary = "No ANCs &mdash; tenant uses Microsoft-hosted networking, removing Azure landing zone scope for W365 networking."
                     }
+                    break
                 }
             }
         }
@@ -3587,6 +3687,7 @@ tr.filter-hidden{display:none}
                         }
                         [void]$html.Append("</tbody></table>`n")
                     }
+                    break
                 }
                 'Provisioning*' {
                     $PPs = @($Inv.ProvisioningPolicies)
@@ -3603,6 +3704,7 @@ tr.filter-hidden{display:none}
                         }
                         [void]$html.Append("</tbody></table>`n")
                     }
+                    break
                 }
                 'Network*' {
                     $ANCs = @($Inv.AzureNetworkConnections)
@@ -3612,16 +3714,17 @@ tr.filter-hidden{display:none}
                         foreach ($A in $ANCs) {
                             $H = "$($A.HealthCheckStatus)"
                             $HBadge = switch -Wildcard ($H.ToLower()) {
-                                'passed'  { "<span style='color:var(--green-text)'>Passed</span>" }
-                                'failed'  { "<span style='color:var(--red-text)'>Failed</span>" }
-                                'running' { "<span style='color:var(--orange-text)'>Running</span>" }
-                                default   { "<span style='color:var(--orange-text)'>$H</span>" }
+                                'passed'  { "<span style='color:var(--green-text)'>Passed</span>"; break }
+                                'failed'  { "<span style='color:var(--red-text)'>Failed</span>"; break }
+                                'running' { "<span style='color:var(--orange-text)'>Running</span>"; break }
+                                default   { "<span style='color:var(--orange-text)'>$H</span>"; break }
                             }
                             $Use = if ($A.InUse) { "<span style='color:var(--green-text)'>Yes</span>" } else { "<span style='color:var(--text-faint)'>No</span>" }
                             [void]$html.Append("<tr><td>$(& $enc $A.DisplayName)</td><td>$(& $enc $A.ConnectionType)</td><td>$(& $enc $A.VirtualNetworkLocation)</td><td>$HBadge</td><td>$Use</td></tr>`n")
                         }
                         [void]$html.Append("</tbody></table>`n")
                     }
+                    break
                 }
                 'Images*' {
                     $DIs = @($Inv.DeviceImages)
@@ -3631,7 +3734,7 @@ tr.filter-hidden{display:none}
                         [void]$html.Append("<table class='comparison-table'><thead><tr><th>Name</th><th>OS</th><th>Build</th><th>Status</th><th>Age (days)</th></tr></thead><tbody>`n")
                         foreach ($D in $DIs) {
                             $Age = '—'
-                            if ($D.LastModifiedDateTime) { try { $Age = ($now - [datetime]$D.LastModifiedDateTime).Days } catch { } }
+                            if ($D.LastModifiedDateTime) { try { $Age = ($now - [datetime]$D.LastModifiedDateTime).Days } catch { Write-DebugLog "Report: could not parse image LastModifiedDateTime '$($D.LastModifiedDateTime)': $($_.Exception.Message)" -Level 'DEBUG' } }
                             $AgeColor = if ($Age -is [int] -and $Age -gt 90) { "color:var(--red-text)" }
                                         elseif ($Age -is [int] -and $Age -gt 30) { "color:var(--orange-text)" }
                                         else { "color:var(--green-text)" }
@@ -3648,6 +3751,7 @@ tr.filter-hidden{display:none}
                         }
                         [void]$html.Append("</tbody></table>`n")
                     }
+                    break
                 }
                 'Cost*' {
                     $CPCs = @($Inv.CloudPCs)
@@ -3660,6 +3764,7 @@ tr.filter-hidden{display:none}
                         }
                         [void]$html.Append("</tbody></table>`n")
                     }
+                    break
                 }
             }
         }
@@ -3673,13 +3778,14 @@ tr.filter-hidden{display:none}
 <div class="field-note-title">Field Notes — Inventory & Topology</div>
 <p>Cloud PCs are licensed per-user, not per-VM. The single most expensive mistake is leaving Cloud PCs in <code>failed</code> or <code>inGracePeriod</code> state — both consume a full license while delivering zero value. Audit the inventory weekly until you have a closed-loop offboarding process.</p>
 <ul>
-<li><strong>Edition selection</strong> — <em>Enterprise</em> = dedicated 1:1 PCs with full Intune/CA. <em>Frontline</em> = shared (1:3 dedicated, higher in shared mode) for shift workers. <em>Business</em> = SMB-only, no Intune, no custom images, no ANC. Avoid mixing editions in the same persona.</li>
+<li><strong>Edition selection</strong> — <em>Enterprise</em> = dedicated 1:1 PCs with full Intune/CA. <em>Flex (formerly Frontline)</em> = shared (1:3 dedicated, higher in shared mode) for shift workers. <em>Business</em> = SMB-only, no Intune, no custom images, no ANC. Avoid mixing editions in the same persona.</li>
 <li><strong>Sizing personas</strong> — Microsoft's published recommendations: 2 vCPU / 4 GB (task), 4 vCPU / 16 GB (knowledge), 8 vCPU / 32 GB (developer/engineer). Validate with Endpoint Analytics resource performance reports — over-sizing is the most common waste.</li>
 <li><strong>Region alignment</strong> — Latency directly drives perceived quality. Target &lt;150 ms RTT, ideally &lt;100 ms for real-time work. If a user's nearest region is unsupported, peer to a supported region rather than provisioning far away.</li>
 <li><strong>Status semantics</strong> — <code>provisioned</code> is the only "good" state. <code>provisionedWithWarnings</code> usually means a soft post-provision step failed (Intune sync delay, language pack). <code>inGracePeriod</code> means the license was removed and the data window is closing — act fast.</li>
 </ul>
 </div>
 "@
+                break
             }
             'Provisioning*' {
                 $FieldNote = @"
@@ -3691,10 +3797,11 @@ tr.filter-hidden{display:none}
 <li><strong>Grace period</strong> — Defaults to 7 hours. For HR offboarding workflows that can take days, increase to 168 hours (7 days). The grace period is the only time window in which user data is recoverable after license removal.</li>
 <li><strong>Domain join</strong> — Microsoft strongly recommends <strong>Entra ID Join</strong>. Hybrid Join requires AD DS DCs reachable from the ANC subnet, DNS configured to resolve the AD domain, and adds Azure AD Connect dependency. For new deployments, choose Entra Join unless on-prem AD is non-negotiable.</li>
 <li><strong>Autopatch</strong> — Built-in option that hands monthly patch orchestration to the Windows Autopatch service (Test → First → Fast → Broad rings, automatic pause on issues). Removes the need to hand-manage Intune update rings for Cloud PCs.</li>
-<li><strong>Frontline</strong> — <code>provisioningType=shared</code> for shared mode (high concurrency); <code>dedicated</code> for 1:3 license sharing where each user keeps the same PC. Shift schedules must not exceed concurrency or users get blocked at sign-in.</li>
+<li><strong>Flex</strong> — <code>provisioningType=shared</code> for shared mode (high concurrency); <code>dedicated</code> for 1:3 license sharing where each user keeps the same PC. Shift schedules must not exceed concurrency or users get blocked at sign-in.</li>
 </ul>
 </div>
 "@
+                break
             }
             'User Settings*' {
                 $FieldNote = @"
@@ -3705,10 +3812,11 @@ tr.filter-hidden{display:none}
 <li><strong>Restore points</strong> — Default frequency is 12 hours, configurable to 4 / 6 / 12. Up to 10 retained. Enable <code>userRestoreEnabled</code> to let users self-serve restore from the Windows 365 portal — typically halves restore-related helpdesk tickets.</li>
 <li><strong>Cross-Region DR</strong> — <strong>Add-on license required per user</strong>. RPO &lt;4 h, RTO &lt;4 h for up to 50 K licensed PCs per backup region. <em>This is for emergency failover only</em> — Microsoft auto-fails-back after 7 days. For permanent moves, use the <em>Move Cloud PC</em> feature instead.</li>
 <li><strong>Self-service reset</strong> — Powerful but dangerous: a reset wipes everything not in OneDrive. <strong>Never enable reset without first verifying KFM is configured and syncing.</strong></li>
-<li><strong>Frontline reserve</strong> — In shared mode, peak-concurrency spikes block users from signing in. Size license count to 120% of observed peak from Endpoint Analytics, then re-evaluate quarterly.</li>
+<li><strong>Flex reserve</strong> — In shared mode, peak-concurrency spikes block users from signing in. Size license count to 120% of observed peak from Endpoint Analytics, then re-evaluate quarterly.</li>
 </ul>
 </div>
 "@
+                break
             }
             'Network*' {
                 $FieldNote = @"
@@ -3724,6 +3832,7 @@ tr.filter-hidden{display:none}
 </ul>
 </div>
 "@
+                break
             }
             'Images*' {
                 $FieldNote = @"
@@ -3739,6 +3848,7 @@ tr.filter-hidden{display:none}
 </ul>
 </div>
 "@
+                break
             }
             'Identity*' {
                 $FieldNote = @"
@@ -3754,6 +3864,7 @@ tr.filter-hidden{display:none}
 </ul>
 </div>
 "@
+                break
             }
             'Security*' {
                 $FieldNote = @"
@@ -3770,21 +3881,23 @@ tr.filter-hidden{display:none}
 </ul>
 </div>
 "@
+                break
             }
             'Cost*' {
                 $FieldNote = @"
 <div class="field-note">
 <div class="field-note-title">Field Notes — Cost & Optimization</div>
-<p>Windows 365 is per-user, per-month — no spot pricing, no scaling-down to zero. The cost levers are <strong>license count</strong>, <strong>SKU sizing</strong>, and <strong>Frontline ratio</strong>. Inactive PCs are pure waste.</p>
+<p>Windows 365 is per-user, per-month — no spot pricing, no scaling-down to zero. The cost levers are <strong>license count</strong>, <strong>SKU sizing</strong>, and <strong>Flex ratio</strong>. Inactive PCs are pure waste.</p>
 <ul>
 <li><strong>Inactive Cloud PCs</strong> — Each unused license costs ~$31-$158/month. A 10% inactive rate in a 1,000-seat deployment is $37 K-$190 K/year of waste. Pull utilization monthly from Endpoint Analytics; reclaim or downsize.</li>
 <li><strong>Right-sizing</strong> — Cloud PCs can be resized in-place without reprovisioning (no data loss). Hunt PCs running &lt;30% CPU and &lt;50% RAM for downsizing. PCs with consistent throttling for upsizing.</li>
-<li><strong>Frontline math</strong> — Required licenses = <code>ceil(peak concurrent / concurrency ratio)</code> × 1.2. Over-purchase loses the cost advantage; under-purchase blocks shift workers.</li>
+<li><strong>Flex math</strong> — Required licenses = <code>ceil(peak concurrent / concurrency ratio)</code> × 1.2. Over-purchase loses the cost advantage; under-purchase blocks shift workers.</li>
 <li><strong>Offboarding</strong> — Tie license removal to HR offboarding via Entra dynamic groups based on employee status attribute. Otherwise licenses pile up on departed users.</li>
 <li><strong>Egress (BYOD network)</strong> — Outbound traffic from Cloud PCs to OneDrive/Office in a different region incurs Azure egress charges. Co-locate Cloud PCs and user data; set Azure budget alerts.</li>
 </ul>
 </div>
 "@
+                break
             }
             'Monitor*' {
                 $FieldNote = @"
@@ -3800,6 +3913,7 @@ tr.filter-hidden{display:none}
 </ul>
 </div>
 "@
+                break
             }
             'Governance*' {
                 $FieldNote = @"
@@ -3816,6 +3930,7 @@ tr.filter-hidden{display:none}
 </ul>
 </div>
 "@
+                break
             }
             'End-User*' {
                 $FieldNote = @"
@@ -3831,6 +3946,7 @@ tr.filter-hidden{display:none}
 </ul>
 </div>
 "@
+                break
             }
             'Landing*' {
                 $FieldNote = @"
@@ -3845,6 +3961,7 @@ tr.filter-hidden{display:none}
 </ul>
 </div>
 "@
+                break
             }
         }
         if ($FieldNote) {
@@ -4122,170 +4239,15 @@ function Get-ExecutiveSummary {
     [void]$sb.AppendLine('SCORING METHODOLOGY')
     [void]$sb.AppendLine('-------------------')
     [void]$sb.AppendLine('  Score = weighted average: Critical(5x), High(4x), Medium(3x), Low(2x)')
-    [void]$sb.AppendLine('  Pass/N/A = 100pts, Warning = 50pts, Fail/Not Assessed = 0pts')
+    [void]$sb.AppendLine('  Pass = 100pts, Warning = 50pts, Fail/Not Assessed = 0pts; N/A and Excluded checks are not scored')
     [void]$sb.AppendLine('  Maturity: Initial(0-34), Developing(35-54), Defined(55-74), Managed(75-89), Optimized(90+)')
 
     return $sb.ToString()
 }
 
-function Get-ExecutiveSummaryRtf {
-    <#
-    .SYNOPSIS  Clean, Robinhood-inspired RTF executive summary for Outlook/Word/Teams.
-    #>
-    $Checks   = $Global:Assessment.Checks
-    $Score    = Get-OverallScore
-    $Maturity = Get-MaturityLevel $Score
-
-    $Total    = $Checks.Count
-    $Assessed = @($Checks | Where-Object { $_.Status -ne 'Not Assessed' }).Count
-    $Pass     = @($Checks | Where-Object { $_.Status -eq 'Pass' }).Count
-    $Fail     = @($Checks | Where-Object { $_.Status -eq 'Fail' }).Count
-    $Warn     = @($Checks | Where-Object { $_.Status -eq 'Warning' }).Count
-    $NA       = @($Checks | Where-Object { $_.Status -eq 'N/A' }).Count
-
-    $DefLookup = @{}
-    foreach ($Def in $Global:CheckDefinitions) { $DefLookup[$Def.id] = $Def }
-
-    $esc = { param($t) if (-not $t) { return '' }; "$t".Replace('\','\\').Replace('{','\{').Replace('}','\}') }
-
-    $rtf = [System.Text.StringBuilder]::new()
-    [void]$rtf.Append('{\rtf1\ansi\deff0')
-    [void]$rtf.Append('{\fonttbl{\f0\fswiss\fcharset0 Segoe UI;}{\f1\fmodern\fcharset0 Cascadia Mono;}}')
-    [void]$rtf.Append('{\colortbl;')
-    [void]$rtf.Append('\red0\green120\blue212;')      #  1 Microsoft Blue
-    [void]$rtf.Append('\red16\green124\blue16;')       #  2 Green
-    [void]$rtf.Append('\red209\green52\blue56;')       #  3 Red
-    [void]$rtf.Append('\red202\green80\blue16;')       #  4 Orange
-    [void]$rtf.Append('\red138\green136\blue134;')     #  5 Gray
-    [void]$rtf.Append('\red243\green242\blue241;')     #  6 Light bg
-    [void]$rtf.Append('\red255\green255\blue255;')     #  7 White
-    [void]$rtf.Append('\red50\green49\blue48;')        #  8 Dark text
-    [void]$rtf.Append('\red0\green47\blue108;')        #  9 Navy
-    [void]$rtf.Append('}')
-    [void]$rtf.Append('\f0\fs20\cf8 ')
-
-    # ── HEADER ──
-    $custName = if ($Global:Assessment.CustomerName) { & $esc $Global:Assessment.CustomerName } else { 'Assessment' }
-    [void]$rtf.Append("{\pard\sb0\sa40\ql{\f0\fs18\cf5 MICROSOFT  \u8226  AZURE VIRTUAL DESKTOP}\par")
-    [void]$rtf.Append("\pard\sb0\sa0\ql{\f0\fs40\b\cf8 $custName}\par")
-    [void]$rtf.Append("\pard\sb0\sa200\ql{\f0\fs18\cf5 $(Get-Date -Format 'MMMM d, yyyy')}\par}")
-
-    # ── SCORE HERO ──
-    $scoreStr = if ($Score -ge 0) { "$Score" } else { '\u8212' }
-    $scoreClr = if ($Score -ge 75) { '\cf2' } elseif ($Score -ge 50) { '\cf4' } elseif ($Score -ge 0) { '\cf3' } else { '\cf5' }
-    [void]$rtf.Append("{\pard\sb0\sa0\ql{\f0\fs96\b$scoreClr $scoreStr}{\f0\fs32\cf5  / 100}\par")
-    [void]$rtf.Append("\pard\sb0\sa200\ql{\f0\fs22\cf5 Overall Score  \u8226  }{\f0\fs22\b\cf1 $Maturity}\par}")
-
-    # ── STATUS LINE ──
-    [void]$rtf.Append("{\pard\sb0\sa200\ql{\f0\fs20 ")
-    [void]$rtf.Append("{\b\cf2 $Pass} pass   ")
-    [void]$rtf.Append("{\b\cf3 $Fail} fail   ")
-    [void]$rtf.Append("{\b\cf4 $Warn} warning   ")
-    [void]$rtf.Append("{\cf5 $NA N/A}")
-    [void]$rtf.Append("{\cf5   \u8226  $Assessed of $Total assessed}")
-    [void]$rtf.Append("}\par}")
-
-    # ── THIN DIVIDER ──
-    [void]$rtf.Append('\pard\sb0\sa200{\f0\fs4\cf5\brdrb\brdrs\brdrw5\brsp20 \par}')
-
-    # ── ENVIRONMENT (if discovery data) ──
-    if ($Global:Assessment.Discovery -and $Global:Assessment.Discovery.Inventory) {
-        $Inv = $Global:Assessment.Discovery.Inventory
-        [void]$rtf.Append("{\pard\sb0\sa120\ql{\f0\fs15\b\cf5 ENVIRONMENT}\par")
-        [void]$rtf.Append("\pard\sb0\sa200\ql{\f0\fs20\cf8 ")
-        [void]$rtf.Append("{\b $($Inv.CloudPCs.Count)} Cloud PCs   ")
-        [void]$rtf.Append("{\b $($Inv.ProvisioningPolicies.Count)} provisioning policies   ")
-        [void]$rtf.Append("{\b $($Inv.AzureNetworkConnections.Count)} ANCs   ")
-        [void]$rtf.Append("{\b $($Inv.DeviceImages.Count)} custom images")
-        if ($Global:Assessment.Discovery.Subscriptions) {
-            $subNames = ($Global:Assessment.Discovery.Subscriptions | ForEach-Object { $_.Name }) -join ', '
-            [void]$rtf.Append("\line{\cf5 $($Global:Assessment.Discovery.Subscriptions.Count) subscription ($subNames)}")
-        }
-        [void]$rtf.Append("}\par}")
-    }
-
-    # ── CATEGORY SCORES (simple list) ──
-    [void]$rtf.Append("{\pard\sb0\sa120\ql{\f0\fs15\b\cf5 CATEGORIES}\par}")
-    foreach ($Cat in (Get-Categories)) {
-        $CatScore = Get-CategoryScore $Cat
-        $CatChecks = @($Checks | Where-Object { $_.Category -eq $Cat })
-        $CatPass  = @($CatChecks | Where-Object { $_.Status -eq 'Pass' }).Count
-        $CatFail  = @($CatChecks | Where-Object { $_.Status -eq 'Fail' }).Count
-        $CatWarn  = @($CatChecks | Where-Object { $_.Status -eq 'Warning' }).Count
-        $ScoreStr = if ($CatScore -ge 0) { "$CatScore%" } else { 'N/A' }
-        $sClr     = if ($CatScore -ge 80) { '\cf2' } elseif ($CatScore -ge 50) { '\cf4' } elseif ($CatScore -ge 0) { '\cf3' } else { '\cf5' }
-        [void]$rtf.Append("{\pard\sb0\sa20\ql{\f0\fs20\cf8 $(& $esc $Cat)  }{\f0\fs20\b$sClr $ScoreStr}")
-        [void]$rtf.Append("{\f0\fs16\cf5   $CatPass pass \u8226 $CatWarn warn \u8226 $CatFail fail}")
-        [void]$rtf.Append("\par}")
-    }
-
-    # ── THIN DIVIDER ──
-    [void]$rtf.Append('\pard\sb120\sa200{\f0\fs4\cf5\brdrb\brdrs\brdrw5\brsp20 \par}')
-
-    # ── MATURITY DIMENSIONS (simple list) ──
-    [void]$rtf.Append("{\pard\sb0\sa120\ql{\f0\fs15\b\cf5 MATURITY}\par}")
-    foreach ($Key in $Global:MaturityDimensions.Keys) {
-        $Dim    = $Global:MaturityDimensions[$Key]
-        $DScore = Get-DimensionScore $Key
-        $DStr   = if ($DScore -ge 0) { "$DScore%" } else { 'N/A' }
-        $DLevel = if ($DScore -ge 0) { Get-MaturityLevel $DScore } else { '' }
-        $dClr   = if ($DScore -ge 80) { '\cf2' } elseif ($DScore -ge 50) { '\cf4' } elseif ($DScore -ge 0) { '\cf3' } else { '\cf5' }
-        [void]$rtf.Append("{\pard\sb0\sa20\ql{\f0\fs20\cf8 $(& $esc $Dim.Label)  }{\f0\fs20\b$dClr $DStr}{\f0\fs16\cf5   $DLevel}\par}")
-    }
-    $Composite = Get-CompositeMaturityScore
-    if ($Composite -ge 0) {
-        $cClr = if ($Composite -ge 80) { '\cf2' } elseif ($Composite -ge 50) { '\cf4' } else { '\cf3' }
-        [void]$rtf.Append("{\pard\sb20\sa0\ql{\f0\fs20\b\cf8 Composite  }{\f0\fs20\b$cClr $Composite%}{\f0\fs16\cf5   $(Get-MaturityLevel $Composite)}\par}")
-    }
-
-    # ── THIN DIVIDER ──
-    [void]$rtf.Append('\pard\sb120\sa200{\f0\fs4\cf5\brdrb\brdrs\brdrw5\brsp20 \par}')
-
-    # ── TOP FAILURES (Critical & High only) ──
-    $critFails = @($Checks | Where-Object {
-        $_.Status -eq 'Fail' -and $_.Severity -in @('Critical','High')
-    } | Sort-Object @{E={if($_.Severity -eq 'Critical'){0}else{1}}}, Id)
-    if ($critFails.Count -gt 0) {
-        [void]$rtf.Append("{\pard\sb0\sa120\ql{\f0\fs15\b\cf5 TOP FINDINGS ($($critFails.Count))}\par}")
-        foreach ($f in $critFails) {
-            $sevClr = if ($f.Severity -eq 'Critical') { '\cf3' } else { '\cf4' }
-            [void]$rtf.Append("{\pard\sb0\sa10\ql{\f0\fs18$sevClr \u9679 }{\f0\fs18\cf8 $(& $esc $f.Name)}{\f0\fs15\cf5   $($f.Id)}\par}")
-        }
-
-        $medLowFails = @($Checks | Where-Object { $_.Status -eq 'Fail' -and $_.Severity -in @('Medium','Low') })
-        if ($medLowFails.Count -gt 0) {
-            $medCount = @($medLowFails | Where-Object { $_.Severity -eq 'Medium' }).Count
-            $lowCount = @($medLowFails | Where-Object { $_.Severity -eq 'Low' }).Count
-            [void]$rtf.Append("{\pard\sb40\sa0\ql{\f0\fs16\cf5 + $medCount medium and $lowCount low severity findings}\par}")
-        }
-    }
-
-    # ── QUICK WINS ──
-    $quickWins = @($Checks | Where-Object {
-        $_.Status -eq 'Fail' -and ($DefLookup[$_.Id].effort -eq 'Quick Win' -or $_.effort -eq 'Quick Win')
-    } | Sort-Object @{E={switch($_.Severity){'Critical'{0}'High'{1}'Medium'{2}default{3}}}}, Id | Select-Object -First 5)
-    if ($quickWins.Count -gt 0) {
-        [void]$rtf.Append('\pard\sb120\sa200{\f0\fs4\cf5\brdrb\brdrs\brdrw5\brsp20 \par}')
-        [void]$rtf.Append("{\pard\sb0\sa120\ql{\f0\fs15\b\cf5 QUICK WINS}\par}")
-        $qi = 0
-        foreach ($qw in $quickWins) {
-            $qi++
-            $rem = if ($qw.remediation) { $qw.remediation } elseif ($DefLookup[$qw.Id].remediation) { $DefLookup[$qw.Id].remediation } else { $null }
-            [void]$rtf.Append("{\pard\sb0\sa10\ql{\f0\fs18\cf8 ${qi}. $(& $esc $qw.Name)}\par}")
-            if ($rem) {
-                $remText = if ($rem.Length -gt 120) { $rem.Substring(0,120) + '...' } else { $rem }
-                [void]$rtf.Append("{\pard\sb0\sa20\li200{\f0\fs16\i\cf5 $(& $esc $remText)}\par}")
-            }
-        }
-    }
-
-    # ── FOOTER ──
-    [void]$rtf.Append('\pard\sb200\sa0{\f0\fs4\cf5\brdrb\brdrs\brdrw5\brsp20 \par}')
-    [void]$rtf.Append("{\pard\sb40\sa0\ql{\f0\fs14\cf5 Generated by Windows 365 Assessor v$Global:AppVersion  \u8226  Microsoft Confidential}\par}")
-
-    [void]$rtf.Append('}')
-    return $rtf.ToString()
-}
+# Get-ExecutiveSummaryRtf (removed, E-g): the RTF executive-summary builder was never
+# referenced — btnCopySummary uses Get-ExecutiveSummaryEmailHtml + Get-ExecutiveSummary
+# (CF_HTML + plain text). Removed as dead code.
 
 function Get-ExecutiveSummaryEmailHtml {
     <#
@@ -4306,7 +4268,8 @@ function Get-ExecutiveSummaryEmailHtml {
     foreach ($Def in $Global:CheckDefinitions) { $DefLookup[$Def.id] = $Def }
 
     $hesc = { param($t) if (-not $t) { return '' }; [System.Net.WebUtility]::HtmlEncode("$t") }
-    $sClr = { param($s) if ($s -ge 80) { '#107C10' } elseif ($s -ge 50) { '#CA5010' } elseif ($s -ge 0) { '#D13438' } else { '#8A8886' } }
+    # E-b: canonical 5-tier maturity zone color (matches live dashboard thresholds)
+    $sClr = { param($s) Get-MaturityZoneColor ([int]$s) }
 
     $custName   = & $hesc $(if ($Global:Assessment.CustomerName) { $Global:Assessment.CustomerName } else { 'Assessment' })
     $scoreColor = & $sClr $Score
@@ -4448,7 +4411,7 @@ function Get-ExecutiveSummaryEmailHtml {
         $DStr   = if ($DScore -ge 0) { "$DScore%" } else { 'N/A' }
         $DLevel = if ($DScore -ge 0) { Get-MaturityLevel $DScore } else { '' }
         $dClr   = & $sClr $DScore
-        $dBg    = if ($DScore -ge 80) { '#E6F2E6' } elseif ($DScore -ge 50) { '#FDF0E6' } elseif ($DScore -ge 0) { '#FBEAEA' } else { '#F3F2F1' }
+        $dBg    = if ($DScore -ge 75) { '#E6F2E6' } elseif ($DScore -ge 35) { '#FDF0E6' } elseif ($DScore -ge 0) { '#FBEAEA' } else { '#F3F2F1' }  # E-b: tier boundaries aligned with Get-MaturityZoneColor
         $bgRow  = if ($dimIdx % 2 -eq 0) { '#FFFFFF' } else { '#F3F2F1' }
         $barPct = if ($DScore -ge 0) { [Math]::Max($DScore, 2) } else { 0 }
 
@@ -4466,7 +4429,7 @@ function Get-ExecutiveSummaryEmailHtml {
     $Composite = Get-CompositeMaturityScore
     if ($Composite -ge 0) {
         $cClr = & $sClr $Composite
-        $cBg  = if ($Composite -ge 80) { '#E6F2E6' } elseif ($Composite -ge 50) { '#FDF0E6' } else { '#FBEAEA' }
+        $cBg  = if ($Composite -ge 75) { '#E6F2E6' } elseif ($Composite -ge 35) { '#FDF0E6' } else { '#FBEAEA' }  # E-b: tier boundaries aligned with Get-MaturityZoneColor
         $cPct = [Math]::Max($Composite, 2)
         [void]$h.Append("<tr style=`"background-color:#EFF6FC;`">")
         [void]$h.Append("<td style=`"padding:10px 12px;font-weight:bold;border-top:2px solid #0078D4;`">Composite Score</td>")
@@ -4567,7 +4530,7 @@ function Get-ExecutiveSummaryEmailHtml {
 <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:#EFF6FC;border-left:3px solid #0078D4;">
 <tr><td style="padding:14px 16px;">
 <p style="Margin:0;font-size:10px;font-weight:bold;color:#0078D4;letter-spacing:1px;padding-bottom:6px;">SCORING METHODOLOGY</p>
-<p style="Margin:0;font-size:11px;color:#424242;line-height:18px;">Weighted average: Critical (5&#215;), High (4&#215;), Medium (3&#215;), Low (2&#215;). Scores: Pass/N/A = 100pts, Warning = 50pts, Fail = 0pts. Maturity: Initial (0&#8211;34), Developing (35&#8211;54), Defined (55&#8211;74), Managed (75&#8211;89), Optimized (90+).</p>
+<p style="Margin:0;font-size:11px;color:#424242;line-height:18px;">Weighted average: Critical (5&#215;), High (4&#215;), Medium (3&#215;), Low (2&#215;). Scores: Pass = 100pts, Warning = 50pts, Fail/Not Assessed = 0pts; N/A and Excluded checks are not scored. Maturity: Initial (0&#8211;34), Developing (35&#8211;54), Defined (55&#8211;74), Managed (75&#8211;89), Optimized (90+).</p>
 </td></tr></table>
 </td></tr>
 "@)
@@ -4641,7 +4604,19 @@ function Export-CsvReport {
 
     if ($dlg.ShowDialog() -eq $true) {
         try {
-            $Global:Assessment.Checks | Select-Object Id, Category, Name, Description, Status, Severity, Weight, Excluded, Origin, Source, Details, Notes |
+            # E-f: neutralize Excel/Sheets formula injection — free-text values starting with
+            # = + - @ are prefixed with a single quote so they import as text, not formulas.
+            $NoFormula = {
+                param($v)
+                $s = "$v"
+                if ($s -and $s[0] -in @([char]'=', [char]'+', [char]'-', [char]'@')) { "'" + $s } else { $s }
+            }
+            $Global:Assessment.Checks | Select-Object Id, Category,
+                @{ Name = 'Name';        Expression = { & $NoFormula $_.Name } },
+                @{ Name = 'Description'; Expression = { & $NoFormula $_.Description } },
+                Status, Severity, Weight, Excluded, Origin, Source,
+                @{ Name = 'Details';     Expression = { & $NoFormula $_.Details } },
+                @{ Name = 'Notes';       Expression = { & $NoFormula $_.Notes } } |
                 Export-Csv -Path $dlg.FileName -NoTypeInformation -Encoding UTF8
             Write-DebugLog "CSV exported: $($dlg.FileName)" -Level 'SUCCESS'
             Unlock-Achievement 'export_csv'
@@ -4727,7 +4702,9 @@ function Clear-Dirty {
 #>
 function AutoSave-Assessment {
     if (-not $Global:AutoSaveEnabled) { return }
-    Set-Dirty
+    # E-c: skip the write entirely when there are no unsaved changes (no Set-Dirty here —
+    # autosaving is not itself a change, and re-lighting the dirty dot after a manual save was a bug).
+    if (-not $Global:IsDirty) { return }
     try {
         Sync-AssessmentFromUI
         $JsonStr = $Global:Assessment | ConvertTo-Json -Depth 10
@@ -4747,9 +4724,9 @@ function AutoSave-Assessment {
         $OldBackups = @(Get-ChildItem $BackupDir -Filter 'backup_*.json' -ErrorAction SilentlyContinue |
             Sort-Object LastWriteTime -Descending | Select-Object -Skip $Global:MaxBackups)
         foreach ($Old in $OldBackups) {
-            try { [System.IO.File]::Delete($Old.FullName) } catch { }
+            try { [System.IO.File]::Delete($Old.FullName) } catch { Write-DebugLog "AutoSave: backup purge failed for $($Old.Name): $($_.Exception.Message)" -Level 'DEBUG' }
         }
-    } catch { }
+    } catch { Write-DebugLog "AutoSave failed: $($_.Exception.Message)" -Level 'WARN' }
 }
 
 <#
@@ -4795,7 +4772,7 @@ function Save-Assessment {
         # Remove the old untitled file if renaming
         if ($Global:ActiveFilePath -and (Test-Path $Global:ActiveFilePath) -and
             (Split-Path $Global:ActiveFilePath -Leaf) -match '^untitled_') {
-            try { [System.IO.File]::Delete($Global:ActiveFilePath) } catch { }
+            try { [System.IO.File]::Delete($Global:ActiveFilePath) } catch { Write-DebugLog "Save: failed to remove old untitled file '$Global:ActiveFilePath': $($_.Exception.Message)" -Level 'DEBUG' }
         }
         $Global:ActiveFilePath = $Path
     } else {
@@ -4884,6 +4861,7 @@ function Load-Assessment {
                     Discovery     = $null
                     Checks        = [System.Collections.ArrayList]::new()
                     ManualOverrides = @{}
+                    CatalogVersion  = $Global:ChecksCatalogVersion
                 }
                 foreach ($Def in $Global:CheckDefinitions) {
                     [void]$Global:Assessment.Checks.Add([PSCustomObject]@{
@@ -4930,6 +4908,7 @@ function Load-Assessment {
                 Update-Progress
                 Render-AssessmentChecks
                 $Global:ActiveFilePath = $dlg.FileName
+                $Global:FirstStatusChangeTime = $null   # E-d: loaded work never counts toward speed_demon
                 Clear-Dirty
                 Write-DebugLog "Assessment loaded: $($dlg.FileName)" -Level 'SUCCESS'
                 Show-Toast "Assessment loaded: $($Json.Checks.Count) checks" -Type 'Success'
@@ -4998,18 +4977,19 @@ function Refresh-AssessmentList {
                 $DisplayName = if ($Peek.CustomerName) { $Peek.CustomerName } else { 'Untitled Assessment' }
                 $ProgressText = "$Assessed/$Total"
                 if ($Assessed -gt 0) {
-                    # Honest scoring matching dashboard: Not Assessed = 0 pts, included in denominator, weighted
-                    $ScoringChecks = @($Peek.Checks)
+                    # Honest scoring matching dashboard (E-a): Not Assessed = 0 pts in denominator;
+                    # N/A and Excluded checks excluded from both numerator and denominator; weighted.
+                    $ScoringChecks = @($Peek.Checks | Where-Object { -not $_.Excluded -and $_.Status -ne 'N/A' })
                     $WeightedSum = 0; $TotalWeight = 0
                     foreach ($SC in $ScoringChecks) {
                         $W = [math]::Max(1, [int]$SC.Weight)
-                        $Pts = switch ($SC.Status) { 'Pass' { 100 } 'N/A' { 100 } 'Warning' { 50 } default { 0 } }
+                        $Pts = switch ($SC.Status) { 'Pass' { 100 } 'Warning' { 50 } default { 0 } }
                         $WeightedSum += $Pts * $W; $TotalWeight += $W
                     }
                     if ($TotalWeight -gt 0) { $ScorePercent = [math]::Round($WeightedSum / $TotalWeight, 0) }
                 }
             }
-        } catch { }
+        } catch { Write-DebugLog "Assessment list: failed to peek '$($F.Name)': $($_.Exception.Message)" -Level 'DEBUG' }
 
         $Item = New-Object System.Windows.Controls.ListViewItem
         $Item.Tag = $F.FullName
@@ -5064,9 +5044,8 @@ function Refresh-AssessmentList {
             $ScoreTB.Text = "$ScorePercent%"
             $ScoreTB.FontSize = 12; $ScoreTB.FontWeight = [System.Windows.FontWeights]::Bold
             $ScoreTB.VerticalAlignment = 'Center'
-            $ScoreTB.Foreground = if ($ScorePercent -ge 80) { $Global:CachedBC.ConvertFromString($(if ($Global:IsLightMode) { '#15803D' } else { '#4ADE80' })) }
-                                  elseif ($ScorePercent -ge 50) { $Global:CachedBC.ConvertFromString($(if ($Global:IsLightMode) { '#C2410C' } else { '#FBBF24' })) }
-                                  else { $Global:CachedBC.ConvertFromString($(if ($Global:IsLightMode) { '#DC2626' } else { '#FB923C' })) }
+            # E-b: canonical 5-tier maturity zone color
+            $ScoreTB.Foreground = $Global:CachedBC.ConvertFromString((Get-MaturityZoneColor $ScorePercent -DarkMode:(-not $Global:IsLightMode)))
             [System.Windows.Controls.DockPanel]::SetDock($ScoreTB, 'Right')
             [void]$Row1.Children.Add($ScoreTB)
         } elseif ($ProgressText) {
@@ -5278,7 +5257,14 @@ function Check-AssessmentAchievements {
 
     # Full sweep — all checks assessed
     $NotAssessed = @($Checks | Where-Object { $_.Status -eq 'Not Assessed' -and -not $_.Excluded })
-    if ($NotAssessed.Count -eq 0 -and $Checks.Count -gt 0) { Unlock-Achievement 'full_sweep' }
+    if ($NotAssessed.Count -eq 0 -and $Checks.Count -gt 0) {
+        Unlock-Achievement 'full_sweep'
+        # E-d: speed_demon — assessment completed within 5 minutes of the first status change
+        if ($Global:FirstStatusChangeTime -and
+            ((Get-Date) - $Global:FirstStatusChangeTime).TotalMinutes -lt 5) {
+            Unlock-Achievement 'speed_demon'
+        }
+    }
 
     # Perfect category — every non-excluded check in the category must be Pass or N/A
     $Categories = @($Checks | ForEach-Object { $_.Category } | Sort-Object -Unique)
@@ -5780,46 +5766,10 @@ foreach ($Cat in (Get-Categories)) {
 $cmbFilterCategory.SelectedIndex = 0
 
 # ===============================================================================
-# SECTION 17: BACKGROUND JOB POLLING TIMER
+# SECTION 17 (removed, E-g): the background-job polling timer only drained the never-used
+# Start-BackgroundWork/SyncHash/BgJobs scaffolding — removed with it. Discovery runs
+# out-of-band; the only remaining timer is the autosave DispatcherTimer.
 # ===============================================================================
-
-$Timer = New-Object System.Windows.Threading.DispatcherTimer
-$Timer.Interval = [TimeSpan]::FromMilliseconds($Script:TIMER_INTERVAL_MS)
-$Timer.Add_Tick({
-    if ($Global:TimerProcessing) { return }
-    $Global:TimerProcessing = $true
-    try {
-        # Process completed background jobs
-        $Completed = @($Global:BgJobs | Where-Object { $_.Handle.IsCompleted })
-        foreach ($Job in $Completed) {
-            try {
-                $Results = $Job.PS.EndInvoke($Job.Handle)
-                $Errors  = $Job.PS.Streams.Error
-                if ($Job.OnComplete) {
-                    & $Job.OnComplete $Results $Errors $Job.Context
-                }
-            } catch {
-                Write-DebugLog "BgJob [$($Job.Name)] error: $($_.Exception.Message)" -Level 'ERROR'
-            } finally {
-                $Job.PS.Dispose()
-                $Job.RS.Dispose()
-                [void]$Global:BgJobs.Remove($Job)
-            }
-        }
-
-        # Process sync queue messages
-        while ($Global:SyncHash.LogQueue.Count -gt 0) {
-            $Msg = $Global:SyncHash.LogQueue.Dequeue()
-            Write-DebugLog $Msg.Message -Level $Msg.Level
-        }
-        while ($Global:SyncHash.StatusQueue.Count -gt 0) {
-            $null = $Global:SyncHash.StatusQueue.Dequeue()
-        }
-    } finally {
-        $Global:TimerProcessing = $false
-    }
-})
-$Timer.Start()
 
 # ===============================================================================
 # SECTION 18: INITIALIZATION
@@ -5831,6 +5781,10 @@ Write-DebugLog "[INIT] Root: $Global:Root" -Level 'DEBUG'
 # Set initial values
 $txtAssessmentDate.Text = (Get-Date -Format 'yyyy-MM-dd')
 $lblSplashVersion.Text = "v$Global:AppVersion"
+# E-h: bind all version labels to $Global:AppVersion (XAML literals are fallbacks only)
+if ($lblTitleVersion) { $lblTitleVersion.Text = "v$Global:AppVersion" }
+$lblSettingsVersionRun = $Window.FindName('lblSettingsVersion')
+if ($lblSettingsVersionRun) { $lblSettingsVersionRun.Text = "v$Global:AppVersion" }
 
 # Splash step 
 Update-AchievementBadges
@@ -5946,7 +5900,7 @@ $Window.Add_Closing({
             Sync-AssessmentFromUI
             $Global:Assessment | ConvertTo-Json -Depth 10 | Set-Content $Global:ActiveFilePath -Encoding UTF8 -Force
             Write-DebugLog "Auto-saved to active profile: $Global:ActiveFilePath" -Level 'SUCCESS'
-        } catch { }
+        } catch { Write-DebugLog "Close: save to active profile failed: $($_.Exception.Message)" -Level 'ERROR' }
     }
     # If dirty but no active file, warn
     elseif ($Global:IsDirty -and (Test-AssessmentDirty)) {
@@ -5979,14 +5933,13 @@ $Window.Add_ContentRendered({
     try {
         $WIH = New-Object System.Windows.Interop.WindowInteropHelper($Window)
         [ForegroundHelper]::SetForegroundWindow($WIH.Handle) | Out-Null
-    } catch { }
+    } catch { Write-DebugLog "SetForegroundWindow failed: $($_.Exception.Message)" -Level 'DEBUG' }
 })
 
 # Show window (blocks until closed)
 $Window.ShowDialog() | Out-Null
 
 # Cleanup
-$Timer.Stop()
 $Global:AutoSaveTimer.Stop()
 Write-DebugLog "Application closed" -Level 'INFO'
 

@@ -55,6 +55,15 @@ Same as above plus domain join parameters:
 | `availabilityZones` | `[]` | Zone pinning (round-robin across VMs) |
 | `acceleratedNetworking` | `false` | Enable for supported SKUs |
 | `enableIntune` | `false` | Auto-enroll in Intune (Entra ID only) |
+| `avdAgentPackageUrl` | `https://wvdportalstorageblob.blob.core.windows.net/galleryartifacts/Configuration.zip` | Version-less AVD DSC agent package (Microsoft rolls this forward automatically). Override to pin a specific build without touching code |
+
+Session hosts in `vmList` are deployed via a module loop decorated with
+`@batchSize(5)` — at most 5 VMs deploy concurrently per run, regardless of how
+many names are in the list. Every generated NIC is named `nic-<vmName>` in
+both `sessionHost-entraid.bicep` and `sessionHost-legacy.bicep`. The VM
+(`Microsoft.Compute/virtualMachines`) and extension resources use API version
+`2024-07-01`; the NIC (`Microsoft.Network/networkInterfaces`) uses
+`2024-05-01`.
 
 ## Image Template (`imageTemplate.bicep`)
 
@@ -94,6 +103,8 @@ Deploys a `Microsoft.VirtualMachineImages/imageTemplates` resource using API ver
 | Staging Resource Group | `stagingResourceGroup` | Use pre-existing staging RG |
 | Gallery Versioning | `distributeVersioningScheme` | `Latest` (auto-increment) or `Source` |
 | Build VM Identity | `buildVmIdentities` | Assign identities for Key Vault access |
+| Windows Update pacing | `windowsUpdateWaitSeconds` (default `300`) | Deliberate `Start-Sleep` before the `WindowsUpdate` customizer, to avoid the known AIB race where the Windows Update service isn't ready yet after prior customizers |
+| Regional Replica Count | `regionalReplicaCount` (default `1`) | Replicas per target region for the distributed `SharedImage` gallery version |
 
 ### Usage
 

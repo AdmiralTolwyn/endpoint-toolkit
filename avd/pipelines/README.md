@@ -22,14 +22,16 @@ Two pipeline options for Azure Image Builder — choose based on your constraint
 | Marketplace dependency | Requires the [Azure VM Image Builder DevOps Task v2](https://marketplace.visualstudio.com/items?itemName=vacuumbreather.devOps-task-for-azure-image-builder-v2) extension | None (only built-in `AzureCLI@2` + `PowerShell@2`) |
 | YAML complexity | ~40 lines for the build step | ~150 lines (prepare / deploy / poll / cleanup) |
 | Customizer upload | Handled by the task (uploads `packagePath` to AIB staging blob) | Manual: pipeline zips repo + uploads to staging container |
-| Template lifecycle | Task creates / runs / cleans the AIB template | Bicep `imageTemplate.bicep` deploys; `az image builder run` triggers; explicit cleanup step deletes |
+| Template lifecycle | Task creates / runs / cleans the AIB template | Bicep `imageTemplate.bicep` deploys; `az image builder run` triggers; explicit cleanup step deletes (retries up to 5x with 60s backoff — AIB refuses template deletion while a run is in progress) |
 | Progress reporting | Built-in phase transitions, elapsed time, heartbeats | Custom polling loop in the pipeline |
 | Output variables | `imageUri`, `templateName`, `runOutput` | Parsed from `az` CLI output in pipeline scripts |
 | Auth | Workload identity federation (OIDC) or service principal | Workload identity federation (OIDC) or service principal |
 
+Both pipelines run an **identical customizer chain** (same 9 steps, same script arguments — see [Recommended pipeline order](../customizer/README.md#recommended-pipeline-order)) and pass full distribute parity (`optimizeVmBoot`, two target regions, versioning, error handling), so the choice between them is purely an infrastructure/dependency decision, not a feature trade-off. The Bicep-only artifact upload uses a user-delegation SAS (`--as-user`, 4h expiry) rather than a storage account key.
+
 ### Option 1: AIB Task v2 (`img-build-custom-image.yml`)
 
-Uses the [`AzureImageBuilderTaskV2@2`](https://marketplace.visualstudio.com/items?itemName=vacuumbreather.devOps-task-for-azure-image-builder-v2) marketplace extension — a community-maintained refresh of Microsoft's original `AzureImageBuilderTask@1`. **Recommended** when you can install the extension in your Azure DevOps organization.
+Uses the [`AzureImageBuilderTaskV2@2`](https://marketplace.visualstudio.com/items?itemName=vacuumbreather.devOps-task-for-azure-image-builder-v2) marketplace extension — a community-maintained refresh of Microsoft's original `AzureImageBuilderTask@1`. **Recommended** when you can install the extension in your Azure DevOps organization. The extension is currently distributed as a Marketplace **Preview** release.
 
 Key v2 improvements over the deprecated v1 task:
 
@@ -48,6 +50,8 @@ Key v2 improvements over the deprecated v1 task:
 
 See the [marketplace listing](https://marketplace.visualstudio.com/items?itemName=vacuumbreather.devOps-task-for-azure-image-builder-v2) for the full input reference and changelog.
 
+The `BuildImage` job carries an explicit `timeoutInMinutes: 180` (the AIB build itself is capped separately at 150 min via `buildTimeout`), so a stuck build fails the job instead of hitting the Azure DevOps default 60-minute job timeout.
+
 ### Option 2: Bicep-Only (`img-build-bicep-only.yml`)
 
 Zero extension dependency. Uses `AzureCLI@2` tasks + the shared [`imageTemplate.bicep`](../bicep/modules/imageTemplate.bicep) module. **Recommended** when extension installation in your Azure DevOps organization is restricted, or when you want full IaC ownership of the AIB template definition.
@@ -65,21 +69,30 @@ Prepare ──► Build ──► Cleanup
 
 ## Host Pool Update Flow
 
-The session host pipelines implement a blue/green deployment pattern across four
-manually-triggered (or scheduled) stages, sharing the helper scripts in
+The session host pipelines implement a blue/green deployment pattern across six
+manually-triggered stages, sharing the helper scripts in
 [avd/scripts](../scripts):
 
 ```
- ┌───────────────────────┐   ┌────────────────────┐   ┌───────────────────────┐
- │  update-hostpool-*    │ → │   activator (15m)  │ → │  cleanup-hostpool     │
- │  (Plan ▸ Drain Old ▸  │   │  Hybrid join only  │   │  Decommission drained │
- │   Canary ▸ Blast)     │   │  legacy-AD pools   │   │  + outdated hosts     │
- └───────────────────────┘   └────────────────────┘   └───────────────────────┘
+ ┌───────────────────────────┐   ┌────────────────────┐   ┌───────────────────────┐
+ │  update-hostpool-*        │ → │   activator (15m)  │ → │  cleanup-hostpool     │
+ │  (Preparation ▸ Validate ▸│   │  Hybrid join only  │   │  Decommission drained │
+ │   Canary ▸ Drain Old ▸    │   │  legacy-AD pools   │   │  + outdated hosts     │
+ │   Blast ▸ Rollback*)      │   │                     │   │                       │
+ └───────────────────────────┘   └────────────────────┘   └───────────────────────┘
+   * Rollback only runs if Canary / Drain Old / Blast fails
 ```
+
+Old hosts are **not** touched until the canary proves out: the canary deploys
+first, is health-gated, and is drained for validation — only then does the
+`DrainOld` stage drain the rest of the outdated fleet, followed by the blast
+deployment. If any of the three production stages (`DeployCanary`, `DrainOld`,
+`DeployBlast`) fails, a `Rollback` stage restores `AllowNewSession = $true` on
+the old fleet so users are never stranded on a half-replaced pool.
 
 ### Update pipelines — `avd-update-hostpool-entraid.yml` / `avd-update-hostpool-legacy.yml`
 
-Both pipelines share the same five-stage skeleton; they differ only in **identity
+Both pipelines share the same six-stage skeleton; they differ only in **identity
 join model**, **Bicep template**, and the **secrets / parameters** required for
 domain join.
 
@@ -88,7 +101,8 @@ domain join.
 | Pipeline name | `…-AVD-SessionHost-Update` | `…-AVD-Legacy-Update` |
 | Join model | Microsoft Entra ID join (optional Intune enrollment) | Hybrid Azure AD / on-prem AD domain join |
 | Bicep entrypoint | [main-entraid.bicep](../bicep/main-entraid.bicep) | [main-legacy.bicep](../bicep/main-legacy.bicep) |
-| Extra variables | `enableIntune` | `domainName`, `ouPath`, `baseName`, `vmCountOverride` |
+| Extra variables | `enableIntune` | `domainName`, `ouPath` |
+| `baseName` / `vmCountOverride` | Both pipelines expose these (see [Key operational variables](#key-operational-variables)) | Both pipelines expose these |
 | Extra Key Vault secrets | — | `avd-domain-join-user`, `avd-domain-join-password` |
 | Default availability zones | `[]` (none) | `[1,2,3]` |
 | Post-deploy activation | Native — Entra-joined hosts register immediately | Requires `avd-activator.yml` to flip `HybridStatus` tag |
@@ -97,17 +111,47 @@ Stage flow (identical for both):
 
 | # | Stage | Job / Script | What it does |
 |---|-------|--------------|--------------|
-| 1 | **Preparation** | `Get-AvdDetails.ps1` | Discovers the latest gallery image version, lists outdated session hosts, splits them into a single **canary** + **blast** batch, generates ISO-8601 hostnames, and issues a fresh host pool registration token. Outputs are exposed as pipeline variables (`TargetImageVersion`, `TargetImageId`, `CanaryList`, `BlastList`, `OutdatedHostsList`, `HostPoolToken`). |
-| 2 | **Validate** | inline script | Prints a human-readable deployment plan and asserts that the target version and registration token were resolved. Fails fast if the plan is empty or invalid. |
-| 3 | **DrainOld** | `Set-AvdDrainMode.ps1` | Sets `AllowNewSession = $false` on every outdated host so users start migrating off. Optionally writes a `Stage=Maintenance, Action=Drain` telemetry event. |
-| 4 | **DeployCanary** | `AzureCLI@2` + Bicep | Deploys **one** new session host from the latest image, joins it (Entra ID or AD), registers it with the host pool, and **immediately drains** it for smoke-testing. Subsequent stages only run if this succeeds. |
-| 5 | **DeployBlast** | `AzureCLI@2` + Bicep | Deploys the remaining new session hosts in a single batch using the same Bicep template / parameters, then drains them as well so admins can validate before opening to users. Skipped automatically when `BlastList` is empty. |
+| 1 | **Preparation** | `Get-AvdDetails.ps1` | Discovers the latest gallery image version, lists outdated session hosts, splits them into a single **canary** + **blast** batch (sized to the number of *outdated* hosts, not total pool size), and generates ISO-8601 hostnames. Outputs are exposed as pipeline variables (`TargetImageVersion`, `TargetImageId`, `CanaryList`, `BlastList`, `OutdatedHostsList`). |
+| 2 | **Validate** | inline script | Prints a human-readable deployment plan and asserts that the target image version was resolved and the canary list is non-empty. Registration tokens are no longer part of this stage's output — see [token handling](#registration-token-handling) below. |
+| 3 | **DeployCanary** | `AzureCLI@2` + Bicep | Mints a fresh host pool registration token in-stage, deploys **one** new session host from the latest image, joins it (Entra ID or AD), and registers it with the host pool. A **health gate** then polls `Get-AzWvdSessionHost` for up to 10 minutes waiting for `Status -eq 'Available'` before the canary is drained for smoke-testing. Subsequent stages only run if this whole stage succeeds — old hosts are untouched at this point. |
+| 4 | **DrainOld** | `Set-AvdDrainMode.ps1` | Runs only after `DeployCanary` succeeds. Sets `AllowNewSession = $false` on every outdated host so users start migrating off. Optionally writes a `Stage=Maintenance, Action=Drain` telemetry event. |
+| 5 | **DeployBlast** | `AzureCLI@2` + Bicep | Mints another fresh registration token in-stage, deploys the remaining new session hosts in a single batch using the same Bicep template / parameters, then drains them as well so admins can validate before opening to users. Skipped automatically when `BlastList` is empty. |
+| 6 | **Rollback** | inline `Update-AzWvdSessionHost` | Runs only if `DeployCanary`, `DrainOld`, or `DeployBlast` failed (and the run wasn't canceled). Restores `AllowNewSession = $true` on every host in `OutdatedHostsList` so the old fleet keeps serving users. `Set-AvdDrainMode.ps1` has no "undrain" direction, so this is done inline. |
+
+#### Registration token handling
+
+Registration tokens are minted **just-in-time inside each Deploy stage**
+(`DeployCanary`, `DeployBlast`) — there is no cross-stage secret hand-off. Each
+stage calls `Get-AzWvdRegistrationInfo`; if the existing token is missing or
+expires within 6 hours, it mints a new 24-hour token via
+`New-AzWvdRegistrationInfo`. This avoids a token minted in `Preparation`
+expiring mid-rollout on later-joining hosts, and avoids passing a secret
+through pipeline stage outputs.
+
+#### Secrets and parameter files
+
+Secrets (`avd-local-admin-password`, `avd-domain-join-user`,
+`avd-domain-join-password`, and the minted `HostPoolToken`) are read via the
+step's `env:` block and never macro-interpolated into scripts. The generated
+`canary.json` / `blast.json` ARM parameter files are deleted by an `always()`
+cleanup step at the end of each deploy job, regardless of success or failure.
+
+#### Key operational variables
+
+| Variable | Pipeline(s) | Default | Purpose |
+|----------|-------------|---------|---------|
+| `vmCountOverride` | `…-entraid.yml`, `…-legacy.yml` | `0` (auto-detect) | Circuit-breaker override. `Get-AvdDetails.ps1` aborts if 100% of a multi-host pool is outdated, unless a non-zero override confirms the full-fleet replacement. |
+| `baseName` | `…-entraid.yml`, `…-legacy.yml` | `<YOURVMPREFIX>` | Prefix for generated ISO-8601 week-based hostnames. |
+| `enableTelemetry` | All update/cleanup pipelines | `'false'` | Set to `'true'` to send `Write-DeploymentTelemetry.ps1` events to Log Analytics. |
 
 Notes:
 
-- All four "real work" stages (`DrainOld`, `DeployCanary`, `DeployBlast`, plus the
-  preparation stage) emit optional Log Analytics telemetry via
-  `Write-DeploymentTelemetry.ps1` when `enableTelemetry: 'true'`.
+- The `Preparation`, `DrainOld`, `DeployCanary`, and `DeployBlast` stages emit
+  optional Log Analytics telemetry via `Write-DeploymentTelemetry.ps1` when
+  `enableTelemetry: 'true'`. **That script uses the HTTP Data Collector API,
+  which Microsoft is retiring — support ends 2026-09-14.** The migration
+  target is the Logs Ingestion API (Data Collection Rule / Data Collection
+  Endpoint + Entra ID auth); this has not been implemented yet.
 - Hosts deployed by these pipelines are **born drained** — flipping them into
   service is an explicit operator decision (typically after Canary validation).
 - The legacy pipeline never undrains hosts on its own; for hybrid pools the
@@ -160,15 +204,32 @@ A single-step pipeline that wraps `Remove-AvdHosts.ps1`. For each session host i
 the target pool that is **already drained** *and* whose image version is older
 than the latest published version in the Compute Gallery, the script:
 
-1. Logs off any remaining sessions (grace period enforced inside the script).
-2. Removes the session host registration from the host pool.
-3. Deletes the underlying VM, NIC, and OS disk from the compute resource group.
-4. Optionally emits a `Stage=Cleanup, Action=Decommission` telemetry event.
+1. If the host has active sessions, stamps a `PendingDrainTimestamp` tag on
+   first encounter and warns connected users. On later runs, once
+   `drainGracePeriodHours` has elapsed, it **force-logs-off any remaining
+   sessions** and re-verifies the session count is zero before proceeding —
+   a host that still shows live sessions after the forced logoff is skipped
+   with an error, never decommissioned.
+2. Deletes the underlying VM **first**. The AVD host registration is only
+   removed once the VM delete is confirmed successful, so a failed VM delete
+   never leaves an orphaned registration pointing at nothing (or vice versa).
+3. Deletes the NIC and OS disk, resolved from the VM's own network/storage
+   profile references (not a naming-pattern guess).
+4. Removes the session host registration from the host pool, and the Entra ID
+   device record for Entra-joined hosts (`Directory=EntraID` tag).
+5. Optionally emits a `Stage=Cleanup, Action=Decommission` telemetry event.
 
 Inputs are the host pool, compute RG, and gallery coordinates used to compute
 "latest". This is the final step of the blue/green cycle and is intentionally
 manual so operators can verify the new fleet is healthy before tearing down the
 old one.
+
+**Safety defaults:** the `simulate` pipeline variable defaults to `'true'` —
+a real (destructive) run requires an explicit opt-out (`simulate: 'false'`)
+when queuing the pipeline. `Simulate` mode is a true dry run: every delete is
+logged but nothing is changed. `drainGracePeriodHours` (default `24`)
+controls how long a host with active sessions is left alone before the
+forced logoff kicks in.
 
 ## Configuration
 
@@ -188,8 +249,14 @@ All pipelines use `<YOUR...>` placeholders for environment-specific values. Sear
 | `<YOURSTORAGEACCOUNT>` | Staging storage account for build artifacts |
 | `<YOURREPOSITORYNAME>` | Azure DevOps repository with customizer scripts |
 | `<YOURHOSTPOOLNAME>` | AVD host pool name |
+| `<YOURVNETNAME>` | Virtual network name for session host NICs |
+| `<YOURVMPREFIX>` | `baseName` prefix used to generate ISO-8601 week-based hostnames |
 | `<YOURDOMAINNAME>` | AD domain FQDN (legacy join only) |
 | `<YOUROUPATH>` | OU distinguished name for computer objects (legacy join only) |
+
+See [Key operational variables](#key-operational-variables) above for
+non-placeholder variables (`vmCountOverride`, `enableTelemetry`) and the
+cleanup pipeline's `simulate` / `drainGracePeriodHours` variables.
 
 ## Prerequisites
 
@@ -198,4 +265,28 @@ All pipelines use `<YOUR...>` placeholders for environment-specific values. Sear
 - User-assigned managed identity with Contributor + Storage Blob Data Contributor roles
 - Storage account for staging artifacts
 - Key Vault with admin credentials
-- For AIB Task v2: [Azure VM Image Builder DevOps Task v2](https://marketplace.visualstudio.com/items?itemName=vacuumbreather.devOps-task-for-azure-image-builder-v2) extension installed (Azure DevOps agent 2.144.0+)
+- For AIB Task v2: [Azure VM Image Builder DevOps Task v2](https://marketplace.visualstudio.com/items?itemName=vacuumbreather.devOps-task-for-azure-image-builder-v2) extension installed (Azure DevOps agent **3.232.1+** — the first agent version with the Node 20 task handler; the extension itself is a Marketplace **Preview** release)
+
+## Required outbound endpoints
+
+Session host deployments run a chain of VM extensions that each need their own
+outbound (egress) connectivity from the session-host subnet. A restricted
+subnet is the most common cause of a deployment that reaches `Succeeded` on
+the VM but hangs at the [async poll](#deployment-diagnostics--async-submit--poll)
+stage. Microsoft's authoritative, always-current list is
+[Required FQDNs and endpoints for Azure Virtual Desktop](https://learn.microsoft.com/azure/virtual-desktop/required-fqdn-endpoint) —
+**verify against that doc**, since Microsoft revises regional/service
+endpoints over time. The extensions polled by these pipelines map to it as
+follows:
+
+| Extension | Purpose | Representative endpoints (verify against the linked doc) |
+|-----------|---------|-----------------------------------------------------------|
+| `AADLoginForWindows` | Entra ID join | `login.microsoftonline.com`, `pas.windows.net`, `enterpriseregistration.windows.net`, `device.login.microsoftonline.com` |
+| `GuestAttestation` | TPM attestation (TrustedLaunch) | Regional `*.attest.azure.net` |
+| `Microsoft.PowerShell.DSC` (AVD agent) | AVD registration | `wvdportalstorageblob.blob.core.windows.net`, `catalogartifact.azureedge.net`, `*.wvd.microsoft.com` |
+
+If a deployment stalls with the DSC/AVD agent extension stuck in
+`Creating`/`Transitioning`, check the AVD agent's own event log first:
+**WVD-Agent Event ID 3701** reports the specific region-scoped FQDN the agent
+is trying (and failing) to reach — it is more precise than guessing from the
+static list above.

@@ -1,6 +1,6 @@
 {
   "_metadata": {
-    "version": "1.0",
+    "version": "1.1",
     "description": "BaselinePilot check definitions — MS Security Baseline + Operational Health checks",
     "originKey": {
       "INTUNE": "Microsoft Intune Security Baseline (24H2)",
@@ -20,7 +20,20 @@
       "UAC": "User Account Control",
       "OPS": "Operations & Health",
       "PERF": "Performance & Stability"
-    }
+    },
+    "totalChecks": 312,
+    "retiredIds": [
+      "AUTH-029",
+      "DATA-019",
+      "DATA-023",
+      "DEF-006",
+      "DEF-007",
+      "DEF-008",
+      "DEF-009",
+      "NET-019",
+      "OPS-010",
+      "OPS-031"
+    ]
   },
   "checks": [
     {
@@ -93,7 +106,7 @@
         "intune",
         "gpo"
       ],
-      "rationale": "Disabling the lock screen camera prevents an attacker with physical access from using the camera to capture images of the environment or users. Low severity but part of physical security hardening.",
+      "rationale": "Disabling the lock screen camera prevents an attacker with physical access from using the camera to capture images of the environment or users. Low severity but part of physical security hardening. Cross-reference: duplicates DATA-015 (Disable Camera on Lock Screen) — same underlying data point; both checks are retained (not consolidated) for saved-assessment backward compatibility.",
       "baselineValue": 1
     },
     {
@@ -142,7 +155,8 @@
         "gpo"
       ],
       "cspPath": "LocalPoliciesSecurityOptions/InteractiveLogon_MachineInactivityLimit",
-      "rationale": "Without an inactivity timeout, an unattended workstation remains unlocked indefinitely. The 900-second (15-minute) baseline balances security with usability. requires session lock after a defined period."
+      "rationale": "Without an inactivity timeout, an unattended workstation remains unlocked indefinitely. The 900-second (15-minute) baseline balances security with usability. requires session lock after a defined period.",
+      "comparison": "max"
     },
     {
       "id": "SEC-006",
@@ -263,7 +277,8 @@
         "gpo"
       ],
       "cspPath": "RemoteDesktopServices/ClientConnectionEncryptionLevel",
-      "rationale": "RDP encryption level must be set to High (3) to use maximum key strength (128-bit). Low or Client Compatible encryption uses weaker keys that can be broken by a network attacker."
+      "rationale": "RDP encryption level must be set to High (3) to use maximum key strength (128-bit). Low or Client Compatible encryption uses weaker keys that can be broken by a network attacker.",
+      "comparison": "min"
     },
     {
       "id": "SEC-011",
@@ -387,18 +402,18 @@
       ],
       "category": "Security Configuration",
       "id": "SEC-016",
-      "remediation": "Set RestrictSendingNTLMTraffic to 2 (Deny all) or 1 (Audit) under Lsa\\MSV1_0",
+      "remediation": "Set RestrictSendingNTLMTraffic to 1 (Audit all) under Lsa\\MSV1_0. Move to 2 (Deny all) only after audit logs confirm no remaining NTLM dependencies.",
       "type": "Auto",
       "effort": "Some Effort",
       "severity": "High",
       "weight": 4,
-      "description": "Restrict NTLM authentication and audit NTLM usage to reduce pass-the-hash attack surface",
+      "description": "Audit NTLM authentication traffic to build visibility ahead of a staged restriction rollout",
       "applicableTo": [
         "gpo"
       ],
       "name": "Restrict NTLM Authentication to Domain",
-      "rationale": "NTLM traffic restriction (RestrictSendingNTLMTraffic) controls whether the machine sends NTLMv1/v2 responses. Setting to 'Deny all' forces Kerberos-only authentication, eliminating NTLM relay and pass-the-hash attack vectors. Start with 'Audit' mode to identify impact.",
-      "baselineValue": "2"
+      "rationale": "NTLM traffic restriction (RestrictSendingNTLMTraffic) controls whether the machine sends NTLMv1/v2 responses. The 25H2 baseline direction is to start with Audit (1) rather than jump straight to Deny all (2), to first identify application/service dependencies on NTLM before eliminating it outright. This check was previously keyed to Deny-all (2); corrected to the Audit-first (1) baseline value.",
+      "baselineValue": "1"
     },
     {
       "impact": "WDigest stores plaintext passwords in LSASS memory, trivially extractable by Mimikatz.",
@@ -444,7 +459,7 @@
         "gpo"
       ],
       "name": "Enable Windows Event Log Service",
-      "rationale": "Part of the Microsoft Security Baseline hardening recommendations. These settings reduce the attack surface by disabling unnecessary features, enforcing secure defaults, and preventing common exploitation techniques.",
+      "rationale": "Part of the Microsoft Security Baseline hardening recommendations. These settings reduce the attack surface by disabling unnecessary features, enforcing secure defaults, and preventing common exploitation techniques. Cross-reference: duplicates OPS-012/OPS-024 (Ensure Critical Services Are Running / Verify Event Log Service Configuration) — same underlying data point (EventLog service running-state); both checks are retained (not consolidated) for saved-assessment backward compatibility.",
       "baselineValue": "Running"
     },
     {
@@ -684,7 +699,7 @@
     {
       "impact": "Print Spooler has been the target of many RCE vulnerabilities (PrintNightmare CVE-2021-34527).",
       "priority": "Baseline",
-      "origin": "SCT",
+      "origin": "OPS",
       "collectionKeys": [
         "services.Spooler.Status"
       ],
@@ -695,12 +710,12 @@
       "effort": "Some Effort",
       "severity": "High",
       "weight": 4,
-      "description": "Disable the Print Spooler service to prevent PrintNightmare-class vulnerabilities",
+      "description": "Disable the Print Spooler service to prevent PrintNightmare-class vulnerabilities — CIS-style hardening, not part of the Microsoft Security Baseline",
       "applicableTo": [
         "gpo"
       ],
       "name": "Disable Print Spooler on Non-Print Servers",
-      "rationale": "The Print Spooler service has been the target of PrintNightmare (CVE-2021-34527, CVSS 8.8), which allows remote code execution as SYSTEM. Even after patches, new Spooler vulnerabilities continue to be discovered. Microsoft recommends disabling the service on non-print servers.",
+      "rationale": "The Print Spooler service has been the target of PrintNightmare (CVE-2021-34527, CVSS 8.8), which allows remote code execution as SYSTEM. Even after patches, new Spooler vulnerabilities continue to be discovered. This is CIS-style hardening guidance, not a Microsoft Security Baseline requirement — relabeled from SCT to OPS origin accordingly; only disable on machines that do not need local/network printing.",
       "mitreAttack": "T1547.012",
       "baselineValue": "Stopped"
     },
@@ -1335,12 +1350,12 @@
       ],
       "type": "Auto",
       "effort": "Quick Win",
-      "severity": "High",
-      "weight": 4,
-      "description": "Verify CPU vulnerability mitigations (Spectre V2, Meltdown) are enabled",
+      "severity": "Low",
+      "weight": 2,
+      "description": "Verify CPU vulnerability mitigations (Spectre V2, Meltdown) are enabled — informational; FeatureSettingsOverride is not present in the current Microsoft Security Baseline",
       "remediation": "GPO: Set 'FeatureSettingsOverride' under HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management. Registry: HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management\\FeatureSettingsOverride. Intune: Use Settings Catalog or custom OMA-URI if CSP mapping available.",
       "name": "Enable Spectre/Meltdown Mitigations",
-      "rationale": "Spectre V2 and Meltdown CPU vulnerabilities allow kernel memory disclosure from user-mode processes. FeatureSettingsOverride controls the OS-level mitigations. The baseline ensures mitigations are active.",
+      "rationale": "Spectre V2 and Meltdown CPU vulnerabilities allow kernel memory disclosure from user-mode processes. FeatureSettingsOverride controls OS-level mitigations, but this setting is not part of the current Microsoft Security Baseline (mitigations are enabled by default via cumulative updates on supported hardware) — demoted to informational/Low.",
       "baselineValue": "0"
     },
     {
@@ -1381,12 +1396,12 @@
       ],
       "type": "Auto",
       "effort": "Quick Win",
-      "severity": "Medium",
-      "weight": 3,
+      "severity": "High",
+      "weight": 4,
       "description": "Ensure Memory Integrity (HVCI) status is reported and monitored",
       "remediation": "Configure via GPO or Intune per Microsoft Security Baseline",
       "name": "Enable Core Isolation Memory Integrity Reporting",
-      "rationale": "Part of the Microsoft Security Baseline hardening recommendations. These settings reduce the attack surface by disabling unnecessary features, enforcing secure defaults, and preventing common exploitation techniques.",
+      "rationale": "Part of the Microsoft Security Baseline hardening recommendations. These settings reduce the attack surface by disabling unnecessary features, enforcing secure defaults, and preventing common exploitation techniques. Cross-reference: duplicates DATA-009 (Enable Memory Integrity (HVCI)) — same underlying data point (Memory Integrity/HVCI running-state; severity aligned to High); both checks are retained (not consolidated) for saved-assessment backward compatibility.",
       "baselineValue": "True"
     },
     {
@@ -1453,11 +1468,11 @@
       "effort": "Quick Win",
       "severity": "Medium",
       "weight": 3,
-      "description": "Disable 6to4, Teredo, and ISATAP tunneling mechanisms",
-      "remediation": "GPO: Set 'DisabledComponents' under HKLM\\SYSTEM\\CurrentControlSet\\Services\\TCPIP6\\Parameters. Registry: HKLM\\SYSTEM\\CurrentControlSet\\Services\\TCPIP6\\Parameters\\DisabledComponents. Intune: Use Settings Catalog or custom OMA-URI if CSP mapping available.",
-      "name": "Disable IPv6 Transition Technologies",
-      "rationale": "Part of the Microsoft Security Baseline hardening recommendations. These settings reduce the attack surface by disabling unnecessary features, enforcing secure defaults, and preventing common exploitation techniques.",
-      "baselineValue": "255"
+      "description": "Disable 6to4/Teredo/ISATAP tunneling and prefer IPv4 over IPv6 (0x20) — do not fully disable IPv6 (0xFF), which Microsoft does not recommend",
+      "remediation": "GPO: Set 'DisabledComponents' under HKLM\\SYSTEM\\CurrentControlSet\\Services\\TCPIP6\\Parameters to 0x20 (32) — disables 6to4/Teredo/ISATAP tunneling adapters and prefers IPv4 over IPv6 in most resolution/binding order scenarios. Do NOT set 255 (0xFF): Microsoft does not recommend fully disabling IPv6, and several OS components assume IPv6 availability.",
+      "name": "Prefer IPv4 Over IPv6 and Disable IPv6 Tunneling",
+      "rationale": "Microsoft's guidance is to disable the IPv6 transition/tunneling technologies (6to4, Teredo, ISATAP) and prefer IPv4 over IPv6 where both are available, using DisabledComponents=0x20 (32). A value of 255 (0xFF) fully disables IPv6 stack-wide, which Microsoft explicitly advises against since IPv6 is tested-in-parallel and several built-in components assume it is present. This check was previously keyed to the unsupported 255 value; corrected to the supported prefer-IPv4 value.",
+      "baselineValue": "32"
     },
     {
       "impact": "Enable PowerShell transcript logging for forensic investigations",
@@ -1522,12 +1537,12 @@
       ],
       "type": "Auto",
       "effort": "Quick Win",
-      "severity": "High",
-      "weight": 4,
-      "description": "Disable PowerShell version 2 engine to prevent logging bypass",
+      "severity": "Low",
+      "weight": 2,
+      "description": "Disable PowerShell version 2 engine to prevent logging bypass — informational; the PowerShell v2 engine has been removed from Windows 11 24H2 and later, so this only applies to legacy/downlevel builds",
       "remediation": "GPO: Set 'PSEngineVersion2' under HKLM\\SOFTWARE\\Microsoft\\PowerShell\\1. Registry: HKLM\\SOFTWARE\\Microsoft\\PowerShell\\1\\PSEngineVersion2. Intune: Use Settings Catalog or custom OMA-URI if CSP mapping available.",
       "name": "Block PowerShell Version 2 Engine",
-      "rationale": "PowerShell v2 engine lacks Script Block Logging, Module Logging, and Constrained Language Mode. Attackers downgrade to v2 to bypass all PS security controls. Removing the v2 engine closes this bypass.",
+      "rationale": "PowerShell v2 engine lacks Script Block Logging, Module Logging, and Constrained Language Mode. Attackers historically downgraded to v2 to bypass PS security controls. Microsoft has removed the PowerShell v2 engine outright starting with Windows 11 24H2, making this check moot on current builds — demoted to informational/Low; only relevant on legacy/downlevel OS versions.",
       "mitreAttack": "T1059.001",
       "baselineValue": "0"
     },
@@ -2133,7 +2148,7 @@
         "gpo"
       ],
       "cspPath": "Defender/PUAProtection",
-      "rationale": "Potentially Unwanted Applications (PUA) include adware, bundleware, and toolbars that degrade performance and may exfiltrate data. PUAProtection=1 blocks these at download time. The baseline has required this since Windows 10 1809."
+      "rationale": "Potentially Unwanted Applications (PUA) include adware, bundleware, and toolbars that degrade performance and may exfiltrate data. PUAProtection=1 blocks these at download time. The baseline has required this since Windows 10 1809. Cross-reference: duplicates DEF-034 (Enable Defender Potentially Unwanted App Blocking) — same underlying data point; both checks are retained (not consolidated) for saved-assessment backward compatibility."
     },
     {
       "id": "DEF-005",
@@ -2357,20 +2372,20 @@
       ],
       "category": "Defender & Endpoint Security",
       "id": "DEF-018",
-      "remediation": "Set ASR rule D1E49AAC-8F56-4280-B9BA-993A6D77406C to Block (1)",
+      "remediation": "Set ASR rule D1E49AAC-8F56-4280-B9BA-993A6D77406C to Audit (2). The 25H2 baseline direction moved this rule from Block (1) to Audit (2); move to Block only after confirming no legitimate PSExec/WMI dependencies via audit logs.",
       "type": "Auto",
       "effort": "Some Effort",
       "severity": "High",
       "weight": 4,
-      "description": "Block process creations originating from PSExec and WMI commands",
+      "description": "Audit process creations originating from PSExec and WMI commands (25H2 baseline: Audit, not Block)",
       "applicableTo": [
         "intune",
         "gpo"
       ],
       "name": "Enable ASR Rule: Block Process Creation from PSExec and WMI",
-      "rationale": "ASR rule D1E49AAC: PSExec and WMI are the most common tools for lateral movement in enterprise attacks. This rule blocks process creation from PSExec/WMI commands, limiting attacker mobility.",
+      "rationale": "ASR rule D1E49AAC: PSExec and WMI are common tools for lateral movement in enterprise attacks, but they are also widely used by legitimate admin tooling. The 25H2 baseline sets this rule to Audit (2) rather than Block (1) to avoid breaking management tooling; this check was previously keyed to Block (1).",
       "mitreAttack": "T1021.002",
-      "baselineValue": "1"
+      "baselineValue": "2"
     },
     {
       "impact": "USB-delivered executables bypass network-level security controls.",
@@ -2439,7 +2454,7 @@
         "gpo"
       ],
       "name": "Enable ASR Rule: Block Email Client Executable Content",
-      "rationale": "ASR rule BE9BA2D9: Email is the primary malware delivery vector. This rule blocks executable content (EXE, DLL, SCR, scripts) from email clients and webmail, preventing direct execution of malicious attachments.",
+      "rationale": "ASR rule BE9BA2D9: Email is the primary malware delivery vector. This rule blocks executable content (EXE, DLL, SCR, scripts) from email clients and webmail, preventing direct execution of malicious attachments. Cross-reference: duplicates DEF-032 (Enable ASR Rule: Block Executable Content from Webmail) — same underlying data point (same ASR GUID BE9BA2D9-53EA-4CDC-84E5-9B1EEEE46550); both checks are retained (not consolidated) for saved-assessment backward compatibility.",
       "baselineValue": "1"
     },
     {
@@ -2448,7 +2463,7 @@
       "priority": "Baseline",
       "origin": "INTUNE,SCT",
       "collectionKeys": [
-        "registryBaselines.HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows Defender\\Policy Manager\\EnableNetworkProtection"
+        "defender.EnableNetworkProtection"
       ],
       "category": "Defender & Endpoint Security",
       "id": "DEF-022",
@@ -2472,7 +2487,7 @@
       "priority": "Baseline",
       "origin": "INTUNE",
       "collectionKeys": [
-        "registryBaselines.HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows Defender\\Policy Manager\\EnableControlledFolderAccess"
+        "defender.EnableControlledFolderAccess"
       ],
       "category": "Defender & Endpoint Security",
       "id": "DEF-023",
@@ -2632,11 +2647,11 @@
       "priority": "Baseline",
       "origin": "INTUNE,SCT",
       "collectionKeys": [
-        "defender.DisableIOAVProtection"
+        "defender.IoavProtectionEnabled"
       ],
       "category": "Defender & Endpoint Security",
       "id": "DEF-029",
-      "remediation": "Set DisableIOAVProtection to 0 via GPO or Intune",
+      "remediation": "Ensure IOAV (on-access download/attachment) protection is enabled — the collector reads the positive Get-MpPreference property IoavProtectionEnabled (True = enabled). Set via GPO ('Scan all downloaded files and attachments') or Intune Antivirus profile.",
       "type": "Auto",
       "effort": "Quick Win",
       "severity": "High",
@@ -2647,8 +2662,8 @@
         "gpo"
       ],
       "name": "Enable Scan of All Downloaded Files and Attachments",
-      "rationale": "On-Access protection (IOAV) scans files as they are downloaded or created. DisableIOAVProtection=0 ensures every file is checked before it can be opened. Without this, malware can be saved to disk and executed later.",
-      "baselineValue": "False"
+      "rationale": "On-Access protection (IOAV) scans files as they are downloaded or created. IoavProtectionEnabled=True (the collector-emitted positive property; the underlying registry value is the inverted DisableIOAVProtection) ensures every file is checked before it can be opened. Without this, malware can be saved to disk and executed later.",
+      "baselineValue": "True"
     },
     {
       "impact": "Email archives may contain embedded malware not caught by real-time protection.",
@@ -2716,7 +2731,7 @@
       "description": "Block executable content downloads from webmail clients",
       "remediation": "GPO: Set 'ASRRules' under HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows Defender\\Policy Manager. Registry: HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows Defender\\Policy Manager\\ASRRules. Intune: Use Settings Catalog or custom OMA-URI if CSP mapping available.",
       "name": "Enable ASR Rule: Block Executable Content from Webmail",
-      "rationale": "Microsoft Defender is the built-in endpoint protection platform. Each setting strengthens a specific detection or prevention capability. The security baseline ensures all Defender features are active and configured for maximum protection.",
+      "rationale": "Microsoft Defender is the built-in endpoint protection platform. Each setting strengthens a specific detection or prevention capability. The security baseline ensures all Defender features are active and configured for maximum protection. Cross-reference: duplicates DEF-021 (Enable ASR Rule: Block Email Client Executable Content) — same underlying data point (same ASR GUID BE9BA2D9-53EA-4CDC-84E5-9B1EEEE46550); both checks are retained (not consolidated) for saved-assessment backward compatibility.",
       "baselineValue": "1"
     },
     {
@@ -2763,7 +2778,7 @@
         "defender.PUAProtection"
       ],
       "severity": "Medium",
-      "rationale": "Microsoft Defender is the built-in endpoint protection platform. Each setting strengthens a specific detection or prevention capability. The security baseline ensures all Defender features are active and configured for maximum protection."
+      "rationale": "Microsoft Defender is the built-in endpoint protection platform. Each setting strengthens a specific detection or prevention capability. The security baseline ensures all Defender features are active and configured for maximum protection. Cross-reference: duplicates DEF-004 (Enable PUA Protection in Defender) — same underlying data point; both checks are retained (not consolidated) for saved-assessment backward compatibility."
     },
     {
       "impact": "Set signature update check interval to no more than 4 hours",
@@ -2970,7 +2985,8 @@
       ],
       "cspPath": "DeviceLock/MinDevicePasswordLength",
       "rationale": "The 14-character minimum was introduced in the Windows 10 21H2 baseline (previously 8). The 22H2 baseline blog specifically discussed this change.",
-      "mitreAttack": "T1110"
+      "mitreAttack": "T1110",
+      "comparison": "min"
     },
     {
       "id": "AUTH-002",
@@ -3019,7 +3035,8 @@
         "gpo"
       ],
       "cspPath": "DeviceLock/MaxDevicePasswordFailedAttempts",
-      "rationale": "Account lockout threshold of 10 was set in the 22H2 baseline (previously 0/not configured). This balances security (blocks brute-force) with usability (10 attempts before lockout is generous for legitimate users)."
+      "rationale": "Account lockout threshold of 10 was set in the 22H2 baseline (previously 0/not configured). This balances security (blocks brute-force) with usability (10 attempts before lockout is generous for legitimate users).",
+      "comparison": "max"
     },
     {
       "id": "AUTH-004",
@@ -3042,7 +3059,7 @@
         "intune",
         "gpo"
       ],
-      "rationale": "LmCompatibilityLevel=5 forces NTLMv2 only and refuses LM and NTLMv1 responses. LM hashes are trivially crackable (rainbow tables), and NTLMv1 is vulnerable to relay attacks. This has been a baseline requirement since Windows Server 2008.",
+      "rationale": "LmCompatibilityLevel=5 forces NTLMv2 only and refuses LM and NTLMv1 responses. LM hashes are trivially crackable (rainbow tables), and NTLMv1 is vulnerable to relay attacks. This has been a baseline requirement since Windows Server 2008. Cross-reference: duplicates AUTH-020 (Disable NTLMv1 Response Only) — same underlying data point; both checks are retained (not consolidated) for saved-assessment backward compatibility.",
       "mitreAttack": "T1550.002"
     },
     {
@@ -3249,7 +3266,7 @@
         "gpo"
       ],
       "name": "Restrict Privilege Escalation from Standard Users",
-      "rationale": "Authentication and credential security is critical for preventing unauthorized access. Weak password policies and credential storage mechanisms are among the most exploited vulnerabilities in enterprise environments."
+      "rationale": "Authentication and credential security is critical for preventing unauthorized access. Weak password policies and credential storage mechanisms are among the most exploited vulnerabilities in enterprise environments. Cross-reference: duplicates UAC-006 (Detect Application Installations and Prompt for Elevation) — same underlying data point (EnableInstallerDetection; severity aligned to High); both checks are retained (not consolidated) for saved-assessment backward compatibility."
     },
     {
       "impact": "Auto admin logon stores cleartext password in the registry and bypasses all authentication.",
@@ -3410,7 +3427,7 @@
       "collectionKeys": [
         "registryBaselines.HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa\\LmCompatibilityLevel"
       ],
-      "rationale": "Authentication and credential security is critical for preventing unauthorized access. Weak password policies and credential storage mechanisms are among the most exploited vulnerabilities in enterprise environments."
+      "rationale": "Authentication and credential security is critical for preventing unauthorized access. Weak password policies and credential storage mechanisms are among the most exploited vulnerabilities in enterprise environments. Cross-reference: duplicates AUTH-004 (Enforce LAN Manager Authentication Level) — same underlying data point; both checks are retained (not consolidated) for saved-assessment backward compatibility."
     },
     {
       "impact": "Set maximum lifetime for user ticket to 10 hours",
@@ -3433,7 +3450,8 @@
       "collectionKeys": [
         "securityPolicy.Kerberos Policy_MaxTicketAge"
       ],
-      "rationale": "Authentication and credential security is critical for preventing unauthorized access. Weak password policies and credential storage mechanisms are among the most exploited vulnerabilities in enterprise environments."
+      "rationale": "Authentication and credential security is critical for preventing unauthorized access. Weak password policies and credential storage mechanisms are among the most exploited vulnerabilities in enterprise environments.",
+      "comparison": "min"
     },
     {
       "impact": "Set maximum lifetime for user ticket renewal to 7 days",
@@ -3456,7 +3474,8 @@
       "collectionKeys": [
         "securityPolicy.Kerberos Policy_MaxRenewAge"
       ],
-      "rationale": "Authentication and credential security is critical for preventing unauthorized access. Weak password policies and credential storage mechanisms are among the most exploited vulnerabilities in enterprise environments."
+      "rationale": "Authentication and credential security is critical for preventing unauthorized access. Weak password policies and credential storage mechanisms are among the most exploited vulnerabilities in enterprise environments.",
+      "comparison": "min"
     },
     {
       "impact": "Enforce computer clock synchronization for Kerberos ticket validation",
@@ -3677,22 +3696,23 @@
       "origin": "SCT",
       "category": "Authentication & Credentials",
       "id": "AUTH-031",
-      "remediation": "Legacy LAPS: Set AdmPwdEnabled=1 under HKLM\\SOFTWARE\\Policies\\Microsoft Services\\AdmPwd. Windows LAPS (preferred): Configure via Intune LAPS policy or GPO 'Computer Configuration > Administrative Templates > System > LAPS'. Intune CSP: ./Device/Vendor/MSFT/LAPS/Policies/BackupDirectory.",
+      "remediation": "Configure Windows LAPS via Intune LAPS policy or GPO 'Computer Configuration > Administrative Templates > System > LAPS > BackupDirectory'. Intune CSP: ./Device/Vendor/MSFT/LAPS/Policies/BackupDirectory. Set BackupDirectory to 1 (back up to Microsoft Entra ID) or 2 (back up to Active Directory) — both values are acceptable; 0 (disabled) fails.",
       "effort": "Some Effort",
       "type": "Auto",
-      "name": "Verify Local Admin Password Solution (LAPS) Deployment",
+      "name": "Verify Windows LAPS Deployment",
       "severity": "High",
       "weight": 4,
-      "description": "Confirm LAPS or Windows LAPS is deployed for local admin password management",
+      "description": "Confirm Windows LAPS (built-in, not legacy AdmPwd) is deployed and backing up local administrator passwords",
       "applicableTo": [
         "intune",
         "gpo"
       ],
       "collectionKeys": [
-        "registryBaselines.HKLM\\SOFTWARE\\Policies\\Microsoft Services\\AdmPwd\\AdmPwdEnabled"
+        "registryBaselines.HKLM\\SOFTWARE\\Microsoft\\Policies\\LAPS\\BackupDirectory"
       ],
-      "rationale": "LAPS ensures each machine has a unique, random, regularly-rotated local admin password. Legacy LAPS (MSI-based) used the AdmPwd registry key. Windows LAPS (built-in since 21H2) is now the recommended solution and uses different CSP/registry paths. The 24H2 MDM baseline configures 'LAPS > Backup Directory: Backup to Azure AD only'. This check validates legacy LAPS deployment — consider also verifying Windows LAPS via the LAPS CSP (BackupDirectory setting).",
-      "baselineValue": 1
+      "rationale": "Windows LAPS (built into Windows since 2023 updates) ensures each machine has a unique, random, regularly-rotated local admin password. The legacy MSI-based LAPS (AdmPwd, AdmPwdEnabled registry key) was deprecated by Microsoft in October 2023 in favor of Windows LAPS, which uses the LAPS\\BackupDirectory policy instead. BackupDirectory=1 (Entra ID) and BackupDirectory=2 (Active Directory) are both acceptable destinations — either satisfies the control; only 0 (not configured/disabled) should fail.",
+      "baselineValue": "1",
+      "comparison": "min"
     },
     {
       "impact": "Limit maximum Windows Hello PIN length to prevent excessive PINs",
@@ -3716,6 +3736,55 @@
       ],
       "rationale": "Authentication and credential security is critical for preventing unauthorized access. Weak password policies and credential storage mechanisms are among the most exploited vulnerabilities in enterprise environments.",
       "baselineValue": "127"
+    },
+    {
+      "id": "AUTH-033",
+      "category": "Authentication & Credentials",
+      "name": "Kerberos AES Encryption Types Readiness",
+      "description": "Verify the KDC is configured to issue AES-only Kerberos tickets (AES128+AES256), ahead of Microsoft's RC4 removal from Kerberos",
+      "severity": "Critical",
+      "weight": 5,
+      "type": "Auto",
+      "priority": "Baseline",
+      "origin": "SCT",
+      "effort": "Some Effort",
+      "impact": "Microsoft is removing RC4 from Kerberos: enforcement begins April 2026 (RC4 no longer negotiated) and audit-mode support is removed entirely in July 2026. Accounts or services still relying on RC4 tickets will fail to authenticate once enforcement lands.",
+      "remediation": "Set DefaultDomainSupportedEncTypes to at least 24 (0x18 = AES128 + AES256) under HKLM\\SYSTEM\\CurrentControlSet\\Services\\Kdc via GPO 'Network security: Configure encryption types allowed for Kerberos' or Intune Settings Catalog (Kerberos policy). Audit for RC4-only accounts/services before enforcing.",
+      "collectionKeys": [
+        "registryBaselines.HKLM\\SYSTEM\\CurrentControlSet\\Services\\Kdc\\DefaultDomainSupportedEncTypes"
+      ],
+      "applicableTo": [
+        "gpo",
+        "intune"
+      ],
+      "rationale": "DefaultDomainSupportedEncTypes controls which Kerberos encryption types the KDC will issue. A value of 24 (0x18) enables AES128+AES256 while excluding RC4 and DES. Microsoft has announced RC4 removal from Kerberos: enforcement (RC4 no longer usable) begins April 2026, and the audit-mode fallback is removed entirely in July 2026 — this is the single biggest 2026 Kerberos hardening gap. This check flags domains/devices that are not yet AES-ready.",
+      "mitreAttack": "T1558",
+      "baselineValue": "24",
+      "comparison": "min"
+    },
+    {
+      "id": "AUTH-034",
+      "category": "Authentication & Credentials",
+      "name": "Administrator Account Lockout",
+      "description": "Enable account lockout for the built-in Administrator account, which is exempt from lockout policy by default",
+      "severity": "High",
+      "weight": 4,
+      "type": "Auto",
+      "priority": "Baseline",
+      "origin": "SCT",
+      "effort": "Quick Win",
+      "impact": "Without this policy, the built-in Administrator account is exempt from lockout, making it a permanent target for unthrottled brute-force attacks even when AUTH-003's lockout threshold is enforced for all other accounts.",
+      "remediation": "Set 'Accounts: Allow Administrator account lockout' (AllowAdministratorLockout) to Enabled via GPO Security Options or Intune Settings Catalog Account Lockout Policy.",
+      "collectionKeys": [
+        "securityPolicy.AllowAdministratorLockout"
+      ],
+      "applicableTo": [
+        "intune",
+        "gpo"
+      ],
+      "rationale": "By default, the built-in local Administrator account is exempt from account lockout, allowing unlimited password guesses even when lockout thresholds (AUTH-003) are enforced for every other account. Enabling AllowAdministratorLockout closes this long-standing gap and reflects current Windows security baseline hardening direction for built-in accounts.",
+      "mitreAttack": "T1110",
+      "baselineValue": "1"
     },
     {
       "id": "MON-001",
@@ -3808,7 +3877,7 @@
         "intune",
         "gpo"
       ],
-      "rationale": "Process Creation auditing (Event 4688) records every process start. Combined with command-line logging (SEC-019), this provides complete visibility into what executes on the system. Essential for malware detection and incident response."
+      "rationale": "Process Creation auditing (Event 4688) records every process start. Combined with command-line logging (SEC-019), this provides complete visibility into what executes on the system. Essential for malware detection and incident response. Cross-reference: duplicates MON-008 (Enable Detailed Tracking - Process Creation) — same underlying data point; both checks are retained (not consolidated) for saved-assessment backward compatibility."
     },
     {
       "id": "MON-005",
@@ -3900,7 +3969,7 @@
         "gpo"
       ],
       "name": "Enable Detailed Tracking - Process Creation",
-      "rationale": "Audit policies determine what security events Windows records. Without proper auditing, security incidents cannot be detected, investigated, or proven. The baseline ensures comprehensive logging for forensic readiness."
+      "rationale": "Audit policies determine what security events Windows records. Without proper auditing, security incidents cannot be detected, investigated, or proven. The baseline ensures comprehensive logging for forensic readiness. Cross-reference: duplicates MON-004 (Enable Process Creation Auditing) — same underlying data point; both checks are retained (not consolidated) for saved-assessment backward compatibility."
     },
     {
       "impact": "Without file auditing, unauthorized data access goes undetected.",
@@ -4922,10 +4991,10 @@
     {
       "id": "NET-003",
       "category": "Network Security",
-      "name": "Disable Insecure TLS Protocols",
-      "description": "Disable SSL 2.0, SSL 3.0, TLS 1.0, and TLS 1.1 — only TLS 1.2+ should be enabled",
-      "severity": "High",
-      "weight": 4,
+      "name": "Disable SSL 3.0 (Server)",
+      "description": "Disable SSL 3.0 server-side support — POODLE (CVE-2014-3566) mitigation. The collectionKey only evaluates the SCHANNEL SSL 3.0 Server\\Enabled value; despite the prior name, this check does not evaluate SSL 2.0, TLS 1.0, or TLS 1.1 (see NET-024/NET-025/NET-023 for those).",
+      "severity": "Critical",
+      "weight": 5,
       "type": "Auto",
       "priority": "Baseline",
       "origin": "INTUNE,SCT",
@@ -4940,7 +5009,7 @@
         "gpo"
       ],
       "cspPath": "Cryptography/TLSCipherSuites",
-      "rationale": "SSL 2.0/3.0 have POODLE (CVE-2014-3566), BEAST, and DROWN vulnerabilities. TLS 1.0/1.1 were deprecated by Microsoft in September 2023 and by IETF in RFC 8996. Only TLS 1.2+ provides adequate protection.",
+      "rationale": "SSL 3.0 (1996) is vulnerable to POODLE (CVE-2014-3566), which allows plaintext recovery from encrypted connections via padding-oracle attacks. Deprecated by IETF in RFC 7568. This check's collectionKey (tlsConfig.SSL 3.0.Server.Enabled) only covers the server-side SSL 3.0 setting; despite its former broader name, it does not itself verify SSL 2.0 or TLS 1.0/1.1 state. Cross-reference: duplicates NET-023 (Disable SSL 3.0 Server and Client) — same underlying data point (both key off tlsConfig.SSL 3.0.Server.Enabled); severity aligned to Critical and name narrowed to match actual single-protocol scope; both checks are retained (not consolidated) for saved-assessment backward compatibility.",
       "mitreAttack": "T1557",
       "baselineValue": "0"
     },
@@ -4973,7 +5042,7 @@
       "priority": "Baseline",
       "origin": "SCT",
       "collectionKeys": [
-        "firewall.Domain.LogDropped"
+        "firewall.Domain.LogBlocked"
       ],
       "category": "Network Security",
       "id": "NET-005",
@@ -4995,7 +5064,7 @@
       "priority": "Baseline",
       "origin": "SCT",
       "collectionKeys": [
-        "firewall.Private.LogDropped"
+        "firewall.Private.LogBlocked"
       ],
       "category": "Network Security",
       "id": "NET-006",
@@ -5017,7 +5086,7 @@
       "priority": "Baseline",
       "origin": "SCT",
       "collectionKeys": [
-        "firewall.Public.LogDropped"
+        "firewall.Public.LogBlocked"
       ],
       "category": "Network Security",
       "id": "NET-007",
@@ -5226,14 +5295,14 @@
       "remediation": "Set EncryptData to True via Set-SmbServerConfiguration",
       "type": "Auto",
       "effort": "Some Effort",
-      "severity": "High",
-      "weight": 4,
-      "description": "Require SMB 3.0 encryption for all connections",
+      "severity": "Medium",
+      "weight": 3,
+      "description": "Require SMB 3.0 encryption for all connections — stricter than the Microsoft Security Baseline, which mandates SMB signing (not encryption) for workstations; treat as a hardening opportunity rather than a baseline gap",
       "applicableTo": [
         "gpo"
       ],
       "name": "Require SMB Encryption",
-      "rationale": "SMB encryption (EncryptData=True) protects file share data in transit. Without encryption, file contents are visible to network sniffers. Required for compliance with data protection regulations when sensitive data is accessed via file shares.",
+      "rationale": "SMB encryption (EncryptData=True) protects file share data in transit. Without encryption, file contents are visible to network sniffers. Note: the Microsoft Security Baseline itself only mandates SMB signing (see NET-001/SEC-045/046), not encryption — this check goes beyond the published baseline, hence the reduced Medium severity.",
       "baselineValue": "True"
     },
     {
@@ -5242,13 +5311,13 @@
       "origin": "SCT",
       "category": "Network Security",
       "id": "NET-017",
-      "remediation": "GPO: Set 'Policy' under HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\Wireless. Registry: HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\Wireless\\Policy. Intune: Use Settings Catalog or custom OMA-URI if CSP mapping available.",
+      "remediation": "GPO: Computer Configuration > Windows Settings > Security Settings > Wireless Network (IEEE 802.11) Policies — require WPA2/WPA3 authentication. Intune: Wi-Fi configuration profile with WPA2/WPA3-Enterprise. Verify effective policy in the WLAN GPO editor or Intune profile report.",
       "effort": "Quick Win",
-      "type": "Auto",
+      "type": "Manual",
       "name": "Enable WiFi Protected Access Requirement",
       "severity": "High",
       "weight": 4,
-      "description": "Require WPA2/WPA3 for wireless connections",
+      "description": "Require WPA2/WPA3 for wireless connections (manual review — WLAN Group Policy is stored as a binary blob under GPTWirelessPolicy, not a readable registry value, so the collector cannot evaluate it)",
       "applicableTo": [
         "intune",
         "gpo"
@@ -5372,7 +5441,7 @@
       "collectionKeys": [
         "tlsConfig.SSL 3.0.Server.Enabled"
       ],
-      "rationale": "SSL 3.0 (1996) is vulnerable to POODLE (CVE-2014-3566) which allows plaintext recovery from encrypted connections. Deprecated by IETF in RFC 7568. Must be disabled on both client and server."
+      "rationale": "SSL 3.0 (1996) is vulnerable to POODLE (CVE-2014-3566) which allows plaintext recovery from encrypted connections. Deprecated by IETF in RFC 7568. Must be disabled on both client and server. Cross-reference: duplicates NET-003 (Disable SSL 3.0 (Server)) — same underlying data point (both key off tlsConfig.SSL 3.0.Server.Enabled); both checks are retained (not consolidated) for saved-assessment backward compatibility."
     },
     {
       "impact": "Disable TLS 1.0 protocol (deprecated)",
@@ -5623,7 +5692,7 @@
         "intune",
         "gpo"
       ],
-      "rationale": "Network security settings control protocol behavior, encryption requirements, and firewall rules. These settings protect data in transit and prevent network-based attacks like MITM, relay, and poisoning.",
+      "rationale": "Network security settings control protocol behavior, encryption requirements, and firewall rules. These settings protect data in transit and prevent network-based attacks like MITM, relay, and poisoning. The Windows 11 24H2 baseline direction is a minimum negotiated SMB dialect of 3.0.0 (maximum 3.1.1). The collector currently only exposes the SMB2Protocol enable/disable boolean (Get-SmbServerConfiguration), which is used here as a proxy — full dialect-level enforcement requires collecting the negotiated SMB dialect separately.",
       "baselineValue": "True"
     },
     {
@@ -5650,6 +5719,30 @@
       "baselineValue": "1"
     },
     {
+      "id": "NET-036",
+      "category": "Network Security",
+      "name": "SMB Authentication Rate Limiter",
+      "description": "Ensure the SMB server enforces a minimum delay before responding to failed authentication attempts, mitigating brute-force and credential-stuffing attacks against SMB",
+      "severity": "Medium",
+      "weight": 3,
+      "type": "Auto",
+      "priority": "Baseline",
+      "origin": "SCT",
+      "effort": "Quick Win",
+      "impact": "Without a minimum authentication delay, SMB is susceptible to fast, unthrottled brute-force and password-spray attacks against local/domain accounts over the network.",
+      "remediation": "PowerShell: Set-SmbServerConfiguration -InvalidAuthenticationDelayTimeInMs 2000 (or higher). This throttle ships enabled by default (2000ms) on Windows 11 24H2 / Windows Server 2025; verify it has not been reduced or disabled.",
+      "collectionKeys": [
+        "smbConfig.server.InvalidAuthenticationDelayTimeInMs"
+      ],
+      "applicableTo": [
+        "gpo"
+      ],
+      "rationale": "SMB's built-in authentication rate limiter throttles repeated failed authentication attempts, blunting brute-force and password-spray attacks against SMB shares. Windows 11 24H2 / Server 2025 ship with a 2000ms default delay; this check ensures the delay has not been lowered or disabled on older or reconfigured systems.",
+      "mitreAttack": "T1110",
+      "baselineValue": "2000",
+      "comparison": "min"
+    },
+    {
       "id": "DATA-001",
       "category": "Data Protection",
       "name": "Enable BitLocker Drive Encryption",
@@ -5670,7 +5763,7 @@
         "gpo"
       ],
       "cspPath": "BitLocker/RequireDeviceEncryption",
-      "rationale": "BitLocker with XTS-AES-256 is the only protection against offline data theft from lost/stolen devices. Without disk encryption, an attacker with physical access can boot from a USB drive and read all data including the SAM database.",
+      "rationale": "BitLocker with XTS-AES-256 is the only protection against offline data theft from lost/stolen devices. Without disk encryption, an attacker with physical access can boot from a USB drive and read all data including the SAM database. Cross-reference: duplicates DATA-020 (Require BitLocker Encryption on OS Drive) — same underlying data point; both checks are retained (not consolidated) for saved-assessment backward compatibility.",
       "mitreAttack": "T1005",
       "baselineValue": "On"
     },
@@ -5694,7 +5787,8 @@
       ],
       "name": "Require BitLocker Startup PIN",
       "rationale": "A BitLocker startup PIN adds a second factor to disk encryption — even if the TPM is compromised or the laptop motherboard is replaced, the PIN prevents boot. Defense against cold boot and DMA attacks on unattended devices.",
-      "baselineValue": "1"
+      "baselineValue": "1",
+      "comparison": "min"
     },
     {
       "impact": "Lost recovery keys mean permanent data loss on encrypted volumes.",
@@ -5853,7 +5947,7 @@
       ],
       "name": "Enable Memory Integrity (HVCI)",
       "cspPath": "VirtualizationBasedTechnology/HypervisorEnforcedCodeIntegrity",
-      "rationale": "Memory Integrity (HVCI) ensures only signed kernel code runs by using the hypervisor to verify code integrity. The 23H2 baseline enabled this by default on compatible hardware. Like Credential Guard and LSA protection, HVCI supports 'enabled without UEFI lock' for initial deployment. Kernel Mode Hardware Enforced Stack Protection (22H2+) adds an additional layer. The 'Require UEFI Memory Attributes Table' option should only be enabled if you have confirmed all devices have compatible UEFI firmware — without MAT support, HVCI can cause crashes, data loss, or incompatibility with certain plug-in cards. Kernel DMA Protection blocks external peripherals from unauthorized memory access unless their drivers support DMA-remapping.",
+      "rationale": "Memory Integrity (HVCI) ensures only signed kernel code runs by using the hypervisor to verify code integrity. The 23H2 baseline enabled this by default on compatible hardware. Like Credential Guard and LSA protection, HVCI supports 'enabled without UEFI lock' for initial deployment. Kernel Mode Hardware Enforced Stack Protection (22H2+) adds an additional layer. The 'Require UEFI Memory Attributes Table' option should only be enabled if you have confirmed all devices have compatible UEFI firmware — without MAT support, HVCI can cause crashes, data loss, or incompatibility with certain plug-in cards. Kernel DMA Protection blocks external peripherals from unauthorized memory access unless their drivers support DMA-remapping. Cross-reference: duplicates SEC-059 (Enable Core Isolation Memory Integrity Reporting) — same underlying data point (Memory Integrity/HVCI running-state; severity aligned to High); both checks are retained (not consolidated) for saved-assessment backward compatibility.",
       "baselineValue": "True"
     },
     {
@@ -5891,7 +5985,7 @@
       "name": "Configure Encryption Method for OS Drive (XTS-AES-256)",
       "severity": "High",
       "weight": 4,
-      "description": "Set BitLocker OS drive encryption to XTS-AES-256",
+      "description": "Set BitLocker OS drive encryption to XTS-AES-256 — stricter than the Microsoft baseline default (XTS-AES-128); XTS-AES-256 exceeds the default requirement, which is acceptable but worth noting when comparing against out-of-the-box baseline exports",
       "applicableTo": [
         "intune",
         "gpo"
@@ -5914,7 +6008,7 @@
       "name": "Configure Encryption Method for Fixed Drives (XTS-AES-256)",
       "severity": "High",
       "weight": 4,
-      "description": "Set BitLocker fixed drive encryption to XTS-AES-256",
+      "description": "Set BitLocker fixed drive encryption to XTS-AES-256 — stricter than the Microsoft baseline default (XTS-AES-128); XTS-AES-256 exceeds the default requirement, which is acceptable but worth noting when comparing against out-of-the-box baseline exports",
       "applicableTo": [
         "intune",
         "gpo"
@@ -5991,7 +6085,7 @@
       "collectionKeys": [
         "registryBaselines.HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\Personalization\\NoLockScreenCamera"
       ],
-      "rationale": "Data protection settings ensure that data at rest and in transit is encrypted and that sensitive information cannot be extracted from lost, stolen, or decommissioned devices."
+      "rationale": "Data protection settings ensure that data at rest and in transit is encrypted and that sensitive information cannot be extracted from lost, stolen, or decommissioned devices. Cross-reference: duplicates SEC-003 (Disable Lock Screen Camera) — same underlying data point; both checks are retained (not consolidated) for saved-assessment backward compatibility."
     },
     {
       "impact": "Prevent Cortana from being accessible on the lock screen",
@@ -6082,7 +6176,7 @@
         "intune",
         "gpo"
       ],
-      "rationale": "Data protection settings ensure that data at rest and in transit is encrypted and that sensitive information cannot be extracted from lost, stolen, or decommissioned devices.",
+      "rationale": "Data protection settings ensure that data at rest and in transit is encrypted and that sensitive information cannot be extracted from lost, stolen, or decommissioned devices. Cross-reference: duplicates DATA-001 (Enable BitLocker Drive Encryption) — same underlying data point; both checks are retained (not consolidated) for saved-assessment backward compatibility.",
       "baselineValue": "On"
     },
     {
@@ -6287,15 +6381,15 @@
       "remediation": "Set EnableInstallerDetection to 1 under Policies\\System",
       "type": "Auto",
       "effort": "Quick Win",
-      "severity": "Medium",
-      "weight": 3,
+      "severity": "High",
+      "weight": 4,
       "description": "Enable application install detection to prompt for elevation when needed",
       "applicableTo": [
         "intune",
         "gpo"
       ],
       "name": "Detect Application Installations and Prompt for Elevation",
-      "rationale": "UAC is the primary defense against unauthorized privilege escalation on Windows. Proper UAC configuration ensures that administrative actions require explicit authentication and prevents silent elevation.",
+      "rationale": "UAC is the primary defense against unauthorized privilege escalation on Windows. Proper UAC configuration ensures that administrative actions require explicit authentication and prevents silent elevation. Cross-reference: duplicates AUTH-013 (Restrict Privilege Escalation from Standard Users) — same underlying data point (EnableInstallerDetection; severity aligned to High); both checks are retained (not consolidated) for saved-assessment backward compatibility.",
       "baselineValue": 1
     },
     {
@@ -6388,6 +6482,30 @@
         "registryBaselines.HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System\\FilterAdministratorToken"
       ],
       "rationale": "UAC is the primary defense against unauthorized privilege escalation on Windows. Proper UAC configuration ensures that administrative actions require explicit authentication and prevents silent elevation."
+    },
+    {
+      "id": "UAC-011",
+      "category": "User Account Control",
+      "name": "UAC Enhanced Privilege Protection",
+      "description": "Enable Windows 11 24H2 Administrator Protection (TypeOfAdminApprovalMode=2), which issues temporary, isolated admin tokens for elevation instead of a persistent split token",
+      "severity": "Medium",
+      "weight": 3,
+      "type": "Auto",
+      "priority": "Baseline",
+      "origin": "SCT",
+      "effort": "Some Effort",
+      "impact": "Without Administrator Protection, a persistent split admin token remains available for the duration of the logon session, widening the window during which a stolen token can be abused for privilege escalation.",
+      "remediation": "GPO: Set 'TypeOfAdminApprovalMode' to 2 under HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System, or enable 'Administrator Protection' via Windows Security settings / Intune Settings Catalog (Windows 11 24H2+).",
+      "collectionKeys": [
+        "registryBaselines.HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System\\TypeOfAdminApprovalMode"
+      ],
+      "applicableTo": [
+        "intune",
+        "gpo"
+      ],
+      "rationale": "Administrator Protection is a new UAC elevation model introduced in Windows 11 24H2 that replaces the always-present split admin token with a just-in-time, isolated admin token created only for the elevation request and discarded immediately after. TypeOfAdminApprovalMode=2 enables this enhanced mode, reducing the window during which a compromised admin token can be abused. Pairs with UAC-010 (Admin Approval Mode for the built-in Administrator account).",
+      "mitreAttack": "T1548.002",
+      "baselineValue": "2"
     },
     {
       "id": "OPS-001",
@@ -6522,7 +6640,7 @@
         "gpo"
       ],
       "name": "Verify Windows Update Agent Health",
-      "rationale": "Operational health checks identify issues that affect system stability, update currency, and maintenance status. These are proactive checks that prevent security gaps from developing over time.",
+      "rationale": "Operational health checks identify issues that affect system stability, update currency, and maintenance status. These are proactive checks that prevent security gaps from developing over time. Cross-reference: duplicates OPS-027 (Monitor Windows Update Service State) — same underlying data point; both checks are retained (not consolidated) for saved-assessment backward compatibility.",
       "baselineValue": "Running"
     },
     {
@@ -6627,7 +6745,7 @@
       "category": "Operations & Health",
       "id": "OPS-011",
       "remediation": "Clear WER queue via Settings > Privacy > Diagnostics & feedback > Delete diagnostic data",
-      "type": "Auto",
+      "type": "Manual",
       "effort": "Quick Win",
       "severity": "Low",
       "weight": 2,
@@ -6651,15 +6769,15 @@
       "remediation": "Restart stopped services and set start type to Automatic.",
       "type": "Auto",
       "effort": "Quick Win",
-      "severity": "Critical",
-      "weight": 5,
+      "severity": "High",
+      "weight": 4,
       "description": "Verify essential Windows services (EventLog, wuauserv, WinDefend) are running",
       "applicableTo": [
         "intune",
         "gpo"
       ],
       "name": "Ensure Critical Services Are Running",
-      "rationale": "Critical services (EventLog, WinDefend, wuauserv, MpsSvc) must be running for basic security. A stopped EventLog service means no security events are recorded. A stopped WinDefend means no real-time protection.",
+      "rationale": "Critical services (EventLog, WinDefend, wuauserv, MpsSvc) must be running for basic security. A stopped EventLog service means no security events are recorded. A stopped WinDefend means no real-time protection. Cross-reference: duplicates SEC-018/OPS-024 (Enable Windows Event Log Service / Verify Event Log Service Configuration) — same underlying data point (EventLog service running-state; demoted from Critical to High to align severity across the three EventLog duplicates); both checks are retained (not consolidated) for saved-assessment backward compatibility.",
       "baselineValue": "Running"
     },
     {
@@ -6871,14 +6989,14 @@
     },
     {
       "origin": "OPS",
-      "type": "Auto",
+      "type": "Manual",
       "effort": "Quick Win",
       "applicableTo": [
         "intune",
         "gpo"
       ],
       "id": "OPS-022",
-      "description": "Audit services running under domain accounts for least-privilege compliance",
+      "description": "Audit services running under domain accounts for least-privilege compliance (manual review — the collector does not gather per-service logon accounts)",
       "name": "Review Service Account Logon Rights",
       "impact": "Audit services running under domain accounts for least-privilege compliance",
       "weight": 3,
@@ -6893,7 +7011,7 @@
     },
     {
       "origin": "OPS",
-      "type": "Auto",
+      "type": "Manual",
       "effort": "Quick Win",
       "applicableTo": [
         "intune",
@@ -6933,7 +7051,7 @@
         "services.EventLog.Status"
       ],
       "severity": "Medium",
-      "rationale": "Operational health checks identify issues that affect system stability, update currency, and maintenance status. These are proactive checks that prevent security gaps from developing over time.",
+      "rationale": "Operational health checks identify issues that affect system stability, update currency, and maintenance status. These are proactive checks that prevent security gaps from developing over time. Cross-reference: duplicates SEC-018/OPS-012 (Enable Windows Event Log Service / Ensure Critical Services Are Running) — same underlying data point (EventLog service running-state; this check remains Medium while the other two are High); both checks are retained (not consolidated) for saved-assessment backward compatibility.",
       "baselineValue": "Running"
     },
     {
@@ -7001,7 +7119,7 @@
         "intune",
         "gpo"
       ],
-      "rationale": "Operational health checks identify issues that affect system stability, update currency, and maintenance status. These are proactive checks that prevent security gaps from developing over time.",
+      "rationale": "Operational health checks identify issues that affect system stability, update currency, and maintenance status. These are proactive checks that prevent security gaps from developing over time. Cross-reference: duplicates OPS-005 (Verify Windows Update Agent Health) — same underlying data point; both checks are retained (not consolidated) for saved-assessment backward compatibility.",
       "baselineValue": "Running"
     },
     {

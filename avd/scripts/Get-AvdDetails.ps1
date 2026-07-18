@@ -7,7 +7,9 @@
     It performs the following high-level tasks:
     1. Identifies the "Gold Image" (latest version) from the Azure Compute Gallery.
     2. Scans the current Host Pool to identify hosts with outdated 'ImageVersion' tags.
-    3. Calculates new hostnames using an ISO-8601 Week-based naming convention (avd-WW-XX).
+    3. Calculates new hostnames using an ISO-8601 Week-based naming convention:
+       "<BaseName><WW><NN>" (e.g. "avd2901") — no dashes/separators, kept within
+       the 15-character Windows computerName limit.
     4. Manages the AVD Registration Token (retrieval or 24h generation).
     5. Exports all data as JSON strings for use in downstream Azure DevOps pipeline stages.
 
@@ -26,6 +28,7 @@
 .PARAMETER VmCountOverride
     Optional: Force the deployment of a specific number of VMs.
 #>
+#Requires -Modules Az.Accounts, Az.Compute, Az.DesktopVirtualization, Az.Resources
 
 [CmdletBinding()]
 param (
@@ -107,28 +110,35 @@ try {
     
     # Cross-subscription support: switch context if gallery is in a different subscription
     $OriginalSubscription = (Get-AzContext).Subscription.Id
+    $SwitchedSubscription = $false
     if ($GallerySubscriptionId -and $GallerySubscriptionId -ne $OriginalSubscription) {
         Write-Log "Switching to gallery subscription: $GallerySubscriptionId" "INFO"
         Set-AzContext -SubscriptionId $GallerySubscriptionId | Out-Null
+        $SwitchedSubscription = $true
     }
 
-    # Sort Image Versions by Publish Date descending, filter out excluded versions
-    $LatestVerObj = Get-AzGalleryImageVersion -ResourceGroupName $GalleryResourceGroupName `
-                    -GalleryName $GalleryName `
-                    -GalleryImageDefinitionName $ImageDefinitionName | 
-                    Where-Object { $_.PublishingProfile.ExcludeFromLatest -ne $true } |
-                    Sort-Object -Property @{Expression={$_.PublishingProfile.PublishedDate}; Descending=$true} | 
-                    Select-Object -First 1
+    try {
+        # Sort Image Versions by Publish Date descending, filter out excluded versions
+        $LatestVerObj = Get-AzGalleryImageVersion -ResourceGroupName $GalleryResourceGroupName `
+                        -GalleryName $GalleryName `
+                        -GalleryImageDefinitionName $ImageDefinitionName |
+                        Where-Object { $_.PublishingProfile.ExcludeFromLatest -ne $true } |
+                        Sort-Object -Property @{Expression={$_.PublishingProfile.PublishedDate}; Descending=$true} |
+                        Select-Object -First 1
 
-    if (-not $LatestVerObj) { throw "CRITICAL: No image version found for definition '$ImageDefinitionName'" }
+        if (-not $LatestVerObj) { throw "CRITICAL: No image version found for definition '$ImageDefinitionName'" }
 
-    $TargetVersion = $LatestVerObj.Name
-    $TargetImageId = $LatestVerObj.Id
-    
-    # Switch back if we changed subscriptions
-    if ($GallerySubscriptionId -and $GallerySubscriptionId -ne $OriginalSubscription) {
-        Write-Log "Switching back to original subscription." "INFO"
-        Set-AzContext -SubscriptionId $OriginalSubscription | Out-Null
+        $TargetVersion = $LatestVerObj.Name
+        $TargetImageId = $LatestVerObj.Id
+    }
+    finally {
+        # Always restore the original subscription context, even on error
+        # paths, so a failure here doesn't leave the session pinned to the
+        # gallery subscription for the rest of the pipeline run.
+        if ($SwitchedSubscription) {
+            Write-Log "Switching back to original subscription." "INFO"
+            Set-AzContext -SubscriptionId $OriginalSubscription | Out-Null
+        }
     }
 
     Write-Log "Found Latest Image: $TargetVersion" "SUCCESS"
@@ -213,8 +223,11 @@ try {
         throw "Aborting: 100% of session hosts marked outdated. This requires explicit confirmation via -VmCountOverride."
     }
 
-    # Determine final VM count based on overrides or existing count
-    $TargetCount = if ($VmCountOverride -gt 0) { $VmCountOverride } elseif ($CurrentCount -eq 0) { 1 } else { $CurrentCount }
+    # Determine final VM count: size the new deployment to the number of
+    # OUTDATED hosts (not the total fleet size), so a fully healthy pool
+    # doesn't get needlessly redeployed. An explicit override always wins;
+    # an empty pool bootstraps with a single host.
+    $TargetCount = if ($VmCountOverride -gt 0) { $VmCountOverride } elseif ($CurrentCount -eq 0) { 1 } else { $OutdatedHosts.Count }
 
     # Generate names with collision avoidance (ISO-8601 Week-based)
     $WeekNum = (Get-Culture).Calendar.GetWeekOfYear((Get-Date), [System.Globalization.CalendarWeekRule]::FirstFourDayWeek, [DayOfWeek]::Monday)
@@ -244,13 +257,23 @@ try {
         $vmNumber++
     }
 
-    # Split targets into Canary (1st host) and Blast (remaining hosts)
-    $Canary = @($NewNames[0])
-    $Blast  = if ($NewNames.Count -gt 1) { $NewNames | Select-Object -Skip 1 } else { @() }
+    # Split targets into Canary (1st host) and Blast (remaining hosts).
+    # If there was nothing to deploy (TargetCount 0, no outdated hosts,
+    # no override), $NewNames stays empty — keep Canary/Blast genuinely
+    # empty (not @($null)) so downstream JSON emits "[]" and the pipeline's
+    # Validate stage can report "nothing to do".
+    if ($NewNames.Count -eq 0) {
+        Write-Log "No outdated hosts and no override supplied. Nothing to deploy." "SUCCESS"
+        $Canary = @()
+        $Blast  = @()
+    } else {
+        $Canary = @($NewNames[0])
+        $Blast  = if ($NewNames.Count -gt 1) { $NewNames | Select-Object -Skip 1 } else { @() }
 
-    # Explicitly log the deployment plan in the DevOps console
-    Write-Log "Planned Canary: $($Canary -join ', ')" "PLAN"
-    if ($Blast) { Write-Log "Planned Blast : $($Blast -join ', ')" "PLAN" }
+        # Explicitly log the deployment plan in the DevOps console
+        Write-Log "Planned Canary: $($Canary -join ', ')" "PLAN"
+        if ($Blast) { Write-Log "Planned Blast : $($Blast -join ', ')" "PLAN" }
+    }
 
     # -------------------------------------------------------------------------
     # STEP 4: REGISTRATION TOKEN
@@ -260,8 +283,11 @@ try {
     $RegInfo = Get-AzWvdRegistrationInfo -ResourceGroupName $ResourceGroupName -HostPoolName $HostPoolName -ErrorAction SilentlyContinue
     
     $Token = $null
-    # Reuse token only if it is valid for at least another 2 hours
-    if ($RegInfo -and $RegInfo.Token -and [DateTime]$RegInfo.ExpirationTime -gt $Now.AddHours(2)) {
+    # Reuse token only if it is valid for at least another 6 hours. Buffer
+    # raised from 2h to cover the worst-case canary+blast rollout window
+    # (canary bake time + full blast deployment) without the token expiring
+    # mid-rollout on later-joining hosts.
+    if ($RegInfo -and $RegInfo.Token -and [DateTime]$RegInfo.ExpirationTime -gt $Now.AddHours(6)) {
         Write-Log "Existing token is valid. Reusing." "SUCCESS"
         $Token = $RegInfo.Token
     } else {
@@ -279,8 +305,6 @@ try {
     $BlastJson    = ConvertTo-Json -InputObject @($Blast) -Compress
     $OutdatedJson = ConvertTo-Json -InputObject @($OutdatedHosts) -Compress
 
-    $guid = (New-Guid).ToString()
-
     # --- VERBOSE CONSOLE OUTPUT (BEAUTIFIED) ---
     Write-Host "`n--- PIPELINE VARIABLE SUMMARY ---" -ForegroundColor Magenta
     Write-Log "TargetImageVersion  : $TargetVersion" "PLAN"
@@ -289,7 +313,6 @@ try {
     Write-Log "BlastList           : $BlastJson" "PLAN"
     Write-Log "OutdatedHostsList   : $OutdatedJson" "PLAN"
     Write-Log "HostPoolToken       : [REDACTED (SECRET)]" "PLAN"
-    Write-Log "DeploymentGuid      : $guid" "PLAN"
     Write-Host "----------------------------------`n" -ForegroundColor Magenta
 
     # --- AZURE DEVOPS AGENT COMMANDS ---
@@ -299,8 +322,7 @@ try {
     Write-Host "##vso[task.setvariable variable=BlastList;isOutput=true]$BlastJson"
     Write-Host "##vso[task.setvariable variable=OutdatedHostsList;isOutput=true]$OutdatedJson"
     Write-Host "##vso[task.setvariable variable=HostPoolToken;isOutput=true;isSecret=true]$Token"
-    Write-Host "##vso[task.setvariable variable=DeploymentGuid;isOutput=true]$guid"
-    
+
     Write-Log "Pre-Flight Complete. Readiness: GREEN." "SUCCESS"
 }
 catch {

@@ -23,6 +23,10 @@ param osDiskType string
 param osDiskSizeGB int
 param availabilityZone string = ''
 param acceleratedNetworking bool = false
+// Version-less AVD DSC agent package (Microsoft rolls this forward automatically).
+// Override from the pipeline to pin a specific build without touching code.
+#disable-next-line no-hardcoded-env-urls
+param avdAgentPackageUrl string = 'https://wvdportalstorageblob.blob.core.windows.net/galleryartifacts/Configuration.zip'
 // --------------------------------
 
 // --- LEGACY AD SPECIFIC ---
@@ -43,8 +47,8 @@ var finalTags = union(tags, {
 var requireNvidiaGpu = startsWith(vmSize, 'Standard_NC') || contains(vmSize, '_A10_v5')
 
 // 2. NETWORK INTERFACE
-resource nic 'Microsoft.Network/networkInterfaces@2023-04-01' = {
-  name: '${vmName}-nic'
+resource nic 'Microsoft.Network/networkInterfaces@2024-05-01' = {
+  name: 'nic-${vmName}'
   location: location
   tags: finalTags
   properties: {
@@ -62,7 +66,7 @@ resource nic 'Microsoft.Network/networkInterfaces@2023-04-01' = {
 }
 
 // 3. VIRTUAL MACHINE
-resource vm 'Microsoft.Compute/virtualMachines@2023-03-01' = {
+resource vm 'Microsoft.Compute/virtualMachines@2024-07-01' = {
   name: vmName
   location: location
   zones: availabilityZone != '' ? [availabilityZone] : []
@@ -109,7 +113,7 @@ resource vm 'Microsoft.Compute/virtualMachines@2023-03-01' = {
 }
 
 // 4. EXTENSIONS: DOMAIN JOIN (Legacy)
-resource domainJoin 'Microsoft.Compute/virtualMachines/extensions@2023-03-01' = {
+resource domainJoin 'Microsoft.Compute/virtualMachines/extensions@2024-07-01' = {
   parent: vm
   name: 'joindomain'
   location: location
@@ -132,7 +136,7 @@ resource domainJoin 'Microsoft.Compute/virtualMachines/extensions@2023-03-01' = 
 }
 
 // 5. EXTENSIONS: GUEST ATTESTATION
-resource guestAttestation 'Microsoft.Compute/virtualMachines/extensions@2021-11-01' = {
+resource guestAttestation 'Microsoft.Compute/virtualMachines/extensions@2024-07-01' = {
   parent: vm
   name: 'GuestAttestation'
   location: location
@@ -146,7 +150,7 @@ resource guestAttestation 'Microsoft.Compute/virtualMachines/extensions@2021-11-
 }
 
 // 5b. GPU DRIVERS (Conditional - NVIDIA)
-resource gpuDriver 'Microsoft.Compute/virtualMachines/extensions@2023-03-01' = if (requireNvidiaGpu) {
+resource gpuDriver 'Microsoft.Compute/virtualMachines/extensions@2024-07-01' = if (requireNvidiaGpu) {
   parent: vm
   name: 'NvidiaGpuDriverWindows'
   location: location
@@ -161,7 +165,7 @@ resource gpuDriver 'Microsoft.Compute/virtualMachines/extensions@2023-03-01' = i
 
 // 6. EXTENSIONS: AVD AGENT
 #disable-next-line no-hardcoded-env-urls
-resource avdAgent 'Microsoft.Compute/virtualMachines/extensions@2023-03-01' = {
+resource avdAgent 'Microsoft.Compute/virtualMachines/extensions@2024-07-01' = {
   parent: vm
   name: 'Microsoft.PowerShell.DSC'
   location: location
@@ -172,7 +176,7 @@ resource avdAgent 'Microsoft.Compute/virtualMachines/extensions@2023-03-01' = {
     typeHandlerVersion: '2.73'
     autoUpgradeMinorVersion: true
     settings: {
-      modulesUrl: 'https://wvdportalstorageblob.blob.core.windows.net/galleryartifacts/Configuration_1.0.03299.1133.zip'
+      modulesUrl: avdAgentPackageUrl
       configurationFunction: 'Configuration.ps1\\AddSessionHost'
       properties: {
         hostPoolName: hostPoolName

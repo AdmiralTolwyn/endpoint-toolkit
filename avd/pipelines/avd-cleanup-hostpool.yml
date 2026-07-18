@@ -1,18 +1,19 @@
 name: $(Date:yyyyMMdd)$(Rev:.r)-AVD-Cleanup-Task
 
 trigger: none
+pr: none
 
 pool:
   vmImage: 'windows-latest'
 
 variables:
   serviceConnection: '<YOURSERVICECONNECTION>'
-  
+
   # AVD Target
   hostPoolName: '<YOURHOSTPOOLNAME>' # Update for Legacy if needed
   hostPoolRg: '<YOURRESOURCEGROUP-CORE>'
   computeRg: '<YOURRESOURCEGROUP-COMPUTE>'      # Where the VMs are
-  
+
   # Image Source (To define what is "New")
   galleryRg: '<YOURRESOURCEGROUP-AIB>'
   galleryName: '<YOURGALLERYNAME>'
@@ -20,6 +21,12 @@ variables:
 
   # Key Vault (for telemetry secrets)
   keyVaultName: '<YOURKEYVAULTNAME>'
+
+  # Cleanup Safety
+  # simulate defaults to 'true' — destructive deletion requires an explicit
+  # opt-in (set to 'false') when queuing the pipeline.
+  simulate: 'true'
+  drainGracePeriodHours: 24
 
   # Telemetry (optional — set to 'true' to send events to Log Analytics)
   enableTelemetry: 'false'
@@ -30,7 +37,7 @@ steps:
   inputs:
     azureSubscription: $(serviceConnection)
     ScriptType: 'FilePath'
-    ScriptPath: '$(System.DefaultWorkingDirectory)/scripts/Remove-AvdHosts.ps1'
+    ScriptPath: '$(System.DefaultWorkingDirectory)/avd/scripts/Remove-AvdHosts.ps1'
     ScriptArguments: >
       -HostPoolName "$(hostPoolName)"
       -HostPoolRg "$(hostPoolRg)"
@@ -38,6 +45,8 @@ steps:
       -GalleryRg "$(galleryRg)"
       -GalleryName "$(galleryName)"
       -ImageDef "$(imageDef)"
+      -Simulate ([System.Convert]::ToBoolean('$(simulate)'))
+      -DrainGracePeriodHours $(drainGracePeriodHours)
     azurePowerShellVersion: 'LatestVersion'
 
 # OPTIONAL: Deployment Telemetry
@@ -57,15 +66,9 @@ steps:
   inputs:
     azureSubscription: $(serviceConnection)
     ScriptType: 'FilePath'
-    ScriptPath: '$(System.DefaultWorkingDirectory)/scripts/Write-DeploymentTelemetry.ps1'
-    ScriptArguments: >
-      -WorkspaceId "$(log-analytics-workspace-id)"
-      -SharedKey "$(log-analytics-shared-key)"
-      -EventData @{
-        HostPoolName  = '$(hostPoolName)';
-        Stage         = 'Cleanup';
-        Action        = 'Decommission';
-        Status        = 'Success';
-        PipelineRunId = '$(Build.BuildId)'
-      }
+    ScriptPath: '$(System.DefaultWorkingDirectory)/avd/scripts/Write-DeploymentTelemetry.ps1'
     azurePowerShellVersion: 'LatestVersion'
+  env:
+    WORKSPACE_ID: $(log-analytics-workspace-id)
+    SHARED_KEY: $(log-analytics-shared-key)
+    EVENT_DATA_JSON: '{"HostPoolName":"$(hostPoolName)","Stage":"Cleanup","Action":"Decommission","Status":"Success","PipelineRunId":"$(Build.BuildId)"}'

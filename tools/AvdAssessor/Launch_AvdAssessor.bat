@@ -18,10 +18,10 @@ if %ERRORLEVEL% EQU 0 (
 )
 
 :: FORCE UNBLOCK
-:: Recursively unblocks all files so the background worker can load them.
-%PS_EXE% -NoProfile -Command "Get-ChildItem -LiteralPath '%~dp0' -Recurse | Unblock-File"
+:: Unblocks only the script/UI files needed to launch (not assessments/reports/_backups).
+%PS_EXE% -STA -NoProfile -Command "Get-ChildItem -Path '%~dp0*' -Include *.ps1,*.xaml,*.bat -File | Unblock-File"
 
 :: Launch the script using the best available PowerShell version
-start "" /MAX %PS_EXE% -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "AvdAssessor.ps1"
+start "" %PS_EXE% -STA -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "AvdAssessor.ps1"
 
 exit

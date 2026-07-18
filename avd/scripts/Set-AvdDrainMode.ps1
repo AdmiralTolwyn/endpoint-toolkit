@@ -22,15 +22,16 @@
     The Resource Group containing the Host Pool.
 
 .PARAMETER HostListJson
-    (Optional) A JSON-formatted string array of host names. 
+    (Optional) A JSON-formatted string array of host names.
     **BEST PRACTICE:** Pass this via the 'env:' block in YAML as HOST_LIST_JSON.
 #>
+#Requires -Modules Az.DesktopVirtualization, Az.Resources
 
 [CmdletBinding()]
 param (
     [Parameter(Mandatory = $true)] [string]$HostPoolName,
     [Parameter(Mandatory = $true)] [string]$ResourceGroupName,
-    [Parameter(Mandatory = $false)] [string]$HostListJson
+    [Parameter(Mandatory = $false)] [string]$HostListJson = ''
 )
 
 # --- CONFIGURATION: SILENCE INFRASTRUCTURE NOISE ---
@@ -98,6 +99,12 @@ try {
     # -------------------------------------------------------------------------
     # 3. INPUT CLEANING & PARSING
     # -------------------------------------------------------------------------
+    # Graceful exit if nothing was provided at all (null/empty guard before .Trim())
+    if ([string]::IsNullOrWhiteSpace($HostListJson)) {
+        Write-Log "No outdated hosts provided in the plan. Nothing to drain." "SUCCESS"
+        exit 0
+    }
+
     # Remove potential surrounding quotes passed by YAML variables
     $CleanJson = $HostListJson.Trim("'").Trim('"')
 
@@ -120,19 +127,54 @@ try {
     # -------------------------------------------------------------------------
     # 4. EXECUTION LOOP
     # -------------------------------------------------------------------------
+    # Pipelines pass short VM names (e.g. "avd2901"), not the registered
+    # "SessionHostName.domain.com" AVD identifiers. We cache one pool-wide
+    # listing (lazily, only if needed) and match by FQDN leaf prefix - the
+    # same pattern used in Invoke-HybridActivator.ps1.
+    $PoolSessionHosts = $null
+    $FailedTargets = @()
+
     foreach ($H in $Hosts) {
         # Handle "HostPoolName/SessionHostName" format often returned by Azure
         # We split by "/" and take the last part to get the pure VM Name
         $TargetName = if ($H -like "*/*") { $H.Split("/")[-1] } else { $H }
 
         Write-Log "Targeting Session Host: $TargetName" "INFO"
-        
+
         try {
             # Get session host details for resource ID and session count
             $SessionHost = Get-AzWvdSessionHost -HostPoolName $HostPoolName `
                                                 -ResourceGroupName $ResourceGroupName `
                                                 -Name $TargetName `
                                                 -ErrorAction SilentlyContinue
+
+            # FALLBACK: exact name lookup failed (e.g. TargetName is a short
+            # VM name, not the full registered SessionHostName). List the
+            # pool once and match by FQDN leaf prefix.
+            if (-not $SessionHost) {
+                if ($null -eq $PoolSessionHosts) {
+                    Write-Log "Exact match failed for '$TargetName'. Listing pool for FQDN-prefix fallback match." "INFO"
+                    $PoolSessionHosts = @(Get-AzWvdSessionHost -HostPoolName $HostPoolName `
+                                                               -ResourceGroupName $ResourceGroupName `
+                                                               -ErrorAction SilentlyContinue)
+                }
+
+                $SessionHost = $PoolSessionHosts | Where-Object {
+                    $Leaf = ($_.Name -split '/')[-1]
+                    $Leaf.Split('.')[0] -eq $TargetName
+                } | Select-Object -First 1
+
+                if ($SessionHost) {
+                    $TargetName = ($SessionHost.Name -split '/')[-1]
+                    Write-Log "Resolved '$H' to registered session host '$TargetName'." "INFO"
+                }
+            }
+
+            if (-not $SessionHost) {
+                Write-Log "FAILED to resolve '$TargetName' to a registered session host (exact + fallback both missed)." "WARN"
+                $FailedTargets += $TargetName
+                continue
+            }
 
             # NOTIFY ACTIVE USERS before draining (Item 3)
             if ($SessionHost -and $SessionHost.Session -gt 0) {
@@ -178,7 +220,19 @@ try {
             # Log warning but continue processing other hosts
             Write-Log "FAILED to update $TargetName." "WARN"
             Write-Log "Detail: $($_.Exception.Message)" "ERROR"
+            $FailedTargets += $TargetName
         }
+    }
+
+    # -------------------------------------------------------------------------
+    # 5. VISIBLE FAILURE GATING
+    # -------------------------------------------------------------------------
+    # Pipelines rely on drain failures being visible - a partial drain that
+    # exits 0 would let a blast/canary deployment proceed against hosts that
+    # are still accepting new sessions.
+    if ($FailedTargets.Count -gt 0) {
+        Write-Log "Maintenance task completed with $($FailedTargets.Count) failure(s): $($FailedTargets -join ', ')" "ERROR"
+        exit 1
     }
 
     Write-Log "Maintenance task completed successfully." "SUCCESS"

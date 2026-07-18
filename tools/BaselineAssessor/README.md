@@ -2,6 +2,10 @@
 
 BaselinePilot is a two-component security baseline assessment tool for Windows 11 clients. It combines Microsoft Security Baselines (Intune MDM + GPO) with ODA-style operational health checks in a rich WPF dashboard.
 
+> The project folder is `tools/BaselineAssessor/` (matching this repo's tool-directory convention); the product itself is named **BaselinePilot** — the two names are not a typo.
+
+**Versions**: App `0.2.0` · Collector `1.1.0` · Catalog (`checks.json`) `1.1`. See [`AUDIT.md`](AUDIT.md) for the July 2026 audit and fix-pass history behind the current versions.
+
 ## Architecture
 
 ```
@@ -9,7 +13,7 @@ Customer Machine                        Assessor Workstation
 ┌─────────────────────────┐             ┌──────────────────────────────┐
 │ Invoke-BaselineCollection│  JSON file  │ BaselinePilot.ps1 (WPF GUI) │
 │ .ps1                     │ ──────────► │ + BaselinePilot_UI.xaml      │
-│ (headless, admin, no     │  transfer   │ + checks.json (308 checks)  │
+│ (headless, admin, no     │  transfer   │ + checks.json (312 checks)  │
 │  external modules)       │             │ + csp_metadata.json         │
 └─────────────────────────┘             └──────────────────────────────┘
 ```
@@ -52,14 +56,14 @@ Import the JSON file in the GUI → Dashboard populates with scores, findings, a
 |---|------|--------|
 | 1 | System Information | CIM/WMI |
 | 2 | Join Type Detection | `dsregcmd /status` |
-| 3 | Applied Policies | `gpresult /scope computer` |
+| 3 | Applied Policies | `gpresult /scope computer` (opt-in via `-IncludeGpoData`) |
 | 4 | MDM Enrollment | Registry (Enrollments + PolicyManager) |
 | 5 | Security Policy Export | `secedit /export` |
 | 6 | Audit Policy | `auditpol /get /category:*` |
 | 7 | Registry Baselines | ~300 registry keys (Intune + GPO paths) |
 | 8 | Defender Configuration | `Get-MpPreference` + `Get-MpComputerStatus` |
 | 9 | Firewall Profiles | `Get-NetFirewallProfile` |
-| 10 | Services | `Get-Service` (36 baseline-relevant services) |
+| 10 | Services | `Get-Service` (37 baseline-relevant services) |
 | 11 | BitLocker Status | `Get-BitLockerVolume` |
 | 12 | Credential Guard / VBS | WMI `Win32_DeviceGuard` + Registry |
 | 13 | Windows Update History | `Get-HotFix` |
@@ -79,9 +83,10 @@ Import the JSON file in the GUI → Dashboard populates with scores, findings, a
 |-----------|---------|-------------|
 | `-OutputPath` | `.\<host>_baseline_<ts>.json` | Output file path |
 | `-LookbackDays` | 30 | Event log query lookback window |
-| `-MaxEventsPerQuery` | 10000 | Cap per event query group |
+| `-MaxEventsPerQuery` | 2000 | Cap per event query group (raise for deeper forensic pulls; large values can produce multi-MB JSON on busy hosts) |
 | `-SkipEventCollection` | `$false` | Skip Area 22 entirely (~30s total) |
 | `-EventSummaryOnly` | `$false` | Counts + top-N stats only |
+| `-IncludeGpoData` | `$false` | Opt-in to Area 3 (`gpresult /scope computer`) — the most expensive/fragile collection step; skipped by default |
 | `-Quiet` | `$false` | Suppress console output |
 
 ### Join Type Awareness
@@ -105,19 +110,21 @@ The collector auto-detects the device join type and adjusts behavior:
 | **Report** | Executive summary preview with RTF clipboard copy, HTML/CSV export |
 | **Settings** | Theme, preferences, assessor name, baseline version |
 
-## Check Categories (308 checks)
+## Check Categories (312 checks)
 
 | Category | Prefix | Count | Scope |
 |----------|--------|-------|-------|
 | Security Configuration | SEC | 87 | Security options, services, user rights, SmartScreen, RDP, WinRM, PowerShell |
 | Monitoring & Audit | MON | 50 | Audit policy, event log sizing, audit gap detection |
 | Defender & Endpoint Security | DEF | 38 | Defender settings, ASR rules, VBS, Credential Guard |
-| Network Security | NET | 34 | Firewall, SMB, TLS/SCHANNEL, LLMNR/NetBIOS |
-| Authentication & Credentials | AUTH | 31 | Password policy, lockout, Kerberos, LAPS, NTLM |
+| Network Security | NET | 35 | Firewall, SMB, TLS/SCHANNEL, LLMNR/NetBIOS |
+| Authentication & Credentials | AUTH | 33 | Password policy, lockout, Kerberos, LAPS, NTLM |
 | Operations & Health | OPS | 31 | Updates, drivers, services, tasks |
 | Data Protection | DATA | 22 | BitLocker, encryption, privacy, removable media |
-| User Account Control | UAC | 10 | UAC settings, elevation prompts, admin approval |
+| User Account Control | UAC | 11 | UAC settings, elevation prompts, admin approval |
 | Performance & Stability | PERF | 5 | Boot performance, reliability events |
+
+Some numeric IDs within a category are non-contiguous — 10 IDs from earlier catalog revisions were retired rather than reused, to avoid breaking saved-assessment compatibility; the July 2026 fix pass documented these gaps explicitly in `_metadata.retiredIds` (`checks.json`) instead of leaving them unexplained.
 
 ## Scoring Model
 
@@ -133,10 +140,14 @@ Score = Σ(points × weight) / Σ(weight)
 | Warning | 50 | High | 4× |
 | Fail | 0 | Medium | 3× |
 | Deferred | 0 | Low | 2× |
-| Accepted Risk | — | — | Excluded |
-| N/A | — | — | Excluded |
+| Not Assessed | 0 | — | — |
+| Accepted Risk | — | — | Excluded from both |
+| N/A | — | — | Excluded from both |
 
-**Baseline Compliance %**: Flat pass/total ratio across all assessed checks.
+- **Not Assessed** (e.g. a collection section failed or a value could not be resolved) scores 0 points but **stays in the Risk Score denominator** — it is not the same as a Fail, but it is not silently dropped either. It **is excluded** from the Baseline Compliance % denominator.
+- **Accepted Risk** and **N/A** are excluded from *both* the weighted Risk Score and Baseline Compliance % — this matches the documented governance intent (a risk that's been formally accepted, or a check that doesn't apply, should not drag down either score).
+
+**Baseline Compliance %**: Flat pass/total ratio across all assessed checks (Not Assessed, Accepted Risk, and N/A excluded from the denominator).
 
 ## Governance Actions
 
@@ -186,12 +197,19 @@ BaselineAssessor/
 ├── BaselinePilot.ps1              # WPF GUI application (~4500 lines)
 ├── BaselinePilot_UI.xaml          # WPF XAML layout
 ├── Invoke-BaselineCollection.ps1  # Headless data collector (22 areas)
-├── checks.json                    # 308 check definitions
+├── checks.json                    # 312 check definitions
 ├── csp_metadata.json              # CSP metadata (descriptions, allowed values)
 ├── admx_metadata.json             # ADMX policy metadata
-├── Launch_BaselinePilot.bat       # Batch launcher
+├── Launch_BaselinePilot.bat       # Batch launcher — starts the GUI
+├── Run_Collection.bat             # Batch launcher — elevation-gated collector run
+├── Test-BaselinePilot.ps1         # Offline validation tests (collection/catalog/evaluation)
 ├── README.md                      # This file
-├── assessments/                   # Saved assessment JSON files
-├── reports/                       # Generated HTML reports
+├── AUDIT.md                       # July 2026 audit + fix-pass changelog
+├── assessments/                   # Saved assessment JSON files (created on first save, not shipped)
+├── reports/                       # Generated HTML reports (created on first export, not shipped)
 └── templates/                     # Report templates
 ```
+
+## Changelog
+
+- **2026-07 fix pass** — App `0.2.0` / Collector `1.1.0` / Catalog `1.1`. Resolved the correctness, drift, and duplicate-severity findings from the July 2026 audit (collector key mismatches, stale baseline values, Not-Assessed scoring, new 2026 checks). Full findings and fix status: [`AUDIT.md`](AUDIT.md).

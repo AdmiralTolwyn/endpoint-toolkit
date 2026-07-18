@@ -127,6 +127,9 @@ param (
     [Parameter(Mandatory=$false)]
     [string]$DefaultSource = 'winget'
 )
+
+$ErrorActionPreference = 'Stop'
+
 #############################################
 #      VDI Image Customizer - Winget        #
 #############################################
@@ -172,14 +175,54 @@ Write-Host "`n*** AVD AIB CUSTOMIZER PHASE *** Preparing Environment & Blocking 
 
 function Set-RegKey($path, $name, $value, $desc) {
     try {
-        if (!(Test-Path $path)) { 
+        if (!(Test-Path $path)) {
             New-Item -Path $path -Force | Out-Null
-            Write-Host "   -> Created Registry Path: $path" 
+            Write-Host "   -> Created Registry Path: $path"
         }
         New-ItemProperty -Path $path -Name $name -Value $value -PropertyType DWORD -Force | Out-Null
         Write-Host "   -> SUCCESS: $desc ($name = $value)" -ForegroundColor Green
     } catch {
         Write-Host "   -> ERROR: Failed to set $desc. Details: $($_.Exception.Message)" -ForegroundColor Red
+    }
+}
+
+# Snapshot/restore helpers for the AllowAllTrustedApps sideloading policy so the
+# captured image does not permanently ship with sideloading enabled. Mirrors the
+# pattern used by InstallProvisionedAppxPackage.ps1.
+function Get-SideloadState($path, $name) {
+    if (-not (Test-Path $path)) {
+        return [pscustomobject]@{ KeyExisted = $false; Value = $null }
+    }
+    try {
+        $v = Get-ItemProperty -Path $path -Name $name -ErrorAction Stop
+        return [pscustomobject]@{ KeyExisted = $true; Value = [int]$v.$name }
+    } catch {
+        return [pscustomobject]@{ KeyExisted = $true; Value = $null }
+    }
+}
+
+function Restore-SideloadState($path, $name, $original) {
+    try {
+        if (-not $original.KeyExisted) {
+            if (Test-Path $path) {
+                Remove-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue
+                $remaining = Get-Item -Path $path -ErrorAction SilentlyContinue
+                if ($remaining -and $remaining.Property.Count -eq 0 -and $remaining.SubKeyCount -eq 0) {
+                    Remove-Item -Path $path -Force -ErrorAction SilentlyContinue
+                }
+            }
+            Write-Host "   -> Restored sideloading policy: removed (parent key did not exist on entry)" -ForegroundColor DarkGray
+            return
+        }
+        if ($null -eq $original.Value) {
+            Remove-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue
+            Write-Host "   -> Restored sideloading policy: $name removed (was absent on entry)" -ForegroundColor DarkGray
+            return
+        }
+        New-ItemProperty -Path $path -Name $name -Value $original.Value -PropertyType DWORD -Force | Out-Null
+        Write-Host "   -> Restored sideloading policy: $name = $($original.Value)" -ForegroundColor DarkGray
+    } catch {
+        Write-Host "   -> WARNING: Failed to restore sideloading policy: $($_.Exception.Message)" -ForegroundColor Yellow
     }
 }
 
@@ -202,9 +245,16 @@ Set-RegKey -path 'HKLM:\Software\Policies\Microsoft\Control Panel\International'
            -value '1' `
            -desc "Block Language Pack Cleanup"
 
-# D. Enable App Sideloading
-Set-RegKey -path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock' `
-           -name 'AllowAllTrustedApps' `
+# D. Enable App Sideloading (snapshot prior state so we can restore it after
+#    provisioning - see Restore-SideloadState call at the end of the provisioning
+#    section below. Otherwise the captured image permanently ships with
+#    sideloading enabled.)
+$AppModelUnlockPath = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock'
+$AppModelUnlockName = 'AllowAllTrustedApps'
+$originalSideloadState = Get-SideloadState -path $AppModelUnlockPath -name $AppModelUnlockName
+
+Set-RegKey -path $AppModelUnlockPath `
+           -name $AppModelUnlockName `
            -value '1' `
            -desc "Enable Sideloading (AllowAllTrustedApps)"
 
@@ -272,8 +322,23 @@ try {
 
     Write-Host "   -> Fetching Release Info from GitHub..."
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
-    $response = Invoke-RestMethod -Uri $apiUrl -Headers @{ "User-Agent"="PS"; "Accept"="application/vnd.github.v3+json" }
-    
+    $ghHeaders = @{ "User-Agent"="PS"; "Accept"="application/vnd.github.v3+json" }
+    if ($env:GITHUB_TOKEN) {
+        Write-Host "   -> GITHUB_TOKEN detected - sending authenticated GitHub API request (higher rate limit)."
+        $ghHeaders["Authorization"] = "Bearer $env:GITHUB_TOKEN"
+    }
+    try {
+        $response = Invoke-RestMethod -Uri $apiUrl -Headers $ghHeaders -TimeoutSec 60
+    }
+    catch {
+        $statusCode = $null
+        if ($_.Exception.Response) { $statusCode = [int]$_.Exception.Response.StatusCode }
+        if ($statusCode -eq 403) {
+            Throw "GitHub API request to $apiUrl failed with HTTP 403 - this is almost always GitHub API rate-limiting (60 requests/hour unauthenticated). Set `$env:GITHUB_TOKEN to a PAT to raise the limit. Details: $($_.Exception.Message)"
+        }
+        Throw
+    }
+
     $assets = $response.assets
     $bundle = $assets | Where-Object { $_.name -like "*.msixbundle" } | Select-Object -First 1
     $license = $assets | Where-Object { $_.name -like "*License1.xml" } | Select-Object -First 1
@@ -285,7 +350,7 @@ try {
         $mb = "{0:N2} MB" -f ($a.size / 1MB)
         Write-Host "   -> Downloading $($a.name) ($mb)..."
         $ProgressPreference = 'SilentlyContinue'
-        Invoke-WebRequest -Uri $a.browser_download_url -OutFile (Join-Path $d $a.name) -UseBasicParsing
+        Invoke-WebRequest -Uri $a.browser_download_url -OutFile (Join-Path $d $a.name) -UseBasicParsing -TimeoutSec 300
     }
 
     Download-Asset $bundle $tempDir
@@ -323,7 +388,7 @@ try {
             Verbose            = $true
         }
 
-        if ($licensePath) { $params.Add("LicensePath", $licensePath) } else { $params.Add("/SKipLicense") }
+        if ($licensePath) { $params.LicensePath = $licensePath } else { $params.SkipLicense = $true }
         if ($depFilesList.Count -gt 0) { $params.Add("DependencyPackagePath", $depFilesList) }
 
         Write-Host "   -> Executing Add-AppxProvisionedPackage with StubPackageOption:installfull..."
@@ -368,6 +433,11 @@ try {
 } catch {
     Write-Host "*** FATAL ERROR during Setup: $($_.Exception.Message) ***" -ForegroundColor Red
     exit 1
+} finally {
+    # Always restore the sideloading policy to its pre-script state, success or
+    # failure, so the captured image does not permanently ship with sideloading
+    # enabled (AllowAllTrustedApps).
+    Restore-SideloadState -path $AppModelUnlockPath -name $AppModelUnlockName -original $originalSideloadState
 }
 
 # ---------------------------------------------------------------------------
@@ -387,7 +457,7 @@ if (-not $SkipApps -and -not $SkipUserRegistration) {
             # This pre-seeds the Winget source cache so it doesn't fail trying to sync from internet
             Write-Host "*** AVD AIB CUSTOMIZER PHASE *** Downloading Winget Source MSIX... ***"
             $ProgressPreference = 'SilentlyContinue'
-            Invoke-WebRequest -Uri $sourceUrl -OutFile $sourcePath -UseBasicParsing
+            Invoke-WebRequest -Uri $sourceUrl -OutFile $sourcePath -UseBasicParsing -TimeoutSec 300
 
             Write-Host "*** AVD AIB CUSTOMIZER PHASE *** Installing Winget Source MSIX (Local File)... ***"
             Add-AppxPackage -Path $sourcePath -ForceApplicationShutdown

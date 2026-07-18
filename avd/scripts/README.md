@@ -8,9 +8,15 @@ PowerShell scripts for AVD session host lifecycle management. Used standalone or
 
 | Script | Purpose |
 |--------|---------|
-| [Get-AvdDetails.ps1](Get-AvdDetails.ps1) | Pre-flight orchestrator — finds latest gallery image, identifies outdated hosts, generates ISO-8601 week-based hostnames, manages host pool registration tokens |
-| [Set-AvdDrainMode.ps1](Set-AvdDrainMode.ps1) | Sets `AllowNewSession = $false` on outdated hosts to block new connections |
-| [Remove-AvdHosts.ps1](Remove-AvdHosts.ps1) | Decommissions drained hosts — removes AVD registration, Entra ID device record, VM, NIC, and OS disk |
+| [Get-AvdDetails.ps1](Get-AvdDetails.ps1) | Pre-flight orchestrator — finds latest gallery image, identifies outdated hosts, sizes the new fleet to the **outdated host count** (not total pool size), generates ISO-8601 week-based hostnames, and includes a circuit breaker requiring `-VmCountOverride` when 100% of a multi-host pool is outdated |
+| [Set-AvdDrainMode.ps1](Set-AvdDrainMode.ps1) | Sets `AllowNewSession = $false` on outdated hosts to block new connections. Resolves short VM names to registered session host names via a pool-wide FQDN leaf-prefix fallback when an exact name match fails, and exits `1` if any target host fails to drain (so a partial drain can't silently let a canary/blast deployment proceed) |
+| [Remove-AvdHosts.ps1](Remove-AvdHosts.ps1) | Decommissions drained hosts — force-logs-off any sessions remaining after the drain grace period (re-verifying zero sessions before proceeding), deletes the VM **first**, then the NIC/OS disk (resolved from the VM's own profile references), then the AVD registration and Entra ID device record. Supports a true dry-run `-Simulate` |
+
+`Get-AvdDetails.ps1` still computes/generates a host pool registration token
+internally (`Get`/`New-AzWvdRegistrationInfo`) and exposes it as a
+`HostPoolToken` output variable, but the update pipelines no longer consume
+that output — each deploy stage mints its own fresh token in-stage instead
+(see [pipelines/README.md](../pipelines/README.md#registration-token-handling)).
 
 ### Hybrid Join
 
@@ -29,7 +35,7 @@ PowerShell scripts for AVD session host lifecycle management. Used standalone or
 
 | Script | Purpose |
 |--------|---------|
-| [Write-DeploymentTelemetry.ps1](Write-DeploymentTelemetry.ps1) | Sends structured deployment events to Log Analytics via HTTP Data Collector API |
+| [Write-DeploymentTelemetry.ps1](Write-DeploymentTelemetry.ps1) | Sends structured deployment events to Log Analytics via the HTTP Data Collector API. Accepts `WorkspaceId`/`SharedKey`/`EventData` as parameters or via `WORKSPACE_ID`/`SHARED_KEY`/`EVENT_DATA_JSON` env vars (the contract the pipelines use). **The HTTP Data Collector API is deprecated — Microsoft support ends 2026-09-14**; migration target is the Logs Ingestion API (DCR/DCE + Entra ID auth), not yet implemented here |
 
 ### Golden Image Provisioning
 
@@ -40,23 +46,33 @@ PowerShell scripts for AVD session host lifecycle management. Used standalone or
 
 ## Usage in Pipelines
 
-The update and cleanup pipelines call these scripts in sequence:
+The update pipelines call these scripts in the order the stages actually run —
+**old hosts are not drained until after the canary deployment succeeds**:
 
 ```
-Get-AvdDetails.ps1          ← Identify outdated hosts + generate new hostnames
+Get-AvdDetails.ps1              ← Identify outdated hosts + generate new hostnames
     │
-    ├─► Set-AvdDrainMode.ps1    ← Block new sessions on old hosts
+    ├─► Bicep deployment (Canary)  ← Deploy + health-gate one new session host
+    ├─► Set-AvdDrainMode.ps1        ← Drain the canary for validation
     │
-    ├─► Bicep deployment         ← Deploy new session hosts
+    ├─► Set-AvdDrainMode.ps1        ← THEN drain the rest of the outdated fleet
     │
-    ├─► Invoke-HybridActivator   ← (legacy AD only, scheduled pipeline)
+    ├─► Bicep deployment (Blast)   ← Deploy remaining new session hosts
+    ├─► Set-AvdDrainMode.ps1        ← Drain the blast batch
     │
-    └─► Remove-AvdHosts.ps1     ← Decommission old hosts after grace period
+    ├─► (on failure) inline Update-AzWvdSessionHost  ← Rollback: un-drain old hosts
+    │
+    ├─► Invoke-HybridActivator.ps1  ← (legacy AD only, scheduled pipeline)
+    │
+    └─► Remove-AvdHosts.ps1        ← Decommission old hosts after grace period (separate pipeline)
 ```
 
 ## Requirements
 
-- Az PowerShell modules: `Az.Accounts`, `Az.DesktopVirtualization`, `Az.Compute`, `Az.Network`
-- `Remove-AvdHosts.ps1` also requires `Az.Resources` (for Entra ID device cleanup)
+- Az PowerShell modules: `Az.Accounts`, `Az.DesktopVirtualization`, `Az.Compute`
+- `Az.Resources` is also required by `Get-AvdDetails.ps1`, `Set-AvdDrainMode.ps1`,
+  `Invoke-HybridActivator.ps1`, and `Remove-AvdHosts.ps1` (tag reads/writes via
+  `Update-AzTag`/`Get-AzResource`, and Entra ID device cleanup in
+  `Remove-AvdHosts.ps1`) — see each script's `#Requires -Modules` line
 - `Write-DeploymentTelemetry.ps1` requires a Log Analytics workspace ID and shared key
 - `Invoke-FslRepairDisk.ps1` requires local admin access and SMB access to the FSLogix share
