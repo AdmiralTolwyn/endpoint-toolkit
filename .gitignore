@@ -49,3 +49,10 @@ build_history.json
 # Local scratch / draft notes
 github-issue-*.md
 
+
+# AI agent orchestration / instruction docs — not in this public repo
+*HANDOFF*.md
+.github/copilot-instructions.md
+AGENTS.md
+CLAUDE.md
+.claude/
