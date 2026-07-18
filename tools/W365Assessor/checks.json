@@ -1,6 +1,6 @@
 {
   "_metadata": {
-    "version": "1.0",
+    "version": "1.1",
     "description": "Windows 365 Assessor check definitions — W365 / WAF / CAF / LZA / SEC best practices",
     "originKey": {
       "W365": "Windows 365 Enterprise Documentation",
@@ -11,9 +11,9 @@
     },
     "weightScale": "1 = informational, 2 = recommended, 3 = important (default), 4 = strongly recommended, 5 = critical",
     "effortScale": "Quick Win = config/toggle, Some Effort = planning/testing/downtime, Major Effort = infra redesign",
-    "totalChecks": 128,
-    "autoMappedCount": 23,
-    "lastUpdated": "2026-04-27"
+    "totalChecks": 132,
+    "autoMappedCount": 41,
+    "lastUpdated": "2026-07-18"
   },
   "checks": [
     {
@@ -32,7 +32,7 @@
       "remediation": "Run Invoke-W365Discovery.ps1 or query the Graph beta virtualEndpoint/cloudPCs endpoint. Import the resulting JSON into the assessor GUI.",
       "appliesTo": [
         "Enterprise",
-        "Frontline"
+        "Flex"
       ],
       "additionalReferences": [
         "https://learn.microsoft.com/en-us/graph/api/resources/cloudpc",
@@ -55,34 +55,34 @@
       "remediation": "Document user personas (task worker, knowledge worker, power user, developer). Map each to a W365 service plan. Review Endpoint Analytics startup performance and resource usage reports to validate sizing.",
       "appliesTo": [
         "Enterprise",
-        "Frontline"
+        "Flex"
       ],
       "additionalReferences": [
         "https://learn.microsoft.com/en-us/windows-365/enterprise/assign-licenses",
-        "https://learn.microsoft.com/en-us/mem/analytics/startup-performance"
+        "https://learn.microsoft.com/en-us/intune/endpoint-analytics/startup-performance"
       ]
     },
     {
       "id": "W365-INV-003",
       "category": "Inventory & Topology",
       "name": "Windows 365 Edition Selection",
-      "description": "Confirm the correct Windows 365 edition (Enterprise vs. Frontline vs. Business) is deployed for each use case. Enterprise provides dedicated Cloud PCs; Frontline shares Cloud PCs across shift workers with a 1:3 or higher concurrency ratio.",
+      "description": "Confirm the correct Windows 365 edition (Enterprise vs. Flex vs. Business) is deployed for each use case. Enterprise provides dedicated Cloud PCs; Flex (formerly Windows 365 Frontline) shares Cloud PCs across shift workers with a 1:3 or higher concurrency ratio.",
       "severity": "Medium",
-      "type": "Manual",
+      "type": "Auto",
       "weight": 3,
       "origin": "W365",
       "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/overview",
       "effort": "Some Effort",
-      "bestPractice": "Use Enterprise for dedicated 1:1 users who need persistent state. Use Frontline for shift/task workers who share devices in rotation. Business is for SMBs without Intune/Azure AD P1 — it has limited management capabilities.",
+      "bestPractice": "Use Enterprise for dedicated 1:1 users who need persistent state. Use Flex for shift/task workers who share devices in rotation. Business is for SMBs without Intune/Azure AD P1 — it has limited management capabilities.",
       "impact": "Wrong edition leads to over-licensing (Enterprise for shift workers) or feature gaps (Business lacking Intune management, CA policies, and custom images).",
-      "remediation": "Review user groups and work patterns. Migrate shift workers to Frontline licenses. Upgrade Business to Enterprise if Conditional Access, custom images, or ANC are needed.",
+      "remediation": "Review user groups and work patterns. Migrate shift workers to Flex licenses. Upgrade Business to Enterprise if Conditional Access, custom images, or ANC are needed.",
       "appliesTo": [
         "Enterprise",
-        "Frontline",
+        "Flex",
         "Business"
       ],
       "additionalReferences": [
-        "https://learn.microsoft.com/en-us/windows-365/enterprise/introduction-windows-365-frontline"
+        "https://learn.microsoft.com/en-us/windows-365/enterprise/introduction-windows-365-flex"
       ]
     },
     {
@@ -94,14 +94,14 @@
       "type": "Auto",
       "weight": 4,
       "origin": "W365",
-      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/known-issues-provisioning",
+      "reference": "https://learn.microsoft.com/en-us/troubleshoot/windows-365/provisioning-errors",
       "effort": "Some Effort",
       "bestPractice": "Monitor Cloud PC status via Intune > Devices > Windows 365 > All Cloud PCs. Investigate any Cloud PC not in 'provisioned' state within 24 hours. Grace-period PCs should be reassigned or deprovisioned before the window closes.",
       "impact": "Failed PCs block user productivity and waste license cost. Grace-period PCs will lose all user data when deprovisioned at expiry.",
       "remediation": "For failed PCs: check provisioning policy, ANC health, and license assignment, then reprovision. For grace-period PCs: reassign the license, remove the user, or let the grace period expire if intentional.",
       "appliesTo": [
         "Enterprise",
-        "Frontline"
+        "Flex"
       ],
       "additionalReferences": [
         "https://learn.microsoft.com/en-us/windows-365/enterprise/end-grace-period",
@@ -114,8 +114,8 @@
       "name": "Service Plan Coverage",
       "description": "Validate that all deployed service plan SKUs are known and that licenses match assigned provisioning policies. Orphaned licenses or mismatched plans indicate procurement or assignment gaps.",
       "severity": "Medium",
-      "type": "Manual",
-      "weight": 2,
+      "type": "Auto",
+      "weight": 3,
       "origin": "W365",
       "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/assign-licenses",
       "effort": "Quick Win",
@@ -124,7 +124,7 @@
       "remediation": "In M365 admin center > Billing > Licenses, identify unassigned W365 licenses. Assign them to security groups targeted by provisioning policies, or release unused licenses.",
       "appliesTo": [
         "Enterprise",
-        "Frontline"
+        "Flex"
       ],
       "additionalReferences": []
     },
@@ -166,7 +166,7 @@
       "remediation": "In Intune > Devices > Windows 365 > Provisioning policies, select the unassigned policy, click Assign, and target a security group. Verify the group contains users with W365 licenses.",
       "appliesTo": [
         "Enterprise",
-        "Frontline"
+        "Flex"
       ],
       "additionalReferences": [
         "https://learn.microsoft.com/en-us/windows-365/enterprise/create-provisioning-policy"
@@ -178,7 +178,7 @@
       "name": "Provisioning Policy Naming Convention",
       "description": "Provisioning policies and their Cloud PC naming templates should follow a consistent, descriptive naming convention that encodes region, persona, join type, and environment.",
       "severity": "Low",
-      "type": "Manual",
+      "type": "Auto",
       "weight": 2,
       "origin": "CAF",
       "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/create-provisioning-policy",
@@ -196,22 +196,22 @@
     {
       "id": "W365-PROV-003",
       "category": "Provisioning Policies",
-      "name": "Frontline Provisioning Configuration",
-      "description": "If Windows 365 Frontline is in use, validate that provisioning policies are set to provisioningType=shared with appropriate concurrency ratios and that only eligible Frontline-licensed users are targeted.",
+      "name": "Flex Provisioning Configuration",
+      "description": "If Windows 365 Flex is in use, validate that provisioning policies are set to provisioningType=shared with appropriate concurrency ratios and that only eligible Flex-licensed users are targeted.",
       "severity": "Medium",
       "type": "Manual",
       "weight": 3,
       "origin": "W365",
-      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/introduction-windows-365-frontline",
+      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/introduction-windows-365-flex",
       "effort": "Some Effort",
-      "bestPractice": "Frontline Cloud PCs are shared across up to 3 users per license (dedicated mode) or more in shared mode. Ensure provisioning policies for Frontline use the correct provisioningType and that shift schedules do not exceed concurrency limits.",
-      "impact": "Misconfigured Frontline policies may lead to users unable to sign in during peak shifts, or to over-provisioning that negates the cost savings of the Frontline SKU.",
-      "remediation": "Review Frontline provisioning policies. Set provisioningType appropriately. Test with actual shift patterns. Monitor concurrent usage in Endpoint Analytics.",
+      "bestPractice": "Flex Cloud PCs are shared across up to 3 users per license (dedicated mode) or more in shared mode. Ensure provisioning policies for Flex use the correct provisioningType and that shift schedules do not exceed concurrency limits.",
+      "impact": "Misconfigured Flex policies may lead to users unable to sign in during peak shifts, or to over-provisioning that negates the cost savings of the Flex SKU.",
+      "remediation": "Review Flex provisioning policies. Set provisioningType appropriately. Test with actual shift patterns. Monitor concurrent usage in Endpoint Analytics.",
       "appliesTo": [
-        "Frontline"
+        "Flex"
       ],
       "additionalReferences": [
-        "https://learn.microsoft.com/en-us/windows-365/enterprise/set-up-windows-365-frontline"
+        "https://learn.microsoft.com/en-us/windows-365/enterprise/introduction-windows-365-flex"
       ]
     },
     {
@@ -232,7 +232,7 @@
         "Enterprise"
       ],
       "additionalReferences": [
-        "https://learn.microsoft.com/en-us/windows/deployment/windows-autopatch/operate/windows-autopatch-groups-overview"
+        "https://learn.microsoft.com/en-us/windows/deployment/windows-autopatch/deploy/windows-autopatch-groups-overview"
       ]
     },
     {
@@ -251,7 +251,7 @@
       "remediation": "In each provisioning policy, review gracePeriodInHours. Align with HR offboarding timelines. Document the policy in operational runbooks.",
       "appliesTo": [
         "Enterprise",
-        "Frontline"
+        "Flex"
       ],
       "additionalReferences": []
     },
@@ -261,7 +261,7 @@
       "name": "Domain Join Type Consistency",
       "description": "Validate that all provisioning policies use a consistent domain join strategy (Entra ID Join preferred, Hybrid Entra ID Join only when required for on-prem AD dependency). Mixed join types complicate policy management.",
       "severity": "Medium",
-      "type": "Manual",
+      "type": "Auto",
       "weight": 3,
       "origin": "W365",
       "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/identity-authentication",
@@ -283,7 +283,7 @@
       "name": "Windows Settings in Provisioning Policy",
       "description": "Check the Windows language/region and OS version settings within each provisioning policy to ensure Cloud PCs are provisioned with the correct locale and patch level from day one.",
       "severity": "Low",
-      "type": "Manual",
+      "type": "Auto",
       "weight": 2,
       "origin": "W365",
       "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/create-provisioning-policy",
@@ -305,14 +305,14 @@
       "type": "Auto",
       "weight": 3,
       "origin": "W365",
-      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/create-user-settings-policy",
+      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/assign-users-as-local-admin",
       "effort": "Quick Win",
       "bestPractice": "Create one user settings policy per persona or DR tier. Assign each to a dedicated security group. Delete or document any intentionally unassigned policies to avoid configuration drift.",
       "impact": "Unassigned policies silently leave users without restore points, DR coverage, or controlled local admin elevation — reducing resilience posture.",
       "remediation": "In Intune > Windows 365 > User settings, assign the policy to a security group or delete if unused.",
       "appliesTo": [
         "Enterprise",
-        "Frontline"
+        "Flex"
       ],
       "additionalReferences": []
     },
@@ -320,19 +320,19 @@
       "id": "W365-USER-002",
       "category": "User Settings & Resilience",
       "name": "Cross-Region Disaster Recovery",
-      "description": "Evaluate whether cross-region disaster recovery (DR) is enabled for business-critical Cloud PCs. When activated, DR creates a temporary copy in a paired Azure region using the latest restore point.",
+      "description": "Evaluate whether cross-region disaster recovery (DR) is enabled for business-critical Cloud PCs. When activated, DR creates a temporary copy in a paired Azure region using the latest restore point. Cross-region DR applies only to dedicated (non-shared) Cloud PCs — Flex Cloud PCs provisioned in shared mode are not eligible.",
       "severity": "High",
       "type": "Auto",
       "weight": 4,
       "origin": "W365",
       "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/cross-region-disaster-recovery",
       "effort": "Some Effort",
-      "bestPractice": "Microsoft recommends enabling cross-region DR for all Cloud PCs supporting business-critical users. RPO and RTO targets are <4 hours for up to 50,000 DR-licensed PCs per backup region. Requires a separate W365 Cross Region DR add-on license per user.",
+      "bestPractice": "Microsoft recommends enabling cross-region DR (generally available) for all dedicated Cloud PCs supporting business-critical users. RTO and RPO targets are both under 4 hours for up to 50,000 DR-licensed PCs per backup region. Requires a separate W365 Cross Region DR add-on license per user.",
       "impact": "Without DR, a regional Azure outage leaves Cloud PCs inaccessible with no failover. Users lose access to their desktop until the region recovers, which may take hours to days.",
       "remediation": "Purchase W365 Cross Region DR add-on licenses. In user settings policy, configure crossRegionDisasterRecoverySetting with the desired backup region. Test activation annually.",
       "appliesTo": [
         "Enterprise",
-        "Frontline (dedicated)"
+        "Flex"
       ],
       "additionalReferences": [
         "https://learn.microsoft.com/en-us/windows-365/enterprise/cross-region-disaster-recovery-set-up",
@@ -343,7 +343,7 @@
       "id": "W365-USER-003",
       "category": "User Settings & Resilience",
       "name": "Restore Point Frequency",
-      "description": "Check the restore point frequency configured in user settings policies. Restore points enable users and admins to roll back a Cloud PC to a known-good state after corruption, misconfiguration, or malware.",
+      "description": "Check the restore point frequency configured in user settings policies. Restore points enable users and admins to roll back a Cloud PC to a known-good state after corruption, misconfiguration, or malware. Restore points apply only to dedicated (non-shared) Cloud PCs — Flex Cloud PCs in shared mode do not support restore points.",
       "severity": "High",
       "type": "Auto",
       "weight": 4,
@@ -355,7 +355,7 @@
       "remediation": "In user settings policy, set restorePointSetting.frequencyInHours to 4 or 6 for critical personas. Optionally enable userRestoreEnabled to let users self-serve.",
       "appliesTo": [
         "Enterprise",
-        "Frontline (dedicated)"
+        "Flex"
       ],
       "additionalReferences": [
         "https://learn.microsoft.com/en-us/windows-365/enterprise/restore-single-cloud-pc"
@@ -370,7 +370,7 @@
       "type": "Auto",
       "weight": 2,
       "origin": "W365",
-      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/create-user-settings-policy",
+      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/assign-users-as-local-admin",
       "effort": "Quick Win",
       "bestPractice": "Enable self-service reset for non-sensitive personas to reduce helpdesk load. Disable for personas with compliance-sensitive data where uncontrolled data wipe is a risk. Combine with OneDrive KFM to protect user files during reset.",
       "impact": "Enabling reset without OneDrive KFM risks data loss. Disabling reset for all users increases helpdesk ticket volume for simple issues that reset would fix.",
@@ -387,7 +387,7 @@
       "description": "Verify that all Azure Network Connections (ANCs) pass Microsoft health checks. ANC health validates subnet availability, DNS resolution, AD reachability, endpoint connectivity, and NSG rules.",
       "severity": "High",
       "type": "Auto",
-      "weight": 5,
+      "weight": 4,
       "origin": "W365",
       "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/azure-network-connections",
       "effort": "Some Effort",
@@ -596,7 +596,7 @@
       "type": "Manual",
       "weight": 3,
       "origin": "WAF",
-      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/apps",
+      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/app-overview",
       "effort": "Some Effort",
       "bestPractice": "Layer apps by lifecycle: image-baked for large/static base apps, Intune Win32 / Enterprise App Catalog for everything that updates monthly or faster, Microsoft Store for shrink-wrapped apps. Always validate app deployment on a staging provisioning policy before broad rollout.",
       "impact": "An unstructured app strategy leads to either bloated golden images that take hours to provision and rebuild, or to slow first-login experiences while Intune installs dozens of apps post-provision. Both hurt adoption.",
@@ -625,7 +625,7 @@
       "remediation": "Ensure New Teams is deployed. Update Windows App / RD client to latest version on endpoints. Verify WebRTC redirector service is running on the Cloud PC. Test with a Teams test call.",
       "appliesTo": [
         "Enterprise",
-        "Frontline",
+        "Flex",
         "Business"
       ],
       "additionalReferences": [
@@ -690,7 +690,7 @@
         "Enterprise"
       ],
       "additionalReferences": [
-        "https://learn.microsoft.com/en-us/windows-365/enterprise/set-up-tenants-passwordless-authentication"
+        "https://learn.microsoft.com/en-us/windows-365/enterprise/identity-authentication"
       ]
     },
     {
@@ -720,7 +720,7 @@
       "name": "Conditional Access for Cloud PCs",
       "description": "Review Conditional Access (CA) policies applied to the Cloud PC sign-in flow. CA policies should enforce MFA, compliant device checks, and location-based restrictions on Windows 365 sessions.",
       "severity": "High",
-      "type": "Manual",
+      "type": "Auto",
       "weight": 4,
       "origin": "SEC",
       "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/set-conditional-access-policies",
@@ -741,7 +741,7 @@
       "name": "Multi-Factor Authentication (MFA)",
       "description": "Confirm MFA is enforced for all Windows 365 sign-ins. MFA is the single most effective control against credential theft and unauthorized access.",
       "severity": "Critical",
-      "type": "Manual",
+      "type": "Auto",
       "weight": 5,
       "origin": "SEC",
       "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/security-guidelines",
@@ -751,7 +751,7 @@
       "remediation": "Create a Conditional Access policy requiring MFA for the Windows 365 cloud app. Migrate from per-user MFA to CA-based MFA. Deploy FIDO2 security keys or WHfB for critical users.",
       "appliesTo": [
         "Enterprise",
-        "Frontline",
+        "Flex",
         "Business"
       ],
       "additionalReferences": [
@@ -776,7 +776,7 @@
         "Enterprise"
       ],
       "additionalReferences": [
-        "https://learn.microsoft.com/en-us/windows-365/enterprise/set-up-tenants-passwordless-authentication"
+        "https://learn.microsoft.com/en-us/windows-365/enterprise/identity-authentication"
       ]
     },
     {
@@ -797,14 +797,14 @@
         "Enterprise"
       ],
       "additionalReferences": [
-        "https://learn.microsoft.com/en-us/entra/identity/role-based-access-control/concept-delegation"
+        "https://learn.microsoft.com/en-us/entra/identity/role-based-access-control/delegate-by-task"
       ]
     },
     {
       "id": "W365-IAM-007",
       "category": "Identity & Access",
       "name": "Session Lock and Timeout Policy",
-      "description": "Verify that Cloud PCs enforce screen lock on inactivity and session disconnect timeouts. This prevents unauthorized access to an unattended Cloud PC session.",
+      "description": "Verify that Cloud PCs enforce screen lock on inactivity and session disconnect timeouts. This prevents unauthorized access to an unattended Cloud PC session. See also W365-SEC-016 for idle session time limits, a related but distinct control that governs disconnect on inactivity rather than screen lock.",
       "severity": "Medium",
       "type": "Manual",
       "weight": 3,
@@ -816,7 +816,7 @@
       "remediation": "Create an Intune configuration profile for screen lock timeout (Administrative Templates > Control Panel > Personalization > Screen lock timeout). Configure RDP session limits via Intune or GPO.",
       "appliesTo": [
         "Enterprise",
-        "Frontline"
+        "Flex"
       ],
       "additionalReferences": []
     },
@@ -848,7 +848,7 @@
       "name": "Microsoft Defender for Endpoint",
       "description": "Verify that Microsoft Defender for Endpoint (MDE) is onboarded and active on all Cloud PCs. MDE provides EDR, threat detection, vulnerability management, and integration with Microsoft Secure Score.",
       "severity": "Critical",
-      "type": "Manual",
+      "type": "Auto",
       "weight": 5,
       "origin": "SEC",
       "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/security-guidelines",
@@ -858,7 +858,7 @@
       "remediation": "Onboard Cloud PCs via Intune MDE connector or MDE onboarding package. Verify onboarding status in Microsoft 365 Defender portal > Devices. Enable Tamper Protection.",
       "appliesTo": [
         "Enterprise",
-        "Frontline",
+        "Flex",
         "Business"
       ],
       "additionalReferences": [
@@ -869,14 +869,14 @@
       "id": "W365-SEC-003",
       "category": "Security & Compliance",
       "name": "Windows 365 Security Baseline",
-      "description": "Check whether the Windows 365 security baseline is deployed to Cloud PCs. The baseline is a pre-built Intune profile that applies Microsoft-recommended security settings for Cloud PC scenarios.",
+      "description": "Check whether the Windows 365 24H1 Cloud PC security baseline is deployed to Cloud PCs. The baseline is a pre-built Intune profile that applies Microsoft-recommended security settings for Cloud PC scenarios.",
       "severity": "High",
-      "type": "Manual",
+      "type": "Auto",
       "weight": 4,
       "origin": "SEC",
       "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/deploy-security-baselines",
       "effort": "Quick Win",
-      "bestPractice": "Deploy the Windows 365 Cloud PC security baseline from Intune > Endpoint security > Security baselines. It configures firewall rules, BitLocker exclusions (not supported on Cloud PCs), RDP hardening, and Windows security features tailored for W365.",
+      "bestPractice": "Deploy the Windows 365 24H1 Cloud PC security baseline from Intune > Endpoint security > Security baselines. It configures firewall rules, BitLocker exclusions (not supported on Cloud PCs), RDP hardening, and Windows security features tailored for W365.",
       "impact": "Without the security baseline, Cloud PCs rely on default Windows settings which may not meet enterprise security requirements — leaving gaps in firewall config, credential protection, and attack surface reduction.",
       "remediation": "In Intune > Endpoint security > Security baselines, create a profile from the Windows 365 baseline. Assign to all Cloud PC device groups. Review and customize settings for your environment.",
       "appliesTo": [
@@ -892,7 +892,7 @@
       "name": "Device Compliance Policy",
       "description": "Verify that Intune device compliance policies are assigned to Cloud PCs and integrated with Conditional Access. Compliance policies check OS version, encryption, antivirus status, and risk level.",
       "severity": "High",
-      "type": "Manual",
+      "type": "Auto",
       "weight": 4,
       "origin": "SEC",
       "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/security-guidelines",
@@ -911,12 +911,12 @@
       "id": "W365-SEC-006",
       "category": "Security & Compliance",
       "name": "Customer-Managed Keys (CMK)",
-      "description": "Evaluate whether customer-managed encryption keys are required for Cloud PC managed disks. CMK provides additional key control beyond Azure platform-managed keys.",
+      "description": "Evaluate whether customer-managed encryption keys are required for Cloud PC managed disks. CMK provides additional key control beyond Azure platform-managed keys. See also W365-SEC-012 for Microsoft Purview Customer Key, which covers service-tier encryption above the disk layer addressed by this control.",
       "severity": "Medium",
       "type": "Manual",
       "weight": 3,
       "origin": "SEC",
-      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/encryption-cloud-pc",
+      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/encryption",
       "effort": "Major Effort",
       "bestPractice": "For regulated industries (finance, healthcare, government), deploy CMK using Azure Key Vault. Associate the disk encryption set with the provisioning policy. Rotate keys per organizational policy (annually or more frequent).",
       "impact": "Without CMK, Microsoft holds the encryption keys. Regulated organizations may not meet data sovereignty or key-control requirements for audit/compliance.",
@@ -930,18 +930,19 @@
       "id": "W365-SEC-007",
       "category": "Security & Compliance",
       "name": "Watermarking",
-      "description": "Check whether Cloud PC watermarking is enabled to deter screenshots and screen recording of sensitive data. Watermarks overlay the user identity (UPN) on the Cloud PC session.",
+      "description": "Check whether Cloud PC watermarking is enabled to deter screenshots and screen recording of sensitive data. Watermarking is natively configurable via the Intune settings catalog for Cloud PCs (Enterprise and Flex). Watermarks overlay the user identity (UPN) on the Cloud PC session.",
       "severity": "Low",
       "type": "Manual",
       "weight": 2,
       "origin": "SEC",
-      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/set-up-watermarking",
+      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/watermarking",
       "effort": "Quick Win",
       "bestPractice": "Enable watermarking via Intune RDP properties or the Windows 365 security baseline for sessions handling sensitive financial, PII, or IP data. Watermarks embed the connected users UPN into the session display as a deterrent against data exfiltration via photography.",
       "impact": "Without watermarking, users can photograph or screenshot sensitive data with no traceability. This is a deterrent control, not a prevention control.",
       "remediation": "Configure watermarking via Intune Settings Catalog (Administrative Templates > Windows Components > Remote Desktop Services > Remote Desktop Session Host > Azure Virtual Desktop > Enable watermarking) targeted at your Cloud PC group, or apply the Windows 365 security baseline which preconfigures it. Validate by signing into a Cloud PC and confirming the watermark overlay shows the connecting user UPN.",
       "appliesTo": [
-        "Enterprise"
+        "Enterprise",
+        "Flex"
       ],
       "additionalReferences": []
     },
@@ -1003,10 +1004,10 @@
       "remediation": "Generate a utilization report. Contact users/managers of inactive PCs. Reclaim licenses or downsize SKUs for confirmed inactive users.",
       "appliesTo": [
         "Enterprise",
-        "Frontline"
+        "Flex"
       ],
       "additionalReferences": [
-        "https://learn.microsoft.com/en-us/mem/analytics/overview"
+        "https://learn.microsoft.com/en-us/intune/endpoint-analytics/"
       ]
     },
     {
@@ -1015,7 +1016,7 @@
       "name": "Right-Sizing Review",
       "description": "Compare actual resource utilization (CPU, RAM, disk) against the assigned service plan tier. Over-provisioned Cloud PCs waste license cost; under-provisioned ones degrade productivity.",
       "severity": "Medium",
-      "type": "Manual",
+      "type": "Auto",
       "weight": 3,
       "origin": "WAF",
       "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/resize-cloud-pc",
@@ -1033,19 +1034,19 @@
     {
       "id": "W365-COST-003",
       "category": "Cost & Optimization",
-      "name": "Frontline License Utilization",
-      "description": "For Frontline deployments, verify the license count matches actual concurrent usage patterns. Over-purchasing Frontline licenses negates the cost advantage over Enterprise.",
+      "name": "Flex License Utilization",
+      "description": "For Flex deployments, verify the license count matches actual concurrent usage patterns. Over-purchasing Flex licenses negates the cost advantage over Enterprise.",
       "severity": "Medium",
       "type": "Manual",
       "weight": 3,
       "origin": "WAF",
-      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/introduction-windows-365-frontline",
+      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/introduction-windows-365-flex",
       "effort": "Some Effort",
-      "bestPractice": "Monitor peak concurrent sessions over a 30-day period. The Frontline license supports up to 3 users per license in dedicated mode. Calculate: Required licenses = ceil(Peak concurrent users / Concurrency ratio). Add 10-20% buffer for spikes.",
-      "impact": "Over-purchasing Frontline licenses wastes budget. Under-purchasing causes users to be blocked at peak shift, disrupting operations.",
-      "remediation": "Analyze shift schedules and actual concurrent sign-in data. Adjust Frontline license count to match 120% of observed peak. Review quarterly.",
+      "bestPractice": "Monitor peak concurrent sessions over a 30-day period. The Flex license supports up to 3 users per license in dedicated mode. Calculate: Required licenses = ceil(Peak concurrent users / Concurrency ratio). Add 10-20% buffer for spikes.",
+      "impact": "Over-purchasing Flex licenses wastes budget. Under-purchasing causes users to be blocked at peak shift, disrupting operations.",
+      "remediation": "Analyze shift schedules and actual concurrent sign-in data. Adjust Flex license count to match 120% of observed peak. Review quarterly.",
       "appliesTo": [
-        "Frontline"
+        "Flex"
       ],
       "additionalReferences": []
     },
@@ -1065,7 +1066,7 @@
       "remediation": "Create an offboarding runbook that includes W365 license removal. Set up dynamic Entra groups to auto-exclude terminated employees. Document grace period handling.",
       "appliesTo": [
         "Enterprise",
-        "Frontline"
+        "Flex"
       ],
       "additionalReferences": []
     },
@@ -1096,10 +1097,10 @@
       "name": "Endpoint Analytics Enrollment",
       "description": "Verify that Cloud PCs are enrolled in Endpoint Analytics for monitoring startup performance, app reliability, and proactive remediations. Endpoint Analytics provides the primary observability layer for Cloud PC health.",
       "severity": "High",
-      "type": "Manual",
+      "type": "Auto",
       "weight": 4,
       "origin": "WAF",
-      "reference": "https://learn.microsoft.com/en-us/mem/analytics/overview",
+      "reference": "https://learn.microsoft.com/en-us/intune/endpoint-analytics/",
       "effort": "Quick Win",
       "bestPractice": "Enable Endpoint Analytics in Intune > Reports > Endpoint Analytics. Ensure Cloud PCs send required telemetry (Windows diagnostic data level = Required or Optional). Review Startup performance, Application reliability, and Resource performance reports monthly.",
       "impact": "Without Endpoint Analytics, IT lacks visibility into Cloud PC performance — user complaints are the only signal, by which time productivity has already been lost.",
@@ -1108,7 +1109,7 @@
         "Enterprise"
       ],
       "additionalReferences": [
-        "https://learn.microsoft.com/en-us/mem/analytics/enroll-intune"
+        "https://learn.microsoft.com/en-us/intune/endpoint-analytics/configure"
       ]
     },
     {
@@ -1117,7 +1118,7 @@
       "name": "Connection Quality Dashboard",
       "description": "Review whether the Windows 365 connection quality dashboard is monitored for round-trip time (RTT), connection reliability, and session quality. This data identifies network path issues affecting user experience.",
       "severity": "Medium",
-      "type": "Manual",
+      "type": "Auto",
       "weight": 3,
       "origin": "WAF",
       "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/report-cloud-pc-connection-quality",
@@ -1139,7 +1140,7 @@
       "type": "Manual",
       "weight": 3,
       "origin": "SEC",
-      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/audit-logs",
+      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/get-cloud-pc-audit-logs-using-powershell",
       "effort": "Some Effort",
       "bestPractice": "W365 audit events are available via Graph (virtualEndpoint/auditEvents) and in the Intune admin center. Forward to a SIEM (Microsoft Sentinel, Splunk) for long-term retention and alerting. Set alerts on high-risk actions: policy deletion, mass reprovisioning, DR activation.",
       "impact": "Without audit monitoring, unauthorized admin actions (policy changes, mass deprovisioning) go undetected until users report impact.",
@@ -1176,7 +1177,7 @@
       "name": "Windows Update Compliance Monitoring",
       "description": "Verify that Cloud PC Windows Update compliance is being tracked. Devices that defer or fail updates for extended periods accumulate security vulnerabilities.",
       "severity": "High",
-      "type": "Manual",
+      "type": "Auto",
       "weight": 4,
       "origin": "SEC",
       "reference": "https://learn.microsoft.com/en-us/mem/intune/protect/windows-update-for-business-configure",
@@ -1245,7 +1246,7 @@
       "remediation": "Create an Intune configuration profile deploying OneDrive KFM with silent redirect. Verify sync status via OneDrive admin reports. Test with a staging group.",
       "appliesTo": [
         "Enterprise",
-        "Frontline"
+        "Flex"
       ],
       "additionalReferences": [
         "https://learn.microsoft.com/en-us/onedrive/use-group-policy#silently-move-windows-known-folders-to-onedrive"
@@ -1363,7 +1364,7 @@
       "origin": "WAF",
       "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/cross-region-disaster-recovery-activate",
       "effort": "Some Effort",
-      "bestPractice": "Test DR activation annually or after any significant configuration change. Microsoft states Cloud PCs automatically fail back after 7 days if activated without a declared outage — this is safe for controlled testing. Document test results, recovery time, and user experience.",
+      "bestPractice": "Test DR activation annually or after any significant configuration change. Cross-region DR is generally available with an RTO/RPO target of under 4 hours. Microsoft states Cloud PCs automatically fail back after 7 days if activated without a declared outage — this is safe for controlled testing. Document test results, recovery time, and user experience.",
       "impact": "Untested DR may fail at the worst moment. Capacity in the backup region is not pre-reserved — if capacity is unavailable during a real outage, recovery is delayed.",
       "remediation": "Schedule an annual DR test. Activate cross-region DR for a subset of users. Verify Cloud PCs are accessible in the backup region within the 4-hour RTO target. Document findings.",
       "appliesTo": [
@@ -1377,19 +1378,19 @@
       "id": "W365-UX-001",
       "category": "End-User Experience",
       "name": "Client App Deployment",
-      "description": "Verify which client applications are supported and recommended for connecting to Cloud PCs. Windows App is the preferred client replacing the legacy Remote Desktop client.",
-      "severity": "Medium",
+      "description": "Verify that Windows App is deployed as the connection client for Cloud PCs. The legacy Remote Desktop (RD) client is retired — the MSI reached end of support on 27 March 2026 (the Store app was retired in May 2025) — so Windows App is now the only supported client.",
+      "severity": "High",
       "type": "Manual",
-      "weight": 3,
+      "weight": 4,
       "origin": "W365",
       "reference": "https://learn.microsoft.com/en-us/windows-365/end-user-access-cloud-pc",
       "effort": "Quick Win",
-      "bestPractice": "Deploy Windows App (formerly Remote Desktop client) on all endpoints. Windows App supports Windows, macOS, iOS, Android, and web browser. It provides a unified experience across Microsoft cloud desktops. Keep clients updated for latest RDP protocol improvements and Shortpath support.",
-      "impact": "Outdated or wrong client versions lack Teams optimization, Shortpath UDP support, and recent security fixes — degrading performance and opening vulnerabilities.",
-      "remediation": "Deploy Windows App via Intune (Win32 app) for managed endpoints. For BYOD, direct users to the Microsoft Store or web portal (windows365.microsoft.com). Verify client version compliance.",
+      "bestPractice": "Deploy Windows App on all endpoints; it is mandatory now that the Remote Desktop client is retired. Windows App supports Windows, macOS, iOS, Android, and web browser, providing a unified experience across Microsoft cloud desktops. Keep clients updated for the latest RDP protocol improvements and Shortpath support.",
+      "impact": "Endpoints still relying on the retired RD client cannot connect to Cloud PCs, or are running an unsupported client with no further security fixes — an availability and security risk.",
+      "remediation": "Deploy Windows App via Intune (Win32 or Store app) for managed endpoints. Identify and uninstall any remaining legacy Remote Desktop client installations. For BYOD, direct users to the Microsoft Store or web portal (windows365.microsoft.com). Verify client version compliance.",
       "appliesTo": [
         "Enterprise",
-        "Frontline",
+        "Flex",
         "Business"
       ],
       "additionalReferences": [
@@ -1402,10 +1403,10 @@
       "name": "Sign-In Performance",
       "description": "Measure the Cloud PC boot-to-desktop time and sign-in duration. Slow boot times indicate image bloat, excessive startup apps, or Group Policy processing overhead.",
       "severity": "Medium",
-      "type": "Manual",
+      "type": "Auto",
       "weight": 3,
       "origin": "WAF",
-      "reference": "https://learn.microsoft.com/en-us/mem/analytics/startup-performance",
+      "reference": "https://learn.microsoft.com/en-us/intune/endpoint-analytics/startup-performance",
       "effort": "Some Effort",
       "bestPractice": "Target <60 seconds boot-to-desktop. Use Endpoint Analytics Startup performance report to identify slow devices. Common causes: too many startup applications, large GPO sets, antivirus scan at boot, and pending Windows updates requiring restart.",
       "impact": "Slow boot times directly impact user perception of Cloud PC quality. Users who wait >90 seconds consistently will resist adoption and prefer physical devices.",
@@ -1419,21 +1420,21 @@
       "id": "W365-UX-003",
       "category": "End-User Experience",
       "name": "Windows 365 Switch Experience",
-      "description": "Evaluate whether Windows 365 Switch is configured for users who have both a physical PC and a Cloud PC. Switch enables seamless Alt+Tab like switching between local and Cloud PC desktops.",
+      "description": "Evaluate whether Windows 365 Switch (generally available) is configured for users who have both a physical PC and a Cloud PC. Switch enables seamless switching between local and Cloud PC desktops, including switching back to the local device without relaunching Windows App.",
       "severity": "Low",
       "type": "Manual",
       "weight": 2,
       "origin": "W365",
       "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/windows-365-switch-overview",
       "effort": "Quick Win",
-      "bestPractice": "Windows 365 Switch integrates the Cloud PC into the Windows 11 Task View. Users can switch between local and Cloud PC desktops with familiar keyboard shortcuts. Requires Windows 11 on the local device and Windows App installed.",
+      "bestPractice": "Windows 365 Switch integrates the Cloud PC into the Windows 11 Task View. Users can switch from local to Cloud PC and back again with familiar keyboard shortcuts, without needing to separately relaunch Windows App to return to the local desktop. Requires Windows 11 on the local device and Windows App installed.",
       "impact": "Without Switch, users must separately launch the Windows App, find their Cloud PC, and connect — a disconnected experience that reduces fluidity.",
       "remediation": "Ensure Windows 11 is on endpoint devices. Deploy Windows App. Enable Windows 365 Switch via Intune policy if not already active by default. Create user guidance.",
       "appliesTo": [
         "Enterprise"
       ],
       "additionalReferences": [
-        "https://learn.microsoft.com/en-us/windows-365/enterprise/windows-365-switch-setup"
+        "https://learn.microsoft.com/en-us/windows-365/enterprise/windows-365-switch-overview"
       ]
     },
     {
@@ -1459,18 +1460,19 @@
       "id": "W365-UX-005",
       "category": "End-User Experience",
       "name": "GPU-Accelerated Cloud PC Sizing",
-      "description": "For personas requiring GPU (CAD, 3D modeling, video editing, data visualization), verify that GPU-enabled Cloud PC service plans are used rather than CPU-only SKUs.",
+      "description": "GPU Cloud PCs reached general availability in September 2025 with the GPU Select SKU, now supported on both Enterprise (dedicated) and Flex (shared) Cloud PCs. For personas requiring GPU (CAD, 3D modeling, video editing, data visualization), verify that GPU-enabled Cloud PC service plans are used rather than CPU-only SKUs.",
       "severity": "Medium",
       "type": "Manual",
       "weight": 3,
       "origin": "W365",
       "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/cloud-pc-size-recommendations",
       "effort": "Some Effort",
-      "bestPractice": "Windows 365 offers GPU-enabled SKUs for graphics-intensive workloads. These include NVIDIA or AMD GPUs with dedicated VRAM. Match GPU SKUs to workload requirements: light GPU (basic video/CAD) vs. heavy GPU (engineering simulation, 3D rendering).",
+      "bestPractice": "Windows 365 offers GPU-enabled SKUs (including the GPU Select SKU, GA September 2025) for graphics-intensive workloads, available on both Enterprise and Flex shared Cloud PCs. These include NVIDIA or AMD GPUs with dedicated VRAM. Match GPU SKUs to workload requirements: light GPU (basic video/CAD) vs. heavy GPU (engineering simulation, 3D rendering).",
       "impact": "CPU-only SKUs for GPU workloads result in software rendering — extremely poor performance for CAD, video, and 3D apps, making them unusable.",
       "remediation": "Identify users running GPU-dependent applications. Provision GPU-enabled Cloud PC SKUs. Test application performance before broad rollout. Monitor GPU utilization via Endpoint Analytics.",
       "appliesTo": [
-        "Enterprise"
+        "Enterprise",
+        "Flex"
       ],
       "additionalReferences": []
     },
@@ -1606,13 +1608,13 @@
       "weight": 4,
       "origin": "W365",
       "effort": "Some Effort",
-      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/gallery-image",
+      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/device-images",
       "bestPractice": "Cloud PCs provisioned from a gallery image past end-of-support no longer receive security patches and are out of Microsoft support scope. Track EOS dates per gallery SKU and migrate provisioning policies to a current SKU 90 days before EOS.",
       "impact": "Past EOS: unpatched OS, no support eligibility, compliance findings. Near EOS: forced rushed migration with user disruption.",
       "remediation": "Identify a replacement supported gallery SKU, update the provisioning policy imageId, and reprovision affected Cloud PCs in a planned maintenance window. Communicate downtime to affected users.",
       "appliesTo": [
         "Enterprise",
-        "Frontline",
+        "Flex",
         "Business"
       ],
       "additionalReferences": [
@@ -1626,16 +1628,16 @@
       "description": "Confirms Windows 365 audit events are being recorded and surfaces low-activity tenants for investigation.",
       "severity": "Medium",
       "type": "Auto",
-      "weight": 2,
+      "weight": 3,
       "origin": "W365",
       "effort": "Some Effort",
-      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/audit-logs",
+      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/get-cloud-pc-audit-logs-using-powershell",
       "bestPractice": "Windows 365 audit events have limited retention in Graph. Forward them to Microsoft Sentinel or Log Analytics for 90+ day retention and alerting on high-impact events: provisioning policy deletion, mass reprovision, DR activation, and bulk Cloud PC removal.",
       "impact": "Without forwarded audit logs, tenants have no detective control for malicious or accidental admin actions and cannot meet most compliance retention requirements.",
       "remediation": "Configure a Microsoft Sentinel data connector for Windows 365 (or use the Graph audit log connector). Define analytics rules for high-impact event types. Retain raw logs for at least 90 days; longer for regulated workloads.",
       "appliesTo": [
         "Enterprise",
-        "Frontline"
+        "Flex"
       ],
       "additionalReferences": [
         "https://learn.microsoft.com/en-us/azure/sentinel/data-connectors-reference"
@@ -1645,9 +1647,9 @@
       "id": "W365-PROV-008",
       "category": "Provisioning Policies",
       "name": "Cloud PC Naming Template",
-      "description": "Confirms each provisioning policy declares a Cloud PC naming template for predictable, traceable device names.",
+      "description": "Confirms each provisioning policy declares a Cloud PC naming template for predictable, traceable device names. Superseded by the automated W365-PROV-002 evaluation (discovery 0.2.0) — assess there; retained for saved-assessment compatibility.",
       "severity": "Low",
-      "type": "Auto",
+      "type": "Manual",
       "weight": 1,
       "origin": "W365",
       "effort": "Quick Win",
@@ -1657,7 +1659,7 @@
       "remediation": "Edit the provisioning policy and set the cloudPcNamingTemplate field. Existing Cloud PCs are unaffected; only newly provisioned PCs adopt the template.",
       "appliesTo": [
         "Enterprise",
-        "Frontline"
+        "Flex"
       ],
       "additionalReferences": []
     },
@@ -1665,9 +1667,9 @@
       "id": "W365-PROV-009",
       "category": "Provisioning Policies",
       "name": "Windows Locale on Provisioning Policy",
-      "description": "Verifies the Windows Settings (locale) field is set on each provisioning policy.",
+      "description": "Verifies the Windows Settings (locale) field is set on each provisioning policy. Superseded by the automated W365-PROV-007 evaluation (discovery 0.2.0) — assess there; retained for saved-assessment compatibility.",
       "severity": "Low",
-      "type": "Auto",
+      "type": "Manual",
       "weight": 1,
       "origin": "W365",
       "effort": "Quick Win",
@@ -1677,7 +1679,7 @@
       "remediation": "Edit the provisioning policy Windows Settings and choose the appropriate locale (e.g. de-DE, ja-JP). For multi-language tenants, create one policy per locale or per region.",
       "appliesTo": [
         "Enterprise",
-        "Frontline"
+        "Flex"
       ],
       "additionalReferences": []
     },
@@ -1697,7 +1699,7 @@
       "remediation": "Either reassign the Cloud PC to an active user via the provisioning policy assignment, or end the grace period to deprovision and free the license.",
       "appliesTo": [
         "Enterprise",
-        "Frontline"
+        "Flex"
       ],
       "additionalReferences": [
         "https://learn.microsoft.com/en-us/windows-365/enterprise/lifecycle"
@@ -1713,7 +1715,7 @@
       "weight": 4,
       "origin": "SEC",
       "effort": "Quick Win",
-      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/customer-managed-keys-overview",
+      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/purview-customer-key",
       "bestPractice": "Cloud PC managed disks are encrypted at rest by default with platform-managed keys. For regulated workloads, configure customer-managed keys (CMK) via a Disk Encryption Set referenced by the provisioning policy.",
       "impact": "An unencrypted-state Cloud PC may indicate a configuration drift, an in-progress operation, or (rarely) a CMK issue. Compliance frameworks generally require all storage to be encrypted at rest.",
       "remediation": "Investigate the reported state. For permanent CMK adoption, create a Disk Encryption Set in Azure, grant Key Vault permissions to the Windows 365 service principal, and reference the DES from the provisioning policy.",
@@ -1740,7 +1742,7 @@
       "remediation": "Investigate the failure (typical causes: source image deletion, sysprep failure, replication issue). Re-upload or rebuild the image, validate, then reassign provisioning policies. Delete the failed image to prevent confusion.",
       "appliesTo": [
         "Enterprise",
-        "Frontline"
+        "Flex"
       ],
       "additionalReferences": [
         "https://learn.microsoft.com/en-us/azure/virtual-machines/image-builder-overview"
@@ -1753,16 +1755,16 @@
       "description": "Surfaces high-impact administrative actions in the last 30 days for review against change records.",
       "severity": "Medium",
       "type": "Auto",
-      "weight": 2,
+      "weight": 3,
       "origin": "W365",
       "effort": "Quick Win",
-      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/audit-logs",
+      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/get-cloud-pc-audit-logs-using-powershell",
       "bestPractice": "Provisioning policy deletion, mass reprovision, restore, and grace-period termination should be approved actions tied to change tickets. Forwarding W365 audit events to Microsoft Sentinel enables alerting and 90+ day retention.",
       "impact": "Without periodic review, an attacker (or a careless admin) can delete provisioning policies or mass-reprovision Cloud PCs, causing wide-scale data loss and outage.",
       "remediation": "Cross-reference the listed events with the change-management system. If any are unapproved, investigate. Stand up Sentinel data connector for Windows 365 audit logs and define analytics rules for high-impact event types.",
       "appliesTo": [
         "Enterprise",
-        "Frontline"
+        "Flex"
       ],
       "additionalReferences": [
         "https://learn.microsoft.com/en-us/azure/sentinel/data-connectors-reference"
@@ -1771,82 +1773,82 @@
     {
       "id": "W365-PROV-010",
       "category": "Provisioning Policies",
-      "name": "Frontline Cloud Apps (RemoteApp Mode)",
-      "description": "Frontline Cloud Apps lets multiple users access individual published applications from a shared Cloud PC pool as RemoteApps instead of full desktops. Verify whether Cloud Apps mode is configured for task-worker or app-only personas and that the right apps are published.",
+      "name": "Flex Cloud Apps (RemoteApp Mode)",
+      "description": "Flex Cloud Apps lets multiple users access individual published applications from a shared Cloud PC pool as RemoteApps instead of full desktops. Verify whether Cloud Apps mode is configured for task-worker or app-only personas and that the right apps are published.",
       "severity": "Medium",
-      "type": "Manual",
+      "type": "Auto",
       "weight": 3,
       "origin": "W365",
-      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/cloud-apps-overview",
+      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/cloud-apps",
       "effort": "Some Effort",
-      "bestPractice": "For app-only or task-worker personas, deploy Frontline in Cloud Apps mode and publish only the curated business apps the user needs, rather than a full Cloud PC desktop.",
-      "impact": "Without Cloud Apps mode, app-only users consume full Frontline desktop concurrency slots and license capacity unnecessarily, inflating cost and reducing concurrency headroom.",
-      "remediation": "In Intune, create a Frontline provisioning policy with type Cloud Apps (RemoteApp). Publish the required apps via the policy, assign to the relevant Entra group, and validate access from the Windows App / browser.",
+      "bestPractice": "For app-only or task-worker personas, deploy Flex in Cloud Apps mode and publish only the curated business apps the user needs, rather than a full Cloud PC desktop.",
+      "impact": "Without Cloud Apps mode, app-only users consume full Flex desktop concurrency slots and license capacity unnecessarily, inflating cost and reducing concurrency headroom.",
+      "remediation": "In Intune, create a Flex provisioning policy with type Cloud Apps (RemoteApp). Publish the required apps via the policy, assign to the relevant Entra group, and validate access from the Windows App / browser.",
       "appliesTo": [
-        "Frontline"
+        "Flex"
       ],
       "additionalReferences": [
-        "https://learn.microsoft.com/en-us/windows-365/enterprise/create-cloud-apps-provisioning-policy"
+        "https://learn.microsoft.com/en-us/windows-365/enterprise/create-provisioning-policy"
       ]
     },
     {
       "id": "W365-PROV-011",
       "category": "Provisioning Policies",
-      "name": "User Experience Sync (Frontline Shared)",
-      "description": "User Experience Sync persists user profile data (settings, files, customizations) across Frontline shared Cloud PC sessions where users do not get a permanent dedicated PC. Verify the setting is enabled where required.",
+      "name": "User Experience Sync (Flex Shared)",
+      "description": "User Experience Sync persists user profile data (settings, files, customizations) across Flex shared Cloud PC sessions where users do not get a permanent dedicated PC. Verify the setting is enabled where required.",
       "severity": "High",
       "type": "Manual",
       "weight": 4,
       "origin": "W365",
-      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/user-experience-sync",
+      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/windows-365-flex-user-experience-sync",
       "effort": "Some Effort",
-      "bestPractice": "For Frontline shared mode (non-dedicated), enable User Experience Sync so each session reattaches the user's profile, OneDrive state, and personalization. Combine with KFM for full data persistence.",
-      "impact": "Without User Experience Sync, Frontline shared users lose customizations and local profile state between sessions, generating help-desk tickets and breaking productivity flows.",
-      "remediation": "Enable User Experience Sync on the Frontline (shared) provisioning policy. Validate that the Entra ID storage account or Intune-backed sync is provisioned and that test users see a persisted profile across sign-ins.",
+      "bestPractice": "For Flex shared mode (non-dedicated), enable User Experience Sync so each session reattaches the user's profile, OneDrive state, and personalization. Combine with KFM for full data persistence.",
+      "impact": "Without User Experience Sync, Flex shared users lose customizations and local profile state between sessions, generating help-desk tickets and breaking productivity flows.",
+      "remediation": "Enable User Experience Sync on the Flex (shared) provisioning policy. Validate that the Entra ID storage account or Intune-backed sync is provisioned and that test users see a persisted profile across sign-ins.",
       "appliesTo": [
-        "Frontline"
+        "Flex"
       ],
       "additionalReferences": [
-        "https://learn.microsoft.com/en-us/windows-365/enterprise/frontline-shared-overview"
+        "https://learn.microsoft.com/en-us/windows-365/enterprise/introduction-windows-365-flex"
       ]
     },
     {
       "id": "W365-PROV-012",
       "category": "Provisioning Policies",
-      "name": "Frontline Concurrency Buffer Sizing",
-      "description": "Frontline licensing is sized by concurrent users, not assigned users. The buffer between purchased concurrency and observed peak concurrency determines whether users will be blocked at sign-in.",
+      "name": "Flex Concurrency Buffer Sizing",
+      "description": "Flex licensing is sized by concurrent users, not assigned users. The buffer between purchased concurrency and observed peak concurrency determines whether users will be blocked at sign-in.",
       "severity": "High",
       "type": "Manual",
       "weight": 4,
       "origin": "W365",
-      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/frontline-concurrency",
+      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/concurrency-buffer",
       "effort": "Some Effort",
-      "bestPractice": "Size Frontline so peak observed concurrency stays at or below ~80% of purchased seats, leaving a 20% buffer for spikes, shift overlap, and break-fix scenarios.",
+      "bestPractice": "Size Flex so peak observed concurrency stays at or below ~80% of purchased seats, leaving a 20% buffer for spikes, shift overlap, and break-fix scenarios.",
       "impact": "Insufficient buffer causes sign-in failures during peak hours; oversized buffer wastes spend.",
-      "remediation": "Use the Frontline utilization report in Intune to identify peak concurrency over the last 30 days. Adjust purchased seats or session-time limits to maintain a healthy buffer.",
+      "remediation": "Use the Flex utilization report in Intune to identify peak concurrency over the last 30 days. Adjust purchased seats or session-time limits to maintain a healthy buffer.",
       "appliesTo": [
-        "Frontline"
+        "Flex"
       ],
       "additionalReferences": [
-        "https://learn.microsoft.com/en-us/windows-365/enterprise/frontline-utilization-report"
+        "https://learn.microsoft.com/en-us/windows-365/enterprise/report-connected-windows-365-flex-cloud-pcs"
       ]
     },
     {
       "id": "W365-USER-006",
       "category": "User Settings & Resilience",
-      "name": "Bulk Reprovision Frontline Cloud PCs Process",
-      "description": "Frontline shared Cloud PCs benefit from a documented bulk reprovision cadence to flush profile drift, apply image changes, and reset to a known-good baseline.",
+      "name": "Bulk Reprovision Flex Cloud PCs Process",
+      "description": "Flex shared Cloud PCs benefit from a documented bulk reprovision cadence to flush profile drift, apply image changes, and reset to a known-good baseline.",
       "severity": "Medium",
       "type": "Manual",
-      "weight": 2,
+      "weight": 3,
       "origin": "W365",
-      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/reprovision-frontline-cloud-pcs",
+      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/windows-365-flex-shared-bulk-reprovision",
       "effort": "Quick Win",
-      "bestPractice": "Document a recurring bulk-reprovision cadence (for example monthly) for Frontline shared pools, executed during a low-usage window.",
+      "bestPractice": "Document a recurring bulk-reprovision cadence (for example monthly) for Flex shared pools, executed during a low-usage window.",
       "impact": "Without a reprovision cadence, image drift and orphaned profile data accumulate, eroding performance and expanding security drift.",
-      "remediation": "Use the Intune bulk reprovision action on the Frontline provisioning policy. Schedule via a runbook or Azure Automation outside core hours.",
+      "remediation": "Use the Intune bulk reprovision action on the Flex provisioning policy. Schedule via a runbook or Azure Automation outside core hours.",
       "appliesTo": [
-        "Frontline"
+        "Flex"
       ],
       "additionalReferences": []
     },
@@ -1859,7 +1861,7 @@
       "type": "Manual",
       "weight": 4,
       "origin": "W365",
-      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/reserve-overview",
+      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/introduction-windows-365-reserve",
       "effort": "Some Effort",
       "bestPractice": "For business-critical personas, license Windows 365 Reserve and document an activation runbook with named approvers, target activation time, and dependent communications.",
       "impact": "Without Reserve (or an equivalent BCP service) a regional outage or mass device-loss event leaves users without any compute path until BAU recovery completes.",
@@ -1868,22 +1870,22 @@
         "Enterprise"
       ],
       "additionalReferences": [
-        "https://learn.microsoft.com/en-us/windows-365/enterprise/reserve-activate"
+        "https://learn.microsoft.com/en-us/windows-365/enterprise/windows-365-reserve-manage"
       ]
     },
     {
       "id": "W365-USER-008",
       "category": "User Settings & Resilience",
       "name": "Disaster Recovery Plus Configuration",
-      "description": "Disaster Recovery Plus extends standard Cross-Region DR with snapshot-based recovery to a paired secondary region with shorter RPO. Confirm whether DR Plus is configured for in-scope user groups.",
+      "description": "Disaster Recovery Plus (generally available since April 2025, Windows 365 Enterprise only) extends standard Cross-Region DR with snapshot-based recovery to a paired secondary region and a target RTO of 30 minutes or less. Confirm whether DR Plus is configured for in-scope user groups.",
       "severity": "High",
       "type": "Manual",
       "weight": 4,
       "origin": "W365",
-      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/disaster-recovery-plus-overview",
+      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/disaster-recovery-plus",
       "effort": "Major Effort",
-      "bestPractice": "For tier-1 personas, enable Disaster Recovery Plus on the User Settings policy with restore-point retention aligned to the documented RPO (for example 4 hours).",
-      "impact": "Without DR Plus, recovery from a regional outage relies on the older default cross-region image only, with longer RPO and no recent user state.",
+      "bestPractice": "For tier-1 personas, enable Disaster Recovery Plus on the User Settings policy. DR Plus targets an RTO of approximately 30 minutes or less, versus the under-4-hour RTO/RPO of standard Cross-Region DR, and is a paid add-on available for Enterprise only.",
+      "impact": "Without DR Plus, recovery from a regional outage relies on the standard cross-region DR path only, with a longer RTO/RPO and coarser-grained recovery points.",
       "remediation": "Edit the User Settings policy, enable Disaster Recovery Plus, choose the secondary region, and verify the test failover succeeds end-to-end including user data.",
       "appliesTo": [
         "Enterprise"
@@ -1920,14 +1922,14 @@
       "type": "Manual",
       "weight": 3,
       "origin": "W365",
-      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/maintenance-windows",
+      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/cloud-pc-maintenance-windows",
       "effort": "Some Effort",
       "bestPractice": "Define and assign a maintenance-window schedule per persona (for example Sunday 02:00 local). Include the schedule in user comms.",
       "impact": "Without maintenance windows, image and configuration changes interrupt active users, generating help-desk tickets and SLA impact.",
       "remediation": "Create a maintenance-window policy in Intune, scope to provisioning policies, validate timezone alignment, and publish to end users.",
       "appliesTo": [
         "Enterprise",
-        "Frontline"
+        "Flex"
       ],
       "additionalReferences": []
     },
@@ -1947,10 +1949,10 @@
       "remediation": "Enable RDP Multipath via Intune Settings Catalog on the targeted user devices. Validate with a test user on a dual-homed laptop.",
       "appliesTo": [
         "Enterprise",
-        "Frontline"
+        "Flex"
       ],
       "additionalReferences": [
-        "https://learn.microsoft.com/en-us/windows-365/enterprise/rdp-shortpath"
+        "https://learn.microsoft.com/en-us/windows-365/enterprise/rdp-shortpath-public-networks"
       ]
     },
     {
@@ -1962,7 +1964,7 @@
       "type": "Manual",
       "weight": 4,
       "origin": "SEC",
-      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/azure-network-connection-credentials",
+      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/azure-network-connection-domain-credential",
       "effort": "Some Effort",
       "bestPractice": "Use a dedicated, least-privilege AD service account with delegated rights only on the target OU. Store the credential in a vault, rotate every 90-180 days, and update the ANC each time.",
       "impact": "A compromised or stale ANC service account can break new provisioning across the entire ANC and provides AD foothold to attackers.",
@@ -1981,14 +1983,14 @@
       "type": "Manual",
       "weight": 3,
       "origin": "SEC",
-      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/customer-lockbox",
+      "reference": "https://learn.microsoft.com/en-us/purview/customer-lockbox-requests",
       "effort": "Quick Win",
       "bestPractice": "Enable Customer Lockbox tenant-wide and define an approver group so any Microsoft access request to Cloud PC data triggers a documented approval workflow.",
       "impact": "Without Lockbox, Microsoft can access tenant data during a support case without per-incident customer approval, weakening regulatory and audit posture.",
       "remediation": "In Microsoft 365 Admin Center > Org Settings > Security & Privacy, enable Customer Lockbox. Configure an approver group and rehearse the approval flow.",
       "appliesTo": [
         "Enterprise",
-        "Frontline"
+        "Flex"
       ],
       "additionalReferences": [
         "https://learn.microsoft.com/en-us/purview/customer-lockbox-requests"
@@ -1998,12 +2000,12 @@
       "id": "W365-SEC-012",
       "category": "Security & Compliance",
       "name": "Microsoft Purview Customer Key for Windows 365",
-      "description": "Microsoft Purview Customer Key adds a customer-controlled root of encryption above Microsoft-managed service encryption for supported Windows 365 surfaces.",
+      "description": "Microsoft Purview Customer Key adds a customer-controlled root of encryption above Microsoft-managed service encryption for supported Windows 365 surfaces. See also W365-SEC-006 for Customer-Managed Keys (CMK) on Cloud PC managed disks, which this control complements at the service tier.",
       "severity": "Low",
       "type": "Manual",
       "weight": 2,
       "origin": "SEC",
-      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/customer-key",
+      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/purview-customer-key",
       "effort": "Major Effort",
       "bestPractice": "For regulated workloads, complement Azure CMK on Cloud PC disks with Microsoft Purview Customer Key for service-tier encryption.",
       "impact": "Without Customer Key, Microsoft-managed service encryption keys are the only protection for some service-tier data, which may not satisfy regulator requirements.",
@@ -2024,14 +2026,14 @@
       "type": "Manual",
       "weight": 3,
       "origin": "SEC",
-      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/cloud-input-protection",
+      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/windows-cloud-input-protection",
       "effort": "Quick Win",
       "bestPractice": "Enable Cloud Input Protection for high-sensitivity personas (privileged operators, finance, R&D) where local endpoints may be exposed to commodity malware.",
       "impact": "Without Cloud Input Protection, a key-logger on the local endpoint can capture credentials and data typed into the Cloud PC session.",
       "remediation": "Enable the Cloud Input Protection policy via Intune Settings Catalog and assign to the in-scope user groups. Validate on a pilot device.",
       "appliesTo": [
         "Enterprise",
-        "Frontline"
+        "Flex"
       ],
       "additionalReferences": []
     },
@@ -2044,17 +2046,17 @@
       "type": "Manual",
       "weight": 3,
       "origin": "SEC",
-      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/restrict-office-access-to-cloud-pcs",
+      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/restrict-office-365-cloud-pcs",
       "effort": "Some Effort",
       "bestPractice": "For data-sensitive personas, scope a Conditional Access policy that requires the Cloud PC compliant device for Office 365 access, blocking sign-in from unmanaged endpoints.",
       "impact": "Without this scoping, users can open the same Office 365 data on unmanaged BYOD devices, defeating the data-isolation value of Cloud PCs.",
       "remediation": "Build a Conditional Access policy targeting Office 365 cloud apps, scoped to the user group, requiring device compliance and the Cloud PC platform. Pilot, then enforce.",
       "appliesTo": [
         "Enterprise",
-        "Frontline"
+        "Flex"
       ],
       "additionalReferences": [
-        "https://learn.microsoft.com/en-us/windows-365/enterprise/conditional-access"
+        "https://learn.microsoft.com/en-us/windows-365/enterprise/set-conditional-access-policies"
       ]
     },
     {
@@ -2073,7 +2075,7 @@
       "remediation": "Add the Under Review action to the IR runbook, define who is authorized to invoke it, and rehearse via a tabletop annually.",
       "appliesTo": [
         "Enterprise",
-        "Frontline"
+        "Flex"
       ],
       "additionalReferences": []
     },
@@ -2086,7 +2088,7 @@
       "type": "Manual",
       "weight": 2,
       "origin": "W365",
-      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/external-identities",
+      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/provide-cloud-pc-external-identities",
       "effort": "Some Effort",
       "bestPractice": "Decide whether external identities are in-scope. If so, scope a dedicated provisioning policy, image, and CA policy with stricter session controls.",
       "impact": "Without an explicit posture, ad-hoc B2B Cloud PC provisioning may bypass standard hardening or violate licensing rules.",
@@ -2105,14 +2107,14 @@
       "type": "Manual",
       "weight": 3,
       "origin": "SEC",
-      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/passwordless-credential-choice",
+      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/choosing-authentication-method",
       "effort": "Some Effort",
       "bestPractice": "Pick a primary passwordless credential per persona (for example WHfB for staff, FIDO2 for admins) and document fallback. Avoid mixing too many factors per persona.",
       "impact": "Inconsistent credential choices increase support cost, weaken phishing resistance, and complicate audit.",
       "remediation": "Document the per-persona credential matrix, configure Authentication Methods policy in Entra accordingly, and roll out to pilot then production.",
       "appliesTo": [
         "Enterprise",
-        "Frontline"
+        "Flex"
       ],
       "additionalReferences": [
         "https://learn.microsoft.com/en-us/entra/identity/authentication/concept-authentication-passwordless"
@@ -2127,7 +2129,7 @@
       "type": "Manual",
       "weight": 3,
       "origin": "W365",
-      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/convert-image-to-gen2",
+      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/device-images-convert-generation-2",
       "effort": "Some Effort",
       "bestPractice": "Standardize on Generation 2 for all custom images. Convert any remaining Gen 1 images using the documented procedure before they block a SKU change.",
       "impact": "Gen 1 images cannot use Secure Boot / vTPM and may be incompatible with newer Cloud PC SKUs, blocking modernization.",
@@ -2146,17 +2148,17 @@
       "type": "Manual",
       "weight": 2,
       "origin": "W365",
-      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/optimize-cisco-webex",
+      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/cisco-webex-support",
       "effort": "Some Effort",
       "bestPractice": "For each non-Teams real-time comms app in production use, deploy the vendor VDI optimization plugin (Webex VDI, Zoom VDI, etc.) to the Cloud PC image and the local endpoint.",
       "impact": "Without optimization, audio/video runs entirely inside the Cloud PC, consuming CPU and degrading call quality vs an optimized Teams baseline.",
       "remediation": "Add the vendor VDI plugin to the image build (Webex VDI / Zoom VDI). Deploy the matching client to local endpoints via Intune. Validate call quality with a pilot.",
       "appliesTo": [
         "Enterprise",
-        "Frontline"
+        "Flex"
       ],
       "additionalReferences": [
-        "https://learn.microsoft.com/en-us/windows-365/enterprise/optimize-zoom"
+        "https://learn.microsoft.com/en-us/windows-365/enterprise/zoom-support"
       ]
     },
     {
@@ -2165,17 +2167,17 @@
       "name": "Cloud PC Recommendations Engine Review",
       "description": "Microsoft's built-in Cloud PC Recommendations engine surfaces sizing, image, network, and policy recommendations specific to the tenant. Confirm the recommendations are reviewed and triaged on a cadence.",
       "severity": "Medium",
-      "type": "Manual",
+      "type": "Auto",
       "weight": 3,
       "origin": "W365",
-      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/cloud-pc-recommendations",
+      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/report-cloud-pc-recommendations",
       "effort": "Quick Win",
       "bestPractice": "Review the Cloud PC Recommendations report monthly. Triage each item to Accept / Defer / Reject and record the decision.",
       "impact": "Untriaged recommendations mean the tenant is not benefitting from Microsoft's own data-driven guidance and may carry avoidable cost or risk.",
       "remediation": "Add the review to the monthly operational rhythm. Capture triage decisions in the change-management system.",
       "appliesTo": [
         "Enterprise",
-        "Frontline"
+        "Flex"
       ],
       "additionalReferences": []
     },
@@ -2195,7 +2197,7 @@
       "remediation": "Acquire required Copilot licensing, enable in Intune, and run a short enablement session with the W365 ops team.",
       "appliesTo": [
         "Enterprise",
-        "Frontline"
+        "Flex"
       ],
       "additionalReferences": []
     },
@@ -2208,7 +2210,7 @@
       "type": "Manual",
       "weight": 2,
       "origin": "W365",
-      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/partner-connectors-overview",
+      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/partner-integration-scenarios",
       "effort": "Some Effort",
       "bestPractice": "Document whether partner connectors are in scope. If yes, capture vendor support boundaries, licensing model, and operational ownership.",
       "impact": "Unmanaged partner connectors create overlapping support boundaries and may bypass Microsoft baseline controls.",
@@ -2227,17 +2229,17 @@
       "type": "Manual",
       "weight": 3,
       "origin": "W365",
-      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/cloud-pc-monitoring",
+      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/cloud-pc-monitoring-overview",
       "effort": "Quick Win",
       "bestPractice": "Opt in to Cloud PC Monitoring (preview), grant access to L1/L2 support, and document the triage steps that use it before traditional log queries.",
       "impact": "Without it, support teams rely on slower batch reports and Endpoint Analytics aggregations to triage live user issues.",
       "remediation": "Enable Cloud PC Monitoring in Intune, scope access via RBAC, and add the workflow to the support runbook. Track preview status until GA.",
       "appliesTo": [
         "Enterprise",
-        "Frontline"
+        "Flex"
       ],
       "additionalReferences": [
-        "https://learn.microsoft.com/en-us/windows-365/enterprise/troubleshoot-cloud-pc-monitoring"
+        "https://learn.microsoft.com/en-us/windows-365/enterprise/troubleshoot-with-cloud-pc-monitoring"
       ]
     },
     {
@@ -2256,7 +2258,7 @@
       "remediation": "Pilot a Cloud PC Configuration on one persona, validate, then migrate other personas. Document preview status and rollback path.",
       "appliesTo": [
         "Enterprise",
-        "Frontline"
+        "Flex"
       ],
       "additionalReferences": []
     },
@@ -2269,7 +2271,7 @@
       "type": "Manual",
       "weight": 2,
       "origin": "W365",
-      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/ai-enabled-cloud-pc",
+      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/ai-enabled-cloud-pcs",
       "effort": "Some Effort",
       "bestPractice": "For knowledge-worker personas with approved AI use cases, pilot AI-enabled Cloud PCs and pair with Manage AI-enabled features policies (Recall on/off, etc.).",
       "impact": "Without an explicit AI posture, Copilot/Recall surfaces may either be unavailable to users who need them or enabled without governance.",
@@ -2285,19 +2287,19 @@
       "id": "W365-UX-007",
       "category": "End-User Experience",
       "name": "Windows App Settings Policy (Preview)",
-      "description": "Windows App Settings (preview) lets admins centrally manage Windows App client behavior (default views, redirection defaults, sign-in modes) via Intune.",
+      "description": "Windows App Settings (preview) lets admins centrally manage Windows App client behavior (default views, redirection defaults, sign-in modes) via Intune. This is now the only central client-policy surface for the connection client — the legacy Remote Desktop client MSI reached end of support on 27 March 2026 (Store app retired May 2025), so Windows App is the sole supported client to govern.",
       "severity": "Low",
       "type": "Manual",
       "weight": 2,
       "origin": "W365",
       "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/windows-app-settings",
       "effort": "Quick Win",
-      "bestPractice": "Use Windows App Settings (preview) to enforce a consistent client experience and tested redirection defaults rather than relying on per-user choice.",
+      "bestPractice": "Use Windows App Settings (preview) to enforce a consistent client experience and tested redirection defaults now that the Remote Desktop client is retired, rather than relying on per-user choice.",
       "impact": "Without centralized control, Windows App configuration drifts across endpoints and complicates support.",
       "remediation": "Create a Windows App Settings policy in Intune, scope to test users, validate, then expand. Track preview status.",
       "appliesTo": [
         "Enterprise",
-        "Frontline"
+        "Flex"
       ],
       "additionalReferences": []
     },
@@ -2317,7 +2319,7 @@
       "remediation": "Create Remote Connection Experience policies in Intune, assign per persona, and validate with pilot users.",
       "appliesTo": [
         "Enterprise",
-        "Frontline"
+        "Flex"
       ],
       "additionalReferences": []
     },
@@ -2330,7 +2332,7 @@
       "type": "Manual",
       "weight": 2,
       "origin": "W365",
-      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/power-platform-connector",
+      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/windows365-power-platform-connector",
       "effort": "Some Effort",
       "bestPractice": "For low-code automation teams, pilot the Power Platform connector to automate joiner/mover/leaver and resize approvals.",
       "impact": "Without it, lifecycle automation must be built in PowerShell/Graph and is harder for business analysts to own.",
@@ -2344,23 +2346,23 @@
       "id": "W365-UX-009",
       "category": "End-User Experience",
       "name": "Windows 365 Boot Configuration",
-      "description": "Windows 365 Boot turns a physical Windows endpoint into a thin client that signs the user directly into a Cloud PC at power-on, bypassing the local desktop. Verify whether Boot is configured for shared/kiosk personas and physical device access is correctly scoped.",
+      "description": "Windows 365 Boot (generally available) turns a physical Windows endpoint into a thin client that signs the user directly into a Cloud PC at power-on, bypassing the local desktop. Verify whether Boot is configured for shared/kiosk personas and physical device access is correctly scoped.",
       "severity": "Medium",
       "type": "Manual",
       "weight": 3,
       "origin": "W365",
-      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/windows-365-boot",
+      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/windows-365-boot-overview",
       "effort": "Some Effort",
       "bestPractice": "For shared workstation, kiosk, or branch personas, deploy Windows 365 Boot via the guided scenario in Intune. Restrict physical-device access using the dedicated Allow/Restrict policies.",
       "impact": "Without Boot, shared physical devices keep a local profile surface that can drift, store local data, and complicate compliance.",
       "remediation": "Run the Windows 365 Boot guided scenario in Intune. Validate physical device requirements (TPM, supported OS), assign the dedicated Cloud PC, and apply the Allow/Restrict access policy.",
       "appliesTo": [
         "Enterprise",
-        "Frontline"
+        "Flex"
       ],
       "additionalReferences": [
-        "https://learn.microsoft.com/en-us/windows-365/enterprise/windows-365-boot-guided-scenario",
-        "https://learn.microsoft.com/en-us/windows-365/enterprise/physical-device-requirements"
+        "https://learn.microsoft.com/en-us/windows-365/enterprise/windows-365-boot-guide",
+        "https://learn.microsoft.com/en-us/windows-365/end-user-hardware-requirements"
       ]
     },
     {
@@ -2372,7 +2374,7 @@
       "type": "Manual",
       "weight": 2,
       "origin": "W365",
-      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/windows-365-government",
+      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/introduction-windows-365-government",
       "effort": "Some Effort",
       "bestPractice": "For US public-sector workloads, deploy on Windows 365 Government, follow the documented tenant setup, and use Government-specific URLs/endpoints.",
       "impact": "Running regulated workloads on the commercial offering may breach compliance commitments (FedRAMP High, IL5).",
@@ -2381,7 +2383,7 @@
         "Enterprise"
       ],
       "additionalReferences": [
-        "https://learn.microsoft.com/en-us/windows-365/enterprise/set-up-tenants-windows-365-government"
+        "https://learn.microsoft.com/en-us/windows-365/enterprise/set-up-tenants-windows-365-gcc"
       ]
     },
     {
@@ -2400,26 +2402,26 @@
       "remediation": "Configure an Enrollment Status Page profile in Intune scoped to Cloud PCs. Define blocking apps, timeout, and failure behaviour. Pilot then enforce.",
       "appliesTo": [
         "Enterprise",
-        "Frontline"
+        "Flex"
       ],
       "additionalReferences": []
     },
     {
       "id": "W365-PROV-014",
       "category": "Provisioning Policies",
-      "name": "Autopilot Device Preparation for Frontline",
-      "description": "Autopilot device preparation for Frontline streamlines first-run readiness on shared Frontline Cloud PCs so that target apps and policies are present before the next user signs in.",
+      "name": "Autopilot Device Preparation for Flex",
+      "description": "Autopilot device preparation for Flex streamlines first-run readiness on shared Flex Cloud PCs so that target apps and policies are present before the next user signs in.",
       "severity": "Medium",
       "type": "Manual",
       "weight": 3,
       "origin": "W365",
-      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/autopilot-device-preparation-frontline",
+      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/autopilot-device-preparation",
       "effort": "Some Effort",
-      "bestPractice": "Configure Autopilot device preparation for all Frontline shared provisioning policies. Track preparation outcomes via Intune reporting.",
-      "impact": "Without device preparation, Frontline shared sessions risk being assigned to a Cloud PC that is still applying configuration, leading to user-visible failures.",
-      "remediation": "Build the device-preparation profile for the Frontline persona, attach it to the provisioning policy, and validate end-to-end.",
+      "bestPractice": "Configure Autopilot device preparation for all Flex shared provisioning policies. Track preparation outcomes via Intune reporting.",
+      "impact": "Without device preparation, Flex shared sessions risk being assigned to a Cloud PC that is still applying configuration, leading to user-visible failures.",
+      "remediation": "Build the device-preparation profile for the Flex persona, attach it to the provisioning policy, and validate end-to-end.",
       "appliesTo": [
-        "Frontline"
+        "Flex"
       ],
       "additionalReferences": []
     },
@@ -2458,7 +2460,7 @@
       "remediation": "Identify migration apps in scope. Open an App Assure request via Microsoft FastTrack. Track findings into the project plan.",
       "appliesTo": [
         "Enterprise",
-        "Frontline"
+        "Flex"
       ],
       "additionalReferences": []
     },
@@ -2466,19 +2468,19 @@
       "id": "W365-SEC-016",
       "category": "Security & Compliance",
       "name": "Idle Session Time Limits",
-      "description": "Idle session time limits sign idle users out of their Cloud PC after a defined period, releasing concurrency on Frontline and reducing exposure if a session is left unattended.",
+      "description": "Idle session time limits sign idle users out of their Cloud PC after a defined period, releasing concurrency on Flex and reducing exposure if a session is left unattended.",
       "severity": "Medium",
       "type": "Manual",
       "weight": 3,
       "origin": "SEC",
-      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/set-idle-session-time-limits",
+      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/windows-365-flex-cloud-pc-session-time-limits",
       "effort": "Quick Win",
-      "bestPractice": "Set idle session time limits per persona (e.g. 60 minutes for Enterprise, shorter for shared Frontline) and align with the wider session-lock policy (W365-IAM-007).",
-      "impact": "Without idle limits, abandoned sessions occupy Frontline concurrency and increase data-leak exposure on the local endpoint.",
+      "bestPractice": "Set idle session time limits per persona (e.g. 60 minutes for Enterprise, shorter for shared Flex) and align with the wider session-lock policy (W365-IAM-007).",
+      "impact": "Without idle limits, abandoned sessions occupy Flex concurrency and increase data-leak exposure on the local endpoint.",
       "remediation": "Configure idle session time limits via Intune Settings Catalog. Scope by persona group and validate on a pilot user.",
       "appliesTo": [
         "Enterprise",
-        "Frontline"
+        "Flex"
       ],
       "additionalReferences": []
     },
@@ -2486,22 +2488,22 @@
       "id": "W365-SEC-017",
       "category": "Security & Compliance",
       "name": "Screen Capture Protection",
-      "description": "Screen Capture Protection blocks the host OS from capturing the Cloud PC session window via screenshot or screen-recording tools, complementing watermarking.",
+      "description": "Screen Capture Protection blocks the host OS from capturing the Cloud PC session window via screenshot or screen-recording tools, complementing watermarking. Both are natively configurable via the Intune settings catalog for Cloud PCs (Enterprise and Flex).",
       "severity": "Medium",
       "type": "Manual",
       "weight": 3,
       "origin": "SEC",
-      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/enable-screen-capture-protection",
+      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/watermarking",
       "effort": "Quick Win",
       "bestPractice": "Enable Screen Capture Protection for data-sensitive personas in addition to watermarking. Communicate the change to end users to set expectations.",
       "impact": "Without Screen Capture Protection, sensitive data displayed in the Cloud PC can be exfiltrated by trivial host-side screen-capture tools.",
       "remediation": "Enable the Screen Capture Protection policy via Intune Settings Catalog and assign to in-scope groups. Validate that screenshot tools no longer capture session content.",
       "appliesTo": [
         "Enterprise",
-        "Frontline"
+        "Flex"
       ],
       "additionalReferences": [
-        "https://learn.microsoft.com/en-us/windows-365/enterprise/set-up-watermarking"
+        "https://learn.microsoft.com/en-us/windows-365/enterprise/watermarking"
       ]
     },
     {
@@ -2513,14 +2515,14 @@
       "type": "Manual",
       "weight": 2,
       "origin": "W365",
-      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/share-restore-points-storage-account",
+      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/share-restore-points-storage",
       "effort": "Some Effort",
       "bestPractice": "Pre-configure a hardened storage account for sharing restore points and document the procedure as part of the IR / forensics runbook.",
       "impact": "Without a documented procedure, urgent disk recovery or forensic evidence collection is delayed by ad-hoc storage provisioning.",
       "remediation": "Provision a dedicated locked-down storage account (private endpoint, immutable blobs where possible). Document the share procedure and rehearse annually.",
       "appliesTo": [
         "Enterprise",
-        "Frontline"
+        "Flex"
       ],
       "additionalReferences": []
     },
@@ -2533,7 +2535,7 @@
       "type": "Manual",
       "weight": 4,
       "origin": "WAF",
-      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/azure-firewall",
+      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/azure-firewall-windows-365",
       "effort": "Some Effort",
       "bestPractice": "Use the documented FQDN tag / service tag in Azure Firewall to permit Windows 365 traffic. Exclude Cloud PC URLs from TLS inspection. Review rules quarterly.",
       "impact": "Misconfigured egress firewall causes intermittent provisioning and connection failures and is a top root cause for Cloud PC outages.",
@@ -2542,7 +2544,7 @@
         "Enterprise"
       ],
       "additionalReferences": [
-        "https://learn.microsoft.com/en-us/windows-365/enterprise/required-fqdn-endpoint"
+        "https://learn.microsoft.com/en-us/windows-365/enterprise/requirements-network"
       ]
     },
     {
@@ -2554,14 +2556,14 @@
       "type": "Manual",
       "weight": 4,
       "origin": "W365",
-      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/extended-security-updates-guidance",
+      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/understanding-extended-security-updates",
       "effort": "Major Effort",
       "bestPractice": "Migrate Win10 Cloud PCs to Win11 before EOS. Where migration is not possible, license ESU and confirm updates are flowing via Windows Update for Business / Autopatch.",
       "impact": "Without ESU, Win10 Cloud PCs stop receiving security updates and become a ransomware/blast-radius risk inside the tenant.",
       "remediation": "Identify Win10 Cloud PCs. Plan and execute Win11 migration. For any residual Win10, procure ESU keys and confirm patch compliance in the Windows Update report.",
       "appliesTo": [
         "Enterprise",
-        "Frontline"
+        "Flex"
       ],
       "additionalReferences": [
         "https://learn.microsoft.com/en-us/windows/whats-new/extended-security-updates"
@@ -2576,14 +2578,14 @@
       "type": "Manual",
       "weight": 3,
       "origin": "CAF",
-      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/migration-to-windows-365",
+      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/migration-to-windows365",
       "effort": "Major Effort",
       "bestPractice": "Build a migration plan covering persona inventory, app dependencies (App Assure), profile migration (FSLogix → OneDrive KFM), comms, training, and rollback windows.",
       "impact": "Unplanned migrations stall mid-flight, leak budget, and erode user confidence in the platform.",
       "remediation": "Use the Microsoft migration guide as a template. Define waves, dependencies, success criteria, and an exec dashboard. Tie into App Assure and FastTrack where eligible.",
       "appliesTo": [
         "Enterprise",
-        "Frontline"
+        "Flex"
       ],
       "additionalReferences": []
     },
@@ -2614,39 +2616,39 @@
       "name": "Resource Performance Report Review",
       "description": "The Cloud PC resource performance report tracks CPU, memory, and disk pressure across Cloud PCs and is the primary signal for sizing and saturation issues.",
       "severity": "Medium",
-      "type": "Manual",
+      "type": "Auto",
       "weight": 3,
       "origin": "W365",
-      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/resource-performance-report",
+      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/report-resource-performance",
       "effort": "Quick Win",
       "bestPractice": "Review the resource performance report monthly. Flag personas where CPU or memory pressure exceeds the thresholds for sustained periods and feed the findings into the right-sizing review (W365-COST-002).",
       "impact": "Without periodic review, undersized Cloud PCs degrade user experience while oversized ones inflate cost; both are detectable from this report.",
       "remediation": "Add the resource performance report to the monthly operational rhythm. Capture sizing decisions in change management.",
       "appliesTo": [
         "Enterprise",
-        "Frontline"
+        "Flex"
       ],
       "additionalReferences": []
     },
     {
       "id": "W365-PROV-015",
       "category": "Provisioning Policies",
-      "name": "Windows Updates for Frontline Cloud PCs",
-      "description": "Windows 365 Frontline Cloud PCs are non-persistent in shared mode and require a different patching approach than Enterprise Cloud PCs. Update rings and Autopatch behaviour must be tuned for the Frontline lifecycle.",
+      "name": "Windows Updates for Flex Cloud PCs",
+      "description": "Windows 365 Flex Cloud PCs are non-persistent in shared mode and require a different patching approach than Enterprise Cloud PCs. Update rings and Autopatch behaviour must be tuned for the Flex lifecycle.",
       "severity": "High",
       "type": "Manual",
       "weight": 4,
       "origin": "W365",
-      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/windows-updates-frontline",
+      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/windows-update-windows-365-flex-cloud-pc",
       "effort": "Some Effort",
-      "bestPractice": "For Frontline, drive update compliance via the image refresh cadence rather than per-device update rings. Schedule periodic image rebuilds and bulk reprovision to deliver patches deterministically.",
-      "impact": "Treating Frontline like Enterprise for updates causes patches to be lost on reprovision and creates a perpetual non-compliance signal in reporting.",
-      "remediation": "Define a Frontline patching strategy in the runbook: cadence for image rebuild, mapping to bulk reprovision (W365-USER-006), and reporting basis. Validate compliance via the Cloud PC inventory after each rebuild.",
+      "bestPractice": "For Flex, drive update compliance via the image refresh cadence rather than per-device update rings. Schedule periodic image rebuilds and bulk reprovision to deliver patches deterministically.",
+      "impact": "Treating Flex like Enterprise for updates causes patches to be lost on reprovision and creates a perpetual non-compliance signal in reporting.",
+      "remediation": "Define a Flex patching strategy in the runbook: cadence for image rebuild, mapping to bulk reprovision (W365-USER-006), and reporting basis. Validate compliance via the Cloud PC inventory after each rebuild.",
       "appliesTo": [
-        "Frontline"
+        "Flex"
       ],
       "additionalReferences": [
-        "https://learn.microsoft.com/en-us/windows-365/enterprise/reprovision-frontline-cloud-pcs"
+        "https://learn.microsoft.com/en-us/windows-365/enterprise/windows-365-flex-shared-bulk-reprovision"
       ]
     },
     {
@@ -2665,10 +2667,97 @@
       "remediation": "Connect to one Cloud PC per persona. Launch BaselinePilot from the toolkit (scripts\\BaselineAssessor\\BaselinePilot.ps1), run the full collection, review failed/warning items, and feed remediation back into the Intune baseline or image build. Attach the BaselinePilot HTML report to the W365 assessment evidence pack.",
       "appliesTo": [
         "Enterprise",
-        "Frontline"
+        "Flex"
       ],
       "additionalReferences": [
         "https://learn.microsoft.com/en-us/windows/security/operating-system-security/device-management/windows-security-configuration-framework/windows-security-baselines"
+      ]
+    },
+    {
+      "id": "W365-IAM-010",
+      "category": "Identity & Access",
+      "name": "Conditional Access Covers Windows Cloud Login",
+      "description": "Confirm that Conditional Access policies targeting the Windows 365 cloud app also cover the Windows Cloud Login application, which brokers the actual RDP connection to the Cloud PC session. A CA policy scoped only to the Windows 365 portal app does not protect the connection-time sign-in event.",
+      "severity": "High",
+      "type": "Auto",
+      "weight": 4,
+      "origin": "SEC",
+      "reference": "https://learn.microsoft.com/en-us/windows-365/enterprise/set-conditional-access-policies",
+      "effort": "Some Effort",
+      "bestPractice": "Target Conditional Access policies at all three Windows 365 connectivity apps — Windows 365 (appId 0af06dc6-e4b5-4f28-818e-e78e62d137a5), Azure Virtual Desktop (appId 9cdead84-a844-4324-93f2-b2e6bb768d07), and Windows Cloud Login (appId 270efc09-cd0d-444b-a71f-39af4910ec45) — with matching grant controls, so MFA, device compliance, and location conditions apply consistently to the end-user portal, the gateway connection, and the Cloud PC session itself.",
+      "impact": "A CA policy that only covers the Windows 365 portal app leaves the actual session-broker sign-in unprotected, letting a user establish a Cloud PC connection without satisfying MFA or compliant-device requirements enforced at portal login.",
+      "remediation": "In Entra admin center > Conditional Access, review the cloud apps targeted by Windows 365 CA policies. Add the Windows Cloud Login application alongside Windows 365 and Azure Virtual Desktop in the same policy (register the Microsoft.DesktopVirtualization resource provider first if the app is not listed). Test with an actual session connection, not just a portal sign-in.",
+      "appliesTo": [
+        "Enterprise",
+        "Flex"
+      ],
+      "additionalReferences": [
+        "https://learn.microsoft.com/en-us/windows-365/enterprise/security-guidelines"
+      ]
+    },
+    {
+      "id": "W365-IAM-011",
+      "category": "Identity & Access",
+      "name": "Token Protection & Sign-in Frequency",
+      "description": "Cloud PC sessions are long-lived, making them a high-value target for token replay. Verify that Conditional Access enforces token protection (binding sign-in and primary refresh tokens to the device) and an appropriate sign-in frequency for the Windows 365 and Windows Cloud Login apps.",
+      "severity": "Medium",
+      "type": "Auto",
+      "weight": 3,
+      "origin": "SEC",
+      "reference": "https://learn.microsoft.com/en-us/entra/identity/conditional-access/concept-token-protection",
+      "effort": "Some Effort",
+      "bestPractice": "Enable token protection on CA policies covering Windows 365 sign-in where supported client platforms allow it, and set sign-in frequency to reauthenticate periodically (or every time, for the highest-sensitivity personas) rather than relying on long-lived session tokens for the full Cloud PC session lifetime.",
+      "impact": "Without token protection, a stolen primary refresh token can be replayed from an attacker-controlled device to establish a Cloud PC session. Without a bounded sign-in frequency, a compromised session can persist far longer than the organization's risk tolerance.",
+      "remediation": "In the CA policy covering Windows 365 / Windows Cloud Login, enable the token protection session control on supported platforms, and configure sign-in frequency under Session > Sign-in frequency. Pilot with a test group before broad rollout, since token protection may not be supported on all client platforms.",
+      "appliesTo": [
+        "Enterprise",
+        "Flex"
+      ],
+      "additionalReferences": [
+        "https://learn.microsoft.com/en-us/entra/identity/conditional-access/howto-conditional-access-session-lifetime"
+      ]
+    },
+    {
+      "id": "W365-SEC-019",
+      "category": "Security & Compliance",
+      "name": "Windows App / Connection Center Posture",
+      "description": "Windows App (and its Connection Center view) is now the sole supported client for connecting to Cloud PCs. Review the deployed Windows App version, update channel, and Connection Center configuration for consistency across managed endpoints.",
+      "severity": "Low",
+      "type": "Manual",
+      "weight": 2,
+      "origin": "W365",
+      "reference": "https://learn.microsoft.com/en-us/windows-app/overview",
+      "effort": "Quick Win",
+      "bestPractice": "Standardize on a single Windows App deployment channel (Microsoft Store or Intune Win32 app) per platform, keep it current, and periodically confirm the Connection Center shows the expected set of resources (Cloud PC, AVD, Dev Box) without stale or duplicate entries.",
+      "impact": "Inconsistent Windows App versions or a cluttered Connection Center increase helpdesk load and can mask a genuinely retired or misconfigured connection entry as a real outage.",
+      "remediation": "Inventory Windows App versions across managed endpoints via Intune. Standardize the deployment/update channel. Spot-check Connection Center on a sample of devices to confirm only current, expected resources are listed.",
+      "appliesTo": [
+        "Enterprise",
+        "Flex",
+        "Business"
+      ],
+      "additionalReferences": []
+    },
+    {
+      "id": "W365-INV-006",
+      "category": "Inventory & Topology",
+      "name": "Windows 365 Link Device Posture",
+      "description": "Windows 365 Link is Microsoft's purpose-built thin-client device for connecting to Cloud PCs. Where deployed, verify Link devices are inventoried, enrolled, and kept current on firmware/OS updates like any other managed endpoint.",
+      "severity": "Low",
+      "type": "Manual",
+      "weight": 2,
+      "origin": "W365",
+      "reference": "https://learn.microsoft.com/en-us/windows-365/link/overview",
+      "effort": "Quick Win",
+      "bestPractice": "Enroll Windows 365 Link devices in Intune, apply update rings for their locked-down OS/firmware, and scope Conditional Access consistently with other Cloud PC endpoints.",
+      "impact": "Unmanaged or un-inventoried Link devices are a blind spot: they are physical, network-attached endpoints capable of reaching Cloud PCs but may fall outside normal device compliance and patch reporting.",
+      "remediation": "Confirm Link devices are enrolled in Intune, included in the device compliance and update-ring reporting used for other endpoints, and covered by the same Conditional Access policies as other Cloud PC connection surfaces (see W365-IAM-010).",
+      "appliesTo": [
+        "Enterprise",
+        "Flex"
+      ],
+      "additionalReferences": [
+        "https://learn.microsoft.com/en-us/windows-365/link/conditional-access-policies"
       ]
     }
   ]
