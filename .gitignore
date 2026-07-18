@@ -52,9 +52,9 @@ github-issue-*.md
 # AI agent orchestration / handoff docs — keep local, never in this public repo
 *HANDOFF*.md
 COPILOT-HANDOFF.md
+VERIFICATION-REPORT.md
 .github/copilot-instructions.md
 AGENTS.md
 CLAUDE.md
 .claude/
-VERIFICATION-REPORT.md
 
