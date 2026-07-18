@@ -1068,7 +1068,7 @@ $dedicated   = @($Discovery.Inventory.CloudPCs | Where-Object { "$($_.Provisioni
     -Status 'Pass' -Severity 'Low' `
     -Details "Provisioning-type mix across $($Discovery.Inventory.CloudPCs.Count) Cloud PC(s): $typeSummary. Dedicated: $dedicated. Flex/shared-by-user (sharedByUser): $flexCount." `
     -Recommendation 'Confirm the dedicated vs Flex split matches the licensing plan. Flex (sharedByUser) personas should be validated for concurrency limits and non-persistent data handling.' `
-    -Reference 'https://learn.microsoft.com/en-us/windows-365/frontline/frontline-overview' `
+    -Reference 'https://learn.microsoft.com/en-us/windows-365/enterprise/introduction-windows-365-flex' `
     -Evidence @{ Mix = $typeSummary; Dedicated = $dedicated; Flex = $flexCount; Total = $Discovery.Inventory.CloudPCs.Count }))
 
 # ─── INV-004: Service plan (SKU) coverage (no new calls; uses the collected ServicePlans set) ──
@@ -1119,7 +1119,7 @@ foreach ($pp in $Discovery.Inventory.ProvisioningPolicies) {
         -Status 'Warning' -Severity 'Low' `
         -Details "Policy '$($pp.DisplayName)' provisioningType = $pt (shared/Flex). Validate concurrency limits, non-persistence, and whether an app-delivery (Cloud Apps) model fits the persona." `
         -Recommendation 'Size the Flex license concurrency for the assigned population, confirm profile/data persistence expectations, and consider Cloud Apps delivery for app-only personas.' `
-        -Reference 'https://learn.microsoft.com/en-us/windows-365/frontline/frontline-overview' `
+        -Reference 'https://learn.microsoft.com/en-us/windows-365/enterprise/introduction-windows-365-flex' `
         -Evidence @{ PolicyName = $pp.DisplayName; ProvisioningType = $pt }))
 }
 
