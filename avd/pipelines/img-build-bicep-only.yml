@@ -378,7 +378,7 @@ stages:
                     $status = az image builder show `
                       --name $templateName `
                       --resource-group $(resourceGroup) `
-                      --query "properties.lastRunStatus" `
+                      --query "lastRunStatus" `
                       -o json | ConvertFrom-Json
                   }
                   catch {
