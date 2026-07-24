@@ -15,8 +15,17 @@ pr: none
 #
 # Stages:
 #   1. Prepare  — Checkout, zip & upload artifacts to staging blob
-#   2. Build    — Deploy AIB template via Bicep, trigger build, poll for completion
-#   3. Cleanup  — Delete template + staging container (runs always)
+#   2. Build    — 4 jobs: (1) DeployAndTrigger deploys the AIB template via Bicep
+#                 and kicks off the build (--no-wait); (2) InitialDelay is an
+#                 agentless server-side wait (pool: server) covering the minimum
+#                 expected bake time, holding no hosted agent; (3)/(4) WaitForBuild1
+#                 and WaitForBuild2 are resumable poll windows that each pick up
+#                 the run's status and either finish or hand off to the next window.
+#                 If a hosted agent is lost during a poll window, use "Rerun failed
+#                 jobs" — the AIB build keeps running in Azure regardless, and
+#                 polling simply resumes where it left off.
+#   3. Cleanup  — Delete template + staging container (runs always); skips the
+#                 template delete (without failing) if the build is still Running.
 # =============================================================================
 
 resources:
@@ -67,6 +76,11 @@ variables:
     value: 'Standard_D4_v5'
   - name: buildTimeout
     value: 150
+  - name: initialDelayMinutes
+    # Agentless (pool: server) server-side delay before the first status poll —
+    # this is the minimum expected bake time, so we don't hold a hosted agent
+    # while the build is definitely still running.
+    value: 60
   - name: bicepTemplatePath
     value: '$(System.DefaultWorkingDirectory)/bicep/modules/imageTemplate.bicep'
   - name: managedIdentity
@@ -179,16 +193,18 @@ stages:
       stagingContainer: $[ stageDependencies.Prepare.UploadArtifacts.outputs['upload.stagingContainer'] ]
       templateName: $[ stageDependencies.Prepare.UploadArtifacts.outputs['upload.templateName'] ]
     jobs:
-      - job: DeployAndRun
-        displayName: "Deploy Template & Run Build"
-        # Job cap must be >= the run step (buildTimeout + 30) plus the deploy step.
-        timeoutInMinutes: 210
+      - job: DeployAndTrigger
+        displayName: "Deploy Template & Trigger Build"
+        timeoutInMinutes: 90
         steps:
-          # ── 4. Deploy AIB image template via Bicep ─────────────────────────
+          # ── 4. Deploy AIB image template via Bicep ─────────────────────
+          # az deployment group create blocks until AIB template provisioning
+          # completes (observed 15-40 min) — this is provisioning the template
+          # resource itself, not running the build.
           - task: AzureCLI@2
             displayName: 'Deploy AIB Image Template (Bicep)'
             name: deploy
-            timeoutInMinutes: 15
+            timeoutInMinutes: 60
             # Secret pipeline vars are not macro-substituted into scripts; pass
             # the SAS blob URL via the environment instead.
             env:
@@ -339,12 +355,11 @@ stages:
 
                 Write-Host "=== Image template deployed successfully ==="
 
-          # ── 5. Trigger the image build ─────────────────────────────────────
+          # ── 5. Trigger the image build (async - no polling here) ──────────
           - task: AzureCLI@2
-            displayName: 'Run AIB Image Build'
-            name: run
-            # Step cap is buildTimeout + 30 so AIB's own 150-min timeout surfaces first.
-            timeoutInMinutes: 180
+            displayName: 'Trigger AIB Image Build'
+            name: trigger
+            timeoutInMinutes: 10
             inputs:
               azureSubscription: $(serviceConnection)
               scriptType: pscore
@@ -352,62 +367,121 @@ stages:
               scriptLocation: inlineScript
               inlineScript: |
                 $ErrorActionPreference = 'Stop'
-
                 $templateName = "$(templateName)"
-                Write-Host "=== Starting image build: $templateName ==="
-                Write-Host "This will take a while (timeout: $(buildTimeout) min)..."
-
-                # Trigger (async)
+                Write-Host "=== Triggering image build: $templateName ==="
                 az image builder run `
                   --name $templateName `
                   --resource-group $(resourceGroup) `
                   --no-wait
-                if ($LASTEXITCODE -ne 0) { throw "az image builder run failed with exit code $LASTEXITCODE" }
+                if ($LASTEXITCODE -ne 0) { throw "Failed to trigger image build (az image builder run exit code $LASTEXITCODE)" }
+                Write-Host "Build triggered (async). Polling happens in later jobs after an agentless delay of $(initialDelayMinutes) min."
 
-                # Poll for completion. Client-side timeout is buildTimeout + 10 so
-                # AIB's own build timeout reports a real error first.
-                Write-Host "=== Monitoring build progress ==="
-                $startTime = Get-Date
-                $timeoutMinutes = $(buildTimeout) + 10
+      # ── Job 2: agentless delay ───────────────────────────────────────────
+      # Burns the minimum expected bake time without holding a hosted agent, so
+      # agent-loss during the long build window is impossible here — there is
+      # no agent to lose while this job is "running".
+      - job: InitialDelay
+        displayName: "Wait (agentless) - minimum bake time"
+        dependsOn: DeployAndTrigger
+        pool: server
+        timeoutInMinutes: 75
+        steps:
+          - task: Delay@1
+            displayName: 'Delay $(initialDelayMinutes) min (no agent held)'
+            inputs:
+              delayForMinutes: '$(initialDelayMinutes)'
+
+      # ── Job 3: first poll window ─────────────────────────────────────────
+      # Resumable: if the hosted agent is lost mid-window, "Rerun failed jobs"
+      # picks polling back up — the AIB build itself is unaffected in Azure.
+      - job: WaitForBuild1
+        displayName: "Poll Build Status (window 1)"
+        dependsOn: InitialDelay
+        timeoutInMinutes: 55
+        steps:
+          - checkout: none
+          - task: AzureCLI@2
+            displayName: 'Poll AIB Build Status'
+            name: poll
+            timeoutInMinutes: 50
+            inputs:
+              azureSubscription: $(serviceConnection)
+              scriptType: pscore
+              addSpnToEnvironment: true
+              scriptLocation: inlineScript
+              inlineScript: |
+                $ErrorActionPreference = 'Stop'
+                $templateName   = "$(templateName)"
+                $windowMinutes  = 45          # per-window poll budget (this job only)
+                $isFinalWindow  = $false      # $true in WaitForBuild2: fail if still running at window end
+
+                Write-Host "=== Polling build status: $templateName (window: $windowMinutes min, final: $isFinalWindow) ==="
+
+                $startTime    = Get-Date
+                $lastState    = ''
+                $noStatusMins = 0
 
                 while ($true) {
                   $elapsed = (Get-Date) - $startTime
+                  $stamp   = $elapsed.ToString('hh\:mm\:ss')
 
-                  # Transient CLI/parse noise must not kill a multi-hour build.
+                  # Per-window budget check FIRST so transient query failures can never bypass it.
+                  if ($elapsed.TotalMinutes -gt $windowMinutes) {
+                    if ($isFinalWindow) {
+                      throw "Build still not finished after all poll windows (last state: $lastState) - exceeded buildTimeout budget."
+                    }
+                    Write-Host "Window budget reached - build still in progress (last state: $lastState)."
+                    Write-Host "Handing off to the next poll window."
+                    Write-Host "##vso[task.setvariable variable=buildDone;isOutput=true]false"
+                    exit 0
+                  }
+
+                  # Query run status. try/catch: a transient az failure with empty stdout would
+                  # otherwise make ConvertFrom-Json throw before the exit-code check is reached.
+                  $status = $null
                   try {
-                    $status = az image builder show `
+                    $raw = az image builder show `
                       --name $templateName `
                       --resource-group $(resourceGroup) `
                       --query "lastRunStatus" `
-                      -o json | ConvertFrom-Json
-                  }
-                  catch {
-                    Write-Host "##vso[task.logissue type=warning]Transient error querying build status: $($_.Exception.Message)"
+                      -o json
+                    if ($LASTEXITCODE -ne 0) { throw "az exit code $LASTEXITCODE" }
+                    if ($raw) { $status = $raw | ConvertFrom-Json }
+                  } catch {
+                    Write-Host "[$stamp] WARN: could not query run status ($($_.Exception.Message)); retrying..."
                     Start-Sleep -Seconds 30
                     continue
                   }
 
-                  if ($status) {
-                    $runState = $status.runState
-                    $runSubState = $status.runSubState
-                    Write-Host "[$($elapsed.ToString('hh\:mm\:ss'))] State: $runState | SubState: $runSubState"
+                  $runState    = if ($status) { $status.runState } else { '' }
+                  $runSubState = if ($status) { $status.runSubState } else { '' }
+
+                  if ([string]::IsNullOrEmpty($runState)) {
+                    # No run status yet — guard against idling forever if the run never registers.
+                    $noStatusMins += 0.5
+                    Write-Host "[$stamp] Waiting for build to start... (no run status yet)"
+                    if ($noStatusMins -ge 10) { throw "No build run status after 10 min - the run never started (check permissions / template state)." }
+                  }
+                  else {
+                    $noStatusMins = 0
+                    if ("$runState/$runSubState" -ne $lastState) {
+                      Write-Host "[$stamp] State: $runState | SubState: $runSubState"
+                      $lastState = "$runState/$runSubState"
+                    } else {
+                      Write-Host "[$stamp] ... still $runState ($runSubState)"
+                    }
 
                     if ($runState -eq 'Succeeded') {
                       Write-Host "=== Build completed successfully! ==="
                       break
                     }
                     elseif ($runState -eq 'Failed' -or $runState -eq 'Canceled') {
-                      $message = $status.message
-                      Write-Host "##vso[task.logissue type=error]Build $runState`: $message"
+                      Write-Host "===== BUILD $($runState.ToUpper()) - full lastRunStatus ====="
+                      $status | ConvertTo-Json -Depth 10 | Write-Host
+                      $message = if ($status.message) { $status.message } else { "(no message returned - check the AIB customization.log in the staging storage account / packer log)" }
+                      Write-Host "##vso[task.logissue type=error]Image build $runState`: $message"
                       throw "Image build $runState`: $message"
                     }
-                  }
-                  else {
-                    Write-Host "[$($elapsed.ToString('hh\:mm\:ss'))] Waiting for build status..."
-                  }
-
-                  if ($elapsed.TotalMinutes -gt $timeoutMinutes) {
-                    throw "Build timed out after $timeoutMinutes minutes"
                   }
 
                   Start-Sleep -Seconds 30
@@ -418,7 +492,6 @@ stages:
                   --name $templateName `
                   --resource-group $(resourceGroup) `
                   -o json | ConvertFrom-Json
-                if ($LASTEXITCODE -ne 0) { Write-Host "##vso[task.logissue type=warning]Failed to retrieve run outputs (exit code $LASTEXITCODE)" }
 
                 if ($runOutputs -and $runOutputs.Count -gt 0) {
                   $artifactId = $runOutputs[0].artifactId
@@ -427,6 +500,119 @@ stages:
                   Write-Host "=== Output image: $imageUri ==="
                   Write-Host "##vso[task.setvariable variable=imageUri;isOutput=true]$imageUri"
                 }
+                Write-Host "##vso[task.setvariable variable=buildDone;isOutput=true]true"
+
+      # ── Job 4: second (final) poll window ────────────────────────────────
+      # Only runs if window 1 handed off (buildDone=false); fails the build if
+      # the run is still going after this window's budget is exhausted.
+      - job: WaitForBuild2
+        displayName: "Poll Build Status (window 2, final)"
+        dependsOn: WaitForBuild1
+        condition: and(succeeded(), ne(dependencies.WaitForBuild1.outputs['poll.buildDone'], 'true'))
+        timeoutInMinutes: 55
+        steps:
+          - checkout: none
+          - task: AzureCLI@2
+            displayName: 'Poll AIB Build Status'
+            name: poll
+            timeoutInMinutes: 50
+            inputs:
+              azureSubscription: $(serviceConnection)
+              scriptType: pscore
+              addSpnToEnvironment: true
+              scriptLocation: inlineScript
+              inlineScript: |
+                $ErrorActionPreference = 'Stop'
+                $templateName   = "$(templateName)"
+                $windowMinutes  = 45          # per-window poll budget (this job only)
+                $isFinalWindow  = $true       # $true in WaitForBuild2: fail if still running at window end
+
+                Write-Host "=== Polling build status: $templateName (window: $windowMinutes min, final: $isFinalWindow) ==="
+
+                $startTime    = Get-Date
+                $lastState    = ''
+                $noStatusMins = 0
+
+                while ($true) {
+                  $elapsed = (Get-Date) - $startTime
+                  $stamp   = $elapsed.ToString('hh\:mm\:ss')
+
+                  # Per-window budget check FIRST so transient query failures can never bypass it.
+                  if ($elapsed.TotalMinutes -gt $windowMinutes) {
+                    if ($isFinalWindow) {
+                      throw "Build still not finished after all poll windows (last state: $lastState) - exceeded buildTimeout budget."
+                    }
+                    Write-Host "Window budget reached - build still in progress (last state: $lastState)."
+                    Write-Host "Handing off to the next poll window."
+                    Write-Host "##vso[task.setvariable variable=buildDone;isOutput=true]false"
+                    exit 0
+                  }
+
+                  # Query run status. try/catch: a transient az failure with empty stdout would
+                  # otherwise make ConvertFrom-Json throw before the exit-code check is reached.
+                  $status = $null
+                  try {
+                    $raw = az image builder show `
+                      --name $templateName `
+                      --resource-group $(resourceGroup) `
+                      --query "lastRunStatus" `
+                      -o json
+                    if ($LASTEXITCODE -ne 0) { throw "az exit code $LASTEXITCODE" }
+                    if ($raw) { $status = $raw | ConvertFrom-Json }
+                  } catch {
+                    Write-Host "[$stamp] WARN: could not query run status ($($_.Exception.Message)); retrying..."
+                    Start-Sleep -Seconds 30
+                    continue
+                  }
+
+                  $runState    = if ($status) { $status.runState } else { '' }
+                  $runSubState = if ($status) { $status.runSubState } else { '' }
+
+                  if ([string]::IsNullOrEmpty($runState)) {
+                    # No run status yet — guard against idling forever if the run never registers.
+                    $noStatusMins += 0.5
+                    Write-Host "[$stamp] Waiting for build to start... (no run status yet)"
+                    if ($noStatusMins -ge 10) { throw "No build run status after 10 min - the run never started (check permissions / template state)." }
+                  }
+                  else {
+                    $noStatusMins = 0
+                    if ("$runState/$runSubState" -ne $lastState) {
+                      Write-Host "[$stamp] State: $runState | SubState: $runSubState"
+                      $lastState = "$runState/$runSubState"
+                    } else {
+                      Write-Host "[$stamp] ... still $runState ($runSubState)"
+                    }
+
+                    if ($runState -eq 'Succeeded') {
+                      Write-Host "=== Build completed successfully! ==="
+                      break
+                    }
+                    elseif ($runState -eq 'Failed' -or $runState -eq 'Canceled') {
+                      Write-Host "===== BUILD $($runState.ToUpper()) - full lastRunStatus ====="
+                      $status | ConvertTo-Json -Depth 10 | Write-Host
+                      $message = if ($status.message) { $status.message } else { "(no message returned - check the AIB customization.log in the staging storage account / packer log)" }
+                      Write-Host "##vso[task.logissue type=error]Image build $runState`: $message"
+                      throw "Image build $runState`: $message"
+                    }
+                  }
+
+                  Start-Sleep -Seconds 30
+                }
+
+                # Retrieve the run output (image version URI)
+                $runOutputs = az image builder show-runs `
+                  --name $templateName `
+                  --resource-group $(resourceGroup) `
+                  -o json | ConvertFrom-Json
+
+                if ($runOutputs -and $runOutputs.Count -gt 0) {
+                  $artifactId = $runOutputs[0].artifactId
+                  $artifactUri = $runOutputs[0].artifactUri
+                  $imageUri = if ($artifactId) { $artifactId } else { $artifactUri }
+                  Write-Host "=== Output image: $imageUri ==="
+                  Write-Host "##vso[task.setvariable variable=imageUri;isOutput=true]$imageUri"
+                }
+                Write-Host "##vso[task.setvariable variable=buildDone;isOutput=true]true"
 
   # ---------------------------------------------------------------------------
   # STAGE 3: CLEANUP
@@ -457,27 +643,46 @@ stages:
                 $templateName = "$(templateName)"
                 $container = "$(stagingContainer)"
 
-                # AIB refuses template deletion while a run is in progress, so
-                # retry with backoff. Cleanup must not hard-fail the pipeline, but
-                # real errors are surfaced as warnings (never silently swallowed).
-                Write-Host "=== Deleting image template: $templateName ==="
-                $maxRetries = 5
-                $deleted = $false
-                for ($i = 1; $i -le $maxRetries; $i++) {
-                  $deleteOutput = az image builder delete `
-                    --name $templateName `
-                    --resource-group $(resourceGroup) `
-                    --output none 2>&1
-                  if ($LASTEXITCODE -eq 0) {
-                    Write-Host "Template deleted."
-                    $deleted = $true
-                    break
-                  }
-                  Write-Host "Attempt $i/$maxRetries to delete template failed (exit $LASTEXITCODE); a run may still be in progress."
-                  if ($i -lt $maxRetries) { Start-Sleep -Seconds 60 }
+                # Never delete a template whose build is still running: an agent-loss or
+                # pipeline failure must not destroy a healthy in-progress bake. AIB delete
+                # on a running template cancels/tears down the build. Query runState first
+                # and skip (without failing) if the build is still Running.
+                $runState = az image builder show `
+                  --name $templateName `
+                  --resource-group $(resourceGroup) `
+                  --query "lastRunStatus.runState" `
+                  -o tsv 2>$null
+
+                if ($LASTEXITCODE -ne 0) {
+                  Write-Host "Template $templateName not found (or query failed) - skipping template delete."
                 }
-                if (-not $deleted) {
-                  Write-Host "##vso[task.logissue type=warning]Failed to delete image template $templateName after $maxRetries attempts: $deleteOutput"
+                elseif ($runState -eq 'Running') {
+                  Write-Host "##vso[task.logissue type=warning]Build for template $templateName is still RUNNING - skipping cleanup so the bake is not destroyed. Re-run the Cleanup stage (or delete manually) once the build finishes."
+                  exit 0
+                }
+                else {
+                  # AIB can still briefly refuse deletion right after a run ends, so
+                  # retry with backoff. Cleanup must not hard-fail the pipeline, but
+                  # real errors are surfaced as warnings (never silently swallowed).
+                  Write-Host "=== Deleting image template: $templateName (runState: $runState) ==="
+                  $maxRetries = 5
+                  $deleted = $false
+                  for ($i = 1; $i -le $maxRetries; $i++) {
+                    $deleteOutput = az image builder delete `
+                      --name $templateName `
+                      --resource-group $(resourceGroup) `
+                      --output none 2>&1
+                    if ($LASTEXITCODE -eq 0) {
+                      Write-Host "Template deleted."
+                      $deleted = $true
+                      break
+                    }
+                    Write-Host "Attempt $i/$maxRetries to delete template failed (exit $LASTEXITCODE); a run may still be finishing."
+                    if ($i -lt $maxRetries) { Start-Sleep -Seconds 60 }
+                  }
+                  if (-not $deleted) {
+                    Write-Host "##vso[task.logissue type=warning]Failed to delete image template $templateName after $maxRetries attempts: $deleteOutput"
+                  }
                 }
 
                 Write-Host "=== Deleting staging container: $container ==="
