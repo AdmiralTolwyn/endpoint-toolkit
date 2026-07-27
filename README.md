@@ -29,6 +29,7 @@ tools/              # Standalone PowerShell/WPF utilities
 windows/
 ├── applications/   # Generic MSI uninstaller by name pattern / publisher / GUID
 ├── dot3svc/        # Wired AutoConfig (dot3svc) migration reset
+├── migration/      # Hybrid Join → Entra-only join in-place migration (EntraCutover)
 ├── print/          # Windows Protected Print (WPP) readiness — flag third-party v3/v4 drivers
 ├── rdp/            # Per-user RDP file signing (no admin required)
 ├── security/       # Hardware speculation mitigations, Secure Boot remediation
@@ -64,6 +65,7 @@ windows/
 | [macos/servicing/](macos/servicing/) | `macos_dev_cleanup.sh` — semi-interactive developer-storage cleanup (Xcode, VS Code/Cursor/Windsurf, .NET, Gradle, Android, Flutter, JetBrains, Homebrew, Docker, Time Machine) |
 | [windows/applications/](windows/applications/UninstallMsiProduct/README.md) | `Uninstall-MsiProduct.ps1` — generic MSI uninstaller by DisplayName / Publisher / Version / ProductCode wildcards. Registry-driven (no `Win32_Product` side effects); built for vendor agents whose GUID changes per release (e.g. Quest / KACE Agent) |
 | [windows/dot3svc/](windows/dot3svc/) | Reset 802.1X / wired-AutoConfig profiles after migration |
+| [windows/migration/](windows/migration/EntraCutover/README.md) | `EntraCutover` — **experimental, not supported by Microsoft.** In-place Hybrid Join → Entra-only join migration (no reinstall). Resumable 5-phase state machine (Assess/Prepare/Teardown/Join/Finalize), Intune enrollment + stale-GPO cleanup, fresh-profile + OneDrive KFM, BitLocker re-escrow to the new device object, break-glass admin + `djoin` offline-rejoin rollback. CLI, CMTrace logging |
 | [windows/print/](windows/print/) | `Get-PrintDriverWppReadiness.ps1` — flag machines with third-party v3/v4 print drivers (not yet Windows Protected Print ready) ahead of WPP enforcement. Intune Proactive Remediation detection script (exit 0/1) + standalone CSV/JSON fleet inventory; maps drivers to printers actually using them. Read-only |
 | [windows/rdp/](windows/rdp/) | Sign `.rdp` files in user context (no admin required) |
 | [windows/security/](windows/security/) | Hardware speculation mitigations + Secure Boot UEFI CA 2023 remediation (Intune PR pair) |
