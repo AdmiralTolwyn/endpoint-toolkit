@@ -211,19 +211,38 @@ from the log or `state.json`.
 
 ---
 
-## Known losses (communicate to users)
+## What the user experiences — a NEW profile (communicate this before a wave)
 
-Unavoidable in any non-wipe migration — no tool on the market solves them:
+This tool does **not** move or convert the user's profile. After it completes the
+user signs in with their Entra ID and Windows creates a **brand-new, empty
+profile** (`C:\Users\<newname>`). The old domain profile is left **fully intact**
+at `C:\Users\<olduser>` — nothing is deleted, but nothing is carried into the new
+profile either. There is no SID-remap and no "same-UPN reconnect": every app
+starts from scratch, so this is not a "re-auth" story — it's a first-run story.
 
-- **Saved passwords** (browser, Wi-Fi, Credential Manager) — DPAPI-bound to the
-  old SID. Redeploy Wi-Fi via Intune; browsers re-sync on sign-in.
-- **Windows Hello** — must be re-enrolled (PIN/biometrics).
-- **EFS-encrypted files** — unreadable after migration (Assess blocks on these).
-- **Per-app re-auth** — OneDrive/Edge need one sign-out/in; **Teams and
-  Authenticator** are the most stubborn.
-- **Fresh-profile mode** additionally leaves behind everything outside KFM:
-  AppData (Outlook signatures/templates, app config), Downloads, PST files,
-  loose folders. The old profile stays at `C:\Users\<olduser>`.
+**Returns on its own (from the cloud):**
+
+- Desktop / Documents / Pictures — re-hydrated by OneDrive KFM (the reason KFM is
+  a hard Prepare gate).
+- Edge / Chrome favorites + saved passwords — **only** if the user had browser
+  sync to their account; they re-download after the user signs into the browser.
+- Office / M365 apps — reactivate on the Entra sign-in (modern auth).
+
+**Does NOT return — set up from scratch in the new profile:**
+
+- OneDrive, Teams, Outlook, Authenticator, every other app — signed out; user
+  re-signs in and reconfigures. Outlook rebuilds its OST/profile.
+- Windows Hello (PIN / biometrics) — re-enrolled from scratch.
+- Wi-Fi profiles, mapped drives, printers, VPN clients — re-provision (push Wi-Fi
+  + drive/printer maps via Intune).
+- Credential Manager entries and per-user certificates — a fresh profile has
+  none. EFS-encrypted files can't be read in the new profile — Assess **blocks**
+  on these so you decrypt first.
+- **Everything left behind in the old profile**: all of `AppData` (Outlook
+  signatures/templates, app settings), `Downloads`, PST files, and any loose
+  folders not under KFM. Users who need these must copy them out of
+  `C:\Users\<olduser>` (readable by a local admin) before that profile is
+  eventually cleaned up.
 
 Post-migration, complete the **tenant cleanup checklist** from the final report:
 disable the on-prem AD computer account **first**, verify the BitLocker key on
