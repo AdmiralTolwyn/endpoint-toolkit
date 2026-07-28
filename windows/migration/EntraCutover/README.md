@@ -1,6 +1,6 @@
 # EntraCutover
 
-> ## WARNING: EXPERIMENTAL - NOT SUPPORTED BY MICROSOFT
+> ## ⚠️ EXPERIMENTAL — NOT SUPPORTED BY MICROSOFT
 > This is community-built tooling that performs an operation Microsoft does **not**
 > support in place. It is **experimental** (v0.1.0, not yet piloted on hardware).
 > Do not run it in production without validating on a throwaway test ring first,
@@ -14,8 +14,9 @@ reprovision, no wipe. CLI-only, CMTrace logging, resumable across reboots.
 > **Unsupported by Microsoft.** Microsoft's documented path is wipe + Autopilot
 > ("Windows Autopilot for existing devices"). This tool performs the same
 > in-place technique that the commercial device-cutover products (ForensiT,
-> Quest On Demand Migration, BitTitan/PowerSyncPro) use. Full rationale, source
-> research, and the risk register are kept as an internal record (not published here).
+> Quest On Demand Migration, BitTitan/PowerSyncPro) use. The full design
+> rationale, source research, and risk register are kept as an internal record
+> (not published here).
 
 ---
 
@@ -41,7 +42,7 @@ Entra ID (a new profile) and OneDrive Known Folder Move re-hydrates
 Desktop/Documents/Pictures from the cloud. **KFM health is a Prepare gate** — the
 migration refuses to start if KFM isn't confirmed syncing (override with
 `-SkipKfmGate`, accepting the data-loss risk). There is **no in-place SID-remap**
-in this version (see the design doc's decision D1 if that changes).
+in this version (see the internal design record's decision D1 if that changes).
 
 ### Cleanup coverage (explicitly handled)
 
@@ -68,7 +69,7 @@ in this version (see the design doc's decision D1 if that changes).
 ### Tenant-side runbook (the tool cannot do these — do them first)
 
 `-Mode Migrate` **refuses to start without `-AcknowledgePrereqs`**, which asserts
-the following are complete (design doc §4):
+the following are complete (internal design record §4):
 
 1. Migrating devices scoped **out of Entra Connect hybrid-join sync** (move the
    AD computer object to a non-synced OU / controlled validation). Otherwise the
@@ -126,9 +127,26 @@ $cred = Get-Credential CONTOSO\svc-unjoin
 ```
 
 Runs Assess → Prepare, then prompts once at the **point of no return** before
-Teardown (suppress with `-Force` for unattended waves). **Record the break-glass
-password shown during Prepare** — it is displayed once and is not recoverable
-from the log or `state.json`.
+Teardown. Attended, the break-glass password is generated and **shown once** in
+Prepare (record it — it is recoverable only on that box, by an admin/SYSTEM, from
+the DPAPI-protected `state.json`).
+
+For **unattended waves** add `-Force` (skips the prompt) **and**
+`-BreakGlassCredential` (required — see below):
+
+```powershell
+$bg = Get-Credential ECFallback   # password from your vault; username is ignored
+.\Invoke-EntraCutover.ps1 -Mode Migrate -PpkgPath .\AADJ-Bulk-Expires-2026-12-31.ppkg `
+    -TenantId 11111111-2222-3333-4444-555555555555 `
+    -DomainCredential $cred -BreakGlassCredential $bg `
+    -AcknowledgePrereqs -Force
+```
+
+With `-BreakGlassCredential` the break-glass admin is set to that **known**
+password — nothing is generated, echoed, or stored — so the operator already
+holds it (recover from your vault). Unattended `-Force` runs **require** it:
+without a known password the generated one is unrecoverable from a locked device,
+which is exactly the lockout the account exists to solve.
 
 ### 3. Watch progress (works mid-migration, across reboots)
 
@@ -160,6 +178,7 @@ from the log or `state.json`.
 | `-JoinMode` | `Ppkg` (default, silent) / `UserDriven` (user joins via Settings; immune to `package_*` CA issues and Token Protection) |
 | `-DomainCredential` | For graceful unjoin + rollback-blob capture |
 | `-OfflineUnjoin` | Permit unjoin without DC line-of-sight (NIC-isolated workgroup swap) |
+| `-BreakGlassCredential` | Known password for the break-glass local admin (username ignored; account is always `ECFallback`). **Required with `-Force`.** Omit for attended runs to generate-and-show-once |
 | `-TenantId` | Expected tenant; validated pre- and post-join |
 | `-SkipKfmGate` | Proceed with unhealthy KFM (accept data-loss risk) |
 | `-FallbackRetentionDays` | Break-glass admin lifetime after Finalize (default 7) |
@@ -174,8 +193,12 @@ from the log or `state.json`.
   unless `-Force`.
 - **Point-of-no-return confirmation** before the domain unjoin (attended runs).
 - **Break-glass local admin** created in Prepare, retained through
-  `-FallbackRetentionDays`, so you never lose local access if the new identity
-  misbehaves.
+  `-FallbackRetentionDays`, for local access if the new identity misbehaves.
+  Unattended (`-Force`) runs **must** supply `-BreakGlassCredential` so the
+  password is operator-held; attended runs generate one shown once (recoverable
+  only on that box). Day-2, hand this account to **Windows LAPS**
+  (`BackupDirectory=1`, via Intune) for central recovery — but note LAPS does not
+  cover the migration window itself, so the specified password is still needed.
 - **Offline-join rollback blob** captured in Prepare → automatic domain rejoin if
   the Entra join fails after unjoin.
 - **BitLocker**: suspended across the reboot chain, recovery key **re-escrowed to

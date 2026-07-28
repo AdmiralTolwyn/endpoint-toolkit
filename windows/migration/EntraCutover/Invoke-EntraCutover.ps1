@@ -73,6 +73,20 @@
     Permit domain unjoin without DC line-of-sight (disables physical NICs,
     performs a local-only workgroup swap, re-enables NICs).
 
+.PARAMETER BreakGlassCredential
+    Password for the break-glass local admin the tool creates in Prepare. When
+    supplied, the account is set to this KNOWN password - nothing is generated
+    and nothing is echoed, so the operator already holds the credential (recover
+    it from your own vault). Only the password is used; the account name is
+    always the fixed local account (a supplied username is ignored with a
+    warning). REQUIRED for unattended (-Force) Migrate runs: without it the tool
+    would mint a random password recoverable only by an admin already on the box
+    (a chicken-and-egg for the very lockout the account exists for). Attended
+    Migrate runs may omit it and get the generate-and-show-once behavior.
+    Day-2 backstop: hand this account to Windows LAPS (BackupDirectory=1) via
+    Intune once the device is Entra-joined + enrolled; LAPS does not cover the
+    migration window itself, which is why the specified password is still needed.
+
 .PARAMETER TenantId
     Expected Entra tenant ID. Used to validate the KFM policy and the
     post-join device state.
@@ -152,6 +166,9 @@ param(
 
     [Parameter()]
     [switch]$OfflineUnjoin,
+
+    [Parameter()]
+    [System.Management.Automation.PSCredential]$BreakGlassCredential,
 
     [Parameter()]
     [ValidatePattern('^$|^[0-9A-Fa-f]{8}-([0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$')]
@@ -602,6 +619,16 @@ $options = [ordered]@{
     FallbackRetentionDays = $FallbackRetentionDays
     BreakGlassUser        = $Script:BreakGlassUser
     HasDomainCredential   = [bool]$DomainCredential
+    HasBreakGlassCredential = [bool]$BreakGlassCredential
+}
+
+# The break-glass account name is fixed; only the supplied password is used.
+# Warn (don't fail) if the operator passed a credential with a different name.
+if ($BreakGlassCredential) {
+    $suppliedName = ($BreakGlassCredential.UserName -split '\\')[-1]
+    if ($suppliedName -and ($suppliedName -ne $Script:BreakGlassUser)) {
+        Write-Log ("Supplied break-glass username '{0}' is ignored; the account is always '{1}'. Only the password is used." -f $suppliedName, $Script:BreakGlassUser) 'WARN'
+    }
 }
 
 $state = Get-CutoverState
@@ -652,6 +679,12 @@ switch ($Mode) {
                 Write-Log '-PpkgPath is required for -JoinMode Ppkg.' 'ERROR'
                 exit 1
             }
+            # Fail-closed: an unattended run must not mint a random break-glass
+            # password that is only recoverable by an admin already on the box.
+            if ($Force -and -not $BreakGlassCredential) {
+                Write-Log 'Unattended Migrate (-Force) requires -BreakGlassCredential so the break-glass admin has a known, operator-held password. Without it the generated password is unrecoverable from a locked device. Re-run with -BreakGlassCredential, or run attended (without -Force) to use generate-and-show-once.' 'ERROR'
+                exit 1
+            }
             $stateObj = New-CutoverState -Options $options
             Save-CutoverState -State $stateObj
             $state = Get-CutoverState   # normalize to PSCustomObject form
@@ -663,6 +696,7 @@ switch ($Mode) {
 
         $ctx = @{
             State = $state; Options = $options; DomainCredential = $DomainCredential
+            BreakGlassCredential = $BreakGlassCredential   # never persisted to state
             Paths = @{ Root = $Script:CutoverRoot; Bin = $Script:BinDir; Backup = $Script:BackupDir; Rollback = $Script:RollbackDir; StateFile = $Script:StateFile }
             RebootRequired = $false
             StayInPhase = $false

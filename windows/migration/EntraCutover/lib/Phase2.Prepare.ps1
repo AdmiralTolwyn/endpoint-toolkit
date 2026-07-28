@@ -116,8 +116,23 @@ function Invoke-PhasePrepare {
     Invoke-Step -Ctx $Ctx -Name 'Prepare.BreakGlass' -Action {
         $userName = $Script:BreakGlassUser
         $existing = Get-LocalUser -Name $userName -ErrorAction SilentlyContinue
-        $plain  = New-ECRandomPassword -Length 24
-        $secure = ConvertTo-SecureString -String $plain -AsPlainText -Force
+
+        # Operator-supplied password (fleet/unattended): use it verbatim - nothing
+        # is generated, echoed, or DPAPI-stored, because the operator already holds
+        # it. Otherwise (attended) generate a random one and show it once.
+        $bgCred = $null
+        if ($Ctx.ContainsKey('BreakGlassCredential')) { $bgCred = $Ctx.BreakGlassCredential }
+        $operatorSupplied = [bool]$bgCred
+
+        $plain  = $null
+        if ($operatorSupplied) {
+            $secure = $bgCred.Password
+        }
+        else {
+            $plain  = New-ECRandomPassword -Length 24
+            $secure = ConvertTo-SecureString -String $plain -AsPlainText -Force
+        }
+
         if (-not $existing) {
             New-LocalUser -Name $userName -Password $secure -FullName 'EntraCutover Break-Glass' `
                 -Description 'Temporary local admin created by EntraCutover Prepare phase.' `
@@ -129,11 +144,22 @@ function Invoke-PhasePrepare {
         }
         else {
             Set-LocalUser -Name $userName -Password $secure -PasswordNeverExpires $true
-            Write-Log "break-glass account '$userName' already exists - password rotated (resume)."
+            Write-Log "break-glass account '$userName' already exists - password set (resume)."
         }
 
+        if ($operatorSupplied) {
+            # Do NOT persist an operator-held secret; record only the source.
+            Set-ECStateValue -Target $Ctx.State.Device -Name 'BreakGlassSecret' -Value $null
+            Set-ECStateValue -Target $Ctx.State.Device -Name 'BreakGlassSource' -Value 'Operator'
+            Save-CutoverState -State $Ctx.State
+            Write-Log "break-glass password set from -BreakGlassCredential (operator-held; not stored or displayed)."
+            return @{ Account = $userName; Source = 'Operator' }
+        }
+
+        # Attended: DPAPI-store (machine scope, on-box recovery) and show once.
         $secret = Protect-Secret -Plain $plain
         Set-ECStateValue -Target $Ctx.State.Device -Name 'BreakGlassSecret' -Value $secret
+        Set-ECStateValue -Target $Ctx.State.Device -Name 'BreakGlassSource' -Value 'Generated'
         Save-CutoverState -State $Ctx.State
 
         $bar = '*' * 70
@@ -142,12 +168,12 @@ function Invoke-PhasePrepare {
         Write-Host '  BREAK-GLASS LOCAL ADMINISTRATOR - RECORD THIS NOW, SHOWN ONCE' -ForegroundColor Yellow
         Write-Host "  Account : $userName" -ForegroundColor Yellow
         Write-Host "  Password: $plain" -ForegroundColor Yellow
-        Write-Host '  Not recoverable from logs or state.json - store it securely.' -ForegroundColor Yellow
+        Write-Host '  Recoverable on THIS box only (DPAPI, admin/SYSTEM). Store it securely now.' -ForegroundColor Yellow
         Write-Host "  $bar" -ForegroundColor Yellow
         Write-Host ''
         $plain = $null
 
-        return @{ Account = $userName }
+        return @{ Account = $userName; Source = 'Generated' }
     }
 
     Invoke-Step -Ctx $Ctx -Name 'Prepare.RollbackBlob' -Action {
