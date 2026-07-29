@@ -592,10 +592,13 @@ foreach ($SubId in $SubscriptionId) {
                 ResourceGroup        = ($HP.Id -split '/')[4]
                 Name                 = $HP.Name
                 Id                   = $HP.Id
-                HostPoolType         = $HP.HostPoolType
-                LoadBalancerType     = $HP.LoadBalancerType
+                # Az 'Support' enum wrappers (HostPoolType/LoadBalancerType/PreferredAppGroupType) are
+                # objects, not strings: they compare fine at runtime but serialize to {} in JSON, breaking
+                # every '-eq' comparison after a save/reload. Coerce to string so they survive the round-trip.
+                HostPoolType         = [string]$HP.HostPoolType
+                LoadBalancerType     = [string]$HP.LoadBalancerType
                 MaxSessionLimit      = $HP.MaxSessionLimit
-                PreferredAppGroupType = $HP.PreferredAppGroupType
+                PreferredAppGroupType = [string]$HP.PreferredAppGroupType
                 StartVMOnConnect     = $HP.StartVMOnConnect
                 ValidationEnvironment = $HP.ValidationEnvironment
                 Location             = $HP.Location
@@ -986,14 +989,14 @@ foreach ($SubId in $SubscriptionId) {
                     ResourceId          = $SH.ResourceId
                     ResourceGroup       = $VMRG
                     Location            = if ($VMModel) { $VMModel.Location } else { $HP.Location }
-                    Status              = $SH.Status
+                    Status              = [string]$SH.Status
                     AllowNewSession     = $SH.AllowNewSession
                     Sessions            = $SH.Session
                     AgentVersion        = $SH.AgentVersion
                     LastHeartBeat       = $SH.LastHeartBeat
                     OSVersion           = $SH.OSVersion
                     OsType              = if ($VMModel) { "$($VMModel.StorageProfile.OsDisk.OsType)" } else { $null }
-                    UpdateState         = $SH.UpdateState
+                    UpdateState         = [string]$SH.UpdateState
                     VMSize              = if ($VMModel) { $VMModel.HardwareProfile.VmSize } else { $null }
                     OSDiskType          = if ($VMModel -and $VMModel.StorageProfile.OsDisk.ManagedDisk.StorageAccountType) {
                         $VMModel.StorageProfile.OsDisk.ManagedDisk.StorageAccountType
