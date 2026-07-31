@@ -28,6 +28,7 @@ tools/              # Standalone PowerShell/WPF utilities
 
 windows/
 ├── applications/   # Generic MSI uninstaller by name pattern / publisher / GUID
+├── diagnostics/    # Read-only endpoint diagnostics — Location policy state, Defender/EDR coexistence
 ├── dot3svc/        # Wired AutoConfig (dot3svc) migration reset
 ├── migration/      # Hybrid Join → Entra-only join in-place migration (EntraCutover)
 ├── print/          # Windows Protected Print (WPP) readiness — flag third-party v3/v4 drivers
@@ -64,6 +65,7 @@ windows/
 | [intune/mdm-enrollment/](intune/mdm-enrollment/) | `Repair-IntuneMdmCert.ps1` — audit (read-only) or repair hosts whose expired Intune MDM device cert wedges `omadmclient.exe` at high CPU. Repair tears down the enrollment + re-enrolls via device credential. Built for cloned AVD fleets that expire together |
 | [macos/servicing/](macos/servicing/) | `macos_dev_cleanup.sh` — semi-interactive developer-storage cleanup (Xcode, VS Code/Cursor/Windsurf, .NET, Gradle, Android, Flutter, JetBrains, Homebrew, Docker, Time Machine) |
 | [windows/applications/](windows/applications/UninstallMsiProduct/README.md) | `Uninstall-MsiProduct.ps1` — generic MSI uninstaller by DisplayName / Publisher / Version / ProductCode wildcards. Registry-driven (no `Win32_Product` side effects); built for vendor agents whose GUID changes per release (e.g. Quest / KACE Agent) |
+| [windows/diagnostics/](windows/diagnostics/) | [`LocationPolicyState/Get-LocationPolicyState.ps1`](windows/diagnostics/LocationPolicyState/README.md) — report the effective Windows Location policy state and every author that can force/lock the toggle. [`MdeCoexistenceState/Get-MdeCoexistenceState.ps1`](windows/diagnostics/MdeCoexistenceState/README.md) — effective Defender AV / Defender for Endpoint state, detection of third-party AV/EDR sharing the endpoint (minifilters by altitude band, services, Security Center), sensor health from the SENSE log, and an automated exclusion-hygiene review that catches `%USERPROFILE%`-style rules that silently match nothing under LocalSystem. Read-only, JSON output, Intune exit codes |
 | [windows/dot3svc/](windows/dot3svc/) | Reset 802.1X / wired-AutoConfig profiles after migration |
 | [windows/migration/](windows/migration/EntraCutover/README.md) | `EntraCutover` — **experimental, not supported by Microsoft.** In-place Hybrid Join → Entra-only join migration (no reinstall). Resumable 5-phase state machine (Assess/Prepare/Teardown/Join/Finalize), Intune enrollment + stale-GPO cleanup, fresh-profile + OneDrive KFM, BitLocker re-escrow to the new device object, break-glass admin + `djoin` offline-rejoin rollback. CLI, CMTrace logging |
 | [windows/print/](windows/print/) | `Get-PrintDriverWppReadiness.ps1` — flag machines with third-party v3/v4 print drivers (not yet Windows Protected Print ready) ahead of WPP enforcement. Intune Proactive Remediation detection script (exit 0/1) + standalone CSV/JSON fleet inventory; maps drivers to printers actually using them. Read-only |
