@@ -2,14 +2,40 @@
 
 ## Overview
 
-Detection and remediation tooling for the **Secure Boot UEFI CA 2023** certificate deployment. Three flavors are included so the same logic can be wired into Intune Proactive Remediations, Ivanti baselines, or used standalone for manual triage.
+Tooling for the **Secure Boot UEFI CA 2023** certificate deployment, in two families that answer different questions.
+
+- **Drive the update** â€” get a device onto the new certificates. Intune Proactive Remediation pair, a standalone triage script, and an Ivanti detect script. These write `AvailableUpdates` and trigger the Secure-Boot-Update scheduled task.
+- **Measure the fleet** â€” find out what the estate is actually doing, including the devices that cannot *report* at all. Read-only inventory, a narrow reporting-prerequisite repair, and offline segmentation. These **never** write `AvailableUpdates`.
+
+The second family exists because at fleet scale a large share of devices land in the status report's **Unknown** bucket, which is a telemetry/reporting gap rather than a certificate failure. No amount of certificate remediation moves them, and pointing the first family at them just burns Proactive Remediation cycles.
+
+### Which script do I want?
+
+| I want to... | Use |
+|--------------|-----|
+| Push devices onto the 2023 certificates via Intune | [Detect_SecureBootUEFICA2023.ps1](Detect_SecureBootUEFICA2023.ps1) + [Remediate_SecureBootUEFICA2023.ps1](Remediate_SecureBootUEFICA2023.ps1) |
+| Triage one device by hand, or push it manually | [SecureBootCertRemediation.ps1](SecureBootCertRemediation.ps1) |
+| Feed an Ivanti baseline | [SecureBootCertDetection-Ivanti.ps1](SecureBootCertDetection-Ivanti.ps1) |
+| Find out why devices show **Unknown** / never report | [Get-SecureBootCertInventory.ps1](Get-SecureBootCertInventory.ps1) |
+| Fix the reporting blockers (without touching certificates) | [Repair-SecureBootReportingPrereqs.ps1](Repair-SecureBootReportingPrereqs.ps1) |
+| Split "Not up to date" into who needs firmware vs. who is a false positive | [Split-SecureBootPopulation.ps1](Split-SecureBootPopulation.ps1) |
+
+> **The two remediation scripts have opposite philosophies â€” do not treat them as interchangeable.** `Remediate_SecureBootUEFICA2023.ps1` arms the certificate update and deliberately exits `1` even when it takes no action, so the Intune dashboard never says `Fixed` for a device that is still non-compliant. `Repair-SecureBootReportingPrereqs.ps1` only repairs *reporting* prerequisites and exits `0` when it succeeds, because for that package "success" means the device can now report. Deploy them as separate Intune packages.
 
 References:
 - [KB5016061 - Secure Boot DB and DBX variable update events](https://support.microsoft.com/en-us/topic/37e47cf8-608b-4a87-8175-bdead630eb69) (event-id semantics)
 - [KB5072718 - Sample Secure Boot Inventory Data Collection script](https://support.microsoft.com/en-us/topic/d02971d2-d4b5-42c9-b58a-8527f0ffa30b) (signal coverage)
 - [KB5084567 - Sample Secure Boot E2E Automation Guide](https://support.microsoft.com/en-us/topic/f850b329-9a6e-40d1-823a-0925c965b8a0) (`AvailableUpdatesPolicy` guidance, GPO/MDM ownership)
+- [Secure Boot playbook for certificates expiring in 2026](https://aka.ms/SecureBootPlaybook) (rollout strategy)
+- [KB5085046 - Secure Boot troubleshooting guide](https://support.microsoft.com/en-US/servicing/os/secure-boot/2026/03/secure-boot-troubleshooting-guide) (`AvailableUpdates` bit order and expected progression)
+- [KB5080921 - Monitoring Secure Boot certificate status with Intune Remediations](https://support.microsoft.com/en-US/servicing/os/secure-boot/2026/02/monitoring-secure-boot-certificate-status-with-microsoft-intune-remediations) (the reporting path used by the inventory script)
+- [KB5085790 - Known issues and resolutions](https://support.microsoft.com/en-US/servicing/os/secure-boot/2026/03/known-issues-and-resolutions-for-secure-boot-certificates-updates) (hypervisor and OEM issues)
+- [KB5080931 - Secure Boot certificate updates for Azure Virtual Desktop](https://support.microsoft.com/en-US/servicing/os/secure-boot/2026/02/secure-boot-certificate-updates-for-azure-virtual-desktop)
+- [Secure Boot status report in Windows Autopatch](https://learn.microsoft.com/en-us/windows/deployment/windows-autopatch/monitor/secure-boot-status-report) (the report whose Unknown bucket this tooling explains)
 
 ## Scripts
+
+### Drive the update
 
 | File | Purpose | Modifies System? | Compliance Gate |
 |------|---------|------------------|-----------------|
@@ -18,7 +44,17 @@ References:
 | [SecureBootCertRemediation.ps1](SecureBootCertRemediation.ps1) | Full detection + smart remediation + real-time monitoring (manual/triage) | Only with `-ForceRemediation` | **Strict**: `1808 AND Status=Updated AND Error=0 AND BootloaderSwapped (1799)` |
 | [SecureBootCertDetection-Ivanti.ps1](SecureBootCertDetection-Ivanti.ps1) | Pure detection for Ivanti Custom Definition (Status / Reason / Expected / Found contract) | Never | **Legacy**: `Status=Updated AND Error=0` |
 
-All scripts share the same TPM-WMI event-id classification and diagnostic signals; only the compliance gate, output contract, and remediation behavior differ.
+These four share the same TPM-WMI event-id classification and diagnostic signals; only the compliance gate, output contract, and remediation behavior differ.
+
+### Measure the fleet
+
+| File | Purpose | Modifies System? |
+|------|---------|------------------|
+| [Get-SecureBootCertInventory.ps1](Get-SecureBootCertInventory.ps1) | Intune Remediations **detection** script. Emits one compact JSON line covering every documented signal. | Never |
+| [Repair-SecureBootReportingPrereqs.ps1](Repair-SecureBootReportingPrereqs.ps1) | Intune Remediations **remediation** script. Fixes only the three conditions that stop a device *reporting*. | Yes, narrowly (scheduled task, OneSettings, telemetry) |
+| [Split-SecureBootPopulation.ps1](Split-SecureBootPopulation.ps1) | Offline. Segments the Intune CSV export into actionable populations. | Never (runs on your workstation) |
+
+None of these three write `AvailableUpdates`, `MicrosoftUpdateManagedOptIn` or `HighConfidenceOptOut`, and none touch DBX, the boot manager, boot order or BitLocker. See [Fleet inventory and reporting prerequisites](#fleet-inventory-and-reporting-prerequisites).
 
 ### Why so many scripts?
 
@@ -152,6 +188,29 @@ found    = Status: <s> | Error: <e> | Confidence: <c> | Capable: <cap> | Event18
 | `0x4100` | Boot Manager staged, pending reboot | Reboot, then script triggers finalization |
 | `0x4104` | KEK update pending | Reboot required |
 | `0x4000` | Complete (conditional on 2011 CA) | No action needed |
+
+### Processing order
+
+The task processes the bits in a fixed order and **does not advance until the current step succeeds**:
+
+| Order | Bit | Action | Success event | `AvailableUpdates` after |
+|:-----:|-----|--------|:-------------:|--------------------------|
+| 1 | `0x0040` | Windows UEFI CA 2023 -> db | 1036 | `0x5944` -> `0x5904` |
+| 2 | `0x0800` | Microsoft Option ROM UEFI CA 2023 -> db | 1044 | `0x5904` -> `0x5104` |
+| 3 | `0x1000` | Microsoft UEFI CA 2023 -> db | 1045 | `0x5104` -> `0x4104` |
+| 4 | `0x0004` | Microsoft Corporation KEK 2K CA 2023 -> KEK | 1043 | `0x4104` -> `0x4100` |
+| 5 | `0x0100` | 2023-signed boot manager | 1799 | `0x4100` -> `0x4000` |
+
+Two consequences worth internalising, because both are commonly inverted:
+
+- **The 2023 KEK is not a prerequisite for the DB updates.** DB updates are authorised by the *existing* 2011 KEK. A device sitting at `0x4104` with Event 1803 has already applied all three DB certificates and is blocked only on the OEM/hypervisor supplying a PK-signed KEK. If step 4 cannot be processed, the task still applies the boot manager at step 5.
+- **Option ROM failures do not resolve themselves once KEK lands.** Option ROM is step 2, KEK is step 4. A device missing the Option ROM certificate is stalled *earlier* and will never reach step 4 on its own.
+
+### Trust configuration changes what "missing" means
+
+The `0x4000` modifier applies the Option ROM and Microsoft UEFI CA 2023 certificates **only if `Microsoft Corporation UEFI CA 2011` is already in db**. On a Microsoft-only-trust device those two certificates are *not applicable*, and Microsoft's own report shows the device **Up to date** with them absent.
+
+A naive "are all five 2023 certificates present?" check therefore produces false positives on every Microsoft-only-trust device. `Get-SecureBootCertInventory.ps1` derives a `trust` value (`MSOnly` / `MSAnd3P` / `Unknown`) from db contents so the segmentation can account for it.
 
 ## Event ID Reference
 
@@ -340,6 +399,98 @@ When `-ForceRemediation` is supplied, the script additionally logs the registry 
 ### `SecureBootCertDetection-Ivanti.ps1`
 
 Four `Write-Host` lines, no banner, no color, no extra output -- safe to consume verbatim from an Ivanti Custom Definition or any detect channel that parses `key = value` pairs.
+
+## Fleet inventory and reporting prerequisites
+
+### Why the status report is not enough
+
+The Windows Autopatch **Secure Boot status report** (Intune admin center -> Reports -> Windows Autopatch -> Windows quality updates -> Reports tab) depends on Secure Boot diagnostic data reaching Microsoft. A device drops to **Unknown** or **Not applicable** when:
+
+- `AllowTelemetry` is below **Required (1)**, or a proxy/firewall blocks diagnostic data
+- the tenant has not enabled the **Data Processor Service for Windows (DPSW)**
+- the `DisableOneSettingsDownloads` policy is enabled
+- the device has been **inactive for more than 28 days**
+- fewer than ~12 hours have passed since the update and restart
+
+Autopatch also supports only **personal persistent** VMs on Azure Virtual Desktop, so multi-session, pooled non-persistent and RemoteApp session hosts never appear in it at all.
+
+The Intune Remediations path has none of those dependencies: the script runs locally as SYSTEM and reports through the Intune script channel.
+
+### `Get-SecureBootCertInventory.ps1`
+
+Deploy as an Intune Remediations package **with no remediation script attached**, or paired with `Repair-SecureBootReportingPrereqs.ps1`.
+
+| Setting | Value |
+|---------|-------|
+| Run this script using the logged-on credentials | **No** |
+| Enforce script signature check | **No** |
+| Run script in 64-bit PowerShell | **Yes** |
+
+Collected signals:
+
+```text
+SecureBoot         AvailableUpdates, AvailableUpdatesPolicy, HighConfidenceOptOut,
+                   MicrosoftUpdateManagedOptIn
+SecureBoot\Servicing
+                   UEFICA2023Status (NoValue when the key is absent), UEFICA2023Error,
+                   UEFICA2023ErrorEvent, WindowsUEFICA2023Capable, BucketHash, ConfidenceLevel
+UEFI variables     KEK 2023 / KEK 2011; db: Windows UEFI CA 2023, Option ROM UEFI CA 2023,
+                   Microsoft UEFI CA 2023, Microsoft Corporation UEFI CA 2011,
+                   Windows Production PCA 2011  -> derived trust configuration
+Scheduled task     \Microsoft\Windows\PI\Secure-Boot-Update  state + last run
+Policy             AllowTelemetry, DisableOneSettingsDownloads
+Events             counts of 1795/1801/1802/1803/1032, latest event id + time, 1802 SkipReason
+Platform           manufacturer, model, firmware version, OS build,
+                   VMware / HyperV / Azure / OtherVM / Physical
+```
+
+Output is one JSON line with deliberately short keys, because **Intune truncates detection output at 2048 characters**. Check the length before adding fields.
+
+Exit `0` when Secure Boot is disabled (out of scope) or `UEFICA2023Status = Updated`; exit `1` otherwise.
+
+### `Repair-SecureBootReportingPrereqs.ps1`
+
+Does exactly three things:
+
+1. Re-enables `\Microsoft\Windows\PI\Secure-Boot-Update` if it is `Disabled`. It is deliberately **not started** â€” the task runs at startup and every 12 hours on its own.
+2. Sets `DisableOneSettingsDownloads` to `0` if it is `1`.
+3. Raises `AllowTelemetry` to `1` â€” **gated off by default** via `$SetTelemetry = $false` at the top of the file, because raising it is a data-sharing decision rather than a technical one. Until it is flipped, the script logs `NEEDS-APPROVAL (not changed)`.
+
+If those policy values arrive from Group Policy or a Policy CSP, **fix them at source** â€” a local write regresses at the next policy refresh.
+
+### `Split-SecureBootPopulation.ps1`
+
+```powershell
+# Intune > Devices > Remediations > <package> > Monitor > Device status
+# Add the "Pre-remediation detection output" column before exporting.
+.\Split-SecureBootPopulation.ps1 -Path .\DeviceStatus.csv -OutputCsv .\segmented.csv
+```
+
+Accepts the CSV export, a folder, or a file of one JSON object per line. First match wins:
+
+| Segment | Meaning | Action |
+|---------|---------|--------|
+| `SecureBootOff` | Secure Boot disabled | Out of scope. Do **not** toggle Secure Boot to "fix" this â€” toggling can erase already-applied certificates |
+| `ReportingBlocked` | Task not Ready, telemetry below Required, or OneSettings blocked | **This is the Unknown bucket.** Run the reporting-prereq remediation |
+| `Updated` | `UEFICA2023Status = Updated` | None |
+| `OptionRomNotApplicable` | Microsoft-only trust, with Windows UEFI CA 2023 and KEK 2023 both present | None â€” report false positive |
+| `VirtualVMware` | VMware guest, not updated | Hypervisor-side. Microsoft lists no VMware entry in KB5085790; track Broadcom KB 423893 |
+| `VirtualOtherHV` | Hyper-V / Azure / other guest | Hyper-V KEK 1795 fixed Mar 2026 (Apr 2026 for Server 2025) and needs the fix on **host and guest**. Azure Trusted Launch 1795 on KEK is an open known issue with no customer action |
+| `FirmwareBlocked` | Event 1795/1802/1803/1032, or confidence `Temporarily Paused` / `Not Supported` | OEM firmware update, or document as an accepted exception |
+| `PendingRestart` | `InProgress` with `AvailableUpdates = 0x4100` | Only the boot manager step remains; lands on the next restart |
+| `NotTargeted` | Servicing key absent or `NotStarted`, prerequisites healthy | Nothing wrong â€” not yet targeted or not yet in a high-confidence bucket |
+| `NeedsInvestigation` | Anything else | Manual |
+
+`ReportingBlocked` is evaluated **before** status, so telemetry problems separate cleanly from certificate problems.
+
+### Notes and caveats
+
+- **`UEFICA2023Status` lives under the `Servicing` subkey.** Any inherited detection command that reads it directly from `...\Control\SecureBoot` returns nothing on every device, and any assessment built on that is void.
+- **Certificate matching uses ISO-8859-1 (codepage 28591), not ASCII.** ASCII folds bytes above 127 to `?` and corrupts the scan. On builds that support `Get-SecureBootUEFI -Decoded`, prefer that.
+- **Expiry is not a boot failure.** Devices that pass the deadline without the 2023 certificates still start and still take Windows updates; they stop receiving *early-boot* security fixes. Post-deadline remediation still works.
+- **Watch the DBX.** This rollout adds certificates and does not revoke â€” the `0x5944` bitmask contains no revoke bit. But the revocation machinery is live (Event 1037 revokes Windows Production PCA 2011 into DBX). Once PCA 2011 is in DBX, **PXE boot applications and recovery media signed with it stop being trusted**. Plan boot-media re-signing before that happens.
+- **Registry keys require the 11 Nov 2025 or later Windows update** on a supported build.
+- **Intune Remediations requires** Windows 10/11 Enterprise E3/E5, Education A3/A5, or F3.
 
 ## Requirements
 
