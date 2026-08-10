@@ -4,8 +4,8 @@
 
 Tooling for the **Secure Boot UEFI CA 2023** certificate deployment, in two families that answer different questions.
 
-- **Drive the update** â€” get a device onto the new certificates. Intune Proactive Remediation pair, a standalone triage script, and an Ivanti detect script. These write `AvailableUpdates` and trigger the Secure-Boot-Update scheduled task.
-- **Measure the fleet** â€” find out what the estate is actually doing, including the devices that cannot *report* at all. Read-only inventory, a narrow reporting-prerequisite repair, and offline segmentation. These **never** write `AvailableUpdates`.
+- **Drive the update** — get a device onto the new certificates. Intune Proactive Remediation pair, a standalone triage script, and an Ivanti detect script. These write `AvailableUpdates` and trigger the Secure-Boot-Update scheduled task.
+- **Measure the fleet** — find out what the estate is actually doing, including the devices that cannot *report* at all. Read-only inventory, a narrow reporting-prerequisite repair, and offline segmentation. These **never** write `AvailableUpdates`.
 
 The second family exists because at fleet scale a large share of devices land in the status report's **Unknown** bucket, which is a telemetry/reporting gap rather than a certificate failure. No amount of certificate remediation moves them, and pointing the first family at them just burns Proactive Remediation cycles.
 
@@ -20,7 +20,7 @@ The second family exists because at fleet scale a large share of devices land in
 | Fix the reporting blockers (without touching certificates) | [Repair-SecureBootReportingPrereqs.ps1](Repair-SecureBootReportingPrereqs.ps1) |
 | Split "Not up to date" into who needs firmware vs. who is a false positive | [Split-SecureBootPopulation.ps1](Split-SecureBootPopulation.ps1) |
 
-> **The two remediation scripts have opposite philosophies â€” do not treat them as interchangeable.** `Remediate_SecureBootUEFICA2023.ps1` arms the certificate update and deliberately exits `1` even when it takes no action, so the Intune dashboard never says `Fixed` for a device that is still non-compliant. `Repair-SecureBootReportingPrereqs.ps1` only repairs *reporting* prerequisites and exits `0` when it succeeds, because for that package "success" means the device can now report. Deploy them as separate Intune packages.
+> **The two remediation scripts have opposite philosophies — do not treat them as interchangeable.** `Remediate_SecureBootUEFICA2023.ps1` arms the certificate update and deliberately exits `1` even when it takes no action, so the Intune dashboard never says `Fixed` for a device that is still non-compliant. `Repair-SecureBootReportingPrereqs.ps1` only repairs *reporting* prerequisites and exits `0` when it succeeds, because for that package "success" means the device can now report. Deploy them as separate Intune packages.
 
 References:
 - [KB5016061 - Secure Boot DB and DBX variable update events](https://support.microsoft.com/en-us/topic/37e47cf8-608b-4a87-8175-bdead630eb69) (event-id semantics)
@@ -452,11 +452,11 @@ Exit `0` when Secure Boot is disabled (out of scope) or `UEFICA2023Status = Upda
 
 Does exactly three things:
 
-1. Re-enables `\Microsoft\Windows\PI\Secure-Boot-Update` if it is `Disabled`. It is deliberately **not started** â€” the task runs at startup and every 12 hours on its own.
+1. Re-enables `\Microsoft\Windows\PI\Secure-Boot-Update` if it is `Disabled`. It is deliberately **not started** — the task runs at startup and every 12 hours on its own.
 2. Sets `DisableOneSettingsDownloads` to `0` if it is `1`.
-3. Raises `AllowTelemetry` to `1` â€” **gated off by default** via `$SetTelemetry = $false` at the top of the file, because raising it is a data-sharing decision rather than a technical one. Until it is flipped, the script logs `NEEDS-APPROVAL (not changed)`.
+3. Raises `AllowTelemetry` to `1` — **gated off by default** via `$SetTelemetry = $false` at the top of the file, because raising it is a data-sharing decision rather than a technical one. Until it is flipped, the script logs `NEEDS-APPROVAL (not changed)`.
 
-If those policy values arrive from Group Policy or a Policy CSP, **fix them at source** â€” a local write regresses at the next policy refresh.
+If those policy values arrive from Group Policy or a Policy CSP, **fix them at source** — a local write regresses at the next policy refresh.
 
 ### `Split-SecureBootPopulation.ps1`
 
@@ -470,15 +470,15 @@ Accepts the CSV export, a folder, or a file of one JSON object per line. First m
 
 | Segment | Meaning | Action |
 |---------|---------|--------|
-| `SecureBootOff` | Secure Boot disabled | Out of scope. Do **not** toggle Secure Boot to "fix" this â€” toggling can erase already-applied certificates |
+| `SecureBootOff` | Secure Boot disabled | Out of scope. Do **not** toggle Secure Boot to "fix" this — toggling can erase already-applied certificates |
 | `ReportingBlocked` | Task not Ready, telemetry below Required, or OneSettings blocked | **This is the Unknown bucket.** Run the reporting-prereq remediation |
 | `Updated` | `UEFICA2023Status = Updated` | None |
-| `OptionRomNotApplicable` | Microsoft-only trust, with Windows UEFI CA 2023 and KEK 2023 both present | None â€” report false positive |
+| `OptionRomNotApplicable` | Microsoft-only trust, with Windows UEFI CA 2023 and KEK 2023 both present | None — report false positive |
 | `VirtualVMware` | VMware guest, not updated | Hypervisor-side. Microsoft lists no VMware entry in KB5085790; track Broadcom KB 423893 |
 | `VirtualOtherHV` | Hyper-V / Azure / other guest | Hyper-V KEK 1795 fixed Mar 2026 (Apr 2026 for Server 2025) and needs the fix on **host and guest**. Azure Trusted Launch 1795 on KEK is an open known issue with no customer action |
 | `FirmwareBlocked` | Event 1795/1802/1803/1032, or confidence `Temporarily Paused` / `Not Supported` | OEM firmware update, or document as an accepted exception |
 | `PendingRestart` | `InProgress` with `AvailableUpdates = 0x4100` | Only the boot manager step remains; lands on the next restart |
-| `NotTargeted` | Servicing key absent or `NotStarted`, prerequisites healthy | Nothing wrong â€” not yet targeted or not yet in a high-confidence bucket |
+| `NotTargeted` | Servicing key absent or `NotStarted`, prerequisites healthy | Nothing wrong — not yet targeted or not yet in a high-confidence bucket |
 | `NeedsInvestigation` | Anything else | Manual |
 
 `ReportingBlocked` is evaluated **before** status, so telemetry problems separate cleanly from certificate problems.
@@ -488,7 +488,7 @@ Accepts the CSV export, a folder, or a file of one JSON object per line. First m
 - **`UEFICA2023Status` lives under the `Servicing` subkey.** Any inherited detection command that reads it directly from `...\Control\SecureBoot` returns nothing on every device, and any assessment built on that is void.
 - **Certificate matching uses ISO-8859-1 (codepage 28591), not ASCII.** ASCII folds bytes above 127 to `?` and corrupts the scan. On builds that support `Get-SecureBootUEFI -Decoded`, prefer that.
 - **Expiry is not a boot failure.** Devices that pass the deadline without the 2023 certificates still start and still take Windows updates; they stop receiving *early-boot* security fixes. Post-deadline remediation still works.
-- **Watch the DBX.** This rollout adds certificates and does not revoke â€” the `0x5944` bitmask contains no revoke bit. But the revocation machinery is live (Event 1037 revokes Windows Production PCA 2011 into DBX). Once PCA 2011 is in DBX, **PXE boot applications and recovery media signed with it stop being trusted**. Plan boot-media re-signing before that happens.
+- **Watch the DBX.** This rollout adds certificates and does not revoke — the `0x5944` bitmask contains no revoke bit. But the revocation machinery is live (Event 1037 revokes Windows Production PCA 2011 into DBX). Once PCA 2011 is in DBX, **PXE boot applications and recovery media signed with it stop being trusted**. Plan boot-media re-signing before that happens.
 - **Registry keys require the 11 Nov 2025 or later Windows update** on a supported build.
 - **Intune Remediations requires** Windows 10/11 Enterprise E3/E5, Education A3/A5, or F3.
 
