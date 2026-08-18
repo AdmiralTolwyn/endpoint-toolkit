@@ -32,6 +32,7 @@ Run from this folder or with full path:
 ./macos_dev_cleanup.sh --dry-run
 ./macos_dev_cleanup.sh
 ./macos_dev_cleanup.sh --yes
+./macos_dev_cleanup.sh --yes --aggressive
 ./macos_dev_cleanup.sh --code-root ~/src   # repo scan location (default: ~/Documents/Git)
 
 ## Safety model
@@ -40,6 +41,13 @@ Run from this folder or with full path:
 - LOW RISK: may reset tool/editor state
 - PERMANENT: user backup/history deletion
 - DESTRUCTIVE: can remove runtime/data that must be reinstalled
+
+Plain `--yes` remains conservative: disruptive/destructive operations such as
+simulator/runtime removal, Android SDK deletion, Docker volume pruning, and
+all-repo build-artifact cleanup are skipped unless `--aggressive` is also set.
+Build-sensitive cleanup is skipped while Flutter, Xcode, Gradle, CocoaPods,
+Swift, Cargo, .NET, or JavaScript builds are active. Use
+`--force-active-builds` only when deliberately overriding that protection.
 
 ## Notes
 

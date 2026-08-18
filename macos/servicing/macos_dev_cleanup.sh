@@ -10,11 +10,15 @@
 # Shows size and impact for each item before asking.
 #
 # Usage:
-#   ./macos_dev_cleanup.sh [--analyze] [--dry-run] [--yes] [--code-root PATH]
+#   ./macos_dev_cleanup.sh [--analyze] [--dry-run] [--yes] [--aggressive]
+#                          [--force-active-builds] [--code-root PATH]
 #
 #   --analyze          Report sizes and impact only — nothing deleted
 #   --dry-run          Show every rm command that would run — nothing deleted
-#   --yes              Non-interactive: auto-confirm all prompts (dangerous)
+#   --yes              Non-interactive: auto-confirm ordinary cleanup
+#   --aggressive       Include disruptive/destructive cleanup with --yes
+#   --force-active-builds
+#                      Permit build-cache cleanup while builds are active
 #   --code-root PATH   Directory containing your git repos, scanned for
 #                      re-creatable build artifacts (default: ~/Documents/Git)
 #
@@ -26,6 +30,8 @@ set -uo pipefail
 DRY_RUN=0
 ASSUME_YES=0
 ANALYZE_ONLY=0
+AGGRESSIVE=0
+FORCE_ACTIVE_BUILDS=0
 CODE_ROOT="${CODE_ROOT:-$HOME/Documents/Git}"
 
 while [[ $# -gt 0 ]]; do
@@ -33,6 +39,8 @@ while [[ $# -gt 0 ]]; do
     --dry-run)   DRY_RUN=1; shift ;;
     --yes)       ASSUME_YES=1; shift ;;
     --analyze)   ANALYZE_ONLY=1; shift ;;
+    --aggressive) AGGRESSIVE=1; shift ;;
+    --force-active-builds) FORCE_ACTIVE_BUILDS=1; shift ;;
     --code-root)
       [[ $# -ge 2 ]] || { echo "--code-root requires a path argument" >&2; exit 1; }
       CODE_ROOT="$2"; shift 2 ;;
@@ -174,6 +182,39 @@ confirm() {
   # be consumed as the answer. Without a tty, default to No.
   read -r -p "  $1 [y/N] " ans < /dev/tty || return 1
   [[ "$ans" =~ ^[Yy]$ ]]
+}
+
+confirm_aggressive() {
+  local prompt="$1"
+  if ! allow_aggressive; then
+    return 1
+  fi
+  confirm "$prompt"
+}
+
+allow_aggressive() {
+  if [[ "$ASSUME_YES" -eq 1 && "$AGGRESSIVE" -ne 1 ]]; then
+    echo "  Skipped in --yes mode: requires --aggressive."
+    return 1
+  fi
+  return 0
+}
+
+active_build_processes() {
+  ps -axo pid=,ppid=,command= 2>/dev/null |
+    grep -E '(^|[ /])(xcodebuild|flutter (build|test|run|drive)|flutter_tools\.snapshot (build|test|run|drive)|gradlew?( |$)|GradleWrapperMain|pod (install|update)|swift (build|test)|cargo (build|test)|dotnet (build|publish|test)|npm (run )?(build|test)|yarn (build|test)|pnpm (build|test))([ ]|$)' |
+    awk -v self="$$" -v parent="$PPID" '$1 != self && $1 != parent { print "    " $0 }' || true
+}
+
+guard_active_builds() {
+  [[ "$FORCE_ACTIVE_BUILDS" -eq 1 ]] && return 0
+  local active
+  active="$(active_build_processes)"
+  [[ -z "$active" ]] && return 0
+  echo "  Skipped: active build process detected."
+  echo "$active" | head -5
+  echo "  Re-run after it finishes, or use --force-active-builds deliberately."
+  return 1
 }
 
 # Escalate to sudo only when the user lacks write permission on the
@@ -448,6 +489,9 @@ echo ""
 echo "macOS Developer Storage Cleanup  ($(date '+%Y-%m-%d'))"
 [[ "$ANALYZE_ONLY" -eq 1 ]] && echo "Mode : analyze only — nothing will be deleted"
 [[ "$DRY_RUN"      -eq 1 ]] && echo "Mode : dry run — no files will be deleted"
+[[ "$ASSUME_YES"   -eq 1 && "$AGGRESSIVE" -ne 1 ]] && \
+  echo "Mode : unattended safe cleanup — disruptive items are skipped"
+[[ "$AGGRESSIVE"   -eq 1 ]] && echo "Mode : aggressive cleanup enabled"
 echo "======================================================================"
 
 # In analyze/dry-run mode there is no user interaction to buy scan time,
@@ -460,15 +504,19 @@ fi
 echo ""
 echo "── 1. XCODE / SIMULATOR ─────────────────────────────────────────────"
 
-item "Xcode DerivedData" path \
-  "$HOME/Library/Developer/Xcode/DerivedData" \
-  "Intermediate build products for every Xcode project ever built." \
-  "SAFE. Rebuilt automatically on next build (adds a few minutes compile time)."
+if guard_active_builds; then
+  item "Xcode DerivedData" path \
+    "$HOME/Library/Developer/Xcode/DerivedData" \
+    "Intermediate build products for every Xcode project ever built." \
+    "SAFE. Rebuilt automatically on next build (adds a few minutes compile time)."
+fi
 
-item "Xcode Archives" path \
-  "$HOME/Library/Developer/Xcode/Archives" \
-  "Archived .xcarchive bundles used to export/upload IPAs." \
-  "PERMANENT loss of those archives. Keep if you may need to re-export; delete if all builds are in App Store Connect."
+if allow_aggressive; then
+  item "Xcode Archives" path \
+    "$HOME/Library/Developer/Xcode/Archives" \
+    "Archived .xcarchive bundles used to export/upload IPAs." \
+    "PERMANENT loss of those archives. Keep if you may need to re-export; delete if all builds are in App Store Connect."
+fi
 
 item "Xcode iOS DeviceSupport" path \
   "$HOME/Library/Developer/Xcode/iOS DeviceSupport" \
@@ -480,27 +528,33 @@ item "Xcode watchOS DeviceSupport" path \
   "Same as above but for Apple Watch devices." \
   "SAFE. Re-downloaded automatically."
 
-item "CoreSimulator Devices" path \
-  "$HOME/Library/Developer/CoreSimulator/Devices" \
-  "All installed iOS/macOS/watchOS simulator runtimes and their per-app data." \
-  "SAFE. Runtimes are re-downloadable via Xcode > Settings > Platforms. Loses simulator app data."
+if allow_aggressive && guard_active_builds; then
+  item "CoreSimulator Devices" path \
+    "$HOME/Library/Developer/CoreSimulator/Devices" \
+    "All installed simulator devices and their per-app data." \
+    "DISRUPTIVE. Deletes every simulator and all simulator app data; runtimes remain installed."
+fi
 
-item "CoreSimulator Caches" contents \
-  "$HOME/Library/Developer/CoreSimulator/Caches" \
-  "Simulator disk image caches used to speed up device creation." \
-  "SAFE. Rebuilt automatically on next simulator launch."
+if guard_active_builds; then
+  item "CoreSimulator Caches" contents \
+    "$HOME/Library/Developer/CoreSimulator/Caches" \
+    "Simulator disk image caches used to speed up device creation." \
+    "SAFE. Rebuilt automatically on next simulator launch."
 
-item "CoreSimulator Caches (system-level)" contents \
-  "/Library/Developer/CoreSimulator/Caches" \
-  "System-wide simulator caches (per-runtime dyld caches). Root-owned — often 10+ GB and invisible to per-user scans." \
-  "SAFE. Rebuilt on next simulator boot. Removal may prompt for sudo."
+  item "CoreSimulator Caches (system-level)" contents \
+    "/Library/Developer/CoreSimulator/Caches" \
+    "System-wide simulator caches (per-runtime dyld caches). Root-owned — often 10+ GB and invisible to per-user scans." \
+    "SAFE. Rebuilt on next simulator boot. Removal may prompt for sudo."
+fi
 
 if command -v xcrun >/dev/null 2>&1; then
-  cmd_item "Simulator: orphaned devices" \
-    "xcrun simctl list devices unavailable 2>/dev/null | grep unavailable | head -8" \
-    "xcrun simctl delete unavailable" \
-    "Simulator devices whose runtime is no longer installed — they cannot boot." \
-    "SAFE. Removes only devices that are already unusable."
+  if guard_active_builds; then
+    cmd_item "Simulator: orphaned devices" \
+      "xcrun simctl list devices unavailable 2>/dev/null | grep unavailable | head -8" \
+      "xcrun simctl delete unavailable" \
+      "Simulator devices whose runtime is no longer installed — they cannot boot." \
+      "SAFE. Removes only devices that are already unusable."
+  fi
 
   # System-level runtime disk images — offered individually since deleting
   # a platform you still build for forces a multi-GB re-download in Xcode.
@@ -513,7 +567,7 @@ if command -v xcrun >/dev/null 2>&1; then
     echo "  Impact : SAFE if you do not build for this platform. Re-downloadable via Xcode > Settings > Components."
     echo "  Size   : $(human_size "$rt_kb")"
     [[ "$ANALYZE_ONLY" -eq 1 ]] && continue
-    if confirm "Delete this runtime?"; then
+    if confirm_aggressive "Delete this runtime?"; then
       if [[ "$DRY_RUN" -eq 1 ]]; then
         echo "  DRY RUN: xcrun simctl runtime delete $rt_uuid"
       else
@@ -533,15 +587,17 @@ while IFS= read -r base; do
   [[ -z "$base" ]] && continue
   app_name="$(basename "$base")"
 
-  item "$app_name workspaceStorage (ALL)" contents \
-    "$base/User/workspaceStorage" \
-    "Per-workspace indexes, AI chat history, extension state, search indexes. One folder per workspace ever opened." \
-    "Loses all AI chat history and workspace search indexes for ALL workspaces. Editor rebuilds indexes on reopen."
+  if allow_aggressive; then
+    item "$app_name workspaceStorage (ALL)" contents \
+      "$base/User/workspaceStorage" \
+      "Per-workspace indexes, AI chat history, extension state, search indexes. One folder per workspace ever opened." \
+      "Loses all AI chat history and workspace search indexes for ALL workspaces. Editor rebuilds indexes on reopen."
 
-  item "$app_name Edit History" contents \
-    "$base/User/History" \
-    "Local edit history — lets you recover previous file versions via the Timeline panel." \
-    "Loses ability to recover old file versions via Timeline. No impact on current files."
+    item "$app_name Edit History" contents \
+      "$base/User/History" \
+      "Local edit history — lets you recover previous file versions via the Timeline panel." \
+      "Loses ability to recover old file versions via Timeline. No impact on current files."
+  fi
 
   item "$app_name Cached VSIXs" path \
     "$base/CachedExtensionVSIXs" \
@@ -579,10 +635,12 @@ echo ""
 echo "── 3. .NET / NUGET / GRADLE ─────────────────────────────────────────"
 
 if [[ -d "$HOME/.dotnet" ]]; then
-  item ".NET SDK packs" path \
-    "$HOME/.dotnet/packs" \
-    "Workload SDK packs (Android, iOS, MAUI runtimes) installed via 'dotnet workload install'." \
-    "SAFE if unused packs are cleaned first with 'dotnet workload clean'. Full delete forces re-download on next build."
+  if guard_active_builds; then
+    item ".NET SDK packs" path \
+      "$HOME/.dotnet/packs" \
+      "Workload SDK packs (Android, iOS, MAUI runtimes) installed via 'dotnet workload install'." \
+      "SAFE if unused packs are cleaned first with 'dotnet workload clean'. Full delete forces re-download on next build."
+  fi
 
   item ".NET templates" path \
     "$HOME/.dotnet/templates" \
@@ -598,15 +656,19 @@ if [[ -d "$HOME/.dotnet" ]]; then
   fi
 fi
 
-item "NuGet package cache" path \
-  "$HOME/.nuget/packages" \
-  "Global NuGet package cache — all packages ever restored across all .NET projects." \
-  "SAFE. Re-downloaded from NuGet.org on next 'dotnet restore' (adds time)."
+if guard_active_builds; then
+  item "NuGet package cache" path \
+    "$HOME/.nuget/packages" \
+    "Global NuGet package cache — all packages ever restored across all .NET projects." \
+    "SAFE. Re-downloaded from NuGet.org on next 'dotnet restore' (adds time)."
+fi
 
-item "Gradle caches" path \
-  "$HOME/.gradle/caches" \
-  "Gradle dependency and build artifact cache shared across all Android/Java projects." \
-  "SAFE. Re-downloaded on next Gradle build (can take significant time on large projects)."
+if guard_active_builds; then
+  item "Gradle caches" path \
+    "$HOME/.gradle/caches" \
+    "Gradle dependency and build artifact cache shared across all Android/Java projects." \
+    "SAFE. Re-downloaded on next Gradle build (can take significant time on large projects)."
+fi
 
 item "Gradle wrapper distributions" path \
   "$HOME/.gradle/wrapper/dists" \
@@ -619,10 +681,12 @@ echo "── 4. ANDROID SDK ─────────────────�
 
 ANDROID_SDK="$(find_android_sdk)"
 if [[ -n "$ANDROID_SDK" ]]; then
-  item "Android SDK" path \
-    "$ANDROID_SDK" \
-    "Full Android SDK (platforms, build-tools, emulator images) managed by Android Studio or Flutter." \
-    "DESTRUCTIVE. Breaks all Android builds until re-installed via the Android Studio SDK Manager."
+  if allow_aggressive && guard_active_builds; then
+    item "Android SDK" path \
+      "$ANDROID_SDK" \
+      "Full Android SDK (platforms, build-tools, emulator images) managed by Android Studio or Flutter." \
+      "DESTRUCTIVE. Breaks all Android builds until re-installed via the Android Studio SDK Manager."
+  fi
 
   item "Android AVDs" path \
     "$HOME/.android/avd" \
@@ -642,10 +706,12 @@ if [[ -n "$FLUTTER_SDK" ]]; then
   echo "  Size   : $(human_size "$(path_kb "$FLUTTER_SDK")")"
 fi
 
-item "Flutter pub cache" path \
-  "$HOME/.pub-cache" \
-  "Downloaded Dart/Flutter packages for all projects (analogous to npm's global cache)." \
-  "SAFE. Re-downloaded from pub.dev on next 'flutter pub get' in each project (adds time)."
+if guard_active_builds; then
+  item "Flutter pub cache" path \
+    "$HOME/.pub-cache" \
+    "Downloaded Dart/Flutter packages for all projects (analogous to npm's global cache)." \
+    "SAFE. Re-downloaded from pub.dev on next 'flutter pub get' in each project (adds time)."
+fi
 
 item "Dart analysis server cache" path \
   "$HOME/.dartServer" \
@@ -677,10 +743,12 @@ fi
 echo ""
 echo "── 7. GENERAL CACHES / BACKUPS ──────────────────────────────────────"
 
-item "iOS / iPadOS device backups" path \
-  "$HOME/Library/Application Support/MobileSync/Backup" \
-  "Full local Finder/iTunes backups of connected iOS devices." \
-  "PERMANENT loss of those backups. Only delete if you rely on iCloud Backup or have a recent backup elsewhere."
+if allow_aggressive; then
+  item "iOS / iPadOS device backups" path \
+    "$HOME/Library/Application Support/MobileSync/Backup" \
+    "Full local Finder/iTunes backups of connected iOS devices." \
+    "PERMANENT loss of those backups. Only delete if you rely on iCloud Backup or have a recent backup elsewhere."
+fi
 
 item "User Caches" contents \
   "$HOME/Library/Caches" \
@@ -692,10 +760,12 @@ item "User Logs" contents \
   "Diagnostic logs written by macOS and user-space apps." \
   "SAFE. No functional impact. Console.app log history will appear empty."
 
-item "Trash" contents \
-  "$HOME/.Trash" \
-  "Files you have already moved to Trash but not permanently deleted." \
-  "PERMANENT. Equivalent to 'Empty Trash'. Review manually if unsure of contents."
+if allow_aggressive; then
+  item "Trash" contents \
+    "$HOME/.Trash" \
+    "Files you have already moved to Trash but not permanently deleted." \
+    "PERMANENT. Equivalent to 'Empty Trash'. Review manually if unsure of contents."
+fi
 
 item "npm cache" path \
   "$HOME/.npm" \
@@ -750,11 +820,13 @@ if command -v brew >/dev/null 2>&1; then
 fi
 
 if command -v docker >/dev/null 2>&1; then
-  cmd_item "Docker: images, volumes, build cache" \
-    "docker system df 2>/dev/null" \
-    "docker system prune -a --volumes -f" \
-    "All Docker images, stopped containers, unused volumes, and build layer cache." \
-    "DESTRUCTIVE for volumes containing persistent data. Images are re-pullable; named volume data is NOT recoverable."
+  if allow_aggressive && guard_active_builds; then
+    cmd_item "Docker: images, volumes, build cache" \
+      "docker system df 2>/dev/null" \
+      "docker system prune -a --volumes -f" \
+      "All Docker images, stopped containers, unused volumes, and build layer cache." \
+      "DESTRUCTIVE for volumes containing persistent data. Images are re-pullable; named volume data is NOT recoverable."
+  fi
 fi
 
 if command -v tmutil >/dev/null 2>&1; then
@@ -810,7 +882,9 @@ else
     printf '    %10s  TOTAL\n' "$(human_size "$TOTAL_KB")"
     echo "  Impact : SAFE. Dependencies re-download and projects recompile on next build (takes time)."
 
-    if [[ "$ANALYZE_ONLY" -ne 1 ]]; then
+     if [[ "$ANALYZE_ONLY" -ne 1 ]] && \
+      allow_aggressive && \
+       guard_active_builds; then
       delete_repo_artifacts() {
         # $1 = repo name, or "" for all repos
         local filter="$CODE_ROOT/${1:+$1/}"
