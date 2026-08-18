@@ -202,12 +202,16 @@ allow_aggressive() {
 
 active_build_processes() {
   ps -axo pid=,ppid=,command= 2>/dev/null |
-    grep -E '(^|[ /])(xcodebuild|flutter (build|test|run|drive)|flutter_tools\.snapshot (build|test|run|drive)|gradlew?( |$)|GradleWrapperMain|pod (install|update)|swift (build|test)|cargo (build|test)|dotnet (build|publish|test)|npm (run )?(build|test)|yarn (build|test)|pnpm (build|test))([ ]|$)' |
+    grep -E '(^|[ /])(xcodebuild|XCBBuildService|swift-frontend|clang(\+\+)?|ld|flutter (build|test|run|drive)|flutter_tools\.snapshot (build|test|run|drive)|frontend_server\.dart\.snapshot|gen_snapshot|gradlew?( |$)|GradleWrapperMain|pod (install|update)|swift (build|test)|cargo (build|test)|dotnet (build|publish|test)|npm (run )?(build|test)|yarn (build|test)|pnpm (build|test))([ ]|$)' |
     awk -v self="$$" -v parent="$PPID" '$1 != self && $1 != parent { print "    " $0 }' || true
 }
 
 guard_active_builds() {
   [[ "$FORCE_ACTIVE_BUILDS" -eq 1 ]] && return 0
+  if [[ "$ASSUME_YES" -eq 1 ]]; then
+    echo "  Skipped in unattended mode: build-sensitive cleanup requires --force-active-builds."
+    return 1
+  fi
   local active
   active="$(active_build_processes)"
   [[ -z "$active" ]] && return 0
@@ -750,10 +754,12 @@ if allow_aggressive; then
     "PERMANENT loss of those backups. Only delete if you rely on iCloud Backup or have a recent backup elsewhere."
 fi
 
-item "User Caches" contents \
-  "$HOME/Library/Caches" \
-  "App-managed caches (Safari, Xcode, Spotlight, and many others)." \
-  "SAFE. All apps rebuild caches on next use. May cause slower first launches."
+if allow_aggressive && guard_active_builds; then
+  item "User Caches (ALL)" contents \
+    "$HOME/Library/Caches" \
+    "All app-managed caches, including developer package and build caches." \
+    "DISRUPTIVE. Can invalidate CocoaPods, Xcode, browser, and tool caches; apps rebuild them over time."
+fi
 
 item "User Logs" contents \
   "$HOME/Library/Logs" \

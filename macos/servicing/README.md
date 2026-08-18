@@ -48,6 +48,11 @@ all-repo build-artifact cleanup are skipped unless `--aggressive` is also set.
 Build-sensitive cleanup is skipped while Flutter, Xcode, Gradle, CocoaPods,
 Swift, Cargo, .NET, or JavaScript builds are active. Use
 `--force-active-builds` only when deliberately overriding that protection.
+Unattended runs skip build-sensitive cleanup even when no build process is
+currently visible, avoiding races between sequential build commands. Combining
+`--yes --aggressive --force-active-builds` is the explicit opt-in for that
+behavior. The blanket `~/Library/Caches` cleanup is also treated as aggressive
+and build-sensitive because it includes CocoaPods and other developer caches.
 
 ## Notes
 
