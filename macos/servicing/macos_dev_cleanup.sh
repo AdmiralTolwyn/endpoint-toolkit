@@ -618,10 +618,12 @@ while IFS= read -r base; do
     "Crash report dumps pending upload to the vendor." \
     "SAFE. No functional impact."
 
-  item "$app_name blob_storage" contents \
-    "$base/blob_storage" \
-    "Internal Electron/Chromium blob and IndexedDB storage used by some extensions." \
-    "LOW RISK. May reset some extension UI state; extensions re-populate on next launch."
+  if allow_aggressive; then
+    item "$app_name blob_storage" contents \
+      "$base/blob_storage" \
+      "Internal Electron/Chromium blob and IndexedDB storage used by some extensions." \
+      "LOW RISK. May reset extension UI state and require extensions to rebuild it."
+  fi
 
   if [[ "$ANALYZE_ONLY" -ne 1 ]]; then
     echo ""
@@ -651,7 +653,7 @@ if [[ -d "$HOME/.dotnet" ]]; then
     "Project template packages installed via 'dotnet new install'." \
     "SAFE. Re-installed on demand with 'dotnet new install <template-id>'."
 
-  if command -v dotnet >/dev/null 2>&1; then
+  if command -v dotnet >/dev/null 2>&1 && guard_active_builds; then
     cmd_item ".NET unused workload packs" \
       "dotnet workload list 2>/dev/null | head -12 || true" \
       "dotnet workload clean" \
@@ -674,10 +676,12 @@ if guard_active_builds; then
     "SAFE. Re-downloaded on next Gradle build (can take significant time on large projects)."
 fi
 
-item "Gradle wrapper distributions" path \
-  "$HOME/.gradle/wrapper/dists" \
-  "Downloaded Gradle distribution ZIPs, one per Gradle version used across projects." \
-  "SAFE. Re-downloaded when you next build a project requiring that Gradle version."
+if guard_active_builds; then
+  item "Gradle wrapper distributions" path \
+    "$HOME/.gradle/wrapper/dists" \
+    "Downloaded Gradle distribution ZIPs, one per Gradle version used across projects." \
+    "BUILD-SENSITIVE. Re-downloaded before the next build for each Gradle version."
+fi
 
 # ── 4. Android SDK ───────────────────────────────────────────────────────────
 echo ""
@@ -692,10 +696,12 @@ if [[ -n "$ANDROID_SDK" ]]; then
       "DESTRUCTIVE. Breaks all Android builds until re-installed via the Android Studio SDK Manager."
   fi
 
-  item "Android AVDs" path \
-    "$HOME/.android/avd" \
-    "Android Virtual Device definitions and their emulator disk images." \
-    "SAFE if you don't use Android emulators. AVDs are re-creatable in Android Studio / AVD Manager."
+  if allow_aggressive && guard_active_builds; then
+    item "Android AVDs" path \
+      "$HOME/.android/avd" \
+      "Android Virtual Device definitions and their emulator disk images." \
+      "DISRUPTIVE. Deletes all Android emulator devices and their app data."
+  fi
 fi
 
 # ── 5. Flutter / Dart ────────────────────────────────────────────────────────
@@ -717,10 +723,12 @@ if guard_active_builds; then
     "SAFE. Re-downloaded from pub.dev on next 'flutter pub get' in each project (adds time)."
 fi
 
-item "Dart analysis server cache" path \
-  "$HOME/.dartServer" \
-  "Type indexes and semantic data cached by the Dart analysis server across all projects." \
-  "SAFE. Rebuilt automatically when a Dart/Flutter project is opened in the editor."
+if guard_active_builds; then
+  item "Dart analysis server cache" path \
+    "$HOME/.dartServer" \
+    "Type indexes and semantic data cached by the Dart analysis server across all projects." \
+    "BUILD-SENSITIVE. Rebuilt when Dart/Flutter projects reopen, causing analysis warm-up."
+fi
 
 # ── 6. JetBrains IDEs ────────────────────────────────────────────────────────
 echo ""
@@ -729,10 +737,12 @@ echo "── 6. JETBRAINS IDEs ────────────────�
 # JetBrains stores caches and logs under versioned directories
 JB_BASE="$HOME/Library/Caches/JetBrains"
 if [[ -d "$JB_BASE" ]]; then
-  item "JetBrains IDE caches" contents \
-    "$JB_BASE" \
-    "Local caches for all JetBrains IDEs (IntelliJ, Android Studio, GoLand, etc.)." \
-    "SAFE. Rebuilt on next IDE launch (causes a slow index warm-up for large projects)."
+  if guard_active_builds; then
+    item "JetBrains IDE caches" contents \
+      "$JB_BASE" \
+      "Local caches for all JetBrains IDEs (IntelliJ, Android Studio, GoLand, etc.)." \
+      "BUILD-SENSITIVE. Rebuilt on next IDE launch and may require a long index warm-up."
+  fi
 fi
 
 JB_LOG_BASE="$HOME/Library/Logs/JetBrains"
@@ -773,25 +783,33 @@ if allow_aggressive; then
     "PERMANENT. Equivalent to 'Empty Trash'. Review manually if unsure of contents."
 fi
 
-item "npm cache" path \
-  "$HOME/.npm" \
-  "npm package download cache shared across all Node.js projects." \
-  "SAFE. Re-downloaded from the registry on next 'npm install'."
+if guard_active_builds; then
+  item "npm cache" path \
+    "$HOME/.npm" \
+    "npm package download cache shared across all Node.js projects." \
+    "BUILD-SENSITIVE. Re-downloaded from the registry on next 'npm install'."
+fi
 
-item "pip cache" path \
-  "$HOME/Library/Caches/pip" \
-  "pip wheel and HTTP caches shared across all Python environments." \
-  "SAFE. Re-downloaded on next 'pip install'."
+if guard_active_builds; then
+  item "pip cache" path \
+    "$HOME/Library/Caches/pip" \
+    "pip wheel and HTTP caches shared across all Python environments." \
+    "BUILD-SENSITIVE. Re-downloaded on next 'pip install'."
+fi
 
-item "yarn cache" path \
-  "$HOME/Library/Caches/Yarn" \
-  "Yarn v1 package download cache." \
-  "SAFE. Re-downloaded on next 'yarn install'."
+if guard_active_builds; then
+  item "yarn cache" path \
+    "$HOME/Library/Caches/Yarn" \
+    "Yarn v1 package download cache." \
+    "BUILD-SENSITIVE. Re-downloaded on next 'yarn install'."
+fi
 
-item "XDG cache (~/.cache)" contents \
-  "$HOME/.cache" \
-  "Shared cache directory used by many CLI tools (pip, Hugging Face, puppeteer, pre-commit, etc.)." \
-  "SAFE. Tools re-create their caches on next run."
+if allow_aggressive && guard_active_builds; then
+  item "XDG cache (~/.cache)" contents \
+    "$HOME/.cache" \
+    "Shared cache directory used by many CLI tools (pip, Hugging Face, puppeteer, pre-commit, etc.)." \
+    "DISRUPTIVE. May remove models, browser downloads, hooks, and package caches needed by development tools."
+fi
 
 # Leftover code-sign clones (Microsoft Edge / Teams bug): the updater makes
 # an APFS clone of the app bundle for signature verification and fails to
@@ -804,10 +822,12 @@ if [[ -n "$DARWIN_TMP" ]]; then
   for clone in "$X_DIR"/*.code_sign_clone; do
     [[ -d "$clone" ]] || continue
     clone_app="$(basename "$clone" .code_sign_clone)"
-    item "Leftover code-sign clone: $clone_app" path \
-      "$clone" \
-      "APFS clone of the app bundle left behind by $clone_app's updater (known bug; also cleared on reboot)." \
-      "SAFE. Quit the app first if it is running. Reported size is partly shared blocks, so real space freed may be smaller."
+    if guard_active_builds; then
+      item "Leftover code-sign clone: $clone_app" path \
+        "$clone" \
+        "APFS clone of the app bundle left behind by $clone_app's updater (known bug; also cleared on reboot)." \
+        "SAFE after the owning app/updater exits. Reported size is partly shared blocks."
+    fi
   done
 fi
 
@@ -815,14 +835,18 @@ fi
 echo ""
 echo "── 8. BREW / DOCKER / TIME MACHINE ──────────────────────────────────"
 
-check_stale_homebrews
+if allow_aggressive; then
+  check_stale_homebrews
+fi
 
 if command -v brew >/dev/null 2>&1; then
   BREW_CACHE="$(brew --cache 2>/dev/null || true)"
-  [[ -n "$BREW_CACHE" ]] && item "Homebrew download cache" contents \
-    "$BREW_CACHE" \
-    "Cached formula and cask download tarballs kept by Homebrew after install." \
-    "SAFE. Re-downloaded from the source on next 'brew install' for that formula."
+  if [[ -n "$BREW_CACHE" ]] && guard_active_builds; then
+    item "Homebrew download cache" contents \
+      "$BREW_CACHE" \
+      "Cached formula and cask download tarballs kept by Homebrew after install." \
+      "BUILD-SENSITIVE. Re-downloaded from the source before future installs or reinstalls."
+  fi
 fi
 
 if command -v docker >/dev/null 2>&1; then
@@ -835,7 +859,7 @@ if command -v docker >/dev/null 2>&1; then
   fi
 fi
 
-if command -v tmutil >/dev/null 2>&1; then
+if command -v tmutil >/dev/null 2>&1 && allow_aggressive; then
   cmd_item "Time Machine local snapshots" \
     "tmutil listlocalsnapshots / 2>/dev/null" \
     'for s in $(tmutil listlocalsnapshots / 2>/dev/null | grep "com.apple.TimeMachine" | sed "s/.*\.//"); do sudo tmutil deletelocalsnapshots "$s"; done' \

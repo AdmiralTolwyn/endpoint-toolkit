@@ -53,6 +53,10 @@ currently visible, avoiding races between sequential build commands. Combining
 `--yes --aggressive --force-active-builds` is the explicit opt-in for that
 behavior. The blanket `~/Library/Caches` cleanup is also treated as aggressive
 and build-sensitive because it includes CocoaPods and other developer caches.
+Conservative unattended cleanup retains package caches, Gradle distributions,
+simulators/AVDs, IDE indexes, XDG caches, and extension state; it automatically
+removes only diagnostic logs, crash data, downloaded extension installers, and
+stale workspace entries.
 
 ## Notes
 
