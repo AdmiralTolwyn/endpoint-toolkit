@@ -64,7 +64,7 @@ None of these three write `AvailableUpdates`, `MicrosoftUpdateManagedOptIn` or `
 |------|---------|------------------|-----------------|
 | [BitLockerPcrDetection-Ivanti.ps1](BitLockerPcrDetection-Ivanti.ps1) | Reads the PCR validation profile of the OS volume's TPM protector. Same Status / Reason / Expected / Found contract as the Ivanti certificate detect script. | Never | Profile is exactly `7,11` or `4,7,11` |
 
-The profile comes from `Win32_EncryptableVolume.GetKeyProtectorPlatformValidationProfile()` rather than parsing `manage-bde`, so it is locale-independent. Requires elevation — the `MicrosoftVolumeEncryption` namespace denies key-protector enumeration to standard users.
+The profile is read from `Win32_EncryptableVolume.GetKeyProtectorPlatformValidationProfile()` where that works, and from `manage-bde` where it does not. On many TPM 2.0 / Secure Boot integrity validation devices the WMI method returns `E_INVALIDARG` (`0x80070057`) even for a valid TPM protector, so the fallback is the normal path rather than an exception. The `manage-bde` parser anchors on the literal token `PCR` and then on a line of comma-separated integers — both survive localisation — and `found =` reports `Source: WMI` or `Source: manage-bde` so you can see which answered. Requires elevation either way.
 
 The finding this screens for is the legacy profile **`0,2,4,11`**, which Windows falls back to when PCR 7 cannot be bound (`PCR7 Configuration = Binding Not Possible`). Devices in that state have been observed dropping into BitLocker recovery on the reboot that finalises a Secure Boot servicing update. Run this **before** pointing the *Drive the update* family at a population, and suspend BitLocker across the servicing reboot on anything it flags.
 
@@ -208,7 +208,7 @@ Must run elevated. Emits the same four-line contract:
 detected = true|false
 reason   = <single sentence>
 expected = Profile: 7,11 or 4,7,11
-found    = Profile: <p> | Protector: <t> | Protection: <s> | Conversion: <c> | SecureBoot: <b> | Event24604: <n> | ...
+found    = Profile: <p> | Source: <WMI|manage-bde> | Protector: <t> | Protection: <s> | Conversion: <c> | SecureBoot: <b> | Event24604: <n> | ...
 ```
 
 ## AvailableUpdates State Machine
@@ -378,6 +378,8 @@ Compliant = (PCR validation profile of the OS volume TPM protector) IN { 7,11 ; 
 
 The measured profile is sorted and de-duplicated before comparison, so PCR order does not matter. Everything else is a finding, including devices with no TPM protector and devices where BitLocker is off — there is no profile to evaluate, so the script cannot vouch for them. `0,2,4,11` gets its own `reason =` string because it is the specific PCR 7 fallback this screen exists to catch.
 
+A device that returns `Profile: N/A | Source: None` alongside a `ReadError` is **not** evidence of a bad profile — it means neither source answered. Treat those as a collection failure, not a finding.
+
 ## Output
 
 ### `Detect_SecureBootUEFICA2023.ps1`
@@ -448,7 +450,7 @@ The same four-line contract. A device on the legacy profile looks like this:
 detected = true
 reason = Legacy PCR profile 0,2,4,11 in use -- PCR 7 could not be bound. Secure Boot servicing on this device risks a recovery prompt.
 expected = Profile: 7,11 or 4,7,11
-found = Profile: 0,2,4,11 | Protector: TPM | Protection: On | Conversion: FullyEncrypted | SecureBoot: True
+found = Profile: 0,2,4,11 | Source: manage-bde | Protector: TPM | Protection: On | Conversion: FullyEncrypted | SecureBoot: True
 ```
 
 `found =` also carries counts of BitLocker-Driver events **24604** (`the boot configuration options did not match expected values`) and **24636** (`bootmgr failed to obtain the volume master key from the TPM`) when either is present, so devices that have *already* been hit are visible in the detect output rather than only in a ticket. Both counts are informational and do not affect the verdict.

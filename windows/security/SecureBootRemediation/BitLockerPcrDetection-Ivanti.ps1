@@ -17,8 +17,12 @@
     end in a recovery prompt.
 
     The profile is read via Win32_EncryptableVolume WMI
-    (GetKeyProtectorPlatformValidationProfile), not by parsing manage-bde, so the
-    result is locale-independent.
+    (GetKeyProtectorPlatformValidationProfile) where that works. On many TPM 2.0 /
+    Secure Boot integrity validation devices that method returns E_INVALIDARG
+    (0x80070057), so the script falls back to parsing manage-bde. The fallback
+    anchors on the literal token "PCR" and then on a line of comma-separated
+    integers, both of which survive localisation. The "found =" line reports which
+    source produced the answer.
 
     Additional diagnostics surfaced in the "found =" line (informational only, they
     do NOT change the compliance verdict):
@@ -32,7 +36,7 @@
         detected = true|false
         reason   = <single sentence>
         expected = Profile: 7,11 or 4,7,11
-        found    = Profile: <p> | Protection: <s> | Conversion: <c> | ...
+        found    = Profile: <p> | Source: <s> | Protection: <s> | Conversion: <c> | ...
 
     Diagnostic log (append-only, never written to stdout):
         C:\Windows\Temp\BitLockerPcrDetection-Ivanti.log
@@ -42,7 +46,7 @@
 
 .NOTES
     Author:  Anton Romanyuk
-    Version: 1.0
+    Version: 1.1
     Date:    2026-08-20
     Requires PowerShell 5.1. Must run elevated -- the MicrosoftVolumeEncryption
     namespace denies key-protector enumeration to standard users.
@@ -104,12 +108,48 @@ Write-DetectLog "Target volume: $Drive"
 # 2. Volume state
 # -------------------------------------------------------------------------------------------------
 $ProfileString   = 'N/A'
+$ProfileSource   = 'None'
 $ProtectionText  = 'N/A'
 $ConversionText  = 'N/A'
 $ProtectorText   = 'None'
 $VolumeFound     = $false
 $TpmProtectorFound = $false
 $ReadError       = $null
+
+# GetKeyProtectorPlatformValidationProfile returns E_INVALIDARG (0x80070057) on many TPM 2.0 /
+# Secure Boot integrity validation devices, so manage-bde is the fallback source.
+function Get-PcrProfileFromManageBde {
+    param([Parameter(Mandatory)] [string] $Volume)
+
+    $exe = Join-Path $env:windir 'System32\manage-bde.exe'
+    if (-not (Test-Path -LiteralPath $exe)) {
+        Write-DetectLog 'manage-bde.exe not found' 'WARN'
+        return $null
+    }
+
+    $lines = @(& $exe -protectors -get $Volume 2>&1 | ForEach-Object { "$_" })
+    if ($lines.Count -eq 0) {
+        Write-DetectLog 'manage-bde returned no output' 'WARN'
+        return $null
+    }
+
+    # Locale-independent: anchor on the literal token "PCR" (retained in every localised build),
+    # then take the first line that is nothing but comma-separated integers.
+    $start = 0
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -match 'PCR') { $start = $i + 1; break }
+    }
+
+    for ($i = $start; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -match '^\s*\d{1,2}(\s*,\s*\d{1,2})*\s*$') {
+            $set = $lines[$i] -split ',' | ForEach-Object { [int]$_.Trim() } | Sort-Object -Unique
+            return ($set -join ',')
+        }
+    }
+
+    Write-DetectLog 'manage-bde output contained no PCR profile line' 'WARN'
+    return $null
+}
 
 try {
     $vol = Get-WmiObject -Namespace $FveNamespace -Class Win32_EncryptableVolume `
@@ -152,18 +192,33 @@ if ($vol) {
             $pv = $vol.GetKeyProtectorPlatformValidationProfile($id)
             if ($pv.ReturnValue -ne 0) {
                 $ReadError = ('GetKeyProtectorPlatformValidationProfile returned 0x{0:X8}' -f $pv.ReturnValue)
-                Write-DetectLog $ReadError 'ERROR'
+                Write-DetectLog $ReadError 'WARN'
                 break
             }
 
             $pcrs = @($pv.PlatformValidationProfile) | ForEach-Object { [int]$_ } | Sort-Object -Unique
-            if ($pcrs.Count -gt 0) { $ProfileString = ($pcrs -join ',') }
+            if ($pcrs.Count -gt 0) {
+                $ProfileString = ($pcrs -join ',')
+                $ProfileSource = 'WMI'
+            }
             Write-DetectLog "Protector $id ($ProtectorText): profile = $ProfileString"
             break
         }
     }
 } else {
     Write-DetectLog "No encryptable volume object for $Drive" 'WARN'
+}
+
+if ($ProfileString -eq 'N/A' -and $VolumeFound) {
+    Write-DetectLog 'Falling back to manage-bde for the PCR validation profile'
+    $fallback = Get-PcrProfileFromManageBde -Volume $Drive
+    if ($fallback) {
+        $ProfileString = $fallback
+        $ProfileSource = 'manage-bde'
+        $TpmProtectorFound = $true
+        $ReadError = $null
+        Write-DetectLog "manage-bde profile = $ProfileString"
+    }
 }
 
 # -------------------------------------------------------------------------------------------------
@@ -202,6 +257,7 @@ $ExpectedString = 'Profile: ' + ($GoodProfiles -join ' or ')
 
 $FoundParts = @(
     "Profile: $ProfileString"
+    "Source: $ProfileSource"
     "Protector: $ProtectorText"
     "Protection: $ProtectionText"
     "Conversion: $ConversionText"
@@ -235,7 +291,7 @@ if (-not $IsCompliant) {
         $ReasonString = "$Drive has no TPM key protector, so it is not bound to any PCR profile."
     }
     elseif ($ReadError) {
-        $ReasonString = "PCR validation profile could not be read. $ReadError"
+        $ReasonString = "PCR validation profile could not be read by WMI or manage-bde. $ReadError"
     }
     elseif ($ProfileString -eq '0,2,4,11') {
         $ReasonString = "Legacy PCR profile 0,2,4,11 in use -- PCR 7 could not be bound. Secure Boot servicing on this device risks a recovery prompt."
@@ -246,7 +302,7 @@ if (-not $IsCompliant) {
 }
 else {
     $DetectedString = 'false'
-    $ReasonString   = "PCR validation profile is '$ProfileString'."
+    $ReasonString   = "PCR validation profile is '$ProfileString' (source: $ProfileSource)."
 }
 
 Write-DetectLog ("detected = $DetectedString")
