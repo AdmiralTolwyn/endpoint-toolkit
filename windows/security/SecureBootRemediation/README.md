@@ -6,6 +6,7 @@ Tooling for the **Secure Boot UEFI CA 2023** certificate deployment, in two fami
 
 - **Drive the update** — get a device onto the new certificates. Intune Proactive Remediation pair, a standalone triage script, and an Ivanti detect script. These write `AvailableUpdates` and trigger the Secure-Boot-Update scheduled task.
 - **Measure the fleet** — find out what the estate is actually doing, including the devices that cannot *report* at all. Read-only inventory, a narrow reporting-prerequisite repair, and offline segmentation. These **never** write `AvailableUpdates`.
+- **Screen for BitLocker exposure** — find the devices where driving the update would end in a recovery prompt, because BitLocker is sealed to the legacy PCR profile instead of PCR 7. Read-only.
 
 The second family exists because at fleet scale a large share of devices land in the status report's **Unknown** bucket, which is a telemetry/reporting gap rather than a certificate failure. No amount of certificate remediation moves them, and pointing the first family at them just burns Proactive Remediation cycles.
 
@@ -19,6 +20,7 @@ The second family exists because at fleet scale a large share of devices land in
 | Find out why devices show **Unknown** / never report | [Get-SecureBootCertInventory.ps1](Get-SecureBootCertInventory.ps1) |
 | Fix the reporting blockers (without touching certificates) | [Repair-SecureBootReportingPrereqs.ps1](Repair-SecureBootReportingPrereqs.ps1) |
 | Split "Not up to date" into who needs firmware vs. who is a false positive | [Split-SecureBootPopulation.ps1](Split-SecureBootPopulation.ps1) |
+| Find devices that will drop into BitLocker recovery when the certificate update lands | [BitLockerPcrDetection-Ivanti.ps1](BitLockerPcrDetection-Ivanti.ps1) |
 
 > **The two remediation scripts have opposite philosophies — do not treat them as interchangeable.** `Remediate_SecureBootUEFICA2023.ps1` arms the certificate update and deliberately exits `1` even when it takes no action, so the Intune dashboard never says `Fixed` for a device that is still non-compliant. `Repair-SecureBootReportingPrereqs.ps1` only repairs *reporting* prerequisites and exits `0` when it succeeds, because for that package "success" means the device can now report. Deploy them as separate Intune packages.
 
@@ -56,11 +58,22 @@ These four share the same TPM-WMI event-id classification and diagnostic signals
 
 None of these three write `AvailableUpdates`, `MicrosoftUpdateManagedOptIn` or `HighConfidenceOptOut`, and none touch DBX, the boot manager, boot order or BitLocker. See [Fleet inventory and reporting prerequisites](#fleet-inventory-and-reporting-prerequisites).
 
+### Screen for BitLocker exposure
+
+| File | Purpose | Modifies System? | Compliance Gate |
+|------|---------|------------------|-----------------|
+| [BitLockerPcrDetection-Ivanti.ps1](BitLockerPcrDetection-Ivanti.ps1) | Reads the PCR validation profile of the OS volume's TPM protector. Same Status / Reason / Expected / Found contract as the Ivanti certificate detect script. | Never | Profile is exactly `7,11` or `4,7,11` |
+
+The profile comes from `Win32_EncryptableVolume.GetKeyProtectorPlatformValidationProfile()` rather than parsing `manage-bde`, so it is locale-independent. Requires elevation — the `MicrosoftVolumeEncryption` namespace denies key-protector enumeration to standard users.
+
+The finding this screens for is the legacy profile **`0,2,4,11`**, which Windows falls back to when PCR 7 cannot be bound (`PCR7 Configuration = Binding Not Possible`). Devices in that state have been observed dropping into BitLocker recovery on the reboot that finalises a Secure Boot servicing update. Run this **before** pointing the *Drive the update* family at a population, and suspend BitLocker across the servicing reboot on anything it flags.
+
 ### Why so many scripts?
 
 - **`Detect_SecureBootUEFICA2023.ps1` / `Remediate_SecureBootUEFICA2023.ps1`** — the Intune PR pair (v1.2). Logs to the Intune Management Extension log directory in CMTrace format with verbose DEBUG-level instrumentation. **Honest-reporting design** (symmetric across detect and remediate): both scripts exit `1` whenever the device is not actually running the new CA — even when the OS cannot help — so the Intune dashboard never marks a non-compliant device as `Compliant` (detect) or `Remediation successful` / `Fixed` (remediate). The remediate script still **takes no action** (no registry writes, no scheduled-task triggers) on hard-blocker conditions, so the PR cycle stays essentially free on devices that cannot be helped. Disambiguating STDOUT markers (`NON-COMPLIANT-NOT-ACTIONABLE` / `NON-COMPLIANT-PENDING-REBOOT` / `NON-COMPLIANT`) let dashboards filter work-to-do vs. operator-escalation cohorts. The remediate script also pre-flights the Secure-Boot-Update scheduled task and aborts cleanly when missing/disabled (see below).
 - **`SecureBootCertRemediation.ps1`** — the standalone deployment / triage script. Detection-only by default; only writes registry / starts the scheduled task when explicitly invoked with `-ForceRemediation`. Strict gate avoids false-positive "compliant" verdicts caused by stale Event 1808 surviving NVRAM / BIOS resets.
 - **`SecureBootCertDetection-Ivanti.ps1`** — the legacy Ivanti baseline detect script. The compliance verdict is intentionally unchanged to avoid baseline / ticket churn; the enhanced diagnostics (1808 / 1799 / 1801 / 1802 / 1803 / latest good / latest bad / FW errors) are surfaced in the `found =` line for triage only.
+- **`BitLockerPcrDetection-Ivanti.ps1`** — answers a different question from every other script here. The rest ask *is this device on the 2023 certificates?*; this one asks *is it safe to put it there?* It never looks at `AvailableUpdates` or the TPM-WMI events, and a device can be perfectly compliant on the certificate gate while failing this one.
 
 ## What It Does
 
@@ -177,6 +190,25 @@ detected = true|false
 reason   = <single sentence>
 expected = Status: Updated | Error: 0
 found    = Status: <s> | Error: <e> | Confidence: <c> | Capable: <cap> | Event1808: <bool> | BootloaderSwapped: <bool> | LatestGood: <id> | ...
+```
+
+### `BitLockerPcrDetection-Ivanti.ps1` (pure detection)
+
+```powershell
+# OS volume (default)
+.\BitLockerPcrDetection-Ivanti.ps1
+
+# A specific volume
+.\BitLockerPcrDetection-Ivanti.ps1 -MountPoint D:
+```
+
+Must run elevated. Emits the same four-line contract:
+
+```text
+detected = true|false
+reason   = <single sentence>
+expected = Profile: 7,11 or 4,7,11
+found    = Profile: <p> | Protector: <t> | Protection: <s> | Conversion: <c> | SecureBoot: <b> | Event24604: <n> | ...
 ```
 
 ## AvailableUpdates State Machine
@@ -338,6 +370,14 @@ Intentionally preserved to avoid churning existing Ivanti baselines and tickets.
 
 > Event 1808 is now also reliably generated on **Windows Server 2025**.
 
+### `BitLockerPcrDetection-Ivanti.ps1` -- PCR profile gate
+
+```
+Compliant = (PCR validation profile of the OS volume TPM protector) IN { 7,11 ; 4,7,11 }
+```
+
+The measured profile is sorted and de-duplicated before comparison, so PCR order does not matter. Everything else is a finding, including devices with no TPM protector and devices where BitLocker is off — there is no profile to evaluate, so the script cannot vouch for them. `0,2,4,11` gets its own `reason =` string because it is the specific PCR 7 fallback this screen exists to catch.
+
 ## Output
 
 ### `Detect_SecureBootUEFICA2023.ps1`
@@ -399,6 +439,21 @@ When `-ForceRemediation` is supplied, the script additionally logs the registry 
 ### `SecureBootCertDetection-Ivanti.ps1`
 
 Four `Write-Host` lines, no banner, no color, no extra output -- safe to consume verbatim from an Ivanti Custom Definition or any detect channel that parses `key = value` pairs.
+
+### `BitLockerPcrDetection-Ivanti.ps1`
+
+The same four-line contract. A device on the legacy profile looks like this:
+
+```
+detected = true
+reason = Legacy PCR profile 0,2,4,11 in use -- PCR 7 could not be bound. Secure Boot servicing on this device risks a recovery prompt.
+expected = Profile: 7,11 or 4,7,11
+found = Profile: 0,2,4,11 | Protector: TPM | Protection: On | Conversion: FullyEncrypted | SecureBoot: True
+```
+
+`found =` also carries counts of BitLocker-Driver events **24604** (`the boot configuration options did not match expected values`) and **24636** (`bootmgr failed to obtain the volume master key from the TPM`) when either is present, so devices that have *already* been hit are visible in the detect output rather than only in a ticket. Both counts are informational and do not affect the verdict.
+
+Diagnostic log: `C:\Windows\Temp\BitLockerPcrDetection-Ivanti.log` (append-only, never written to stdout).
 
 ## Fleet inventory and reporting prerequisites
 
