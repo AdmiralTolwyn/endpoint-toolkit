@@ -29,8 +29,8 @@
     .\Invoke-AvdDiscovery.ps1 -IncludeGuestChecks
 .NOTES
     Author : Anton Romanyuk
-    Version: 0.6.0
-    Date   : 2026-07-18
+    Version: 0.6.1
+    Date   : 2026-08-25
 #>
 
 [CmdletBinding()]
@@ -58,7 +58,7 @@ $env:PSModulePath = ($env:PSModulePath -split ';' |
 $ScriptRoot = $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($ScriptRoot)) { $ScriptRoot = $PWD.Path }
 
-$ScriptVersion = '0.6.0'
+$ScriptVersion = '0.6.1'
 
 # ═══════════════════════════════════════════════════════════════════════════
 # HELPERS
@@ -963,8 +963,10 @@ foreach ($SubId in $SubscriptionId) {
                 } elseif ($VMModel -and $VMModel.Extensions) {
                     $VMModel.Extensions
                 } else { $null }
-                # Distinguish "no join extension found" from "could not read extension data at all" (C-8).
-                $JoinDataAvailable = ($null -ne $VMModel) -or ($null -ne $VMInstance)
+                # Reading the VM model does not prove device join state. These extension names can
+                # positively identify a join path, but their absence is inconclusive because join
+                # may predate extension retention or be managed outside this deployment path.
+                $JoinDataAvailable = $false
                 if ($RawExts) {
                     $ExtList = @($RawExts | ForEach-Object {
                         $ExtType = if ($_.VirtualMachineExtensionType) { $_.VirtualMachineExtensionType } else { $_.Type }
@@ -975,6 +977,7 @@ foreach ($SubId in $SubscriptionId) {
                     # The domain-join extension alone cannot distinguish pure AD DS from Hybrid (Hybrid = AD join
                     # plus Entra Connect sync, which is not visible from VM extensions), so report both (C-8).
                     $SHJoinType = if ($HasAADExt -and $HasDJExt) { 'Hybrid' } elseif ($HasAADExt) { 'Entra ID' } elseif ($HasDJExt) { 'AD DS or Hybrid' } else { 'Unknown' }
+                    $JoinDataAvailable = $SHJoinType -ne 'Unknown'
                     $HasAMAExt = 'AzureMonitorWindowsAgent' -in $ExtList
                     # MicrosoftMonitoringAgent (MMA) was retired Aug 2024 and is NOT MDE - only MDE.Windows counts (B-4).
                     $HasMDEExt = @($ExtList | Where-Object { $_ -eq 'MDE.Windows' }).Count -gt 0
@@ -1135,7 +1138,7 @@ foreach ($SubId in $SubscriptionId) {
                         -Reference 'https://learn.microsoft.com/en-us/azure/virtual-machines/trusted-launch#vtpm'))
                 }
 
-                # ─── CHECK: OS Disk Encryption - ADE or host-based (SEC-021) ───
+                # ─── CHECK: Enhanced OS Disk Encryption - ADE, encryption at host, or CMK ───
                 if ($VMModel) {
                     $HasADE = $false
                     $DiskEncType = 'None'
@@ -1152,12 +1155,12 @@ foreach ($SubId in $SubscriptionId) {
                     }
                     $IsEncrypted = $DiskEncType -ne 'None'
                     [void]$AllChecks.Add((New-CheckResult -Id "SEC-OSDISK-$VMName" `
-                        -Category 'Security & IAM' -Name 'OS Disk Encryption' `
-                        -Description 'OS disks should use ADE, host-based encryption, or customer-managed DES beyond platform default' `
+                        -Category 'Security & IAM' -Name 'Enhanced OS Disk Encryption' `
+                        -Description 'OS disks are platform-encrypted by default; assess whether policy requires ADE, encryption at host, or a customer-managed disk encryption set' `
                         -Status $(if ($IsEncrypted) { 'Pass' } else { 'Warning' }) `
                         -Severity 'High' `
                         -Details "EncryptionType: $DiskEncType" `
-                        -Recommendation 'Enable Azure Disk Encryption or encryption at host for data-at-rest protection beyond platform-managed keys.' `
+                        -Recommendation 'Where policy requires controls beyond platform-managed encryption, enable encryption at host or a customer-managed disk encryption set.' `
                         -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/security-recommendations#azure-confidential-computing' `
                         -Evidence @{ VM = $VMName; EncryptionType = $DiskEncType }))
                 }
@@ -1316,9 +1319,9 @@ foreach ($SubId in $SubscriptionId) {
                 [void]$AllChecks.Add((New-CheckResult -Id "IAM-JOIN-$VMName" `
                     -Category 'Identity & Access' -Name 'Entra ID Join Type' `
                     -Description 'Session hosts should use Entra ID or Hybrid join' `
-                    -Status $(if (-not $SHObj.JoinDataAvailable) { 'Error' } elseif ($SHObj.JoinType -ne 'Unknown') { 'Pass' } else { 'Warning' }) `
+                    -Status $(if ($SHObj.JoinDataAvailable) { 'Pass' } else { 'Error' }) `
                     -Severity 'High' `
-                    -Details "$(if (-not $SHObj.JoinDataAvailable) { 'Could not read VM extension data - join type undetermined.' } else { "JoinType: $($SHObj.JoinType)" })" `
+                    -Details "$(if (-not $SHObj.JoinDataAvailable) { 'VM extension inventory does not prove device join state. Validate with guest dsregcmd or authoritative device inventory.' } else { "JoinType: $($SHObj.JoinType)" })" `
                     -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/prerequisites#identity'))
 
                 # ─── CHECK: Azure Monitor Agent (AMA) ───
@@ -1335,9 +1338,9 @@ foreach ($SubId in $SubscriptionId) {
                 [void]$AllChecks.Add((New-CheckResult -Id "SEC-MDE-$VMName" `
                     -Category 'Security' -Name 'Endpoint Protection (MDE)' `
                     -Description 'Microsoft Defender for Endpoint should be deployed on session hosts' `
-                    -Status $(if ($SHObj.MDEInstalled) { 'Pass' } else { 'Warning' }) `
+                    -Status $(if ($SHObj.MDEInstalled) { 'Pass' } else { 'Error' }) `
                     -Severity 'High' `
-                    -Details "MDE Extension: $(if ($SHObj.MDEInstalled) { 'Installed' } else { 'Not found (may be deployed via Intune/GPO)' })" `
+                    -Details "$(if ($SHObj.MDEInstalled) { 'MDE.Windows extension installed' } else { 'MDE.Windows extension not found; extension inventory cannot prove whether MDE was onboarded via Intune, GPO, script, or Defender for Cloud.' })" `
                     -Recommendation 'Deploy Microsoft Defender for Endpoint via VM extension, Intune, or Defender for Cloud auto-provisioning.' `
                     -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/security-recommendations'))
 
@@ -1718,13 +1721,19 @@ foreach ($SubId in $SubscriptionId) {
     Write-Status "Networking" -Level 'SECTION'
     try {
         # Determine whether the whole estate is cloud-native Entra-joined (used by NET-DNS, C-7).
+        # This networking pass runs once per subscription. Scope accumulated inventory to the
+        # current subscription; otherwise every later pass duplicates prior hosts and queries
+        # prior VNets/NSGs under the wrong Az context.
+        $CurrentSessionHosts = @($Discovery.Inventory.SessionHosts | Where-Object {
+            $_.ResourceId -and (($_.ResourceId -split '/')[2] -eq $SubId)
+        })
         $EstateHosts = @($Discovery.Inventory.SessionHosts | Where-Object { $_.JoinDataAvailable })
         $AllEntraJoined = ($EstateHosts.Count -gt 0) -and (@($EstateHosts | Where-Object { $_.JoinType -ne 'Entra ID' }).Count -eq 0)
 
         # Collect unique VNets from session host NICs. Reuse NIC facts cached during the session-host
         # pass (E-7) instead of re-fetching VM + NIC per host.
         $DiscoveredVNetIds = @{}
-        foreach ($SH in $Discovery.Inventory.SessionHosts) {
+        foreach ($SH in $CurrentSessionHosts) {
             $VMName = if ($SH.ResourceId) { ($SH.ResourceId -split '/')[-1] } else { $SH.Name }
             $SubnetId = $SH.NicSubnetId
             if (-not $SubnetId) { continue }
@@ -1747,13 +1756,16 @@ foreach ($SubId in $SubscriptionId) {
         # Get VNet details
         foreach ($VNetId in $DiscoveredVNetIds.Keys) {
             try {
+                $VNetSub  = ($VNetId -split '/')[2]
                 $VNetRG   = ($VNetId -split '/')[4]
                 $VNetName = ($VNetId -split '/')[-1]
+                Set-AzContext -SubscriptionId $VNetSub -ErrorAction Stop -WarningAction SilentlyContinue | Out-Null
                 $VNet = Get-AzVirtualNetwork -ResourceGroupName $VNetRG -Name $VNetName -ErrorAction Stop
 
                 $VNetObj = [PSCustomObject]@{
                     Name          = $VNet.Name
                     Id            = $VNet.Id
+                    SubscriptionId = $VNetSub
                     ResourceGroup = $VNetRG
                     AddressSpace  = $VNet.AddressSpace.AddressPrefixes
                     Subnets       = @($VNet.Subnets | ForEach-Object {
@@ -1818,6 +1830,7 @@ foreach ($SubId in $SubscriptionId) {
                     $RTId = $SubnetEntry.RouteTable.Id
                     if (-not $RTId) { continue }
                     try {
+                        Set-AzContext -SubscriptionId (($RTId -split '/')[2]) -ErrorAction Stop -WarningAction SilentlyContinue | Out-Null
                         $RT = Get-AzRouteTable -ResourceGroupName (($RTId -split '/')[4]) -Name (($RTId -split '/')[-1]) -ErrorAction Stop
                         foreach ($Route in @($RT.Routes)) {
                             if ($Route.AddressPrefix -eq '0.0.0.0/0' -and $Route.NextHopType -in @('VirtualAppliance','VirtualNetworkGateway')) {
@@ -1930,19 +1943,23 @@ foreach ($SubId in $SubscriptionId) {
         }
 
         # Get NSGs on AVD subnets
+        $CurrentVNetEntries = @($Discovery.Inventory.VNets | Where-Object { $_.SubscriptionId -eq $SubId })
         $DiscoveredNSGs = @{}
-        foreach ($VNetEntry in $Discovery.Inventory.VNets) {
+        foreach ($VNetEntry in $CurrentVNetEntries) {
             foreach ($Subnet in $VNetEntry.Subnets) {
                 if ($Subnet.NSG -and -not $DiscoveredNSGs.ContainsKey($Subnet.NSG)) {
                     $DiscoveredNSGs[$Subnet.NSG] = $true
                     try {
+                        $NSGSub  = ($Subnet.NSG -split '/')[2]
                         $NSGRG   = ($Subnet.NSG -split '/')[4]
                         $NSGName = ($Subnet.NSG -split '/')[-1]
+                        Set-AzContext -SubscriptionId $NSGSub -ErrorAction Stop -WarningAction SilentlyContinue | Out-Null
                         $NSG = Get-AzNetworkSecurityGroup -ResourceGroupName $NSGRG -Name $NSGName -ErrorAction Stop
 
                         $Discovery.Inventory.NSGs += [PSCustomObject]@{
                             Name          = $NSG.Name
                             Id            = $NSG.Id
+                            SubscriptionId = $NSGSub
                             ResourceGroup = $NSGRG
                             Rules         = @($NSG.SecurityRules | ForEach-Object {
                                 [PSCustomObject]@{
@@ -1982,7 +1999,7 @@ foreach ($SubId in $SubscriptionId) {
 
                         # CHECK: Port 3389 exposure
                         $ExposedToInternet = @(& $EvalPortExposure 3389)
-                        [void]$AllChecks.Add((New-CheckResult -Id "NET-RDP-$NSGName" `
+                        [void]$AllChecks.Add((New-CheckResult -Id "NET-RDP-$NSGSub-$NSGName" `
                             -Category 'Networking' -Name 'RDP Port 3389 Not Internet-Exposed' `
                             -Description 'Port 3389 should not be open to the internet on AVD subnets' `
                             -Status $(if ($ExposedToInternet.Count -gt 0) { 'Fail' } else { 'Pass' }) `
@@ -2004,7 +2021,7 @@ foreach ($SubId in $SubscriptionId) {
                             $HasAADAllow = @($OutboundRules | Where-Object {
                                 $_.Access -eq 'Allow' -and ($_.DestinationAddressPrefix -match 'AzureActiveDirectory')
                             }).Count -gt 0
-                            [void]$AllChecks.Add((New-CheckResult -Id "NET-AVDOUT-$NSGName" `
+                            [void]$AllChecks.Add((New-CheckResult -Id "NET-AVDOUT-$NSGSub-$NSGName" `
                                 -Category 'Networking' -Name 'AVD Required Outbound Rules' `
                                 -Description 'When default outbound is denied, NSG must allow WindowsVirtualDesktop and AzureAD service tags on 443' `
                                 -Status $(if ($HasWVDAllow -and $HasAADAllow) { 'Pass' }
@@ -2019,7 +2036,7 @@ foreach ($SubId in $SubscriptionId) {
                         # CHECK: SSH port 22 exposure (common misconfiguration)
                         $SshExposed = @(& $EvalPortExposure 22)
                         if ($SshExposed.Count -gt 0) {
-                            [void]$AllChecks.Add((New-CheckResult -Id "NET-SSH-$NSGName" `
+                            [void]$AllChecks.Add((New-CheckResult -Id "NET-SSH-$NSGSub-$NSGName" `
                                 -Category 'Networking' -Name 'SSH Port 22 Not Internet-Exposed' `
                                 -Description 'Port 22 should not be open to the internet' `
                                 -Status 'Fail' -Severity 'High' `
@@ -2028,7 +2045,8 @@ foreach ($SubId in $SubscriptionId) {
                                 -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/security-guide'))
                         }
                     } catch {
-                        [void]$AllChecks.Add((New-CheckResult -Id "NET-RDP-$($Subnet.NSG -split '/' | Select-Object -Last 1)" `
+                        $FailedNSGSub = ($Subnet.NSG -split '/')[2]
+                        [void]$AllChecks.Add((New-CheckResult -Id "NET-RDP-$FailedNSGSub-$($Subnet.NSG -split '/' | Select-Object -Last 1)" `
                             -Category 'Networking' -Name 'RDP Port 3389 Not Internet-Exposed' `
                             -Description 'Port 3389 should not be open to the internet on AVD subnets' `
                             -Status 'Error' -Severity 'Critical' `
@@ -2044,7 +2062,7 @@ foreach ($SubId in $SubscriptionId) {
     }
 
         # Populate top-level Subnets and UDRs arrays from VNet data
-        foreach ($VNetEntry in $Discovery.Inventory.VNets) {
+        foreach ($VNetEntry in $CurrentVNetEntries) {
             foreach ($SubnetEntry in $VNetEntry.Subnets) {
                 $Discovery.Inventory.Subnets += [PSCustomObject]@{
                     VNetName      = $VNetEntry.Name
