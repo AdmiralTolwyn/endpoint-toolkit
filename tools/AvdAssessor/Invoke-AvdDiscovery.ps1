@@ -1727,7 +1727,7 @@ foreach ($SubId in $SubscriptionId) {
         $CurrentSessionHosts = @($Discovery.Inventory.SessionHosts | Where-Object {
             $_.ResourceId -and (($_.ResourceId -split '/')[2] -eq $SubId)
         })
-        $EstateHosts = @($Discovery.Inventory.SessionHosts | Where-Object { $_.JoinDataAvailable })
+        $EstateHosts = @($CurrentSessionHosts | Where-Object { $_.JoinDataAvailable })
         $AllEntraJoined = ($EstateHosts.Count -gt 0) -and (@($EstateHosts | Where-Object { $_.JoinType -ne 'Entra ID' }).Count -eq 0)
 
         # Collect unique VNets from session host NICs. Reuse NIC facts cached during the session-host
@@ -1911,6 +1911,7 @@ foreach ($SubId in $SubscriptionId) {
                     $Discovery.Inventory.VNets += [PSCustomObject]@{
                         Name          = $FallbackVNet.Name
                         Id            = $FallbackVNet.ResourceId
+                        SubscriptionId = $VNetSub
                         ResourceGroup = $VNetRG
                         AddressSpace  = @($FbProps.addressSpace.addressPrefixes)
                         Subnets       = @($FbProps.subnets | ForEach-Object {
