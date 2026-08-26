@@ -28,7 +28,7 @@
     .\Invoke-AvdDiscovery.ps1 -IncludeGuestChecks
 .NOTES
     Author : Anton Romanyuk
-    Version: 0.6.3
+    Version: 0.6.4
     Date   : 2026-08-26
 #>
 
@@ -57,7 +57,7 @@ $env:PSModulePath = ($env:PSModulePath -split ';' |
 $ScriptRoot = $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($ScriptRoot)) { $ScriptRoot = $PWD.Path }
 
-$ScriptVersion = '0.6.3'
+$ScriptVersion = '0.6.4'
 
 # ═══════════════════════════════════════════════════════════════════════════
 # HELPERS
@@ -333,11 +333,17 @@ function Invoke-AvdLaQuery {
     }
     try {
         $Parts = $WorkspaceResourceId -split '/'
+        $SubIdx = -1
         $RgIdx = -1
-        for ($i = 0; $i -lt $Parts.Length; $i++) { if ($Parts[$i] -ieq 'resourceGroups') { $RgIdx = $i; break } }
-        if ($RgIdx -lt 0) { return @{ Ok = $false; Error = "Could not parse workspace resource ID: $WorkspaceResourceId"; Rows = @() } }
+        for ($i = 0; $i -lt $Parts.Length; $i++) {
+            if ($Parts[$i] -ieq 'subscriptions') { $SubIdx = $i }
+            if ($Parts[$i] -ieq 'resourceGroups') { $RgIdx = $i }
+        }
+        if ($SubIdx -lt 0 -or $RgIdx -lt 0) { return @{ Ok = $false; Error = "Could not parse workspace resource ID: $WorkspaceResourceId"; Rows = @() } }
+        $WsSub  = $Parts[$SubIdx + 1]
         $WsRg   = $Parts[$RgIdx + 1]
         $WsName = $Parts[-1]
+        Set-AzContext -SubscriptionId $WsSub -ErrorAction Stop -WarningAction SilentlyContinue | Out-Null
         $Ws = Get-AzOperationalInsightsWorkspace -ResourceGroupName $WsRg -Name $WsName -ErrorAction Stop
         $CustId = if ($Ws.CustomerId -and $Ws.CustomerId.Guid) { $Ws.CustomerId.Guid } else { "$($Ws.CustomerId)" }
         if (-not $CustId) { return @{ Ok = $false; Error = "Workspace $WsName has no CustomerId"; Rows = @() } }
@@ -1002,19 +1008,22 @@ foreach ($SubId in $SubscriptionId) {
                 # may predate extension retention or be managed outside this deployment path.
                 $JoinDataAvailable = $false
                 if ($RawExts) {
+                    # Az.Compute model and instance-view objects expose extension identity in
+                    # different fields. Preserve all useful forms (for example
+                    # Microsoft.Azure.Monitor.AzureMonitorWindowsAgent and vm/extensionName).
                     $ExtList = @($RawExts | ForEach-Object {
-                        $ExtType = if ($_.VirtualMachineExtensionType) { $_.VirtualMachineExtensionType } else { $_.Type }
-                        $ExtType
-                    } | Where-Object { $_ })
-                    $HasAADExt = 'AADLoginForWindows' -in $ExtList
-                    $HasDJExt  = 'JsonADDomainExtension' -in $ExtList
+                        @($_.VirtualMachineExtensionType, $_.Type, $_.Name) |
+                            Where-Object { $_ } | ForEach-Object { "$_" }
+                    } | Sort-Object -Unique)
+                    $HasAADExt = @($ExtList | Where-Object { $_ -match '(^|[./])AADLoginForWindows$' }).Count -gt 0
+                    $HasDJExt  = @($ExtList | Where-Object { $_ -match '(^|[./])JsonADDomainExtension$' }).Count -gt 0
                     # The domain-join extension alone cannot distinguish pure AD DS from Hybrid (Hybrid = AD join
                     # plus Entra Connect sync, which is not visible from VM extensions), so report both (C-8).
                     $SHJoinType = if ($HasAADExt -and $HasDJExt) { 'Hybrid' } elseif ($HasAADExt) { 'Entra ID' } elseif ($HasDJExt) { 'AD DS or Hybrid' } else { 'Unknown' }
                     $JoinDataAvailable = $SHJoinType -ne 'Unknown'
-                    $HasAMAExt = 'AzureMonitorWindowsAgent' -in $ExtList
+                    $HasAMAExt = @($ExtList | Where-Object { $_ -match '(^|[./])AzureMonitorWindowsAgent$' }).Count -gt 0
                     # MicrosoftMonitoringAgent (MMA) was retired Aug 2024 and is NOT MDE - only MDE.Windows counts (B-4).
-                    $HasMDEExt = @($ExtList | Where-Object { $_ -eq 'MDE.Windows' }).Count -gt 0
+                    $HasMDEExt = @($ExtList | Where-Object { $_ -match '(^|[./])MDE\.Windows$' }).Count -gt 0
                 }
                 if ($VMModel -and $VMModel.SecurityProfile) {
                     $HasTrustedLaunch = $VMModel.SecurityProfile.SecurityType -eq 'TrustedLaunch'
@@ -3723,17 +3732,25 @@ Write-Status "AVD Insights (Log Analytics KQL)" -Level 'SECTION'
 $KqlWsIds = @($LAWorkspaceIds.Keys)
 $OpInsightsPresent = [bool](Get-Module -ListAvailable -Name Az.OperationalInsights -ErrorAction SilentlyContinue)
 
-# Data Collection Rule facts (supplementary for MON-008/009). Best-effort in the current context.
-$DcrHasPerf = $false; $DcrHasEvent = $false
-try {
-    $DcrSubId = (Get-AzContext).Subscription.Id
-    foreach ($Dcr in @(Get-AzDataCollectionRule -SubscriptionId $DcrSubId -ErrorAction Stop)) {
-        $DcrJson = ''
-        try { $DcrJson = ($Dcr | ConvertTo-Json -Depth 8 -Compress) } catch { }
-        if ($DcrJson -match '(?i)performanceCounters|DataSourcePerformanceCounter') { $DcrHasPerf = $true }
-        if ($DcrJson -match '(?i)windowsEventLogs|DataSourceWindowsEventLog') { $DcrHasEvent = $true }
-    }
-} catch { }
+# Data Collection Rule facts (supplementary for MON-008/009), scoped to each
+# subscription represented by the harvested Log Analytics workspaces.
+$DcrPerfBySub = @{}; $DcrEventBySub = @{}
+$DcrSubscriptionIds = @($KqlWsIds | ForEach-Object {
+    $Parts = $_ -split '/'
+    if ($Parts.Count -gt 2 -and $Parts[1] -ieq 'subscriptions') { $Parts[2] }
+} | Where-Object { $_ } | Sort-Object -Unique)
+foreach ($DcrSubId in $DcrSubscriptionIds) {
+    $DcrPerfBySub[$DcrSubId] = $false
+    $DcrEventBySub[$DcrSubId] = $false
+    try {
+        foreach ($Dcr in @(Get-AzDataCollectionRule -SubscriptionId $DcrSubId -ErrorAction Stop)) {
+            $DcrJson = ''
+            try { $DcrJson = ($Dcr | ConvertTo-Json -Depth 8 -Compress) } catch { }
+            if ($DcrJson -match '(?i)performanceCounters|DataSourcePerformanceCounter') { $DcrPerfBySub[$DcrSubId] = $true }
+            if ($DcrJson -match '(?i)windowsEventLogs|DataSourceWindowsEventLog') { $DcrEventBySub[$DcrSubId] = $true }
+        }
+    } catch { }
+}
 
 # FSLogix storage accounts (for MON-010 scoping).
 $FslStorage = @($Discovery.Inventory.StorageAccounts | Where-Object { $_.LikelyFSLogix })
@@ -3771,7 +3788,11 @@ if (-not $OpInsightsPresent) {
     Write-Status "  $NoWs" -Level 'WARN'
 } else {
     foreach ($WsId in $KqlWsIds) {
-        $WsName = ($WsId -split '/')[-1]
+        $WsParts = $WsId -split '/'
+        $WsName = $WsParts[-1]
+        $WsSubId = if ($WsParts.Count -gt 2 -and $WsParts[1] -ieq 'subscriptions') { $WsParts[2] } else { '' }
+        $DcrHasPerf = $WsSubId -and [bool]$DcrPerfBySub[$WsSubId]
+        $DcrHasEvent = $WsSubId -and [bool]$DcrEventBySub[$WsSubId]
 
         # --- NET-008: latency (WVDConnectionNetworkData) ---
         $LatQ = 'WVDConnectionNetworkData | where TimeGenerated > ago(7d) | summarize AvgRtt = avg(EstRoundTripTimeInMs)'
@@ -3807,9 +3828,9 @@ if (-not $OpInsightsPresent) {
         } else {
             $PerfRows = if ($PerfR.Rows.Count -gt 0 -and $PerfR.Rows[0].Rows) { [int64]$PerfR.Rows[0].Rows } else { 0 }
             if ($PerfRows -gt 0) {
-                [void]$AllChecks.Add((New-CheckResult -Id "MON-PERF-$WsName" -Category 'Monitoring' -Name 'Performance Counters Configured' -Description 'Session-host performance counters should be collected' -Status 'Pass' -Severity 'Medium' -Details "Workspace ${WsName}: session-host performance counters (e.g. User Input Delay) present in Perf ($PerfRows rows/7d). DCR perf sources: $DcrHasPerf." -Recommendation 'Keep the session-host performance counter Data Collection Rule assigned.' -Reference $PerfRef -Evidence @{ Workspace = $WsName; PerfRows = $PerfRows; DcrHasPerf = $DcrHasPerf }))
+                [void]$AllChecks.Add((New-CheckResult -Id "MON-PERF-$WsName" -Category 'Monitoring' -Name 'Performance Counters Configured' -Description 'Session-host performance counters should be collected' -Status 'Pass' -Severity 'Medium' -Details "Workspace ${WsName}: session-host performance counters (e.g. User Input Delay) present in Perf ($PerfRows rows/7d). Performance-counter DCR found in workspace subscription: $DcrHasPerf." -Recommendation 'Keep the session-host performance counter Data Collection Rule assigned.' -Reference $PerfRef -Evidence @{ Workspace = $WsName; PerfRows = $PerfRows; DcrHasPerf = $DcrHasPerf }))
             } else {
-                [void]$AllChecks.Add((New-CheckResult -Id "MON-PERF-$WsName" -Category 'Monitoring' -Name 'Performance Counters Configured' -Description 'Session-host performance counters should be collected' -Status 'Warning' -Severity 'Medium' -Details "Workspace ${WsName}: no session-host performance counters in Perf (last 7d). $(if ($DcrHasPerf) { 'A Data Collection Rule with performance counters exists but no data is arriving.' } else { 'No Data Collection Rule with performance counters found.' })" -Recommendation 'Deploy/assign a Data Collection Rule collecting AVD performance counters (User Input Delay per Session, Processor, Memory) to session hosts.' -Reference $PerfRef -Evidence @{ Workspace = $WsName; DcrHasPerf = $DcrHasPerf }))
+                [void]$AllChecks.Add((New-CheckResult -Id "MON-PERF-$WsName" -Category 'Monitoring' -Name 'Performance Counters Configured' -Description 'Session-host performance counters should be collected' -Status 'Warning' -Severity 'Medium' -Details "Workspace ${WsName}: no session-host performance counters in Perf (last 7d). $(if ($DcrHasPerf) { 'A performance-counter DCR exists in this subscription, but that does not prove assignment to these session hosts or delivery to this workspace.' } else { 'No performance-counter DCR was found in this workspace subscription.' })" -Recommendation 'Verify the DCR is associated with the session hosts, includes the required AVD performance counters, and sends them to this Log Analytics workspace.' -Reference $PerfRef -Evidence @{ Workspace = $WsName; DcrHasPerf = $DcrHasPerf }))
             }
         }
 
@@ -3821,9 +3842,9 @@ if (-not $OpInsightsPresent) {
         } else {
             $EvtRows = if ($EvtR.Rows.Count -gt 0 -and $EvtR.Rows[0].Rows) { [int64]$EvtR.Rows[0].Rows } else { 0 }
             if ($EvtRows -gt 0) {
-                [void]$AllChecks.Add((New-CheckResult -Id "MON-EVENTS-$WsName" -Category 'Monitoring' -Name 'Windows Event Logs Collected' -Description 'Windows event logs should be collected from session hosts' -Status 'Pass' -Severity 'Medium' -Details "Workspace ${WsName}: Windows event log data present in Event table ($EvtRows rows/7d). DCR event sources: $DcrHasEvent." -Recommendation 'Keep the Windows event log Data Collection Rule assigned to session hosts.' -Reference $EvtRef -Evidence @{ Workspace = $WsName; EventRows = $EvtRows; DcrHasEvent = $DcrHasEvent }))
+                [void]$AllChecks.Add((New-CheckResult -Id "MON-EVENTS-$WsName" -Category 'Monitoring' -Name 'Windows Event Logs Collected' -Description 'Windows event logs should be collected from session hosts' -Status 'Pass' -Severity 'Medium' -Details "Workspace ${WsName}: Windows event log data present in Event table ($EvtRows rows/7d). Event-log DCR found in workspace subscription: $DcrHasEvent." -Recommendation 'Keep the Windows event log Data Collection Rule assigned to session hosts.' -Reference $EvtRef -Evidence @{ Workspace = $WsName; EventRows = $EvtRows; DcrHasEvent = $DcrHasEvent }))
             } else {
-                [void]$AllChecks.Add((New-CheckResult -Id "MON-EVENTS-$WsName" -Category 'Monitoring' -Name 'Windows Event Logs Collected' -Description 'Windows event logs should be collected from session hosts' -Status 'Warning' -Severity 'Medium' -Details "Workspace ${WsName}: no Windows event log data in Event table (last 7d). $(if ($DcrHasEvent) { 'A Data Collection Rule with Windows event logs exists but no data is arriving.' } else { 'No Data Collection Rule with Windows event log sources found.' })" -Recommendation 'Deploy/assign a Data Collection Rule with Windows event log data sources to session hosts.' -Reference $EvtRef -Evidence @{ Workspace = $WsName; DcrHasEvent = $DcrHasEvent }))
+                [void]$AllChecks.Add((New-CheckResult -Id "MON-EVENTS-$WsName" -Category 'Monitoring' -Name 'Windows Event Logs Collected' -Description 'Windows event logs should be collected from session hosts' -Status 'Warning' -Severity 'Medium' -Details "Workspace ${WsName}: no Windows event log data in Event table (last 7d). $(if ($DcrHasEvent) { 'An event-log DCR exists in this subscription, but that does not prove assignment to these session hosts or delivery to this workspace.' } else { 'No event-log DCR was found in this workspace subscription.' })" -Recommendation 'Verify the DCR is associated with the session hosts, contains the required Windows event log sources, and sends them to this Log Analytics workspace.' -Reference $EvtRef -Evidence @{ Workspace = $WsName; DcrHasEvent = $DcrHasEvent }))
             }
         }
 
