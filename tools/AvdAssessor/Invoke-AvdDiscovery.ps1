@@ -28,8 +28,8 @@
     .\Invoke-AvdDiscovery.ps1 -IncludeGuestChecks
 .NOTES
     Author : Anton Romanyuk
-    Version: 0.6.1
-    Date   : 2026-08-25
+    Version: 0.6.2
+    Date   : 2026-08-26
 #>
 
 [CmdletBinding()]
@@ -57,7 +57,7 @@ $env:PSModulePath = ($env:PSModulePath -split ';' |
 $ScriptRoot = $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($ScriptRoot)) { $ScriptRoot = $PWD.Path }
 
-$ScriptVersion = '0.6.1'
+$ScriptVersion = '0.6.2'
 
 # ═══════════════════════════════════════════════════════════════════════════
 # HELPERS
@@ -3154,7 +3154,7 @@ try {
 # ─── SECURITY BASELINE / REGULATORY COMPLIANCE (SEC-013) ──────────────
 Write-Status "Security Baseline" -Level 'SECTION'
 try {
-    $ComplianceStandards = @(Get-AzSecurityRegulatoryComplianceStandard -ErrorAction Stop)
+    $ComplianceStandards = @(Get-AzRegulatoryComplianceStandard -ErrorAction Stop)
     $Benchmark = @($ComplianceStandards | Where-Object { $_.Name -match 'Azure-Security-Benchmark|Microsoft-cloud-security-benchmark' }) | Select-Object -First 1
     if ($Benchmark) {
         $Passed = [double]($Benchmark.PassedControls | ForEach-Object { $_ })
