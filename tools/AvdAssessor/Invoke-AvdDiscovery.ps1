@@ -443,6 +443,18 @@ if (-not $SkipLogin) {
     try {
         $Context = Get-AzContext -ErrorAction SilentlyContinue
         if ($Context -and $Context.Account) {
+            try {
+                Get-AzAccessToken -ResourceUrl 'https://management.azure.com/' -ErrorAction Stop | Out-Null
+            } catch {
+                Write-Status "Cached Azure session expired; launching interactive login..." -Level 'WARN'
+                $TenantId = if ($Context.Tenant -and $Context.Tenant.Id) { $Context.Tenant.Id } else { $null }
+                if ($TenantId) {
+                    Connect-AzAccount -TenantId $TenantId -ErrorAction Stop | Out-Null
+                } else {
+                    Connect-AzAccount -ErrorAction Stop | Out-Null
+                }
+                $Context = Get-AzContext -ErrorAction Stop
+            }
             Write-Status "$($Context.Account.Id)" -Level 'SUCCESS'
             Write-Status "Subscription: $($Context.Subscription.Name)" -Level 'INFO'
         } else {
@@ -461,6 +473,12 @@ if (-not $SkipLogin) {
         Write-Status "No existing Az context. Run Connect-AzAccount first or remove -SkipLogin." -Level 'ERROR'
         exit 1
     }
+    try {
+        Get-AzAccessToken -ResourceUrl 'https://management.azure.com/' -ErrorAction Stop | Out-Null
+    } catch {
+        Write-Status "Existing Az context is expired. Run Connect-AzAccount first or remove -SkipLogin." -Level 'ERROR'
+        exit 1
+    }
     Write-Status "$($Context.Account.Id)" -Level 'SUCCESS'
 }
 
@@ -468,11 +486,16 @@ if (-not $SkipLogin) {
 if (-not $SubscriptionId -or $SubscriptionId.Count -eq 0) {
     # Show all available subscriptions and let user pick
     Write-Status "Subscriptions" -Level 'SECTION'
-    $AllSubs = @(Get-AzSubscription -WarningAction SilentlyContinue -ErrorAction Stop |
-        Where-Object { $_.State -eq 'Enabled' } | Sort-Object Name)
+    try {
+        $AllSubs = @(Get-AzSubscription -TenantId $Context.Tenant.Id -WarningAction SilentlyContinue -ErrorAction Stop |
+            Where-Object { -not $_.State -or $_.State -eq 'Enabled' } | Sort-Object Name)
+    } catch {
+        Write-Status "Could not enumerate subscriptions: $($_.Exception.Message)" -Level 'ERROR'
+        exit 1
+    }
 
     if ($AllSubs.Count -eq 0) {
-        Write-Status "No enabled subscriptions found" -Level 'ERROR'
+        Write-Status "No enabled subscriptions returned for tenant $($Context.Tenant.Id)" -Level 'ERROR'
         exit 1
     } elseif ($AllSubs.Count -eq 1) {
         $SubscriptionId = @($AllSubs[0].Id)
