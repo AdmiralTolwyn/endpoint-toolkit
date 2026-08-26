@@ -28,7 +28,7 @@
     .\Invoke-AvdDiscovery.ps1 -IncludeGuestChecks
 .NOTES
     Author : Anton Romanyuk
-    Version: 0.6.2
+    Version: 0.6.3
     Date   : 2026-08-26
 #>
 
@@ -57,7 +57,7 @@ $env:PSModulePath = ($env:PSModulePath -split ';' |
 $ScriptRoot = $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($ScriptRoot)) { $ScriptRoot = $PWD.Path }
 
-$ScriptVersion = '0.6.2'
+$ScriptVersion = '0.6.3'
 
 # ═══════════════════════════════════════════════════════════════════════════
 # HELPERS
@@ -836,11 +836,11 @@ foreach ($SubId in $SubscriptionId) {
                 } else { @() }
                 [void]$AllChecks.Add((New-CheckResult -Id "SEC-HPPL-$($HP.Name)" `
                     -Category 'Security' -Name 'Host Pool Private Link' `
-                    -Description 'AVD host pools should use Private Link for control-plane traffic' `
-                    -Status $(if ($HPPrivateEndpoints.Count -gt 0) { 'Pass' } else { 'Warning' }) `
+                    -Description 'Private Link is an optional isolation control for environments requiring private-only AVD control-plane access' `
+                    -Status $(if ($HPPrivateEndpoints.Count -gt 0) { 'Pass' } else { 'N/A' }) `
                     -Severity 'Medium' `
-                    -Details "PrivateEndpoints: $($HPPrivateEndpoints.Count)" `
-                    -Recommendation 'Configure AVD Private Link to keep session brokering traffic off the public internet.' `
+                    -Details "PrivateEndpoints: $($HPPrivateEndpoints.Count)$(if ($HPPrivateEndpoints.Count -eq 0) { ' (optional; public AVD endpoints remain Microsoft-managed and TLS-protected)' })" `
+                    -Recommendation 'Consider AVD Private Link only when policy requires private-only control-plane access and clients have connectivity through peering, VPN, or ExpressRoute.' `
                     -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/private-link-overview' `
                     -Evidence @{ HostPool = $HP.Name; PECount = $HPPrivateEndpoints.Count }))
             } catch {
@@ -858,17 +858,17 @@ foreach ($SubId in $SubscriptionId) {
                 $HPPE = if ($HPRes2 -and $HPRes2.Properties.privateEndpointConnections) { @($HPRes2.Properties.privateEndpointConnections) } else { @() }
                 [void]$AllChecks.Add((New-CheckResult -Id "NET-PL-$($HP.Name)" `
                     -Category 'Networking' -Name 'Private Link / Private Endpoints' `
-                    -Description 'AVD control-plane resources should use Private Link to keep management traffic off the public internet' `
-                    -Status $(if ($HPPE.Count -gt 0) { 'Pass' } else { 'Warning' }) `
+                    -Description 'Private Link is an optional architecture pattern for private-only AVD control-plane access' `
+                    -Status $(if ($HPPE.Count -gt 0) { 'Pass' } else { 'N/A' }) `
                     -Severity 'Medium' `
-                    -Details "HostPool $($HP.Name): privateEndpointConnections: $($HPPE.Count)" `
-                    -Recommendation 'Configure AVD Private Link (feed/broker/gateway) so control-plane traffic stays on the Microsoft backbone. RDP Shortpath over Private Link is supported.' `
+                    -Details "HostPool $($HP.Name): privateEndpointConnections: $($HPPE.Count)$(if ($HPPE.Count -eq 0) { ' (optional; no private-access requirement identified)' })" `
+                    -Recommendation 'Use AVD Private Link when policy requires private-only feed, broker, or gateway access. Validate DNS, routing, and client connectivity through peering, VPN, or ExpressRoute before adoption.' `
                     -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/private-link-overview' `
                     -Evidence @{ HostPool = $HP.Name; PECount = $HPPE.Count }))
             } catch {
                 [void]$AllChecks.Add((New-CheckResult -Id "NET-PL-$($HP.Name)" `
                     -Category 'Networking' -Name 'Private Link / Private Endpoints' `
-                    -Description 'AVD control-plane resources should use Private Link' `
+                    -Description 'Private Link is an optional architecture pattern for private-only AVD control-plane access' `
                     -Status 'Error' -Severity 'Medium' `
                     -Details "Could not assess Private Link: $($_.Exception.Message)" `
                     -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/private-link-overview'))
