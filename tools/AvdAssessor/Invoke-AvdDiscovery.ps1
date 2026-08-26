@@ -1,5 +1,4 @@
-﻿#Requires -Version 5.1
-<#
+﻿<#
 .SYNOPSIS
     AVD Discovery - Automated Azure Virtual Desktop environment assessment.
 .DESCRIPTION
@@ -400,6 +399,9 @@ foreach ($Mod in $RequiredModules) {
     if (-not $Installed) {
         $Missing += $Mod.Name
         Write-Status "$($Mod.Name) >= $($Mod.MinVersion) - MISSING" -Level 'ERROR'
+    } elseif ($Installed.Version -lt [version]$Mod.MinVersion) {
+        $Missing += $Mod.Name
+        Write-Status "$($Mod.Name) v$($Installed.Version) - OUTDATED (requires >= $($Mod.MinVersion))" -Level 'ERROR'
     } else {
         Write-Status "$($Mod.Name) v$($Installed.Version)" -Level 'SUCCESS'
     }
@@ -423,8 +425,10 @@ $OptionalModules = @(
 foreach ($Opt in $OptionalModules) {
     $OptInstalled = Get-Module -ListAvailable -Name $Opt.Name -ErrorAction SilentlyContinue |
                     Sort-Object Version -Descending | Select-Object -First 1
-    if ($OptInstalled) {
+    if ($OptInstalled -and $OptInstalled.Version -ge [version]$Opt.MinVersion) {
         Write-Status "$($Opt.Name) v$($OptInstalled.Version) (optional)" -Level 'SUCCESS'
+    } elseif ($OptInstalled) {
+        Write-Status "$($Opt.Name) v$($OptInstalled.Version) is below required v$($Opt.MinVersion) (optional) - $($Opt.Reason) will report Error" -Level 'WARN'
     } else {
         Write-Status "$($Opt.Name) not installed (optional) - $($Opt.Reason) will report Error" -Level 'WARN'
     }
