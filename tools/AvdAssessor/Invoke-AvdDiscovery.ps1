@@ -609,6 +609,7 @@ foreach ($SubId in $SubscriptionId) {
 
     # ─── HOST POOLS ───────────────────────────────────────────────────────
     Write-Status "Host Pools" -Level 'SECTION'
+    $HostPools = @()
     try {
         $HostPools = @(Get-AzWvdHostPool -ErrorAction Stop)
         Write-Status "  Found $($HostPools.Count) host pool(s)" -Level 'SUCCESS'
@@ -930,6 +931,12 @@ foreach ($SubId in $SubscriptionId) {
     } catch {
         Write-Status "  Error discovering host pools: $($_.Exception.Message)" -Level 'ERROR'
         $Discovery.Errors += "Host pool discovery failed: $($_.Exception.Message)"
+        continue
+    }
+
+    if ($HostPools.Count -eq 0) {
+        Write-Status "No AVD host pools found; skipping AVD checks for this subscription" -Level 'INFO'
+        continue
     }
 
     # ─── SESSION HOSTS ────────────────────────────────────────────────────
