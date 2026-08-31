@@ -112,6 +112,37 @@ Test-Assert "All engine functions extracted from production ($($extracted.Count)
     ($extracted.Count -eq $WantedFunctions.Count) "Missing: $(@($WantedFunctions | Where-Object { $_ -notin $extracted }) -join ', ')"
 Test-Assert 'SecureDefaultTable extracted' ($null -ne $Global:SecureDefaultTable -and $Global:SecureDefaultTable.Count -ge 5)
 
+# The collector must preserve registry/environment evidence when CIM itself is
+# unhealthy (for example HRESULT 0x80070534 from an orphaned account/SID mapping).
+$CollectorPath = Join-Path $Root 'Invoke-BaselineCollection.ps1'
+$collectorTokens = $null; $collectorParseErrors = $null
+$collectorAst = [System.Management.Automation.Language.Parser]::ParseFile(
+    $CollectorPath, [ref]$collectorTokens, [ref]$collectorParseErrors
+)
+$systemInfoAssignment = $collectorAst.FindAll({ param($node)
+    $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+    $node.Left.Extent.Text -eq '$systemInfo'
+}, $true) | Select-Object -First 1
+$systemInfoCommand = $systemInfoAssignment.Right.PipelineElements[0]
+$systemInfoArgument = $systemInfoCommand.CommandElements | Where-Object {
+    $_ -is [System.Management.Automation.Language.ScriptBlockExpressionAst]
+} | Select-Object -First 1
+$systemInfoText = $systemInfoArgument.ScriptBlock.Extent.Text.Trim()
+$systemInfoBlock = [ScriptBlock]::Create($systemInfoText.Substring(1, $systemInfoText.Length - 2))
+function Get-CimInstance { throw [System.Exception]::new('HRESULT 0x80070534: No mapping between account names and security IDs was done.') }
+function Confirm-SecureBootUEFI { return $true }
+try {
+    $cimFailureResult = & $systemInfoBlock
+} finally {
+    Remove-Item Function:\Get-CimInstance, Function:\Confirm-SecureBootUEFI -ErrorAction SilentlyContinue
+}
+Test-Assert 'Collector System Information survives CIM account/SID failure' `
+    (-not $cimFailureResult._collectionFailed -and $cimFailureResult.ComputerName)
+Test-Assert 'Collector records each mandatory CIM failure as a warning' `
+    (@($cimFailureResult._collectionWarnings).Count -ge 3)
+Test-Assert 'Collector retains registry OS build when CIM fails' `
+    ($cimFailureResult.osBuild -and $cimFailureResult.osBuild -ne 'Unknown')
+
 # Minimal check-object factory for synthetic tests (mirrors the fields the engine reads)
 function New-TestCheck {
     param([hashtable]$Props)

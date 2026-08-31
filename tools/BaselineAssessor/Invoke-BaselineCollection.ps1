@@ -28,8 +28,8 @@
     Suppress console output (for automation).
 .NOTES
     Author : Anton Romanyuk
-    Version: 1.1.0
-    Date   : 2026-07-18
+    Version: 1.1.1
+    Date   : 2026-08-31
     Requires: PowerShell 5.1, Local Admin, No external modules
     Runs headless on arbitrary Windows targets (client, member server, DC, Server Core).
 .EXAMPLE
@@ -54,7 +54,7 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
-$Script:CollectorVersion = '1.1.0'
+$Script:CollectorVersion = '1.1.1'
 $Script:StartTime        = [DateTime]::Now
 # Area 3 (GPO/gpresult) only runs when -IncludeGpoData; Area 22 (events) only when not -SkipEventCollection.
 $Script:TotalAreas       = 20
@@ -388,9 +388,19 @@ if (-not $Quiet) {
 # ═══════════════════════════════════════════════════════════════════════
 
 $systemInfo = Invoke-CollectionArea -Step 1 -Name 'System Information' -Sections @('systemInfo') -Script {
-    $os  = Get-CimInstance Win32_OperatingSystem
-    $cs  = Get-CimInstance Win32_ComputerSystem
-    $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
+    $cimWarnings = [System.Collections.ArrayList]::new()
+    $os = try { Get-CimInstance Win32_OperatingSystem -ErrorAction Stop } catch {
+        [void]$cimWarnings.Add("Win32_OperatingSystem: $($_.Exception.Message)")
+        $null
+    }
+    $cs = try { Get-CimInstance Win32_ComputerSystem -ErrorAction Stop } catch {
+        [void]$cimWarnings.Add("Win32_ComputerSystem: $($_.Exception.Message)")
+        $null
+    }
+    $cpu = try { Get-CimInstance Win32_Processor -ErrorAction Stop | Select-Object -First 1 } catch {
+        [void]$cimWarnings.Add("Win32_Processor: $($_.Exception.Message)")
+        $null
+    }
 
     # TPM: distinguish "genuinely absent" ($false) from "could not determine" ($null on error).
     # Get-CimInstance returns nothing (no throw) when the machine has no TPM.
@@ -409,24 +419,36 @@ $systemInfo = Invoke-CollectionArea -Step 1 -Name 'System Information' -Sections
         if ($_.Exception.Message -match 'not supported|platform|not enabled|not available') { $sbState = 'NotSupported' } else { $sbState = 'Unknown' }
     }
 
-    $dv  = try {
-        $reg = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction Stop
-        $reg.DisplayVersion
-    } catch { '' }
+    $reg = try { Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction Stop } catch { $null }
+    $dv = if ($reg) { "$($reg.DisplayVersion)" } else { '' }
 
     # ProductType: 1 = Workstation (client), 2 = Domain Controller, 3 = Member/Standalone Server
-    $productType = try { [int]$os.ProductType } catch { 1 }
-    $isServer    = ($productType -ne 1)
-    $isDomainController = ($productType -eq 2)
+    $productType = if ($os -and $null -ne $os.ProductType) { [int]$os.ProductType } else { $null }
+    $isServer = if ($null -ne $productType) {
+        $productType -ne 1
+    } elseif ($reg -and $reg.InstallationType) {
+        "$($reg.InstallationType)" -match 'Server'
+    } else { $null }
+    $isDomainController = if ($null -ne $productType) { $productType -eq 2 } else { $null }
 
     # Build-to-version mapping with support status. Same build number can map to a client
     # OR a server SKU (e.g. 26100 = Win11 24H2 client AND Server 2025) — disambiguate on ProductType.
-    $buildNum = $os.BuildNumber.ToString()
+    $buildNum = if ($os -and $os.BuildNumber) {
+        "$($os.BuildNumber)"
+    } elseif ($reg -and $reg.CurrentBuildNumber) {
+        "$($reg.CurrentBuildNumber)"
+    } else { 'Unknown' }
     $versionName = $dv
     $isSupported = $null
     $endOfService = $null
-    $isWindows11 = $os.Caption -match 'Windows 11'
-    if ($isServer) {
+    $osCaption = if ($os -and $os.Caption) { "$($os.Caption)" } elseif ($reg -and $reg.ProductName) { "$($reg.ProductName)" } else { 'Windows' }
+    $osVersion = if ($os -and $os.Version) { "$($os.Version)" } elseif ($reg -and $reg.CurrentVersion) { "$($reg.CurrentVersion)" } else { $null }
+    $buildInt = 0
+    if ($isServer -eq $false -and [int]::TryParse($buildNum, [ref]$buildInt) -and $buildInt -ge 22000) {
+        $osCaption = $osCaption -replace '^Windows 10', 'Windows 11'
+    }
+    $isWindows11 = $osCaption -match 'Windows 11'
+    if ($isServer -eq $true) {
         switch ($buildNum) {
             '14393' { $versionName = 'Server 2016'; $endOfService = '2027-01-12'; $isSupported = $true }
             '17763' { $versionName = 'Server 2019'; $endOfService = '2029-01-09'; $isSupported = $true }
@@ -434,7 +456,7 @@ $systemInfo = Invoke-CollectionArea -Step 1 -Name 'System Information' -Sections
             '25398' { $versionName = 'Server 23H2'; $endOfService = '2025-10-24'; $isSupported = $true }
             '26100' { $versionName = 'Server 2025'; $endOfService = '2034-10-10'; $isSupported = $true }
         }
-    } else {
+    } elseif ($isServer -eq $false) {
         switch ($buildNum) {
             '22000' { $versionName = '21H2'; $endOfService = '2024-10-08'; $isSupported = $false }
             '22621' { $versionName = '22H2'; $endOfService = '2025-10-14'; $isSupported = $true }
@@ -447,10 +469,10 @@ $systemInfo = Invoke-CollectionArea -Step 1 -Name 'System Information' -Sections
 
     $result = @{
         ComputerName     = $env:COMPUTERNAME
-        OSCaption        = $os.Caption
-        osVersion        = $os.Version
-        osBuild          = $os.BuildNumber
-        osEdition        = $os.Caption
+        OSCaption        = $osCaption
+        osVersion        = $osVersion
+        osBuild          = $buildNum
+        osEdition        = $osCaption
         displayVersion   = $dv
         versionName      = $versionName
         isWindows11      = $isWindows11
@@ -460,21 +482,22 @@ $systemInfo = Invoke-CollectionArea -Step 1 -Name 'System Information' -Sections
         isServer         = $isServer
         isDomainController = $isDomainController
         hostname         = $env:COMPUTERNAME
-        domain           = $cs.Domain
-        ramGB            = [math]::Round($cs.TotalPhysicalMemory / 1GB, 1)
-        cpuName          = $cpu.Name
-        cpuCores         = $cpu.NumberOfCores
+        domain           = if ($cs) { $cs.Domain } else { $null }
+        ramGB            = if ($cs -and $cs.TotalPhysicalMemory) { [math]::Round($cs.TotalPhysicalMemory / 1GB, 1) } else { $null }
+        cpuName          = if ($cpu) { $cpu.Name } else { $env:PROCESSOR_IDENTIFIER }
+        cpuCores         = if ($cpu) { $cpu.NumberOfCores } else { $null }
         tpmPresent       = $tpmPresent
         tpmVersion       = if ($tpm) { $tpm.SpecVersion -replace ',.*' } else { if ($tpmPresent -eq $false) { 'Not present' } else { 'Unknown' } }
         secureBootEnabled = $sb
         secureBootState  = $sbState
-        installDate      = $os.InstallDate.ToString('o')
+        installDate      = if ($os -and $os.InstallDate) { $os.InstallDate.ToString('o') } elseif ($reg -and $reg.InstallDate) { [DateTimeOffset]::FromUnixTimeSeconds([int64]$reg.InstallDate).ToString('o') } else { $null }
     }
     try { $result['freeSpaceGB'] = [math]::Round((Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'" -EA Stop).FreeSpace / 1GB, 1) } catch { $result['freeSpaceGB'] = $null }
-    try { $result['lastBootTime'] = $os.LastBootUpTime.ToString('o') } catch { $result['lastBootTime'] = $null }
-    try { $result['uptimeDays'] = [math]::Round(((Get-Date) - $os.LastBootUpTime).TotalDays, 1) } catch { $result['uptimeDays'] = $null }
+    try { $result['lastBootTime'] = if ($os -and $os.LastBootUpTime) { $os.LastBootUpTime.ToString('o') } else { $null } } catch { $result['lastBootTime'] = $null }
+    try { $result['uptimeDays'] = if ($os -and $os.LastBootUpTime) { [math]::Round(((Get-Date) - $os.LastBootUpTime).TotalDays, 1) } else { $null } } catch { $result['uptimeDays'] = $null }
+    if ($cimWarnings.Count -gt 0) { $result['_collectionWarnings'] = @($cimWarnings) }
 
-    $result['_detail'] = "$versionName (Build $buildNum)$(if (-not $isSupported) { ' UNSUPPORTED' })"
+    $result['_detail'] = "$versionName (Build $buildNum)$(if ($isSupported -eq $false) { ' UNSUPPORTED' })$(if ($cimWarnings.Count -gt 0) { " | $($cimWarnings.Count) CIM warning(s)" })"
     $result
 }
 
