@@ -8,10 +8,15 @@
     service state, and month-to-date byte counters directly from the
     root/Microsoft/Windows/DeliveryOptimization CIM provider.
 
-    The monthly download fields and efficiency calculations follow the naming used
-    by Windows Update for Business Delivery Optimization reports: BytesFromCDN,
-    BytesFromCache, BytesFromPeers, BytesFromGroupPeers, TotalBytes,
+    The monthly download fields and efficiency calculations follow the source
+    categories used by Windows Update for Business Delivery Optimization reports:
+    BytesFromCDN, BytesFromCache, BytesFromPeers, BytesFromGroupPeers, TotalBytes,
     BandwidthSavingsPct, P2PEfficiencyPct, and ConnectedCacheEfficiencyPct.
+
+    The local provider's MonthlyCdnBytes and per-transfer BytesFromHttp counters
+    are inclusive HTTP totals: original CDN plus Microsoft Connected Cache. The
+    script retains that total as BytesFromHTTP and derives direct BytesFromCDN by
+    subtracting cache-host bytes so Connected Cache traffic is not counted twice.
 
     The local CIM provider also exposes Link-Local and Internet peer bytes. These
     are retained in separate all-source totals. The WUfB-compatible calculations
@@ -54,7 +59,7 @@
 .NOTES
     File:     windows/diagnostics/DeliveryOptimizationStatistics/Get-DeliveryOptimizationStatistics.ps1
     Author:   Anton Romanyuk
-    Version:  1.2.0
+    Version:  1.2.1
     Requires: PowerShell 5.1+, DeliveryOptimization module, CIM access.
 
     Data scope:
@@ -432,7 +437,8 @@ function ConvertTo-CurrentTransfer {
         FileSize                   = [uint64] $Transfer.FileSize
         FileSizeInCache            = [uint64] $Transfer.FileSizeInCache
         TotalBytesDownloaded       = [uint64] $Transfer.TotalBytesDownloaded
-        BytesFromCDN               = [uint64] $Transfer.BytesFromHttp
+        BytesFromHTTP              = [uint64] $Transfer.BytesFromHttp
+        BytesFromCDN               = if ([uint64] $Transfer.BytesFromHttp -ge [uint64] $Transfer.BytesFromCacheServer) { [uint64] ([uint64] $Transfer.BytesFromHttp - [uint64] $Transfer.BytesFromCacheServer) } else { [uint64] 0 }
         BytesFromCache             = [uint64] $Transfer.BytesFromCacheServer
         BytesFromPeers             = [uint64] $Transfer.BytesFromLanPeers
         BytesFromGroupPeers        = [uint64] $Transfer.BytesFromGroupPeers
@@ -578,7 +584,7 @@ function Write-ConsoleReport {
     Write-Host 'Month-to-date downloads' -ForegroundColor Cyan
     $downloadRows = @()
     foreach ($source in @(
-        [pscustomobject]@{ Name = 'CDN';              Bytes = $Result.download.BytesFromCDN }
+        [pscustomobject]@{ Name = 'Direct CDN';       Bytes = $Result.download.BytesFromCDN }
         [pscustomobject]@{ Name = 'Connected Cache';  Bytes = $Result.download.BytesFromCache }
         [pscustomobject]@{ Name = 'LAN peers';        Bytes = $Result.download.BytesFromPeers }
         [pscustomobject]@{ Name = 'Group peers';      Bytes = $Result.download.BytesFromGroupPeers }
@@ -654,17 +660,18 @@ try {
     $os           = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop
     $currentBuild = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction Stop
 
-    $bytesFromCDN        = [uint64] $download.MonthlyCdnBytes
+    $bytesFromHTTP       = [uint64] $download.MonthlyCdnBytes
     $bytesFromCache      = [uint64] $download.MonthlyCacheHostBytes
+    $bytesFromCDN        = if ($bytesFromHTTP -ge $bytesFromCache) { [uint64] ($bytesFromHTTP - $bytesFromCache) } else { [uint64] 0 }
     $bytesFromPeers      = [uint64] $download.MonthlyLanBytes
     $bytesFromGroup      = [uint64] $download.MonthlyGroupBytes
     $bytesFromInternet   = [uint64] $download.MonthlyInternetBytes
     $bytesFromLinkLocal  = [uint64] $download.MonthlyLinkLocalBytes
     $wufbPeerBytes       = [double] ($bytesFromPeers + $bytesFromGroup)
-    $wufbTotalBytes      = [double] ($bytesFromCDN + $bytesFromCache + $wufbPeerBytes)
+    $wufbTotalBytes      = [double] ($bytesFromHTTP + $wufbPeerBytes)
     $wufbLocalBytes      = [double] ($bytesFromCache + $wufbPeerBytes)
     $totalPeerBytes      = [double] ($bytesFromPeers + $bytesFromGroup + $bytesFromInternet + $bytesFromLinkLocal)
-    $totalDownloadBytes  = [double] ($bytesFromCDN + $bytesFromCache + $totalPeerBytes)
+    $totalDownloadBytes  = [double] ($bytesFromHTTP + $totalPeerBytes)
     $localSourceBytes    = [double] ($bytesFromCache + $totalPeerBytes)
     $wufbSavingsPct      = ConvertTo-Percentage -Numerator $wufbLocalBytes -Denominator $wufbTotalBytes
 
@@ -771,6 +778,7 @@ try {
             AllSourcesCDNPercentage         = ConvertTo-Percentage -Numerator $bytesFromCDN -Denominator $totalDownloadBytes
         }
         download        = [pscustomobject]@{
+            BytesFromHTTP            = $bytesFromHTTP
             BytesFromCDN             = $bytesFromCDN
             BytesFromCache           = $bytesFromCache
             BytesFromPeers           = $bytesFromPeers
@@ -815,6 +823,8 @@ try {
         }
         transfers       = $transferPayload
         coverage        = [pscustomobject]@{
+            MonthlyHTTPBytes         = 'CapturedInclusiveOfConnectedCache'
+            DirectCDNBytes           = 'DerivedAsHTTPMinusConnectedCache'
             MonthlySourceBytes       = 'CapturedLocalCalendarMonth'
             CurrentTransferDetails   = 'CapturedWhenActive'
             CurrentPeerOutcomes      = 'CapturedWhenActive'

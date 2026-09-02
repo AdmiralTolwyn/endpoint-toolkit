@@ -34,7 +34,7 @@ The JSON/object payload contains:
 - Measurement window: UTC `period_start` / `period_end`, plus local-time equivalents and `period_timezone`
 - Effective configuration: download mode/provider, bandwidth limits, upload limits, RAM/disk/battery gates, VPN behavior, working directory, and business-hour limits
 - Raw MDM and Group Policy Delivery Optimization values, kept in separate source maps
-- Month-to-date download bytes from CDN, Connected Cache, LAN, Group, Internet, and Link-Local peers
+- Month-to-date inclusive HTTP bytes plus mutually exclusive direct-CDN, Connected Cache, LAN, Group, Internet, and Link-Local bytes
 - Month-to-date upload bytes to each peer class
 - Strict WUfB-compatible and complete all-source efficiency calculations
 - Current cache size, disk capacity, peer count, source connections, active/pending jobs, CPU, and memory use
@@ -47,11 +47,13 @@ The console report uses local time because the counters reset at local calendar-
 
 ## Calculations
 
-The script emits two calculation families. Fields without an `AllSources` prefix follow the formulas published for the WUfB report:
+The local provider's `MonthlyCdnBytes` counter is exposed by Microsoft's PowerShell wrapper as `DownloadHttpBytes`. Microsoft documents this as the inclusive HTTP total, including Connected Cache. The script therefore derives direct CDN bytes before applying the mutually exclusive WUfB source formulas:
 
 ```text
+HTTPBytes = MonthlyCdnBytes
+CDN = max(HTTPBytes - ConnectedCache, 0)
 WUfBPeerBytes = LAN + Group
-WUfBTotalBytes = CDN + ConnectedCache + LAN + Group
+WUfBTotalBytes = HTTPBytes + LAN + Group
 WUfBLocalSourceBytes = ConnectedCache + LAN + Group
 
 BandwidthSavingsPct = 100 * WUfBLocalSourceBytes / WUfBTotalBytes
@@ -63,7 +65,7 @@ The complete local totals additionally include Internet and Link-Local peers:
 
 ```text
 TotalPeerBytes = LAN + Group + Internet + LinkLocal
-TotalBytes = CDN + ConnectedCache + TotalPeerBytes
+TotalBytes = HTTPBytes + TotalPeerBytes
 AllSourcesBandwidthSavingsPct = 100 * (ConnectedCache + TotalPeerBytes) / TotalBytes
 AllSourcesP2PEfficiencyPct = 100 * TotalPeerBytes / TotalBytes
 ```
@@ -94,7 +96,7 @@ Do not compare the local percentage directly with `BWOptPercent28Days` unless th
 | `AzureADTenantId`, `TenantId` | Captured when Entra joined | `identity.AzureADTenantId` |
 | `BWOptPercent7Days`, `BWOptPercent28Days` | Not locally available | Rolling windows are produced from cloud telemetry |
 | `BytesFromCache` | Captured month-to-date | `download.BytesFromCache`; no ISP-level MCC filtering |
-| `BytesFromCDN` | Captured month-to-date | `download.BytesFromCDN` |
+| `BytesFromCDN` | Derived month-to-date | `download.BytesFromCDN` is direct CDN only: inclusive HTTP minus Connected Cache |
 | `BytesFromPeers` | Captured month-to-date | `download.BytesFromPeers` means LAN peers, matching the report calculation page |
 | `BytesFromGroupPeers` | Captured month-to-date | `download.BytesFromGroupPeers` |
 | `BytesFromIntPeers` | Captured month-to-date | `download.BytesFromIntPeers`; excluded from strict WUfB formulas |
@@ -122,6 +124,8 @@ Do not compare the local percentage directly with `BWOptPercent28Days` unless th
 ### `UCDOAggregatedStatus` and report-only terms
 
 The source-byte fields and formulas are captured for this device. `DeviceCount`, P2P device count, MCC device count, total active devices, top-ten groups, and tenant/content-type aggregations require records from multiple devices and are therefore unavailable to a local one-device script. Local booleans `PeerConfigured`, `PeerUsedThisMonth`, and `MCCUsedThisMonth` allow Grafana to calculate those counts after ingesting results from a fleet.
+
+`download.BytesFromHTTP` preserves the provider's inclusive HTTP counter. The same distinction is present for current transfers: `transfers[].BytesFromHTTP` includes `BytesFromCache`, while `transfers[].BytesFromCDN` is the derived direct-CDN remainder.
 
 The report's content categories are Apps, Driver Updates, Edge Updates, Feature Updates, Intune Apps, Office, Other, Quality Updates, and Teams Updates. The local month-to-date CIM counters do not retain that category dimension.
 
