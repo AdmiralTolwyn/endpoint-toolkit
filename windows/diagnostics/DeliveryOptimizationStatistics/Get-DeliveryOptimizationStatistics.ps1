@@ -59,7 +59,7 @@
 .NOTES
     File:     windows/diagnostics/DeliveryOptimizationStatistics/Get-DeliveryOptimizationStatistics.ps1
     Author:   Anton Romanyuk
-    Version:  1.2.1
+    Version:  1.3.0
     Requires: PowerShell 5.1+, DeliveryOptimization module, CIM access.
 
     Data scope:
@@ -556,13 +556,26 @@ function Write-ConsoleReport {
     }
     Write-Host ('Workbook signal: {0} (Microsoft flags savings <= 60%; comparative signal, not device health).' -f `
         $Result.efficiency.BandwidthSavingsStatus) -ForegroundColor $signalColor
+    $observations = New-Object System.Collections.Generic.List[string]
     if ($Result.configuration.PeerConfigured -and -not $Result.configuration.PeerUsedThisMonth) {
-        $observation = if ($Result.configuration.MCCUsedThisMonth) {
-            'Peering is enabled, but no peer traffic is recorded this month; alternate-source savings came from Connected Cache.'
+        if ($Result.configuration.MCCUsedThisMonth) {
+            $observations.Add('Peering is enabled, but no peer traffic is recorded this month; alternate-source savings came from Connected Cache.')
         } else {
-            'Peering is enabled, but no peer traffic is recorded this month.'
+            $observations.Add('Peering is enabled, but no peer traffic is recorded this month.')
         }
-        Write-Host ('Observation: {0}' -f $observation) -ForegroundColor Yellow
+    }
+    if (-not $Result.configuration.PeerConfigured -and $Result.configuration.MCCUsedThisMonth) {
+        if ($Result.configuration.CacheHostConfigured) {
+            $observations.Add(('Peering is off, but {0:N2}% of downloads came from the configured Microsoft Connected Cache host ({1}). MCC serves content over HTTP independently of peer-to-peer, so this is expected.' -f $Result.efficiency.ConnectedCacheEfficiencyPct, $Result.configuration.ConfiguredCacheHost))
+        } else {
+            $observations.Add(('Peering is off, but {0:N2}% of downloads came from Microsoft Connected Cache with no enterprise cache host configured - this is an ISP-operated MCC (e.g. Deutsche Telekom) assigned automatically by the DO cloud service. WUfB reports exclude ISP-hosted MCC from BytesFromCache, so this local percentage will not match the WUfB report.' -f $Result.efficiency.ConnectedCacheEfficiencyPct))
+        }
+        if (@($Result.configuration.ObservedCacheHosts).Count -gt 0) {
+            $observations.Add(('Observed Connected Cache host(s) this run: {0}.' -f (@($Result.configuration.ObservedCacheHosts) -join ', ')))
+        }
+    }
+    foreach ($obs in $observations) {
+        Write-Host ('Observation: {0}' -f $obs) -ForegroundColor Yellow
     }
 
     Write-Host ''
@@ -695,12 +708,18 @@ try {
     if ($null -eq $configuredGroupIdSource) {
         $configuredGroupIdSource = Get-ObjectPropertyValue -InputObject $policyValues.GroupPolicy -Name 'DOGroupIDSource'
     }
+    # An enterprise/self-hosted MCC is set via DOCacheHost; without it, Connected Cache bytes come from an ISP-hosted MCC the DO cloud service assigns automatically.
+    $configuredCacheHost = Get-ObjectPropertyValue -InputObject $policyValues.MDM -Name 'DOCacheHost'
+    if ($null -eq $configuredCacheHost) {
+        $configuredCacheHost = Get-ObjectPropertyValue -InputObject $policyValues.GroupPolicy -Name 'DOCacheHost'
+    }
     $transferPayload = @(
         foreach ($transfer in $rawTransfers) {
             $matchingPeerInfo = $rawPeerInfo | Where-Object { $_.FileId -eq $transfer.FileId } | Select-Object -First 1
             ConvertTo-CurrentTransfer -Transfer $transfer -PeerInfo $matchingPeerInfo
         }
     )
+    $observedCacheHosts = @($transferPayload | ForEach-Object { $_.CacheHost } | Where-Object { $_ } | Sort-Object -Unique)
     $currentStatusDescription = if ($transferPayload.Count -gt 0) {
         (@($transferPayload.Status | Sort-Object -Unique) -join ', ')
     } else {
@@ -734,6 +753,9 @@ try {
             PeerConfigured       = ($downloadModeId -in @(1, 2, 3))
             PeerUsedThisMonth    = ($totalPeerBytes -gt 0)
             MCCUsedThisMonth     = ($bytesFromCache -gt 0)
+            ConfiguredCacheHost  = $configuredCacheHost
+            CacheHostConfigured  = (-not [string]::IsNullOrWhiteSpace([string] $configuredCacheHost))
+            ObservedCacheHosts   = $observedCacheHosts
             ConfiguredGroupID    = $configuredGroupId
             ConfiguredGroupIDHash = Get-WUfBGroupIdHash -GroupId $configuredGroupId
             ConfiguredGroupIDSource = $configuredGroupIdSource
