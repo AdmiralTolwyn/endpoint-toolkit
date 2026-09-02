@@ -15,7 +15,7 @@ avd/
 └── scripts/        # PowerShell scripts used by pipelines
 
 devops/
-└── aib-task-v1-patched/   # Patched Azure Image Builder DevOps task (v2)
+└── aib-task-v2/           # Azure Image Builder DevOps task (v2)
 
 intune/
 ├── bitlocker/        # BitLocker detection & remediation scripts for Intune
@@ -28,7 +28,9 @@ tools/              # Standalone PowerShell/WPF utilities
 
 windows/
 ├── applications/   # Generic MSI uninstaller by name pattern / publisher / GUID
+├── diagnostics/    # Read-only endpoint diagnostics — Location policy state, Defender/EDR coexistence, Delivery Optimization stats, power/standby evidence
 ├── dot3svc/        # Wired AutoConfig (dot3svc) migration reset
+├── migration/      # Hybrid Join → Entra-only join in-place migration (EntraCutover)
 ├── print/          # Windows Protected Print (WPP) readiness — flag third-party v3/v4 drivers
 ├── rdp/            # Per-user RDP file signing (no admin required)
 ├── security/       # Hardware speculation mitigations, Secure Boot remediation
@@ -60,11 +62,12 @@ windows/
 | [avd/pipelines/](avd/pipelines/) | Azure DevOps YAML pipelines for AVD activation, host-pool updates, image bakes |
 | [avd/bicep/](avd/bicep/) | Bicep templates for AVD session-host deployment (Entra ID + AD-joined variants) |
 | [intune/bitlocker/](intune/bitlocker/) | Intune Proactive Remediation pair — ensure BitLocker recovery key escrow to Entra ID; MBAM client uninstall |
-| [intune/mdm-enrollment/](intune/mdm-enrollment/) | `Repair-IntuneMdmCert.ps1` — audit (read-only) or repair hosts whose expired Intune MDM device cert wedges `omadmclient.exe` at high CPU. Repair tears down both the Intune (`MS DM Server`) and MMP-C (`Microsoft Device Management`) enrollments, re-enrolls (user- or device-credential via `-EnrollMode`), and polls the DeviceManagement event log to confirm. Built for cloned AVD fleets that expire together |
+| [intune/mdm-enrollment/](intune/mdm-enrollment/) | `Repair-IntuneMdmCert.ps1` — audit (read-only) or repair hosts whose expired Intune MDM device cert wedges `omadmclient.exe` at high CPU. Repair tears down the enrollment + re-enrolls via device credential. Built for cloned AVD fleets that expire together |
 | [macos/servicing/](macos/servicing/) | `macos_dev_cleanup.sh` — semi-interactive developer-storage cleanup (Xcode, VS Code/Cursor/Windsurf, .NET, Gradle, Android, Flutter, JetBrains, Homebrew, Docker, Time Machine) |
 | [windows/applications/](windows/applications/UninstallMsiProduct/README.md) | `Uninstall-MsiProduct.ps1` — generic MSI uninstaller by DisplayName / Publisher / Version / ProductCode wildcards. Registry-driven (no `Win32_Product` side effects); built for vendor agents whose GUID changes per release (e.g. Quest / KACE Agent) |
-| [windows/diagnostics/DeliveryOptimizationStatistics/](windows/diagnostics/DeliveryOptimizationStatistics/) | `Get-DeliveryOptimizationStatistics.ps1` — read-only local DO configuration and month-to-date CDN / Connected Cache / peer statistics; formatted table, PowerShell object, or single-line JSON for Grafana / Loki / Telegraf |
+| [windows/diagnostics/](windows/diagnostics/) | [`LocationPolicyState/Get-LocationPolicyState.ps1`](windows/diagnostics/LocationPolicyState/README.md) — report the effective Windows Location policy state and every author that can force/lock the toggle. [`MdeCoexistenceState/Get-MdeCoexistenceState.ps1`](windows/diagnostics/MdeCoexistenceState/README.md) — effective Defender AV / Defender for Endpoint state, detection of third-party AV/EDR sharing the endpoint (minifilters by altitude band, services, Security Center), sensor health from the SENSE log, and an automated exclusion-hygiene review that catches `%USERPROFILE%`-style rules that silently match nothing under LocalSystem. Read-only, JSON output, Intune exit codes. [`PowerEvidence/Get-PowerEvidence.ps1`](windows/diagnostics/PowerEvidence/README.md) — one-pass power / standby / screen-on evidence collector (`powercfg /a`, battery report, SleepStudy, System Power, wake diagnostics, Kernel power/boot events, Fast Startup / Hibernate config) that auto-zips a bundle for return. Runs unelevated; elevation adds SleepStudy / System Power / active requests |
 | [windows/dot3svc/](windows/dot3svc/) | Reset 802.1X / wired-AutoConfig profiles after migration |
+| [windows/migration/](windows/migration/EntraCutover/README.md) | `EntraCutover` — **experimental, not supported by Microsoft.** In-place Hybrid Join → Entra-only join migration (no reinstall). Resumable 5-phase state machine (Assess/Prepare/Teardown/Join/Finalize), Intune enrollment + stale-GPO cleanup, fresh-profile + OneDrive KFM, BitLocker re-escrow to the new device object, break-glass admin + `djoin` offline-rejoin rollback. CLI, CMTrace logging |
 | [windows/print/](windows/print/) | `Get-PrintDriverWppReadiness.ps1` — flag machines with third-party v3/v4 print drivers (not yet Windows Protected Print ready) ahead of WPP enforcement. Intune Proactive Remediation detection script (exit 0/1) + standalone CSV/JSON fleet inventory; maps drivers to printers actually using them. Read-only |
 | [windows/rdp/](windows/rdp/) | Sign `.rdp` files in user context (no admin required) |
 | [windows/security/](windows/security/) | Hardware speculation mitigations + Secure Boot UEFI CA 2023 remediation (Intune PR pair) |
