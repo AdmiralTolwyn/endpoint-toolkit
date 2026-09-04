@@ -108,9 +108,12 @@
     in-flight stimulus.
 
 .PARAMETER OutputDirectory
-    Root directory for stimulus-log.csv, stimulus.log and session.json.
-    Created if absent. Required (an empty value throws); not marked Mandatory
-    so a scheduled task or -ListPlan run never blocks on a prompt.
+    Root directory for stimulus-log.csv, stimulus.log and
+    stimulus-session.json. Created if absent. Required (an empty value throws);
+    not marked Mandatory so a scheduled task or -ListPlan run never blocks on a
+    prompt. Safe to share with the loopback recorder's -OutputDirectory: the
+    filenames do not collide, and Invoke-AudioRunReview.ps1 expects the
+    recorder, stimulus and monitor output in one directory.
 
 .PARAMETER Sequence
     Ordered list of stimulus type names to run once per cycle. Defaults to
@@ -163,11 +166,12 @@
     MARK-INCIDENT.txt marker is written into this directory so a concurrently
     running Start-AudioLoopbackRecorder.ps1 preserves its rolling window for
     that moment (see that script's -DESCRIPTION for how the marker is
-    consumed). Disk cost: each marker copies the recorder's entire rolling
-    window (roughly 11 MB per minute of window at that script's default
-    format) into its preserved\ directory, so firing many stimuli with a short
-    -IdleSeconds against a large rolling window can consume disk quickly;
-    watch that script's -MaxPreservedMegabytes retention limit. If this
+    consumed). Disk cost: each marker preserves the newest -MarkerSegments
+    rolling segments (default 2, about 10 MB); with -MarkerSegments 0 it
+    copies the recorder's entire rolling window (roughly 11 MB per minute of
+    window at that script's default format), so firing many stimuli with a
+    short -IdleSeconds can exhaust that script's -MaxPreservedMegabytes
+    retention limit and evict older preserved audio. If this
     directory does not exist, the marker is skipped for that stimulus and a
     warning is logged rather than the run failing.
 
@@ -175,6 +179,15 @@
     Delay after firing before writing the -RecorderOutputDirectory marker, so
     the recorder's rolling window still contains the stimulus once the marker
     triggers preservation. Defaults to 5.
+
+.PARAMETER MarkerSegments
+    Number of newest rolling segments the recorder preserves for each
+    stimulus marker, written into the marker as "segments=N". Defaults to 2
+    (the segment holding the stimulus and the one before it, about 10 MB at
+    the recorder's default format). 0 preserves the whole rolling window,
+    about 105 MB per marker at the defaults, which at one marker per
+    stimulus exhausts a 2 GB preservation cap in minutes and then evicts the
+    oldest preserved audio, real incidents included.
 
 .PARAMETER Interactive
     During each idle wait, poll the keyboard for the B key (console host only;
@@ -274,6 +287,9 @@ param(
 
     [ValidateRange(0, 3600)]
     [int] $MarkerDelaySeconds = 5,
+
+    [ValidateRange(0, 500)]
+    [int] $MarkerSegments = 2,
 
     [switch] $Interactive,
 
@@ -864,7 +880,9 @@ if (-not (Test-Path -LiteralPath $OutputDirectory -PathType Container)) {
 $resolvedOutput = (Resolve-Path -LiteralPath $OutputDirectory).ProviderPath
 $csvPath = Join-Path $resolvedOutput 'stimulus-log.csv'
 $logPath = Join-Path $resolvedOutput 'stimulus.log'
-$sessionPath = Join-Path $resolvedOutput 'session.json'
+# Distinct from the recorder's session.json so both can share one output
+# directory, which Invoke-AudioRunReview.ps1 requires.
+$sessionPath = Join-Path $resolvedOutput 'stimulus-session.json'
 $stopFilePath = Join-Path $resolvedOutput $StopFileName
 
 try {
@@ -1081,7 +1099,11 @@ try {
                             Write-StimulusLog -Path $logPath -Level 'WARN' -Message ("Recorder output directory not found, marker skipped: {0}" -f $RecorderOutputDirectory)
                         } else {
                             $markerPath = Join-Path $RecorderOutputDirectory $MARKER_NAME
-                            $markerContent = 'AudioArtifactHunter stimulus marker {0} cycle={1} seq={2} stimulus={3}' -f $fireUtc.ToString('o'), $cycle, $sequenceNumber, $stimulusName
+                            # segments=N tells the recorder to preserve only the newest N
+                            # rolling segments (the stimulus and its run-up) instead of
+                            # the whole ten-minute window, which at one marker per
+                            # stimulus would exhaust the preservation cap in minutes.
+                            $markerContent = 'AudioArtifactHunter stimulus marker {0} cycle={1} seq={2} stimulus={3} segments={4}' -f $fireUtc.ToString('o'), $cycle, $sequenceNumber, $stimulusName, $MarkerSegments
                             Set-Content -LiteralPath $markerPath -Value $markerContent -Encoding UTF8
                         }
                     } catch {

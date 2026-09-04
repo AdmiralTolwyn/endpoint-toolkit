@@ -580,6 +580,26 @@ function New-CaptureRecorder {
     )
 }
 
+function Get-ExceptionHResultHex {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [AllowNull()] $ExceptionObject
+    )
+
+    # The core reports a failed COM call as InvalidOperationException whose
+    # text carries the HRESULT as 0x........; PowerShell then wraps it in a
+    # MethodInvocationException. Take the code from the text first, then from
+    # an ExternalException.ErrorCode; a managed HResult such as
+    # COR_E_INVALIDOPERATION would be misleading and is not used.
+    $current = $ExceptionObject
+    while ($null -ne $current) {
+        if ($current.Message -match '0x[0-9A-Fa-f]{8}') { return ('hr=' + $Matches[0].ToUpperInvariant().Replace('0X', '0x')) }
+        if ($current -is [System.Runtime.InteropServices.ExternalException]) { return ('hr=0x{0:X8}' -f ([uint32] ([int] $current.ErrorCode -band 0xFFFFFFFF))) }
+        $current = $current.InnerException
+    }
+    return 'hr=unknown'
+}
+
 function Write-EndpointGenerationEvent {
     [CmdletBinding()]
     param(
@@ -770,8 +790,14 @@ $recorder.Generation = $generation
 $completedTriggerCount = [long] 0
 $markerShortcutPath = $null
 
+# One identifier per recorder process. The CSVs append across runs and the
+# generation counter restarts at 1 in every run, so without this a folder
+# that held two runs could not be sliced afterwards.
+$runId = '{0:yyyyMMdd-HHmmss}-{1}' -f (Get-Date).ToUniversalTime(), $PID
+
 try {
 try {
+    Write-EndpointGenerationEvent -Path $generationLogPath -Generation $generation -EventName 'RunStarted' -EndpointId '' -Details ("RunId={0}; KeepAliveSilence={1}; CaptureEndpoint={2}; TriggerThresholdDbfs={3}; OnsetGate={4}" -f $runId, [bool] $KeepAliveSilence, [bool] $CaptureEndpoint, $TriggerThresholdDbfs, (-not [bool] $AbsoluteTrigger))
     $recorder.Start()
     $startedDetails = '{0} Hz, {1} ch; attempts=1' -f $recorder.SampleRate, $recorder.Channels
     Write-EndpointGenerationEvent -Path $generationLogPath -Generation $generation -EventName 'Started' -EndpointId $recorder.DeviceId -Details $startedDetails
@@ -836,7 +862,8 @@ try {
 
     $startedUtc = (Get-Date).ToUniversalTime()
     $sessionMetadata = [pscustomobject] @{
-        SchemaVersion        = '1.0'
+        SchemaVersion        = '1.1'
+        RunId                = $runId
         StartedUtc           = $startedUtc.ToString('o')
         ComputerName         = $env:COMPUTERNAME
         UserSid              = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
@@ -914,7 +941,9 @@ try {
                     $recorder = $candidate
                     break
                 } catch {
-                    $startFailure = $_.Exception.Message
+                    # HRESULT first, so the row can be parsed whatever language
+                    # the .NET exception text is in.
+                    $startFailure = '{0} {1}' -f (Get-ExceptionHResultHex -ExceptionObject $_.Exception), $_.Exception.Message
                     Write-EndpointGenerationEvent -Path $generationLogPath -Generation $generation -EventName 'StartFailed' -EndpointId '' -Details $startFailure
 
                     $nowUtcRetry = (Get-Date).ToUniversalTime()
@@ -940,6 +969,15 @@ try {
             $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss-fff')
             $markerConsumed = $false
 
+            # A marker written by a script after a known stimulus may ask for
+            # only the newest segments ("segments=2" anywhere in the file);
+            # an operator's marker has no such hint and gets the whole window.
+            $markerSegments = 0
+            try {
+                $markerText = [System.IO.File]::ReadAllText($markerPath)
+                if ($markerText -match 'segments=(\d{1,3})') { $markerSegments = [int] $Matches[1] }
+            } catch { }
+
             try {
                 Remove-Item -LiteralPath $markerPath -Force -ErrorAction Stop
                 $markerConsumed = $true
@@ -955,13 +993,13 @@ try {
 
             if ($markerConsumed) {
                 $targetDirectory = Join-Path $preservedDirectory ("manual-$stamp")
-                $copied = $recorder.PreserveRollingWindow($targetDirectory)
+                $copied = $recorder.PreserveRollingWindow($targetDirectory, $markerSegments)
                 $deleted = @(Limit-PreservedData -Path $preservedDirectory -MaximumBytes ([long] $MaxPreservedMegabytes * 1MB) -ManifestPath $evidenceManifestPath -GenerationLogPath $generationLogPath -Generation $generation -EndpointId $recorder.DeviceId)
                 Write-RetentionTombstones -DeletedRelativePaths $deleted -ManifestPath $evidenceManifestPath -GenerationLogPath $generationLogPath -Generation $generation -EndpointId $recorder.DeviceId
                 Update-EvidenceHashes -PreservedPath $preservedDirectory -ManifestPath $evidenceManifestPath -GenerationLogPath $generationLogPath -Generation $generation -EndpointId $recorder.DeviceId
 
                 $manualMarkCount++
-                Write-RecorderLog -Path $LogPath -Level 'INFO' -Message ("[{0:HH:mm:ss}] Operator marker: {1} segment(s) preserved to {2}" -f (Get-Date), $copied, $targetDirectory)
+                Write-RecorderLog -Path $LogPath -Level 'INFO' -Message ("[{0:HH:mm:ss}] Marker: {1} segment(s) preserved to {2}{3}" -f (Get-Date), $copied, $targetDirectory, $(if ($markerSegments -gt 0) { " (newest $markerSegments requested by the marker)" } else { ' (whole rolling window)' }))
             }
         }
 
@@ -991,7 +1029,7 @@ try {
 } finally {
     Write-RecorderLog -Path $LogPath -Level 'INFO' -Message 'Stopping recorder.'
     if ($null -ne $recorder) {
-        Write-EndpointGenerationEvent -Path $generationLogPath -Generation $generation -EventName 'FinalStop' -EndpointId $recorder.DeviceId -Details 'Recorder wrapper stopped.'
+        Write-EndpointGenerationEvent -Path $generationLogPath -Generation $generation -EventName 'FinalStop' -EndpointId $recorder.DeviceId -Details ("Recorder wrapper stopped. RunId={0}" -f $runId)
     }
     $recorder.Stop()
     $recorder.Dispose()

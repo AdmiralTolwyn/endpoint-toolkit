@@ -1021,14 +1021,23 @@ namespace AudioArtifactHunter
             {
                 Array.Clear(_onsetBuckets, 0, length);
                 _onsetCurrentBucket = bucket;
-                _onsetReadyBucket = bucket + length;
+                // The first packet after Start: if the engine was idle for
+                // longer than the window before it (no packets since Start),
+                // that idle time is silence and the window is already
+                // complete; otherwise wait one window length.
+                bool idleBeforeFirstPacket = (DateTime.UtcNow - LastPacketUtc).TotalMilliseconds >= length * OnsetBucketMilliseconds;
+                _onsetReadyBucket = idleBeforeFirstPacket ? bucket : bucket + length;
             }
             else if (bucket != _onsetCurrentBucket)
             {
                 long skipped = bucket - _onsetCurrentBucket;
                 if (skipped > length)
                 {
+                    // A gap longer than the window means no packets at all,
+                    // which is silence on the render side; the window is
+                    // therefore complete and quiet, not unknown.
                     skipped = length;
+                    _onsetReadyBucket = bucket;
                 }
 
                 for (long i = 1; i <= skipped; i++)
@@ -1113,6 +1122,17 @@ namespace AudioArtifactHunter
 
         public int PreserveRollingWindow(string targetDirectory)
         {
+            return PreserveRollingWindow(targetDirectory, 0);
+        }
+
+        /// <summary>
+        /// Copies the newest maxSegments rolling segments (0 = the whole
+        /// window) into targetDirectory. A scripted marker after a known
+        /// stimulus needs only the last one or two segments; an operator
+        /// marker after a surprise needs the whole window.
+        /// </summary>
+        public int PreserveRollingWindow(string targetDirectory, int maxSegments)
+        {
             Directory.CreateDirectory(targetDirectory);
             int copied = 0;
 
@@ -1120,8 +1140,13 @@ namespace AudioArtifactHunter
             {
                 string activePath = _segment == null ? null : _segment.Path;
 
-                foreach (string source in Directory.GetFiles(_rollingDirectory, "segment-*.wav"))
+                string[] sources = Directory.GetFiles(_rollingDirectory, "segment-*.wav");
+                Array.Sort(sources, StringComparer.Ordinal);
+                int first = (maxSegments > 0 && sources.Length > maxSegments) ? sources.Length - maxSegments : 0;
+
+                for (int i = first; i < sources.Length; i++)
                 {
+                    string source = sources[i];
                     string target = Path.Combine(targetDirectory, Path.GetFileName(source));
                     if (string.Equals(source, activePath, StringComparison.OrdinalIgnoreCase))
                     {

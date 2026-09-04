@@ -132,6 +132,8 @@ Waiting for an intermittent fault is expensive. This fires **controlled, timesta
 
 Use `-ListPlan` to print the sequence and estimated duration without playing anything. Point `-RecorderOutputDirectory` at a running recorder and it drops incident markers automatically.
 
+`-MarkerSegments` (default 2) bounds what each of those automatic markers costs. The stimulus writes `segments=N` into the marker file and the recorder honours it, preserving only the newest N segments (~10 MB) instead of the whole rolling window (~105 MB). That matters on a fast sweep: a marker every 15-20 seconds at full-window cost fills a 2 GB preservation cap within an hour, after which the recorder evicts the oldest preserved audio - real incidents included. A marker created by hand, such as the user's desktop shortcut, carries no `segments=` value and still preserves the whole window.
+
 ```powershell
 .\Invoke-AudioStimulus.ps1 -ListPlan
 .\Invoke-AudioStimulus.ps1 -OutputDirectory C:\Temp\Stim -RecorderOutputDirectory C:\Temp\Audio -AcknowledgeHearingSafety
@@ -222,10 +224,11 @@ It is read-only apart from those two files.
 | `triggers.csv` | Recorder | One row per debounced trigger, with peak and duration. |
 | `capture-events.csv` | Recorder | Buffer discontinuities, silent/timestamp-error flags, HRESULTs, QPC timestamps. |
 | `endpoint-volume.csv` / `session-volume.csv` | Recorder | Master scalar and mute sampled during capture. |
-| `session.json` | Recorder / Stimulus | Run parameters and environment. |
+| `session.json` | Recorder | Recorder run parameters and environment. |
+| `stimulus-session.json` | Stimulus | Stimulus run parameters, notification/MailBeep bindings and push-service state. Deliberately a different filename so both can share one directory. |
 | `endpoint-generations.csv` | Recorder | Each endpoint change and restart. |
 | `evidence-hashes.csv` | Recorder | SHA-256 of every preserved artifact. |
-| `MARK-INCIDENT.txt` | **You / the user** | Drop-file that preserves the current segment. |
+| `MARK-INCIDENT.txt` | **You / the user** | Drop-file that preserves the rolling window. A marker containing `segments=N` preserves only the newest N segments; created by hand it preserves the whole window. |
 | `endpoint-state.csv` + `-sessions.csv` | Monitor | Endpoint identity, state, volume, mute; per-app sessions. |
 | `stimulus-log.csv` | Stimulus | One row per stimulus with pre/post endpoint state. `RunId` distinguishes processes; `Cycle` is only meaningful within one `RunId`. |
 | `review.md` / `review.json` | Run review | Ranked incident candidates joined across the recorder, stimulus and monitor logs. |

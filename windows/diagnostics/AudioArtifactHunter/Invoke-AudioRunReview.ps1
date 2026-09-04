@@ -175,6 +175,18 @@ function Get-WindowPeak {
     return [double] (($rows | ForEach-Object { [double] $_.PeakDbfs } | Measure-Object -Maximum).Maximum)
 }
 
+function Get-PreWindowPeak {
+    # Peak of the three seconds before the stimulus fired. Above -40 dBFS
+    # something else was already playing and the window cannot be used to
+    # judge the stimulus's own level.
+    param([datetime] $Utc)
+    if ($null -eq $Utc -or $levels.Count -eq 0) { return $null }
+    $from = $Utc.AddSeconds(-4); $to = $Utc.AddSeconds(-1)
+    $rows = @($levels | Where-Object { $null -ne $_.Utc -and $_.Utc -ge $from -and $_.Utc -lt $to })
+    if ($rows.Count -eq 0) { return $null }
+    return [double] (($rows | ForEach-Object { [double] $_.PeakDbfs } | Measure-Object -Maximum).Maximum)
+}
+
 function Get-NearestStimulus {
     param([datetime] $Utc, [int] $BeforeSeconds, [int] $AfterSeconds)
     if ($null -eq $Utc) { return $null }
@@ -292,26 +304,39 @@ foreach ($c in $captureEvents) {
 $stimulusSummary = New-Object System.Collections.Generic.List[object]
 foreach ($group in @($stimuli | Where-Object { $_.Stimulus -ne '' } | Group-Object Stimulus)) {
     $rows = @($group.Group)
-    $peaks = @($rows | ForEach-Object { Get-WindowPeak -Utc $_.Utc } | Where-Object { $null -ne $_ })
+    # Only windows with a quiet run-up judge the stimulus's own level; a
+    # window with other audio already playing is counted as masked.
+    $cleanPeaks = New-Object System.Collections.Generic.List[double]
+    $masked = 0; $noData = 0
+    $loudest = $null
+    foreach ($r in $rows) {
+        $peak = Get-WindowPeak -Utc $r.Utc
+        if ($null -eq $peak) { $noData++; continue }
+        $pre = Get-PreWindowPeak -Utc $r.Utc
+        if ($null -ne $pre -and $pre -gt -40) { $masked++; continue }
+        [void] $cleanPeaks.Add($peak)
+        if ($null -eq $loudest -or $peak -gt $loudest.Peak) { $loudest = [pscustomobject] @{ Peak = $peak; Row = $r } }
+    }
     $expected = Get-ExpectedAssetPeak -Stimulus $group.Name -Asset $rows[0].Asset
-    $maxPeak = $(if ($peaks.Count -gt 0) { ($peaks | Measure-Object -Maximum).Maximum } else { $null })
-    $medPeak = $(if ($peaks.Count -gt 0) { [Math]::Round((($peaks | Sort-Object)[[int][Math]::Floor($peaks.Count / 2)]), 2) } else { $null })
-    $verdict = 'no level data'
-    if ($null -ne $maxPeak) {
+    $maxPeak = $(if ($cleanPeaks.Count -gt 0) { ($cleanPeaks | Measure-Object -Maximum).Maximum } else { $null })
+    $medPeak = $(if ($cleanPeaks.Count -gt 0) { [Math]::Round((($cleanPeaks | Sort-Object)[[int][Math]::Floor($cleanPeaks.Count / 2)]), 2) } else { $null })
+    $verdict = $(if ($noData -eq $rows.Count) { 'no level data' } elseif ($cleanPeaks.Count -eq 0) { 'every window masked by other audio' } else { '' })
+    if ($verdict -eq '') {
         if ($group.Name -in @('ToastSilent', 'ManualCue', 'OutlookSelfMail')) { $verdict = 'not expected to play at fire time' }
         elseif ($null -eq $expected) { $verdict = 'asset peak unknown' }
         elseif ($maxPeak -gt $expected.Peak + $MarginDb) { $verdict = 'LOUDER than the asset allows' }
         elseif ($medPeak -lt $expected.Peak - 20) { $verdict = 'silent or far below asset (blanked binding, low session volume, or not delivered)' }
-        else { $verdict = 'as expected' }
+        else { $verdict = 'as expected (below the asset peak by master and session gain)' }
     }
     [void] $stimulusSummary.Add([pscustomobject] @{
         Stimulus = $group.Name; Count = $rows.Count
         Results = (($rows | Group-Object Result | ForEach-Object { '{0}={1}' -f $_.Name, $_.Count }) -join ' ')
+        CleanWindows = $cleanPeaks.Count; MaskedWindows = $masked; NoDataWindows = $noData
         LoopbackMedianPeakDbfs = $medPeak; LoopbackMaxPeakDbfs = $maxPeak
         AssetPeakDbfs = $(if ($null -ne $expected) { $expected.Peak } else { $null })
         Verdict = $verdict
     })
-    if ($verdict -like 'LOUDER*') { Add-Candidate -Kind 'StimulusLouderThanAsset' -Strength 'Strong' -Utc $null -Detail ("{0}: max loopback peak {1} dBFS vs asset {2} dBFS" -f $group.Name, $maxPeak, $expected.Peak) }
+    if ($verdict -like 'LOUDER*') { Add-Candidate -Kind 'StimulusLouderThanAsset' -Strength 'Strong' -Utc $loudest.Row.Utc -Detail ("{0}: clean-window loopback peak {1} dBFS vs asset {2} dBFS (cycle {3})" -f $group.Name, $maxPeak, $expected.Peak, $loudest.Row.Cycle) }
 }
 
 # ---------------------------------------------------------------- integrity and coverage
@@ -325,6 +350,17 @@ if ($stimuli.Count -gt 0) {
         if ($uncovered -gt 0) { [void] $integrity.Add(("COVERAGE: {0} of {1} stimuli fired outside the recorder's level span ({2:o} to {3:o}); the recorder was not running for them." -f $uncovered, $stimuli.Count, $levelUtcs[0], $levelUtcs[-1])) }
     }
     if ($stateRows.Count -eq 0) { [void] $integrity.Add("COVERAGE: no endpoint-state monitor output in this directory; endpoint and session changes could not be checked.") }
+}
+if ($levels.Count -gt 0) {
+    $emptyRows = @($levels | Where-Object { $_.Frames -eq '0' }).Count
+    $emptyShare = [Math]::Round(100.0 * $emptyRows / $levels.Count, 1)
+    if ($emptyShare -ge 50) {
+        [void] $integrity.Add(("COVERAGE: {0}% of level rows carry no audio frames ({1} of {2}). The loopback only receives data while something renders on the endpoint; on an idle VDA use -KeepAliveSilence, and note that it also keeps the Citrix audio channel active." -f $emptyShare, $emptyRows, $levels.Count))
+    }
+}
+$runStarts = @($generations | Where-Object { $_.Event -eq 'RunStarted' -or $_.Event -eq 'Started' -and $_.Generation -eq '1' })
+if ($runStarts.Count -gt 1) {
+    [void] $integrity.Add(("COVERAGE: this directory holds {0} recorder runs (RunStarted/Started generation 1 rows at {1}); per-run statistics above are pooled. Use one folder per run." -f $runStarts.Count, (($runStarts | ForEach-Object { $_.TimestampUtc }) -join ', ')))
 }
 $hashed = @{}; foreach ($h in $hashes) { $hashed[$h.RelativePath] = $h }
 $preservedRoot = Join-Path $root 'preserved'
@@ -375,8 +411,8 @@ if ($candidates.Count -eq 0) { [void] $md.AppendLine("None.") } else {
 [void] $md.AppendLine("## Stimulus verification")
 [void] $md.AppendLine("")
 if ($stimulusSummary.Count -eq 0) { [void] $md.AppendLine("No stimulus log.") } else {
-    [void] $md.AppendLine("| Stimulus | Count | Results | Loopback median peak | Loopback max peak | Asset peak | Verdict |"); [void] $md.AppendLine("|---|---|---|---|---|---|---|")
-    foreach ($s in $stimulusSummary) { [void] $md.AppendLine(("| {0} | {1} | {2} | {3} | {4} | {5} | {6} |" -f $s.Stimulus, $s.Count, $s.Results, $s.LoopbackMedianPeakDbfs, $s.LoopbackMaxPeakDbfs, $s.AssetPeakDbfs, $s.Verdict)) }
+    [void] $md.AppendLine("| Stimulus | Count | Results | Clean / masked / no-data windows | Loopback median peak (clean) | Loopback max peak (clean) | Asset peak | Verdict |"); [void] $md.AppendLine("|---|---|---|---|---|---|---|---|")
+    foreach ($s in $stimulusSummary) { [void] $md.AppendLine(("| {0} | {1} | {2} | {3} / {4} / {5} | {6} | {7} | {8} | {9} |" -f $s.Stimulus, $s.Count, $s.Results, $s.CleanWindows, $s.MaskedWindows, $s.NoDataWindows, $s.LoopbackMedianPeakDbfs, $s.LoopbackMaxPeakDbfs, $s.AssetPeakDbfs, $s.Verdict)) }
 }
 [void] $md.AppendLine("")
 [void] $md.AppendLine("## Recorder triggers")
@@ -411,5 +447,12 @@ $jsonPath = Join-Path $root 'review.json'
 Write-Host ''
 Write-Host $verdict
 Write-Host ("Candidates: {0} strong, {1} medium, {2} weak" -f $strong.Count, @($candidates | Where-Object { $_.Strength -eq 'Medium' }).Count, @($candidates | Where-Object { $_.Strength -eq 'Weak' }).Count)
-foreach ($s in $stimulusSummary) { Write-Host ("  {0,-18} n={1,-4} loopback max {2,6} dBFS  asset {3,6} dBFS  {4}" -f $s.Stimulus, $s.Count, $s.LoopbackMaxPeakDbfs, $s.AssetPeakDbfs, $s.Verdict) }
+foreach ($s in $stimulusSummary) { Write-Host ("  {0,-18} n={1,-4} clean/masked/nodata {2}/{3}/{4}  loopback max {5,6} dBFS  asset {6,6} dBFS  {7}" -f $s.Stimulus, $s.Count, $s.CleanWindows, $s.MaskedWindows, $s.NoDataWindows, $s.LoopbackMaxPeakDbfs, $s.AssetPeakDbfs, $s.Verdict) }
+$cleanMax = @($stimulusSummary | Where-Object { $null -ne $_.LoopbackMaxPeakDbfs -and $_.LoopbackMaxPeakDbfs -gt -100 -and $_.Stimulus -notin @('ToastSilent', 'ManualCue', 'OutlookSelfMail') } | ForEach-Object { [double] $_.LoopbackMaxPeakDbfs })
+if ($cleanMax.Count -gt 0) {
+    $suggested = [Math]::Ceiling(($cleanMax | Measure-Object -Maximum).Maximum + 4)
+    $line = ("Suggested -TriggerThresholdDbfs for the next run on this host: {0} (loudest clean stimulus {1} dBFS plus 4 dB, so normal stimuli do not preserve segments and anything louder does)." -f $suggested, ($cleanMax | Measure-Object -Maximum).Maximum)
+    Write-Host $line
+    [System.IO.File]::AppendAllText($mdPath, "`r`n" + $line + "`r`n", [System.Text.UTF8Encoding]::new($false))
+}
 Write-Host ("Report: {0}" -f $mdPath)
