@@ -112,6 +112,22 @@
     and retention rules apply. It records the user's speech and surroundings
     and needs the same approvals as the loopback.
 
+.PARAMETER KeepAliveSilence
+    Open a second, render-side stream on the same endpoint and feed it
+    silence for the whole run. The Windows audio engine delivers loopback
+    data only while some render stream is active on the endpoint, so on an
+    idle virtual endpoint (a VDA with nothing playing) the loopback receives
+    no packets at all: levels.csv shows -144 dBFS with Frames 0 and the
+    segments stay empty until something plays. On a laptop other applications
+    usually keep the engine running, which is why the same command behaves
+    differently there. The silent stream keeps the engine, and therefore the
+    loopback, running continuously. It also keeps the Citrix audio channel
+    streaming to the client, which removes the idle-then-resume condition the
+    case reports; use it either as a diagnostic (does the loopback work at
+    all on this endpoint?) or deliberately as the "sink kept open" pilot arm,
+    and record which in the ledger. The silent stream appears as this
+    process's session in session-volume.csv. Ignored with -CaptureEndpoint.
+
 .PARAMETER SegmentSeconds
     Length of each rolling WAV segment. Defaults to 30.
 
@@ -307,7 +323,10 @@ param(
     [switch] $CreateMarkerShortcut,
 
     [Parameter(ParameterSetName = 'Record')]
-    [switch] $CaptureEndpoint
+    [switch] $CaptureEndpoint,
+
+    [Parameter(ParameterSetName = 'Record')]
+    [switch] $KeepAliveSilence
 )
 
 Set-StrictMode -Version 2.0
@@ -631,8 +650,8 @@ function Import-CaptureCore {
             $versionProperty = $readerType.GetProperty('CoreVersion')
             if ($null -ne $versionProperty) { $loadedVersion = [string] $versionProperty.GetValue($null, $null) }
         }
-        if ([version] $loadedVersion -lt [version] '1.4.0') {
-            throw ("An older AudioLoopbackCapture.cs build ({0}) is already loaded in this PowerShell session; 1.4.0 or later is required and .NET cannot unload it. Start a new PowerShell process, for example: powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Start-AudioLoopbackRecorder.ps1 ..." -f $loadedVersion)
+        if ([version] $loadedVersion -lt [version] '1.5.0') {
+            throw ("An older AudioLoopbackCapture.cs build ({0}) is already loaded in this PowerShell session; 1.5.0 or later is required and .NET cannot unload it. Start a new PowerShell process, for example: powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Start-AudioLoopbackRecorder.ps1 ..." -f $loadedVersion)
         }
         return
     }
@@ -745,6 +764,7 @@ $gateQuietDbfs = if ($AbsoluteTrigger) { 0 } else { $OnsetQuietDbfs }
 $gateQuietSeconds = if ($AbsoluteTrigger) { 0 } else { $OnsetQuietSeconds }
 $recorder = New-CaptureRecorder -Path $resolvedOutput -EndpointId $DeviceId -SegmentLength $SegmentSeconds -SegmentsToRetain $RetainSegments -ThresholdDbfs $TriggerThresholdDbfs -QuietDbfs $gateQuietDbfs -QuietSeconds $gateQuietSeconds
 $recorder.CaptureEndpoint = [bool] $CaptureEndpoint
+$recorder.KeepAliveSilence = [bool] $KeepAliveSilence
 $generation = 1
 $recorder.Generation = $generation
 $completedTriggerCount = [long] 0
@@ -759,7 +779,8 @@ try {
     Write-RecorderLog -Path $LogPath -Level 'INFO' -Message ''
     Write-RecorderLog -Path $LogPath -Level 'INFO' -Message $(if ($CaptureEndpoint) { 'Capture-endpoint (microphone) recorder started.' } else { 'Loopback recorder started.' })
     Write-RecorderLog -Path $LogPath -Level 'INFO' -Message ("  Endpoint    : {0}" -f $recorder.DeviceId)
-    Write-RecorderLog -Path $LogPath -Level 'INFO' -Message ("  Format      : {0} Hz, {1} channel(s)" -f $recorder.SampleRate, $recorder.Channels)
+    Write-RecorderLog -Path $LogPath -Level 'INFO' -Message ("  Format      : {0} Hz, {1} channel(s); {2}" -f $recorder.SampleRate, $recorder.Channels, $recorder.FormatDescription)
+    Write-RecorderLog -Path $LogPath -Level 'INFO' -Message ("  Keep-alive  : {0}" -f $(if ($KeepAliveSilence) { 'silent render stream on (engine and Citrix channel kept active)' } else { 'off (loopback receives packets only while something renders)' }))
     Write-RecorderLog -Path $LogPath -Level 'INFO' -Message ("  Output      : {0}" -f $resolvedOutput)
     Write-RecorderLog -Path $LogPath -Level 'INFO' -Message ("  Rolling     : {0} x {1}s segments" -f $RetainSegments, $SegmentSeconds)
     if ($AbsoluteTrigger) {
@@ -821,6 +842,8 @@ try {
         UserSid              = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
         EndpointId           = $recorder.DeviceId
         CaptureEndpoint      = [bool] $CaptureEndpoint
+        KeepAliveSilence     = [bool] $KeepAliveSilence
+        FormatDescription    = $recorder.FormatDescription
         SampleRate           = $recorder.SampleRate
         Channels             = $recorder.Channels
         SegmentSeconds       = $SegmentSeconds
@@ -842,6 +865,7 @@ try {
     [System.IO.File]::WriteAllText((Join-Path $resolvedOutput 'session.json'), ($sessionMetadata | ConvertTo-Json -Depth 3), [System.Text.UTF8Encoding]::new($true))
 
     $lastStatusUtc = $startedUtc
+    $lastStatusFrames = [long] 0
     $manualMarkCount = 0
     $markerStuck = $false
 
@@ -884,6 +908,7 @@ try {
                 try {
                     $candidate = New-CaptureRecorder -Path $resolvedOutput -EndpointId $null -SegmentLength $SegmentSeconds -SegmentsToRetain $RetainSegments -ThresholdDbfs $TriggerThresholdDbfs -QuietDbfs $gateQuietDbfs -QuietSeconds $gateQuietSeconds
                     $candidate.CaptureEndpoint = [bool] $CaptureEndpoint
+                    $candidate.KeepAliveSilence = [bool] $KeepAliveSilence
                     $candidate.Generation = $generation
                     $candidate.Start()
                     $recorder = $candidate
@@ -947,8 +972,15 @@ try {
             $deleted = @(Limit-PreservedData -Path $preservedDirectory -MaximumBytes ([long] $MaxPreservedMegabytes * 1MB) -ManifestPath $evidenceManifestPath -GenerationLogPath $generationLogPath -Generation $generation -EndpointId $recorder.DeviceId)
             Write-RetentionTombstones -DeletedRelativePaths $deleted -ManifestPath $evidenceManifestPath -GenerationLogPath $generationLogPath -Generation $generation -EndpointId $recorder.DeviceId
             Update-EvidenceHashes -PreservedPath $preservedDirectory -ManifestPath $evidenceManifestPath -GenerationLogPath $generationLogPath -Generation $generation -EndpointId $recorder.DeviceId
-            Write-RecorderLog -Path $LogPath -Level 'INFO' -Message ("[{0:HH:mm:ss}] generation {1} | running {2:F1}h | peak {3:F1} dBFS | endpoint volume {4:P0} | muted {5} | triggers {6} | gated crossings {7} | marks {8}" -f `
-                (Get-Date), $generation, ($nowUtc - $startedUtc).TotalHours, $recorder.LastPeakDbfs, $recorder.LastEndpointVolumeScalar, $recorder.LastEndpointMuted, ($completedTriggerCount + $recorder.TriggerCount), $recorder.GatedCrossingCount, $manualMarkCount)
+            $framesNow = [long] $recorder.FramesCaptured
+            $framesDelta = $framesNow - $lastStatusFrames
+            $lastStatusFrames = $framesNow
+            $capturedSeconds = if ($recorder.SampleRate -gt 0) { $framesDelta / [double] $recorder.SampleRate } else { 0 }
+            Write-RecorderLog -Path $LogPath -Level 'INFO' -Message ("[{0:HH:mm:ss}] generation {1} | running {2:F1}h | audio {3:F1}s of {4}s | peak {5:F1} dBFS | endpoint volume {6:P0} | muted {7} | triggers {8} | gated crossings {9} | marks {10}" -f `
+                (Get-Date), $generation, ($nowUtc - $startedUtc).TotalHours, $capturedSeconds, $StatusIntervalSeconds, $recorder.LastPeakDbfs, $recorder.LastEndpointVolumeScalar, $recorder.LastEndpointMuted, ($completedTriggerCount + $recorder.TriggerCount), $recorder.GatedCrossingCount, $manualMarkCount)
+            if ($framesDelta -eq 0) {
+                Write-RecorderLog -Path $LogPath -Level 'WARN' -Message "No audio packets in the last $StatusIntervalSeconds s. A loopback client receives nothing while no render stream is active on the endpoint; if this persists through a stimulus, the loopback is not delivering on this endpoint. -KeepAliveSilence keeps the engine running (and the Citrix channel active)."
+            }
         }
 
         if ($DurationHours -gt 0 -and ($nowUtc - $startedUtc).TotalHours -ge $DurationHours) {

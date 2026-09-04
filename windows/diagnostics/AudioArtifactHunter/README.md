@@ -30,7 +30,7 @@ These tools exist to separate those two, because you cannot fix an artifact you 
 
 | File | Ver | Purpose | Records audio? |
 |---|---|---|---|
-| [`AudioLoopbackCapture.cs`](AudioLoopbackCapture.cs) | 1.4.0 | WASAPI interop core: loopback recorder, endpoint-state reader, WAV writer. Compiled at runtime by the scripts below; not run directly. | — |
+| [`AudioLoopbackCapture.cs`](AudioLoopbackCapture.cs) | 1.5.0 | WASAPI interop core: loopback recorder, endpoint-state reader, WAV writer. Compiled at runtime by the scripts below; not run directly. | — |
 | [`Start-AudioEndpointStateMonitor.ps1`](Start-AudioEndpointStateMonitor.ps1) | 1.3.0 | Samples default render endpoint identity, device state, master volume and mute, plus per-application sessions. | **No** |
 | [`Start-AudioLoopbackRecorder.ps1`](Start-AudioLoopbackRecorder.ps1) | 1.0.0 | Rolling WASAPI loopback capture with level logging, automatic peak triggers and operator-marked preservation. | **Yes** |
 | [`Invoke-AudioStimulus.ps1`](Invoke-AudioStimulus.ps1) | 1.0.0 | Fires controlled, logged audio stimuli so an intermittent artifact can be provoked rather than waited for. | Plays audio |
@@ -48,6 +48,7 @@ Two of these tools need an explicit acknowledgement, and both gates are delibera
 **`Start-AudioLoopbackRecorder.ps1` records audio.** Loopback capture records everything the machine renders — which in practice includes meeting audio and the voice of anyone on the far end of a call. `-AcknowledgeAudioCapture` is a **mandatory** parameter; the script will not run without it. Before deploying it:
 
 - Confirm you have authorization to record on that endpoint, from whoever owns that decision in your organisation (privacy/works council/legal, as applicable).
+- `-CaptureEndpoint` records the **microphone**, not the render mix. That captures the user's own speech and their surroundings, which is a broader intrusion than loopback and needs its own approval — do not treat it as covered by the loopback sign-off.
 - Tell the user what is being captured and for how long.
 - Treat the output folder as sensitive. The recorder and the state monitor both restrict their output directory's DACL to the current user, SYSTEM and Administrators, and the recorder writes SHA-256 hashes of preserved evidence \u2014 but retention and disposal are your responsibility.
 
@@ -98,6 +99,8 @@ It measures true per-sample RMS alongside peak, and logs buffer discontinuities 
 | `AbsoluteTrigger` | Off | Disable the onset gate; any peak at or above the threshold preserves, whatever preceded it. |
 | `MaxPreservedMegabytes` | | Hard cap on preserved evidence. |
 | `CreateMarkerShortcut` | Off | Put a "Mark audio incident" shortcut on the desktop for the run, removed on stop. |
+| `CaptureEndpoint` | Off | Record the **microphone** instead of render loopback. See the note below. |
+| `KeepAliveSilence` | Off | Hold a silent render stream open so loopback keeps receiving packets on an idle endpoint. Ignored with `-CaptureEndpoint`. |
 | `RestartOnEndpointChange` / `MaxEndpointRestarts` | | Follow the default endpoint across device changes (common on remoted sessions and USB headsets). |
 | `DurationHours`, `StopFileName`, `LogPath`, `KeepRollingOnStop` | | Run length and shutdown behaviour. |
 
@@ -107,6 +110,16 @@ It measures true per-sample RMS alongside peak, and logs buffer discontinuities 
 
 # Then capture
 .\Start-AudioLoopbackRecorder.ps1 -OutputDirectory C:\Temp\Audio -AcknowledgeAudioCapture -RestartOnEndpointChange
+```
+
+**If `levels.csv` reads −144 dBFS with `Frames 0`, the tool is not broken.** Windows only delivers loopback data while some render stream is active on the endpoint, so on an idle virtual endpoint — a session host with nothing playing — the loopback receives no packets at all and segments stay empty until something plays. On a laptop other applications keep the engine running, which is why the identical command behaves differently there. `-KeepAliveSilence` holds a silent render stream open for the whole run so loopback keeps flowing; it also keeps the remoting audio channel streaming, which removes the idle-then-resume condition entirely — so record whether you used it, because it is both a diagnostic and a potential mitigation.
+
+```powershell
+# Idle session host: keep the engine alive so loopback actually receives packets
+.\Start-AudioLoopbackRecorder.ps1 -OutputDirectory C:\Temp\Audio -AcknowledgeAudioCapture -KeepAliveSilence
+
+# Second instance on the microphone, to catch what never reached the render side
+.\Start-AudioLoopbackRecorder.ps1 -OutputDirectory C:\Temp\Mic -AcknowledgeAudioCapture -CaptureEndpoint
 ```
 
 ### Invoke-AudioStimulus.ps1
@@ -225,7 +238,9 @@ Being explicit about the boundaries, because loopback capture is routinely over-
 
 **It can show** that the rendered digital stream did or did not contain a loud transient at a given moment; that the endpoint volume scalar did or did not change; that the capture had a buffer discontinuity; and that a given event coincided in time.
 
-**It cannot show** anything that happens *after* the loopback tap. Loopback captures the mix as Windows renders it, so it will **not** contain distortion introduced by the headset, dock, DAC, Bluetooth/DECT link, or a hardware amplifier — nor by a remoting client's own audio path on a different machine. An artifact the user clearly heard that is **absent** from the loopback capture is a genuine and useful result: it relocates the fault downstream of Windows. Do not read it as "nothing happened".
+**It cannot show** anything that happens *after* the render tap. Loopback captures the mix as Windows renders it, so it will **not** contain distortion introduced by the headset, dock, DAC, Bluetooth/DECT link, or a hardware amplifier — nor by a remoting client's own audio path on a different machine. An artifact the user clearly heard that is **absent** from the loopback capture is a genuine and useful result: it relocates the fault downstream of Windows. Do not read it as "nothing happened".
+
+That blind spot is exactly what `-CaptureEndpoint` is for. Running a second recorder on the microphone picks up acoustic leakage from the earcups, so a bang that was only ever produced downstream of Windows — or by the endpoint's own media engine on a remoted session — still leaves a spike in *that* recording. Loopback silent plus microphone spike is strong evidence the fault is downstream; both silent, with the user certain they heard it, points at the endpoint device itself.
 
 It also cannot establish causation from correlation alone. Coincidence in a timeline is a lead, not a root cause — which is what `ToastSilent` and the inventory diff are for.
 
@@ -233,7 +248,7 @@ It also cannot establish causation from correlation alone. Coincidence in a time
 
 - **PowerShell 5.1.** These target Windows PowerShell 5.1 and use no PowerShell 7+ syntax.
 - `AudioLoopbackCapture.cs` must sit **alongside** the recorder, monitor and stimulus scripts — they compile it at runtime with `Add-Type`. No NuGet package, no third-party audio library; it uses the in-box .NET Framework compiler and the Windows Core Audio COM APIs directly.
-- The scripts check the core's `CoreVersion` and require **1.4.0 or later**. .NET Framework cannot unload an assembly, so if an older build was already compiled into the current session you will get an explicit error rather than silently mismatched behaviour. The fix is a **new PowerShell process** (`powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\<script>.ps1 ...`), not re-running in the same window.
+- The scripts check the core's `CoreVersion` and require **1.5.0 or later**. .NET Framework cannot unload an assembly, so if an older build was already compiled into the current session you will get an explicit error rather than silently mismatched behaviour. The fix is a **new PowerShell process** (`powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\<script>.ps1 ...`), not re-running in the same window.
 - Elevation is not required for capture or monitoring. `Get-AudioStackInventory.ps1` gives broader coverage elevated, and `Set-NotificationSoundState.ps1 -DefaultUser` requires it.
 - A render endpoint must be present and active. Verify with `-ListDevices` first.
 

@@ -878,8 +878,8 @@ try {
         $versionProperty = $coreType.GetProperty('CoreVersion')
         $loadedVersion = '0.0.0'
         if ($null -ne $versionProperty) { $loadedVersion = [string] $versionProperty.GetValue($null, $null) }
-        if ([version] $loadedVersion -lt [version] '1.4.0') {
-            throw ("An older AudioLoopbackCapture.cs build ({0}) is already loaded in this PowerShell session; 1.4.0 or later is required and .NET cannot unload it. Start a new PowerShell process, for example: powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Invoke-AudioStimulus.ps1 ..." -f $loadedVersion)
+        if ([version] $loadedVersion -lt [version] '1.5.0') {
+            throw ("An older AudioLoopbackCapture.cs build ({0}) is already loaded in this PowerShell session; 1.5.0 or later is required and .NET cannot unload it. Start a new PowerShell process, for example: powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Invoke-AudioStimulus.ps1 ..." -f $loadedVersion)
         }
     }
 

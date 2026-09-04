@@ -167,7 +167,7 @@ $roleNames = @{
 }
 
 # Minimum AudioLoopbackCapture.cs build this script needs (session capture).
-$REQUIRED_CORE_VERSION = '1.4.0'
+$REQUIRED_CORE_VERSION = '1.5.0'
 
 <#
 .SYNOPSIS

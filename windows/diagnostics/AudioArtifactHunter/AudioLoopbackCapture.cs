@@ -79,6 +79,13 @@ namespace AudioArtifactHunter
         [PreserveSig] int GetNextPacketSize(out uint frames);
     }
 
+    [ComImport, Guid("F294ACFC-3146-4483-A7BF-ADDCA7C260E2"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    internal interface IAudioRenderClient
+    {
+        [PreserveSig] int GetBuffer(uint framesRequested, out IntPtr data);
+        [PreserveSig] int ReleaseBuffer(uint framesWritten, uint flags);
+    }
+
     [ComImport, Guid("5CDF2C82-841E-4546-9722-0CF74078229A"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     internal interface IAudioEndpointVolume
     {
@@ -323,7 +330,7 @@ namespace AudioArtifactHunter
         /// an assembly: a session that compiled an older copy of this file
         /// keeps that copy until the process exits.
         /// </summary>
-        public static string CoreVersion { get { return "1.4.0"; } }
+        public static string CoreVersion { get { return "1.5.0"; } }
 
         private const int DataFlowRender = 0;
         private const int ClsCtxAll = 23;
@@ -715,6 +722,12 @@ namespace AudioArtifactHunter
 
         private static readonly Guid IidAudioClient = new Guid("1CB9AD4C-DBFA-4C32-B178-C2F568A703B2");
         private static readonly Guid IidAudioCaptureClient = new Guid("C8ADBD64-E71E-48A0-A4DE-185C395CD317");
+        private static readonly Guid IidAudioRenderClient = new Guid("F294ACFC-3146-4483-A7BF-ADDCA7C260E2");
+
+        // A loopback client receives nothing while no render stream is active
+        // on the endpoint, because the engine does not run. After this many
+        // seconds without a packet a NoData event is logged once.
+        private const double NoDataReportSeconds = 30.0;
         private static readonly Guid IidAudioEndpointVolume = new Guid("5CDF2C82-841E-4546-9722-0CF74078229A");
         private static readonly Guid IidAudioSessionManager2 = new Guid("77AA99A0-1BD6-484F-8BC7-2C654C9A9B6F");
         private static readonly Guid SubtypeIeeeFloat = new Guid("00000003-0000-0010-8000-00AA00389B71");
@@ -829,6 +842,32 @@ namespace AudioArtifactHunter
         public bool CaptureEndpoint { get; set; }
 
         /// <summary>
+        /// When true, opens a second, render-side client on the same endpoint
+        /// and feeds it silence for the whole run. The audio engine only
+        /// produces loopback data while some render stream is active, so on
+        /// an idle virtual endpoint (a VDA with nothing playing) a loopback
+        /// client otherwise receives no packets at all. The silent stream
+        /// keeps the engine, and therefore the loopback, running. It also
+        /// keeps the remoting audio channel streaming to the client, which
+        /// removes the idle-then-resume condition under test; use it either
+        /// as a diagnostic or deliberately as the "sink kept open" pilot.
+        /// Ignored with CaptureEndpoint. Set before Start.
+        /// </summary>
+        public bool KeepAliveSilence { get; set; }
+
+        /// <summary>Total frames delivered by the capture client since Start.</summary>
+        public long FramesCaptured { get; private set; }
+
+        /// <summary>Total packets delivered by the capture client since Start.</summary>
+        public long PacketsCaptured { get; private set; }
+
+        /// <summary>Mix format as reported by the endpoint, for the run log.</summary>
+        public string FormatDescription { get; private set; }
+
+        /// <summary>UTC time of the last packet, or of Start while none arrived.</summary>
+        public DateTime LastPacketUtc { get; private set; }
+
+        /// <summary>
         /// Creates a recorder. Nothing is captured until Start is called.
         /// </summary>
         /// <param name="outputDirectory">Root directory for all output.</param>
@@ -927,6 +966,39 @@ namespace AudioArtifactHunter
             }
 
             File.AppendAllText(path, header + "\r\n", Encoding.UTF8);
+        }
+
+        /// <summary>
+        /// Tops up the keep-alive render buffer with silence. Failures are
+        /// swallowed: the keep-alive is an aid, never a reason to stop capture.
+        /// </summary>
+        private static void FeedKeepAliveSilence(IAudioClient renderClient, IAudioRenderClient render, uint bufferFrames)
+        {
+            try
+            {
+                uint padding;
+                if (renderClient.GetCurrentPadding(out padding) < 0)
+                {
+                    return;
+                }
+
+                uint available = bufferFrames > padding ? bufferFrames - padding : 0;
+                if (available == 0)
+                {
+                    return;
+                }
+
+                IntPtr data;
+                if (render.GetBuffer(available, out data) < 0)
+                {
+                    return;
+                }
+
+                render.ReleaseBuffer(available, BufferFlagsSilent);
+            }
+            catch (Exception)
+            {
+            }
         }
 
         /// <summary>
@@ -1074,6 +1146,10 @@ namespace AudioArtifactHunter
             IMMDevice device = null;
             IAudioClient client = null;
             IAudioCaptureClient capture = null;
+            IAudioClient keepAliveClient = null;
+            IAudioRenderClient keepAliveRender = null;
+            uint keepAliveBufferFrames = 0;
+            bool noDataReported = false;
             IAudioEndpointVolume endpointVolume = null;
             IAudioSessionManager2 sessionManager = null;
 
@@ -1136,6 +1212,10 @@ namespace AudioArtifactHunter
 
                 _sampleRate = (int)format.SamplesPerSec;
                 _channels = format.Channels;
+                FormatDescription = string.Format(
+                    CultureInfo.InvariantCulture,
+                    "tag=0x{0:X4} bits={1} float={2} rate={3} channels={4} blockAlign={5}",
+                    format.FormatTag, format.BitsPerSample, isFloat, format.SamplesPerSec, format.Channels, format.BlockAlign);
 
                 // A one second client buffer is far larger than needed and makes
                 // the loop tolerant of scheduling delays on a busy host.
@@ -1150,8 +1230,45 @@ namespace AudioArtifactHunter
 
                 Check(client.Start(), "Start");
 
+                if (KeepAliveSilence && !CaptureEndpoint)
+                {
+                    try
+                    {
+                        Guid keepAliveClientIid = IidAudioClient;
+                        object keepAliveClientObject;
+                        int khr = device.Activate(ref keepAliveClientIid, ClsCtxAll, IntPtr.Zero, out keepAliveClientObject);
+                        if (khr < 0) { throw new COMException("Activate(IAudioClient) for keep-alive", khr); }
+                        keepAliveClient = (IAudioClient)keepAliveClientObject;
+
+                        khr = keepAliveClient.Initialize(ShareModeShared, 0, 10000000L, 0, formatPointer, IntPtr.Zero);
+                        if (khr < 0) { throw new COMException("Initialize keep-alive render", khr); }
+
+                        Guid renderIid = IidAudioRenderClient;
+                        object renderObject;
+                        khr = keepAliveClient.GetService(ref renderIid, out renderObject);
+                        if (khr < 0) { throw new COMException("GetService(IAudioRenderClient)", khr); }
+                        keepAliveRender = (IAudioRenderClient)renderObject;
+
+                        khr = keepAliveClient.GetBufferSize(out keepAliveBufferFrames);
+                        if (khr < 0) { throw new COMException("GetBufferSize keep-alive", khr); }
+
+                        FeedKeepAliveSilence(keepAliveClient, keepAliveRender, keepAliveBufferFrames);
+                        khr = keepAliveClient.Start();
+                        if (khr < 0) { throw new COMException("Start keep-alive", khr); }
+
+                        LogCaptureEvent("KeepAliveStarted", 0, 0, keepAliveBufferFrames, 0, 0, "Silent render stream opened on the endpoint so the engine and the loopback keep running; the remoting channel stays active.");
+                    }
+                    catch (COMException ex)
+                    {
+                        LogCaptureEvent("KeepAliveFailed", ex.ErrorCode, 0, 0, 0, 0, ex.Message);
+                        keepAliveRender = null;
+                        keepAliveClient = null;
+                    }
+                }
+
                 _secondStartUtc = DateTime.UtcNow;
                 _segmentStartUtc = _secondStartUtc;
+                LastPacketUtc = _secondStartUtc;
                 _running = true;
 
                 RotateSegment();
@@ -1169,6 +1286,18 @@ namespace AudioArtifactHunter
                     if (packetFrames == 0)
                     {
                         Thread.Sleep(10);
+                        if (keepAliveRender != null)
+                        {
+                            FeedKeepAliveSilence(keepAliveClient, keepAliveRender, keepAliveBufferFrames);
+                        }
+                        if (!noDataReported && (DateTime.UtcNow - LastPacketUtc).TotalSeconds >= NoDataReportSeconds)
+                        {
+                            noDataReported = true;
+                            LogCaptureEvent("NoData", 0, 0, 0, 0, 0, string.Format(
+                                CultureInfo.InvariantCulture,
+                                "No packets for {0:F0}s. A loopback client receives nothing while no render stream is active on the endpoint (engine idle); KeepAliveSilence={1}, CaptureEndpoint={2}.",
+                                NoDataReportSeconds, KeepAliveSilence, CaptureEndpoint));
+                        }
                         SampleEndpointVolume(endpointVolume, false);
                         SampleSessionVolumes(sessionManager, false);
                         FlushSecondIfDue();
@@ -1189,6 +1318,16 @@ namespace AudioArtifactHunter
 
                         if (frames > 0)
                         {
+                            DateTime packetUtc = DateTime.UtcNow;
+                            if (noDataReported)
+                            {
+                                noDataReported = false;
+                                LogCaptureEvent("DataResumed", 0, flags, frames, devicePosition, qpcPosition, string.Format(CultureInfo.InvariantCulture, "Packets resumed after {0:F0}s without data.", (packetUtc - LastPacketUtc).TotalSeconds));
+                            }
+                            LastPacketUtc = packetUtc;
+                            PacketsCaptured++;
+                            FramesCaptured += frames;
+
                             bool silent = (flags & BufferFlagsSilent) != 0;
                             int sampleCount = (int)frames * _channels;
 
@@ -1249,6 +1388,11 @@ namespace AudioArtifactHunter
                         hr = capture.ReleaseBuffer(frames);
                         CheckCapture(hr, "ReleaseBuffer", flags, frames, devicePosition, qpcPosition);
 
+                        if (keepAliveRender != null)
+                        {
+                            FeedKeepAliveSilence(keepAliveClient, keepAliveRender, keepAliveBufferFrames);
+                        }
+
                         FlushSecondIfDue();
                         SampleEndpointVolume(endpointVolume, false);
                         SampleSessionVolumes(sessionManager, false);
@@ -1279,6 +1423,16 @@ namespace AudioArtifactHunter
                 if (client != null)
                 {
                     try { client.Stop(); } catch (Exception) { }
+                }
+
+                if (keepAliveClient != null)
+                {
+                    try { keepAliveClient.Stop(); } catch (Exception) { }
+                    if (keepAliveRender != null)
+                    {
+                        try { Marshal.ReleaseComObject(keepAliveRender); } catch (Exception) { }
+                    }
+                    try { Marshal.ReleaseComObject(keepAliveClient); } catch (Exception) { }
                 }
 
                 ReleaseComObject(capture);
