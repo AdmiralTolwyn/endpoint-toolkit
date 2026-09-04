@@ -70,6 +70,13 @@
     which takes noticeably longer than the rest of the collection combined.
     Worth enabling once per image rather than on every host.
 
+.PARAMETER LobProcessNamePattern
+    Regular expression matched against running process names (no extension)
+    recorded in the LineOfBusiness section with path, version, start time and
+    command line. Defaults to the Java launchers. Add the line-of-business
+    application's own executable once its name is known, for example
+    '^(java|javaw|myapp)$'.
+
 .PARAMETER LogPath
     Optional path to a run log. When supplied, the script appends a line for
     the run start, each collection step and its duration, the output file
@@ -127,6 +134,9 @@ param(
 
     [Parameter(ParameterSetName = 'Collect')]
     [switch] $MeasureSoundAssets,
+
+    [Parameter(ParameterSetName = 'Collect')]
+    [string] $LobProcessNamePattern = '^(java|javaw|javaws|jp2launcher)$',
 
     [Parameter(ParameterSetName = 'Compare', Mandatory)]
     [string] $CompareWith,
@@ -907,6 +917,141 @@ function Get-RemotingAndUsbFacts {
 
 <#
 .SYNOPSIS
+    Records classic Outlook alert settings and Java-hosted line-of-business
+    processes, two common application-layer producers of notification audio.
+
+.DESCRIPTION
+    A classic Outlook alert and a Java-hosted business application are audio
+    producers that a lab image without the production application set does
+    not reproduce. Both sit above the Windows audio engine:
+    classic Outlook's desktop alert is a toast plus, when "Play a sound" is on,
+    the AppEvents MailBeep binding (reported in SoundScheme); a Java
+    application renders through javax.sound.sampled or a bundled engine and
+    appears in the state monitor's session CSV under its process name.
+
+    Outlook value names under HKCU\Software\Microsoft\Office\16.0\Outlook are
+    observed implementation locations; a value that is absent means Outlook is
+    using its default (desktop alert on, sound on), and a policy value under
+    HKCU\Software\Policies overrides it. Reads only; nothing is changed.
+
+.PARAMETER ProcessNamePattern
+    Regular expression matched against running process names (without
+    extension) to capture as line-of-business processes. Defaults to Java
+    launchers; add the application's own executable name when known.
+
+.OUTPUTS
+    System.Management.Automation.PSCustomObject
+#>
+function Get-LineOfBusinessFacts {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string] $ProcessNamePattern
+    )
+
+    $outlookRoot = 'HKCU:\Software\Microsoft\Office\16.0\Outlook'
+    $outlookPolicyRoot = 'HKCU:\Software\Policies\Microsoft\Office\16.0\Outlook'
+    $alertValuePattern = '^(NewmailDesktopAlerts|PlaySound|ShowEnvelope|ChangeCursor|UseNewOutlook|NewOutlookMigration.*|DesktopAlert.*)$'
+    $reminderValuePattern = '^(PlaySound|ReminderSoundFile|Beep.*|Reminder.*)$'
+
+    $outlookPath = Get-RegValue -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\OUTLOOK.EXE' -Name '(default)'
+    $outlookFileVersion = $null
+    if (-not [string]::IsNullOrWhiteSpace($outlookPath) -and (Test-Path -LiteralPath $outlookPath -PathType Leaf)) {
+        $outlookFileVersion = (Get-Item -LiteralPath $outlookPath).VersionInfo.FileVersion
+    }
+
+    $filteredPrefs = [ordered] @{}
+    $prefs = Get-RegValueMap -Path (Join-Path $outlookRoot 'Preferences')
+    foreach ($name in @($prefs.Keys)) { if ($name -match $alertValuePattern) { $filteredPrefs[$name] = $prefs[$name] } }
+
+    $filteredReminders = [ordered] @{}
+    $reminders = Get-RegValueMap -Path (Join-Path $outlookRoot 'Options\Reminders')
+    foreach ($name in @($reminders.Keys)) { if ($name -match $reminderValuePattern) { $filteredReminders[$name] = $reminders[$name] } }
+
+    $policyPrefs = Get-RegValueMap -Path (Join-Path $outlookPolicyRoot 'Preferences')
+    $policyReminders = Get-RegValueMap -Path (Join-Path $outlookPolicyRoot 'Options\Reminders')
+
+    $c2r = Get-RegValueMap -Path 'HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Configuration'
+    $c2rFacts = [ordered] @{}
+    foreach ($name in @('VersionToReport', 'UpdateChannel', 'CDNBaseUrl', 'Platform', 'ProductReleaseIds')) {
+        if ($c2r.Contains($name)) { $c2rFacts[$name] = $c2r[$name] }
+    }
+
+    $outlookProcesses = @(Get-Process -Name 'OUTLOOK', 'olk' -ErrorAction SilentlyContinue | ForEach-Object {
+        [pscustomobject] @{ Name = $_.ProcessName; Id = $_.Id; Path = $_.Path }
+    })
+
+    $uninstallRoots = @(
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall',
+        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall',
+        'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall'
+    )
+    $javaProducts = New-Object System.Collections.Generic.List[object]
+    foreach ($root in $uninstallRoots) {
+        if (-not (Test-Path -LiteralPath $root)) { continue }
+        foreach ($key in @(Get-ChildItem -LiteralPath $root -ErrorAction SilentlyContinue)) {
+            $displayName = Get-RegValue -Path $key.PSPath -Name 'DisplayName'
+            if ([string]::IsNullOrWhiteSpace($displayName)) { continue }
+            if ($displayName -notmatch 'java|jdk|jre|openjdk|temurin|zulu|corretto|semeru|liberica|graalvm') { continue }
+            [void] $javaProducts.Add([pscustomobject] @{
+                DisplayName     = $displayName
+                DisplayVersion  = Get-RegValue -Path $key.PSPath -Name 'DisplayVersion'
+                Publisher       = Get-RegValue -Path $key.PSPath -Name 'Publisher'
+                InstallLocation = Get-RegValue -Path $key.PSPath -Name 'InstallLocation'
+            })
+        }
+    }
+
+    $commandLines = @{}
+    try {
+        foreach ($proc in @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop)) {
+            $commandLines[[int] $proc.ProcessId] = $proc.CommandLine
+        }
+    } catch {
+        Write-Verbose "Win32_Process command lines unavailable: $($_.Exception.Message)"
+    }
+
+    $lobProcesses = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -match $ProcessNamePattern } | ForEach-Object {
+        $info = $null
+        try { $info = $_.MainModule.FileVersionInfo } catch { }
+        $startTime = $null
+        try { $startTime = $_.StartTime.ToUniversalTime().ToString('o') } catch { }
+        [pscustomobject] @{
+            Name         = $_.ProcessName
+            Id           = $_.Id
+            Path         = $_.Path
+            FileVersion  = if ($null -ne $info) { $info.FileVersion } else { $null }
+            ProductName  = if ($null -ne $info) { $info.ProductName } else { $null }
+            CompanyName  = if ($null -ne $info) { $info.CompanyName } else { $null }
+            StartedUtc   = $startTime
+            CommandLine  = if ($commandLines.ContainsKey([int] $_.Id)) { $commandLines[[int] $_.Id] } else { $null }
+        }
+    })
+
+    return [pscustomobject] @{
+        Outlook = [pscustomobject] @{
+            ExecutablePath       = $outlookPath
+            FileVersion          = $outlookFileVersion
+            ClickToRun           = $c2rFacts
+            AlertPreferences     = $filteredPrefs
+            ReminderOptions      = $filteredReminders
+            PolicyPreferences    = $policyPrefs
+            PolicyReminderOptions = $policyReminders
+            RunningProcesses     = $outlookProcesses
+            Note                 = 'Absent values mean Outlook defaults (desktop alert on, play a sound on). New-mail sound is the AppEvents MailBeep binding in SoundScheme; the desktop alert itself is a toast. Value names are observed locations, not a documented contract.'
+        }
+        Java = [pscustomobject] @{
+            InstalledRuntimes = $javaProducts.ToArray()
+            JavaHomeMachine   = [System.Environment]::GetEnvironmentVariable('JAVA_HOME', 'Machine')
+            JavaHomeUser      = [System.Environment]::GetEnvironmentVariable('JAVA_HOME', 'User')
+            ProcessNamePattern = $ProcessNamePattern
+            RunningProcesses  = $lobProcesses
+            Note              = 'A Java application renders through javax.sound.sampled (DirectSound shared mode on Windows) or a bundled media engine and appears in the state monitor session CSV under its process name. Command lines are read for the collecting user; other users need elevation.'
+        }
+    }
+}
+
+<#
+.SYNOPSIS
     Collects new Teams' vdi_connection_info.json monitoring file(s).
 
 .DESCRIPTION
@@ -1545,6 +1690,7 @@ try {
     $remoting = Invoke-CollectionStep -Name 'Remoting and USB' -Action { Get-RemotingAndUsbFacts }
     $collaboration = Invoke-CollectionStep -Name 'Collaboration clients' -Action { Get-CollaborationClientFacts }
     $soundScheme = Invoke-CollectionStep -Name 'Sound scheme' -Action { Get-SoundSchemeFacts -MeasurePeak:$MeasureSoundAssets }
+    $lineOfBusiness = Invoke-CollectionStep -Name 'Line-of-business producers' -Action { Get-LineOfBusinessFacts -ProcessNamePattern $LobProcessNamePattern }
 
     $snapshot = [pscustomobject] @{
         SchemaVersion     = '1.0'
@@ -1561,6 +1707,7 @@ try {
         RemotingAndUsb    = $remoting
         CollaborationClients = $collaboration
         SoundScheme       = $soundScheme
+        LineOfBusiness    = $lineOfBusiness
     }
 
     $needsReview = @($apos | Where-Object { $_.NeedsReview })

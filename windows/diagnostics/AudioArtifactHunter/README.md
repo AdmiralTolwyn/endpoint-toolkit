@@ -48,7 +48,7 @@ Two of these tools need an explicit acknowledgement, and both gates are delibera
 
 - Confirm you have authorization to record on that endpoint, from whoever owns that decision in your organisation (privacy/works council/legal, as applicable).
 - Tell the user what is being captured and for how long.
-- Treat the output folder as sensitive. The script ACLs the directory and writes SHA-256 hashes of preserved evidence, but retention and disposal are your responsibility.
+- Treat the output folder as sensitive. The recorder and the state monitor both restrict their output directory's DACL to the current user, SYSTEM and Administrators, and the recorder writes SHA-256 hashes of preserved evidence \u2014 but retention and disposal are your responsibility.
 
 **`Invoke-AudioStimulus.ps1` deliberately plays sounds into a headset**, during an investigation whose whole subject is unexpectedly loud audio. `-AcknowledgeHearingSafety` is required. Use `-ListPlan` first — it prints the planned sequence and writes nothing. Do not run an unattended stimulus sequence against a headset somebody is wearing without briefing them first and having them set a safe volume.
 
@@ -78,7 +78,7 @@ It polls the default render endpoint for the Console, Multimedia and Communicati
 
 Continuous WASAPI loopback capture with **rolling retention** — it keeps only the last N segments, so it can run for hours without filling the disk, and preserves a segment only when something interesting happens.
 
-Preservation is triggered two ways: automatically when the peak crosses `-TriggerThresholdDbfs` (with a debounce so one event produces one row, not hundreds), and manually when the user drops a `MARK-INCIDENT.txt` file into the output folder the moment they hear something. The manual marker matters — it captures the user's *perception*, which is the only ground truth for "that was the noise I'm complaining about".
+Preservation is triggered two ways: automatically when the peak crosses `-TriggerThresholdDbfs` (with a debounce so one event produces one row, not hundreds), and manually when the user drops a `MARK-INCIDENT.txt` file into the output folder the moment they hear something. The manual marker matters — it captures the user's *perception*, which is the only ground truth for "that was the noise I'm complaining about". `-CreateMarkerShortcut` puts a **"Mark audio incident" shortcut on the user's desktop** for the life of the run and removes it on stop, which is the difference between a user who actually marks the event and one who was told to go and create a text file.
 
 The automatic trigger is **onset-gated**, and this matters more than it sounds. A bare peak threshold does not work in practice: in a pilot on a laptop in a Teams call, a plain −6 dBFS threshold fired six times in two minutes — normal speech peaks — which under rolling retention would evict the real event before anyone looked at it. So the trigger only opens if the preceding `-OnsetQuietSeconds` were at or below `-OnsetQuietDbfs`, i.e. it looks for a loud sound emerging *out of quiet*, which is what "it suddenly banged" actually means. Use `-AbsoluteTrigger` to disable the gate when you genuinely want every peak.
 
@@ -96,6 +96,7 @@ It measures true per-sample RMS alongside peak, and logs buffer discontinuities 
 | `OnsetQuietSeconds` | `2` | Length of the quiet window the onset gate inspects. |
 | `AbsoluteTrigger` | Off | Disable the onset gate; any peak at or above the threshold preserves, whatever preceded it. |
 | `MaxPreservedMegabytes` | | Hard cap on preserved evidence. |
+| `CreateMarkerShortcut` | Off | Put a "Mark audio incident" shortcut on the desktop for the run, removed on stop. |
 | `RestartOnEndpointChange` / `MaxEndpointRestarts` | | Follow the default endpoint across device changes (common on remoted sessions and USB headsets). |
 | `DurationHours`, `StopFileName`, `LogPath`, `KeepRollingOnStop` | | Run length and shutdown behaviour. |
 
@@ -109,7 +110,9 @@ It measures true per-sample RMS alongside peak, and logs buffer discontinuities 
 
 ### Invoke-AudioStimulus.ps1
 
-Waiting for an intermittent fault is expensive. This fires **controlled, timestamped stimuli** instead, so each one can be correlated against the recorder and the state monitor. Stimulus types: `ToastDefaultSound`, `ToastSilent`, `DirectWav`, `SystemSound`, `ManualCue`.
+Waiting for an intermittent fault is expensive. This fires **controlled, timestamped stimuli** instead, so each one can be correlated against the recorder and the state monitor. Stimulus types: `ToastDefaultSound`, `ToastSilent`, `DirectWav`, `SystemSound`, `MailBeep`, `ManualCue`. The default sequence is `ToastDefaultSound, MailBeep, DirectWav, SystemSound, ToastSilent`.
+
+`MailBeep` fires the Windows "New Mail Notification" AppEvents binding through `winmm` `PlaySound` — the same event classic Outlook uses for its new-mail sound — without needing Outlook or a mailbox. It is a *separate* binding from `Notification.Default`, so silencing one does not silence the other. `SND_NODEFAULT` is set deliberately: a blanked binding logs `NotPlayed` rather than falling back to the default beep, so you can see that a silencing policy actually took effect on that host.
 
 `ToastSilent` is the control case: it raises the same notification with no sound bound. If the artifact still occurs on `ToastSilent`, the notification WAV is not the source — which immediately invalidates the most common assumption.
 
@@ -122,7 +125,7 @@ Use `-ListPlan` to print the sequence and estimated duration without playing any
 
 ### Get-AudioStackInventory.ps1
 
-A single read-only snapshot of everything that can plausibly change how audio is rendered: OS and build, audio services, endpoints and their properties, audio processing objects (APOs), drivers, reliability history, remoting/USB configuration and sound-scheme bindings.
+A single read-only snapshot of everything that can plausibly change how audio is rendered: OS build and update history, audio services, endpoints and their properties, audio processing objects (APOs) with signature trust, drivers, reliability history, remoting/USB configuration, sound-scheme bindings, remoting/collaboration components, Outlook alert settings, and line-of-business processes matched by `-LobProcessNamePattern` (Java launchers by default — point it at the LOB executable once you know its name).
 
 Its real value is the **diff**. Take a baseline on a healthy machine (or on the same machine before a change), then compare:
 

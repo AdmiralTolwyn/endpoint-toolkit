@@ -81,7 +81,7 @@
         component or vendor ownership.
 
         This records the endpoint mix and may capture calls, media, notification
-        sounds and other user audio. Do not run it without the required customer
+        sounds and other user audio. Do not run it without the required
         privacy, legal and employee approvals.
 
     Peak levels are measured from the raw float samples before conversion to the
@@ -171,6 +171,14 @@
     line normally written to the console. Defaults to recorder.log inside
     -OutputDirectory. Useful when the recorder runs unattended and no console
     output would otherwise be captured.
+
+.PARAMETER CreateMarkerShortcut
+    Place a shortcut named "Mark audio incident" on the current user's desktop
+    at start that runs cmd.exe /c echo incident > <marker file>, so the user
+    has a one-click way to preserve the last minutes of audio after hearing
+    an artefact. The shortcut is removed again when the recorder stops,
+    cleanly or on error. Off by default so an unattended run changes nothing
+    outside its output directory unless asked to.
 
 .PARAMETER KeepRollingOnStop
     Leave the rolling\ segments on disk when the recorder makes its final stop
@@ -281,7 +289,10 @@ param(
     [string] $LogPath,
 
     [Parameter(ParameterSetName = 'Record')]
-    [switch] $KeepRollingOnStop
+    [switch] $KeepRollingOnStop,
+
+    [Parameter(ParameterSetName = 'Record')]
+    [switch] $CreateMarkerShortcut
 )
 
 Set-StrictMode -Version 2.0
@@ -392,22 +403,72 @@ function Write-RetentionTombstones {
     $tombstoneRows | Export-Csv -LiteralPath $ManifestPath -NoTypeInformation -Encoding UTF8 -Append
 }
 
+<#
+.SYNOPSIS
+    Restricts the output directory to the current user, SYSTEM and
+    Administrators (inherited entries removed), best effort.
+
+.DESCRIPTION
+    The directory will hold recorded endpoint audio, so inherited entries such
+    as Users:Modify on C:\temp are cut off. Only the DACL is written, through
+    DirectoryInfo.SetAccessControl, because Windows PowerShell's Set-Acl can
+    attempt to persist the audit section as well and then fails for a
+    standard user with "SeSecurityPrivilege". If the DACL is already in the
+    intended state (a previous run, possibly elevated, protected it) nothing
+    is written. Failure is reported, not thrown: the restriction is hygiene,
+    and a run that cannot apply it must still record.
+
+.OUTPUTS
+    PSCustomObject with Protected (bool), Changed (bool) and Message.
+#>
 function Protect-CaptureDirectory {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [string] $Path
     )
 
-    $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
-    $acl.SetAccessRuleProtection($true, $false)
+    $requiredSids = @([Security.Principal.WindowsIdentity]::GetCurrent().User.Value, 'S-1-5-18', 'S-1-5-32-544')
+    $fullControl = [System.Security.AccessControl.FileSystemRights]::FullControl
 
-    foreach ($sidValue in @([Security.Principal.WindowsIdentity]::GetCurrent().User.Value, 'S-1-5-18', 'S-1-5-32-544')) {
-        $sid = New-Object Security.Principal.SecurityIdentifier($sidValue)
-        $rule = New-Object Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
-        [void] $acl.AddAccessRule($rule)
+    try {
+        $directory = New-Object System.IO.DirectoryInfo($Path)
+        $acl = $directory.GetAccessControl([System.Security.AccessControl.AccessControlSections]::Access)
+    } catch {
+        return [pscustomobject] @{ Protected = $false; Changed = $false; Message = "Could not read the DACL: $($_.Exception.Message)" }
     }
 
-    Set-Acl -LiteralPath $Path -AclObject $acl -ErrorAction Stop
+    $explicitRules = @($acl.GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier]))
+    $satisfied = $acl.AreAccessRulesProtected
+    foreach ($sidValue in $requiredSids) {
+        $match = @($explicitRules | Where-Object {
+            $_.IdentityReference.Value -eq $sidValue -and
+            $_.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow -and
+            (($_.FileSystemRights -band $fullControl) -eq $fullControl)
+        })
+        if ($match.Count -eq 0) { $satisfied = $false }
+    }
+    foreach ($rule in $explicitRules) {
+        if ($requiredSids -notcontains $rule.IdentityReference.Value) { $satisfied = $false }
+    }
+    if ($satisfied) {
+        return [pscustomobject] @{ Protected = $true; Changed = $false; Message = 'DACL already restricted to the current user, SYSTEM and Administrators.' }
+    }
+
+    try {
+        $acl.SetAccessRuleProtection($true, $false)
+        foreach ($rule in $explicitRules) {
+            if ($requiredSids -notcontains $rule.IdentityReference.Value) { [void] $acl.RemoveAccessRule($rule) }
+        }
+        foreach ($sidValue in $requiredSids) {
+            $sid = New-Object Security.Principal.SecurityIdentifier($sidValue)
+            $rule = New-Object Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+            [void] $acl.AddAccessRule($rule)
+        }
+        $directory.SetAccessControl($acl)
+        return [pscustomobject] @{ Protected = $true; Changed = $true; Message = 'DACL restricted to the current user, SYSTEM and Administrators.' }
+    } catch {
+        return [pscustomobject] @{ Protected = $false; Changed = $false; Message = "Could not restrict the DACL (continuing without it): $($_.Exception.Message)" }
+    }
 }
 
 function Update-EvidenceHashes {
@@ -652,7 +713,7 @@ if (-not (Test-Path -LiteralPath $OutputDirectory -PathType Container)) {
 }
 
 $resolvedOutput = (Resolve-Path -LiteralPath $OutputDirectory).ProviderPath
-Protect-CaptureDirectory -Path $resolvedOutput
+$aclResult = Protect-CaptureDirectory -Path $resolvedOutput
 $markerPath = Join-Path $resolvedOutput $MARKER_NAME
 $stopFilePath = Join-Path $resolvedOutput $StopFileName
 $rollingDirectory = Join-Path $resolvedOutput 'rolling'
@@ -663,6 +724,7 @@ $generationLogPath = Join-Path $resolvedOutput 'endpoint-generations.csv'
 if ([string]::IsNullOrWhiteSpace($LogPath)) {
     $LogPath = Join-Path $resolvedOutput 'recorder.log'
 }
+Write-RecorderLog -Path $LogPath -Level $(if ($aclResult.Protected) { 'INFO' } else { 'WARN' }) -Message ("Output DACL: {0}" -f $aclResult.Message)
 
 $gateQuietDbfs = if ($AbsoluteTrigger) { 0 } else { $OnsetQuietDbfs }
 $gateQuietSeconds = if ($AbsoluteTrigger) { 0 } else { $OnsetQuietSeconds }
@@ -670,6 +732,7 @@ $recorder = New-CaptureRecorder -Path $resolvedOutput -EndpointId $DeviceId -Seg
 $generation = 1
 $recorder.Generation = $generation
 $completedTriggerCount = [long] 0
+$markerShortcutPath = $null
 
 try {
 try {
@@ -708,6 +771,27 @@ try {
     Write-RecorderLog -Path $LogPath -Level 'INFO' -Message ("  {0}" -f $markerPath)
     Write-RecorderLog -Path $LogPath -Level 'INFO' -Message 'A desktop shortcut to the following gives an operator a one-click trigger:'
     Write-RecorderLog -Path $LogPath -Level 'INFO' -Message ("  cmd.exe /c echo incident > `"{0}`"" -f $markerPath)
+    if ($CreateMarkerShortcut) {
+        $shell = $null
+        try {
+            $desktopPath = [System.Environment]::GetFolderPath([System.Environment+SpecialFolder]::DesktopDirectory)
+            $candidatePath = Join-Path $desktopPath 'Mark audio incident.lnk'
+            $shell = New-Object -ComObject 'WScript.Shell'
+            $shortcut = $shell.CreateShortcut($candidatePath)
+            $shortcut.TargetPath = $env:ComSpec
+            $shortcut.Arguments = ('/c echo incident > "{0}"' -f $markerPath)
+            $shortcut.WorkingDirectory = $resolvedOutput
+            $shortcut.WindowStyle = 7
+            $shortcut.Description = 'Preserve the last minutes of endpoint audio after hearing an artefact'
+            $shortcut.Save()
+            $markerShortcutPath = $candidatePath
+            Write-RecorderLog -Path $LogPath -Level 'INFO' -Message ("Desktop shortcut created (removed at stop): {0}" -f $markerShortcutPath)
+        } catch {
+            Write-RecorderLog -Path $LogPath -Level 'WARN' -Message ("Could not create the desktop shortcut: {0}" -f $_.Exception.Message)
+        } finally {
+            if ($null -ne $shell) { [void] [System.Runtime.InteropServices.Marshal]::ReleaseComObject($shell) }
+        }
+    }
     Write-RecorderLog -Path $LogPath -Level 'INFO' -Message ("To stop cleanly without Ctrl+C, create: {0}" -f $stopFilePath)
     Write-RecorderLog -Path $LogPath -Level 'INFO' -Message ''
     Write-RecorderLog -Path $LogPath -Level 'INFO' -Message 'Press Ctrl+C to stop.'
@@ -735,6 +819,8 @@ try {
         StopFileName           = $StopFileName
         LogPath                = $LogPath
         KeepRollingOnStop      = [bool] $KeepRollingOnStop
+        MarkerShortcutPath     = $markerShortcutPath
+        OutputAclProtected     = [bool] $aclResult.Protected
     }
     [System.IO.File]::WriteAllText((Join-Path $resolvedOutput 'session.json'), ($sessionMetadata | ConvertTo-Json -Depth 3), [System.Text.UTF8Encoding]::new($true))
 
@@ -871,6 +957,15 @@ try {
             try { Remove-Item -LiteralPath $rollingFile.FullName -Force -ErrorAction Stop } catch { }
         }
         Write-EndpointGenerationEvent -Path $generationLogPath -Generation $generation -EventName 'RollingPurged' -EndpointId $recorder.DeviceId -Details "$($rollingFiles.Count) segment(s) purged."
+    }
+
+    if ($null -ne $markerShortcutPath -and (Test-Path -LiteralPath $markerShortcutPath -PathType Leaf)) {
+        try {
+            Remove-Item -LiteralPath $markerShortcutPath -Force -ErrorAction Stop
+            Write-RecorderLog -Path $LogPath -Level 'INFO' -Message ("Desktop shortcut removed: {0}" -f $markerShortcutPath)
+        } catch {
+            Write-RecorderLog -Path $LogPath -Level 'WARN' -Message ("Could not remove the desktop shortcut {0}: {1}" -f $markerShortcutPath, $_.Exception.Message)
+        }
     }
 
     Write-RecorderLog -Path $LogPath -Level 'INFO' -Message ''

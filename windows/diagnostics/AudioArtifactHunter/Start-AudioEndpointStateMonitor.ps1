@@ -206,10 +206,15 @@ function Write-MonitorLog {
 .DESCRIPTION
     Copied verbatim from Start-AudioLoopbackRecorder.ps1's Protect-CaptureDirectory
     so both collectors apply the same restriction to output that may contain
-    evidence. See that script for the owning implementation.
+    evidence. See that script for the owning implementation. Writes the DACL
+    only (DirectoryInfo.SetAccessControl), skips the write when the DACL is
+    already in the intended state, and reports failure instead of throwing.
 
 .PARAMETER Path
     Directory to protect.
+
+.OUTPUTS
+    PSCustomObject with Protected (bool), Changed (bool) and Message.
 #>
 function Protect-CaptureDirectory {
     [CmdletBinding()]
@@ -217,16 +222,48 @@ function Protect-CaptureDirectory {
         [Parameter(Mandatory)] [string] $Path
     )
 
-    $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
-    $acl.SetAccessRuleProtection($true, $false)
+    $requiredSids = @([Security.Principal.WindowsIdentity]::GetCurrent().User.Value, 'S-1-5-18', 'S-1-5-32-544')
+    $fullControl = [System.Security.AccessControl.FileSystemRights]::FullControl
 
-    foreach ($sidValue in @([Security.Principal.WindowsIdentity]::GetCurrent().User.Value, 'S-1-5-18', 'S-1-5-32-544')) {
-        $sid = New-Object Security.Principal.SecurityIdentifier($sidValue)
-        $rule = New-Object Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
-        [void] $acl.AddAccessRule($rule)
+    try {
+        $directory = New-Object System.IO.DirectoryInfo($Path)
+        $acl = $directory.GetAccessControl([System.Security.AccessControl.AccessControlSections]::Access)
+    } catch {
+        return [pscustomobject] @{ Protected = $false; Changed = $false; Message = "Could not read the DACL: $($_.Exception.Message)" }
     }
 
-    Set-Acl -LiteralPath $Path -AclObject $acl -ErrorAction Stop
+    $explicitRules = @($acl.GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier]))
+    $satisfied = $acl.AreAccessRulesProtected
+    foreach ($sidValue in $requiredSids) {
+        $match = @($explicitRules | Where-Object {
+            $_.IdentityReference.Value -eq $sidValue -and
+            $_.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow -and
+            (($_.FileSystemRights -band $fullControl) -eq $fullControl)
+        })
+        if ($match.Count -eq 0) { $satisfied = $false }
+    }
+    foreach ($rule in $explicitRules) {
+        if ($requiredSids -notcontains $rule.IdentityReference.Value) { $satisfied = $false }
+    }
+    if ($satisfied) {
+        return [pscustomobject] @{ Protected = $true; Changed = $false; Message = 'DACL already restricted to the current user, SYSTEM and Administrators.' }
+    }
+
+    try {
+        $acl.SetAccessRuleProtection($true, $false)
+        foreach ($rule in $explicitRules) {
+            if ($requiredSids -notcontains $rule.IdentityReference.Value) { [void] $acl.RemoveAccessRule($rule) }
+        }
+        foreach ($sidValue in $requiredSids) {
+            $sid = New-Object Security.Principal.SecurityIdentifier($sidValue)
+            $rule = New-Object Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+            [void] $acl.AddAccessRule($rule)
+        }
+        $directory.SetAccessControl($acl)
+        return [pscustomobject] @{ Protected = $true; Changed = $true; Message = 'DACL restricted to the current user, SYSTEM and Administrators.' }
+    } catch {
+        return [pscustomobject] @{ Protected = $false; Changed = $false; Message = "Could not restrict the DACL (continuing without it): $($_.Exception.Message)" }
+    }
 }
 
 <#
@@ -387,11 +424,12 @@ try {
         }
     }
 
-    try {
-        Protect-CaptureDirectory -Path $outputDirectory
-    } catch {
-        Write-Warning "Could not protect output directory ACL: $($_.Exception.Message)"
-        Write-MonitorLog -Path $logPath -Message ("WARNING: ACL protection failed for {0}: {1}" -f $outputDirectory, $_.Exception.Message)
+    $aclResult = Protect-CaptureDirectory -Path $outputDirectory
+    if ($aclResult.Protected) {
+        Write-MonitorLog -Path $logPath -Message ("Output DACL: {0}" -f $aclResult.Message)
+    } else {
+        Write-Warning ("Output DACL: {0}" -f $aclResult.Message)
+        Write-MonitorLog -Path $logPath -Message ("WARNING: Output DACL: {0}" -f $aclResult.Message)
     }
 
     if (-not (Test-Path -LiteralPath $resolvedOutputPath -PathType Leaf)) {

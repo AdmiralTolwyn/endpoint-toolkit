@@ -14,7 +14,7 @@
     window for those instead - the script prints a prompt and waits briefly for
     Enter, it does not send the Teams/Webex event itself.
 
-    Five stimulus types are supported, each implemented as a small function
+    Six stimulus types are supported, each implemented as a small function
     that returns a result object carrying Result/HResult/Error rather than
     throwing, so one failing stimulus never aborts the run:
 
@@ -26,6 +26,13 @@
                          bypassing WinRT toasts entirely.
       SystemSound        [System.Media.SystemSounds]::Asterisk.Play(), the
                          classic MessageBeep path.
+      MailBeep           winmm PlaySound of the AppEvents "MailBeep" alias, the
+                         Windows "New Mail Notification" event that classic
+                         Outlook's "Play a sound" on message arrival uses.
+                         Fires that binding without Outlook or a mailbox.
+                         SND_NODEFAULT is set, so a blanked binding plays
+                         nothing and the row reads NotPlayed rather than
+                         falling back to the default beep.
       ManualCue          Fires nothing. Prints a prompt so an operator can
                          trigger an external (Teams/Webex) stimulus by hand and
                          logs a Cue row. Only used when -IncludeManualCue is
@@ -42,8 +49,8 @@
 
     Each cycle walks -Sequence in order. Before every stimulus the script
     sleeps -IdleSeconds (plus up to -JitterSeconds of random extra idle, since
-    the case events this is built to reproduce were reported after idle
-    periods), polling the stop file every 500 ms so a run can always be ended
+    transients of this kind are typically reported after idle periods),
+    polling the stop file every 500 ms so a run can always be ended
     promptly. Immediately before and ~1 second after firing, the script reads
     the default render endpoint's identity, device state, master volume and
     mute for both the Console and Multimedia roles
@@ -59,8 +66,8 @@
     moment the operator presses B - a way to mark a real, unprompted artefact
     without waiting for the next scripted stimulus.
 
-    Absence of a bang during a run is not proof of absence: the case artefact
-    is reported as intermittent, and a short run at a given cadence samples
+    Absence of a bang during a run is not proof of absence: an intermittent
+    artefact is intermittent, and a short run at a given cadence samples
     only a fraction of the conditions that could produce it.
 
     Correlating a row with other collectors is a matter of matching
@@ -99,17 +106,21 @@
 
 .PARAMETER Sequence
     Ordered list of stimulus type names to run once per cycle. Defaults to
-    @('ToastDefaultSound','DirectWav','SystemSound','ToastSilent'). Each value
-    must be one of ToastDefaultSound, ToastSilent, DirectWav, SystemSound,
-    ManualCue. Including 'ManualCue' also requires -IncludeManualCue.
+    @('ToastDefaultSound','MailBeep','DirectWav','SystemSound','ToastSilent').
+    Each value must be one of ToastDefaultSound, ToastSilent, DirectWav,
+    SystemSound, MailBeep, ManualCue. Including 'ManualCue' also requires
+    -IncludeManualCue. ToastDefaultSound plus MailBeep together reproduce what
+    a classic Outlook desktop alert with sound does on Path 1.
 
 .PARAMETER Cycles
     Number of times to repeat -Sequence. 1 to 1000. Defaults to 3.
 
 .PARAMETER IdleSeconds
-    Idle time to sleep immediately before each stimulus, because the case
-    events this reproduces were reported after an idle period. 0 to 3600.
-    Defaults to 120.
+    Idle time to sleep immediately before each stimulus, because transients
+    of this kind are typically reported after an idle period. 0 to 3600.
+    Defaults to 120. Combine a small value with -JitterSeconds to sweep a
+    range of idle lengths; IdleSecondsBefore in each row then lets a bang
+    rate be tabulated against idle length.
 
 .PARAMETER JitterSeconds
     Additional random idle, 0 to this many seconds, added on top of
@@ -228,8 +239,8 @@
 param(
     [string] $OutputDirectory,
 
-    [ValidateSet('ToastDefaultSound', 'ToastSilent', 'DirectWav', 'SystemSound', 'ManualCue')]
-    [string[]] $Sequence = @('ToastDefaultSound', 'DirectWav', 'SystemSound', 'ToastSilent'),
+    [ValidateSet('ToastDefaultSound', 'ToastSilent', 'DirectWav', 'SystemSound', 'MailBeep', 'ManualCue')]
+    [string[]] $Sequence = @('ToastDefaultSound', 'MailBeep', 'DirectWav', 'SystemSound', 'ToastSilent'),
 
     [ValidateRange(1, 1000)]
     [int] $Cycles = 3,
@@ -468,6 +479,53 @@ function Invoke-SystemSoundStimulus {
             Result  = 'Played'
             HResult = '0x00000000'
             Error   = ''
+        }
+    } catch {
+        return [pscustomobject] @{
+            Result  = 'Failed'
+            HResult = (Get-ExceptionHResultText -ExceptionObject $_.Exception)
+            Error   = $_.Exception.Message
+        }
+    }
+}
+
+<#
+.SYNOPSIS
+    Plays the AppEvents "MailBeep" alias through winmm PlaySound.
+
+.DESCRIPTION
+    MailBeep is the Windows "New Mail Notification" sound event, the binding
+    classic Outlook's "Play a sound" on message arrival uses. Playing the
+    alias synchronously reproduces that Path 1 producer without Outlook.
+    SND_ALIAS | SND_SYNC | SND_NODEFAULT: a blanked or missing binding plays
+    nothing and returns false instead of falling back to the default beep,
+    which makes a GPP-blanked host visible in the log as NotPlayed.
+
+.OUTPUTS
+    PSCustomObject with Result ('Played', 'NotPlayed' or 'Failed'), HResult, Error.
+#>
+function Invoke-MailBeepStimulus {
+    [CmdletBinding()]
+    param()
+
+    try {
+        if (-not ('AudioArtifactHunter.WinMm' -as [type])) {
+            Add-Type -Namespace 'AudioArtifactHunter' -Name 'WinMm' -MemberDefinition @'
+[DllImport("winmm.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+public static extern bool PlaySound(string pszSound, IntPtr hmod, uint fdwSound);
+'@ -ErrorAction Stop
+        }
+
+        # SND_SYNC 0x0000 | SND_NODEFAULT 0x0002 | SND_ALIAS 0x00010000
+        $played = [AudioArtifactHunter.WinMm]::PlaySound('MailBeep', [IntPtr]::Zero, 0x00010002)
+        if ($played) {
+            return [pscustomobject] @{ Result = 'Played'; HResult = '0x00000000'; Error = '' }
+        }
+
+        return [pscustomobject] @{
+            Result  = 'NotPlayed'
+            HResult = '0x00000000'
+            Error   = 'PlaySound returned false: MailBeep binding blank, file missing, or no render device.'
         }
     } catch {
         return [pscustomobject] @{
@@ -772,6 +830,23 @@ try {
         if ($null -ne $bindingKey) { $bindingKey.Close() }
     }
 
+    # MailBeep is the "New Mail Notification" event classic Outlook's
+    # "Play a sound" uses; it is a separate binding from Notification.Default,
+    # so a GPP that blanks one need not blank the other.
+    $mailBeepBinding = $null
+    $mailBeepKey = $null
+    try {
+        $mailBeepKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('AppEvents\Schemes\Apps\.Default\MailBeep\.Current')
+        if ($null -ne $mailBeepKey) {
+            $mailBeepBinding = [string] $mailBeepKey.GetValue('', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+        }
+    } catch {
+        Write-Verbose "Could not read MailBeep binding: $($_.Exception.Message)"
+    } finally {
+        if ($null -ne $mailBeepKey) { $mailBeepKey.Close() }
+    }
+    if ([string]::IsNullOrWhiteSpace($mailBeepBinding)) { $mailBeepBinding = 'AppEvents MailBeep (blank)' }
+
     try { [void] [Console]::KeyAvailable } catch { $script:consoleAvailable = $false }
 
     $wpnServiceInfo = $null
@@ -844,6 +919,11 @@ try {
             IsBlank  = [string]::IsNullOrWhiteSpace($notificationBinding)
             Note     = 'HKCU AppEvents .Default\Notification.Default\.Current read-only at run start. Blank means notification sounds are silenced for this user (locally or by Group Policy Preferences); ToastDefaultSound is then silent while DirectWav still plays.'
         }
+        MailBeepBinding         = [pscustomobject] @{
+            RawValue = $mailBeepBinding
+            IsBlank  = ($mailBeepBinding -eq 'AppEvents MailBeep (blank)')
+            Note     = 'HKCU AppEvents .Default\MailBeep\.Current, the Windows "New Mail Notification" event classic Outlook uses for its new-mail sound. Read-only at run start. Blank means the MailBeep stimulus logs NotPlayed.'
+        }
         PushServiceState        = [pscustomobject] @{
             Note            = 'Recorded read-only at run start. A Disabled/Stopped WpnService or WpnUserService here documents host state for this run; it is not itself evidence of what happened during the run, and this script never changes it.'
             WpnService      = $wpnServiceInfo
@@ -885,6 +965,7 @@ try {
                     'ToastSilent'       { Send-ToastStimulus -AppId $ToastAppId -SequenceLabel $stimulusName -NowUtc $fireUtc -Silent }
                     'DirectWav'         { Invoke-DirectWavStimulus -WavFilePath $resolvedWavPath }
                     'SystemSound'       { Invoke-SystemSoundStimulus }
+                    'MailBeep'          { Invoke-MailBeepStimulus }
                     'ManualCue'         { Invoke-ManualCueStimulus -StopFilePath $stopFilePath }
                 }
 
@@ -896,6 +977,7 @@ try {
                     'ToastSilent'       { $ToastAppId }
                     'DirectWav'         { $resolvedWavPath }
                     'SystemSound'       { 'SystemSounds.Asterisk' }
+                    'MailBeep'          { $mailBeepBinding }
                     'ManualCue'         { 'external' }
                 }
 
