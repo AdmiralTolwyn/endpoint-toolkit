@@ -243,10 +243,106 @@ function Get-RegValueMap {
 
 <#
 .SYNOPSIS
+    Returns a trimmed path, or $null when the value cannot be a filesystem path.
+
+.DESCRIPTION
+    Registry values are arbitrary data. Handing one containing a quote or other
+    reserved character straight to Test-Path throws ArgumentException
+    ("Illegal characters in path") rather than returning $false, which aborts
+    the whole collection run. Everything read out of the registry is screened
+    through here first.
+
+.OUTPUTS
+    System.String, or $null.
+#>
+function Get-SafeFilePath {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [AllowEmptyString()] [AllowNull()] [string] $Value
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
+
+    $trimmed = $Value.Trim()
+    if ($trimmed.IndexOfAny([System.IO.Path]::GetInvalidPathChars()) -ge 0) { return $null }
+
+    return $trimmed
+}
+
+<#
+.SYNOPSIS
+    Converts a registry ImagePath / COM server value into the executable path
+    it refers to.
+
+.DESCRIPTION
+    These values are command lines, not paths: they may be quoted, carry
+    arguments, and use NT-style prefixes. "C:\Program Files\Vendor\svc.exe"
+    \service must resolve to the .exe, with the argument discarded.
+
+    A quoted value is unambiguous - the executable ends at the closing quote.
+    An unquoted value is genuinely ambiguous when the directory contains
+    spaces, because C:\Program Files\App\run.exe -x could split at either
+    space, so each boundary is probed and the first prefix that exists on disk
+    wins. That is the same resolution order Windows itself uses.
+
+.OUTPUTS
+    System.String, or $null when nothing usable can be extracted.
+#>
+function ConvertTo-BinaryPath {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [AllowEmptyString()] [AllowNull()] [string] $Value
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
+
+    $candidate = $Value.Trim()
+    $candidate = $candidate -replace '^\\\?\?\\', ''
+    $candidate = $candidate -replace '^\\SystemRoot\\', '%SystemRoot%\'
+    if ($candidate -match '^[Ss]ystem32\\') { $candidate = '%SystemRoot%\' + $candidate }
+
+    if ($candidate.StartsWith('"')) {
+        $closing = $candidate.IndexOf('"', 1)
+        if ($closing -gt 1) {
+            $candidate = $candidate.Substring(1, $closing - 1)
+        } else {
+            $candidate = $candidate.Replace('"', '')
+        }
+
+        return (Get-SafeFilePath -Value ([System.Environment]::ExpandEnvironmentVariables($candidate)))
+    }
+
+    $expanded = [System.Environment]::ExpandEnvironmentVariables($candidate)
+
+    $whole = Get-SafeFilePath -Value $expanded
+    if ($null -ne $whole -and (Test-Path -LiteralPath $whole -PathType Leaf)) { return $whole }
+
+    if ($expanded.Contains(' ')) {
+        $index = $expanded.IndexOf(' ')
+        while ($index -gt 0) {
+            $prefix = Get-SafeFilePath -Value $expanded.Substring(0, $index)
+            if ($null -ne $prefix) {
+                if (Test-Path -LiteralPath $prefix -PathType Leaf) { return $prefix }
+                if (Test-Path -LiteralPath ($prefix + '.exe') -PathType Leaf) { return ($prefix + '.exe') }
+            }
+            $index = $expanded.IndexOf(' ', $index + 1)
+        }
+
+        # Nothing matched on disk; report the first token so the value is still
+        # visible in the snapshot rather than silently dropped.
+        return (Get-SafeFilePath -Value $expanded.Substring(0, $expanded.IndexOf(' ')))
+    }
+
+    return $whole
+}
+
+<#
+.SYNOPSIS
     Resolves a file to its version and Authenticode signer.
 
 .PARAMETER Path
-    Full path to the file to inspect.
+    Path to the file to inspect. May be a raw registry command line, including
+    quotes, arguments and NT-style prefixes; the executable is isolated first.
 
 .OUTPUTS
     System.Management.Automation.PSCustomObject
@@ -271,7 +367,12 @@ function Get-FileFacts {
 
     if ([string]::IsNullOrWhiteSpace($Path)) { return $facts }
 
-    $expanded = [System.Environment]::ExpandEnvironmentVariables($Path.Trim('"'))
+    $expanded = ConvertTo-BinaryPath -Value $Path
+
+    if ([string]::IsNullOrWhiteSpace($expanded)) {
+        $facts.Path = $Path.Trim()
+        return $facts
+    }
 
     if ($Script:FileFactsCache.ContainsKey($expanded)) {
         return $Script:FileFactsCache[$expanded]
@@ -395,6 +496,8 @@ function Get-UserProfileRoots {
         foreach ($key in @(Get-ChildItem -LiteralPath $PROFILE_LIST_ROOT -ErrorAction Stop)) {
             $imagePath = Get-RegValue -Path $key.PSPath -Name 'ProfileImagePath'
             if ([string]::IsNullOrWhiteSpace($imagePath)) { continue }
+            $imagePath = Get-SafeFilePath -Value $imagePath
+            if ($null -eq $imagePath) { continue }
             if (-not (Test-Path -LiteralPath $imagePath -PathType Container)) { continue }
             if (-not $results.Contains($imagePath)) { [void] $results.Add($imagePath) }
         }
@@ -1416,15 +1519,19 @@ function Get-SoundSchemeFacts {
                 if ([string]::IsNullOrWhiteSpace($file)) { continue }
 
                 $expanded = [System.Environment]::ExpandEnvironmentVariables($file)
+                $safeExpanded = Get-SafeFilePath -Value $expanded
 
                 $peak = $null
                 if ($MeasurePeak) { $peak = Measure-WavPeakDbfs -Path $expanded }
+
+                $exists = $false
+                if ($null -ne $safeExpanded) { $exists = Test-Path -LiteralPath $safeExpanded -PathType Leaf }
 
                 [void] $sounds.Add([pscustomobject] @{
                     App        = $app.PSChildName
                     Event      = $soundEvent.PSChildName
                     File       = $expanded
-                    Exists     = (Test-Path -LiteralPath $expanded -PathType Leaf)
+                    Exists     = $exists
                     PeakDbfs   = $peak
                 })
             }
@@ -1455,10 +1562,13 @@ function Measure-WavPeakDbfs {
     )
 
     if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
+
+    $safePath = Get-SafeFilePath -Value $Path
+    if ($null -eq $safePath) { return $null }
+    if (-not (Test-Path -LiteralPath $safePath -PathType Leaf)) { return $null }
 
     try {
-        $bytes = [System.IO.File]::ReadAllBytes($Path)
+        $bytes = [System.IO.File]::ReadAllBytes($safePath)
     } catch {
         return $null
     }

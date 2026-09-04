@@ -30,13 +30,14 @@ These tools exist to separate those two, because you cannot fix an artifact you 
 
 | File | Ver | Purpose | Records audio? |
 |---|---|---|---|
-| [`AudioLoopbackCapture.cs`](AudioLoopbackCapture.cs) | 1.3.0 | WASAPI interop core: loopback recorder, endpoint-state reader, WAV writer. Compiled at runtime by the scripts below; not run directly. | — |
+| [`AudioLoopbackCapture.cs`](AudioLoopbackCapture.cs) | 1.4.0 | WASAPI interop core: loopback recorder, endpoint-state reader, WAV writer. Compiled at runtime by the scripts below; not run directly. | — |
 | [`Start-AudioEndpointStateMonitor.ps1`](Start-AudioEndpointStateMonitor.ps1) | 1.3.0 | Samples default render endpoint identity, device state, master volume and mute, plus per-application sessions. | **No** |
 | [`Start-AudioLoopbackRecorder.ps1`](Start-AudioLoopbackRecorder.ps1) | 1.0.0 | Rolling WASAPI loopback capture with level logging, automatic peak triggers and operator-marked preservation. | **Yes** |
 | [`Invoke-AudioStimulus.ps1`](Invoke-AudioStimulus.ps1) | 1.0.0 | Fires controlled, logged audio stimuli so an intermittent artifact can be provoked rather than waited for. | Plays audio |
 | [`Get-AudioStackInventory.ps1`](Get-AudioStackInventory.ps1) | 1.0.0 | Full audio-stack configuration snapshot, and a diff between two snapshots. | **No** |
 | [`Invoke-AudioEventCorrelation.ps1`](Invoke-AudioEventCorrelation.ps1) | 1.1.0 | Cross-provider event timeline around an incident; profiles retained date ranges in an archived log collection. | **No** |
 | [`Set-NotificationSoundState.ps1`](Set-NotificationSoundState.ps1) | 1.0.0 | Reversibly silences Windows notification/ringtone/alarm sounds while leaving the visual toast intact. | **No** (makes changes) |
+| [`Invoke-AudioRunReview.ps1`](Invoke-AudioRunReview.ps1) | 1.0.0 | Joins the recorder, stimulus and monitor outputs by UTC time and ranks incident candidates into `review.md` / `review.json`. | **No** |
 
 Only `Set-NotificationSoundState.ps1` modifies the system. Everything else is read-only apart from writing into its own output folder.
 
@@ -168,6 +169,27 @@ Every original value is written to an identity-bound backup before any change, a
 
 These are per-user values. On a non-persistent session host, apply via Group Policy Preferences, a logon script, or `-DefaultUser` against the golden image.
 
+### Invoke-AudioRunReview.ps1
+
+The answer to "we captured eight hours overnight, now what?". It joins the recorder, stimulus and state-monitor outputs by UTC time and writes `review.md` and `review.json` into the run directory, ranking what it found so nobody has to listen to the whole capture to find out whether anything happened.
+
+The strongest candidate is deliberately the most diagnostic one: **a recorder trigger with no stimulus to explain it**. A trigger that lines up with a stimulus is just the tool hearing itself; a trigger that does not is the thing you are actually looking for.
+
+| Parameter | Default | Description |
+|---|---|---|
+| `Path` | | The run/output directory to review. |
+| `InventoryPath` | newest in folder | Inventory snapshot to fold in; the latest `AudioStackInventory-*.json` is picked up automatically. |
+| `WindowSeconds` | `4` | Tolerance when matching a trigger to a stimulus. |
+| `MarginDb` | `3` | How far above the threshold a peak must sit to count. |
+| `VolumeJumpPoints` | `10` | Endpoint volume change, in percentage points, treated as a jump. |
+
+```powershell
+.\Invoke-AudioRunReview.ps1 -Path C:\Temp\Audio
+# -> writes review.md and review.json alongside the evidence
+```
+
+It is read-only apart from those two files.
+
 ## Suggested workflow
 
 1. **Inventory** — `Get-AudioStackInventory.ps1` on the affected machine and on a known-good one. Diff them.
@@ -176,7 +198,8 @@ These are per-user values. On a non-persistent session host, apply via Group Pol
 4. **Capture** — once authorized, add `Start-AudioLoopbackRecorder.ps1` and brief the user to create `MARK-INCIDENT.txt` when they hear it.
 5. **Provoke** — if waiting is not working, run `Invoke-AudioStimulus.ps1` with the recorder and monitor already running.
 6. **Correlate** — feed the incident timestamp back into `Invoke-AudioEventCorrelation.ps1`.
-7. **Mitigate** — only once attributed. `Set-NotificationSoundState.ps1` if the source is a notification sound.
+7. **Review** — point `Invoke-AudioRunReview.ps1` at the output directory to get a ranked candidate list without listening to hours of audio.
+8. **Mitigate** — only once attributed. `Set-NotificationSoundState.ps1` if the source is a notification sound.
 
 ## Output artifacts
 
@@ -192,6 +215,7 @@ These are per-user values. On a non-persistent session host, apply via Group Pol
 | `MARK-INCIDENT.txt` | **You / the user** | Drop-file that preserves the current segment. |
 | `endpoint-state.csv` + `-sessions.csv` | Monitor | Endpoint identity, state, volume, mute; per-app sessions. |
 | `stimulus-log.csv` | Stimulus | One row per stimulus with pre/post endpoint state. `RunId` distinguishes processes; `Cycle` is only meaningful within one `RunId`. |
+| `review.md` / `review.json` | Run review | Ranked incident candidates joined across the recorder, stimulus and monitor logs. |
 | `stimulus-log-schema-<stamp>.csv` | Stimulus | An existing log whose column layout no longer matches is archived here rather than being appended to or overwritten. |
 | `STOP-RECORDER.txt` / `STOP-MONITOR.txt` / `STOP-STIMULUS.txt` | **You** | Clean-shutdown drop-files. |
 
@@ -209,7 +233,7 @@ It also cannot establish causation from correlation alone. Coincidence in a time
 
 - **PowerShell 5.1.** These target Windows PowerShell 5.1 and use no PowerShell 7+ syntax.
 - `AudioLoopbackCapture.cs` must sit **alongside** the recorder, monitor and stimulus scripts — they compile it at runtime with `Add-Type`. No NuGet package, no third-party audio library; it uses the in-box .NET Framework compiler and the Windows Core Audio COM APIs directly.
-- The scripts check the core's `CoreVersion` and require **1.3.0 or later**. .NET Framework cannot unload an assembly, so if an older build was already compiled into the current session you will get an explicit error rather than silently mismatched behaviour. The fix is a **new PowerShell process** (`powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\<script>.ps1 ...`), not re-running in the same window.
+- The scripts check the core's `CoreVersion` and require **1.4.0 or later**. .NET Framework cannot unload an assembly, so if an older build was already compiled into the current session you will get an explicit error rather than silently mismatched behaviour. The fix is a **new PowerShell process** (`powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\<script>.ps1 ...`), not re-running in the same window.
 - Elevation is not required for capture or monitoring. `Get-AudioStackInventory.ps1` gives broader coverage elevated, and `Set-NotificationSoundState.ps1 -DefaultUser` requires it.
 - A render endpoint must be present and active. Verify with `-ListDevices` first.
 

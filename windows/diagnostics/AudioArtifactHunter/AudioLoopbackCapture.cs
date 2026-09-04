@@ -323,7 +323,7 @@ namespace AudioArtifactHunter
         /// an assembly: a session that compiled an older copy of this file
         /// keeps that copy until the process exits.
         /// </summary>
-        public static string CoreVersion { get { return "1.3.0"; } }
+        public static string CoreVersion { get { return "1.4.0"; } }
 
         private const int DataFlowRender = 0;
         private const int ClsCtxAll = 23;
@@ -689,6 +689,7 @@ namespace AudioArtifactHunter
     public sealed class LoopbackRecorder : IDisposable
     {
         private const int DataFlowRender = 0;
+        private const int DataFlowCapture = 1;
         private const int RoleConsole = 0;
         private const int ShareModeShared = 0;
         private const int StreamFlagsLoopback = 0x00020000;
@@ -815,6 +816,17 @@ namespace AudioArtifactHunter
         /// CSV row so rows can be attributed to the generation that wrote them.
         /// </summary>
         public int Generation { get; set; }
+
+        /// <summary>
+        /// When true, records the default capture endpoint (or the capture
+        /// endpoint named by deviceId) as an ordinary microphone stream instead
+        /// of the render endpoint's loopback. On a VDA the default capture
+        /// endpoint is the redirected headset microphone, which picks up
+        /// acoustic leakage from the earcups: a loud transient at the ear that
+        /// never existed on the VDA render side still leaves a spike here.
+        /// Set before Start.
+        /// </summary>
+        public bool CaptureEndpoint { get; set; }
 
         /// <summary>
         /// Creates a recorder. Nothing is captured until Start is called.
@@ -1073,7 +1085,7 @@ namespace AudioArtifactHunter
 
                 if (string.IsNullOrEmpty(_requestedDeviceId))
                 {
-                    hr = enumerator.GetDefaultAudioEndpoint(DataFlowRender, RoleConsole, out device);
+                    hr = enumerator.GetDefaultAudioEndpoint(CaptureEndpoint ? DataFlowCapture : DataFlowRender, RoleConsole, out device);
                     Check(hr, "GetDefaultAudioEndpoint");
                 }
                 else
@@ -1127,7 +1139,9 @@ namespace AudioArtifactHunter
 
                 // A one second client buffer is far larger than needed and makes
                 // the loop tolerant of scheduling delays on a busy host.
-                Check(client.Initialize(ShareModeShared, StreamFlagsLoopback, 10000000L, 0, formatPointer, IntPtr.Zero), "Initialize");
+                // Loopback is a render-endpoint concept; a capture endpoint is
+                // opened as a plain shared-mode capture stream.
+                Check(client.Initialize(ShareModeShared, CaptureEndpoint ? 0 : StreamFlagsLoopback, 10000000L, 0, formatPointer, IntPtr.Zero), "Initialize");
 
                 Guid captureIid = IidAudioCaptureClient;
                 object captureObject;

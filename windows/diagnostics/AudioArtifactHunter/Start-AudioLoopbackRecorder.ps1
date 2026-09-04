@@ -94,11 +94,23 @@
     task never blocks on a prompt), but an empty value throws immediately.
 
 .PARAMETER ListDevices
-    List render endpoints and exit without recording.
+    List audio endpoints and exit without recording.
 
 .PARAMETER DeviceId
     Endpoint ID to capture. Defaults to the default render endpoint, which is
-    the correct choice on a host with a single virtual render endpoint.
+    the correct choice on a host with a single virtual render endpoint. With
+    -CaptureEndpoint, defaults to the default capture endpoint instead.
+
+.PARAMETER CaptureEndpoint
+    Record the default capture endpoint (the microphone) as a plain capture
+    stream instead of the render endpoint's loopback. On a VDA the default
+    capture endpoint is the redirected headset microphone, which picks up
+    acoustic leakage from the earcups, so a loud transient at the ear that
+    never existed on the VDA render side still leaves a spike in this
+    recording. Run it as a second recorder instance in its own output
+    directory next to the loopback instance; the same onset trigger, marker
+    and retention rules apply. It records the user's speech and surroundings
+    and needs the same approvals as the loopback.
 
 .PARAMETER SegmentSeconds
     Length of each rolling WAV segment. Defaults to 30.
@@ -292,7 +304,10 @@ param(
     [switch] $KeepRollingOnStop,
 
     [Parameter(ParameterSetName = 'Record')]
-    [switch] $CreateMarkerShortcut
+    [switch] $CreateMarkerShortcut,
+
+    [Parameter(ParameterSetName = 'Record')]
+    [switch] $CaptureEndpoint
 )
 
 Set-StrictMode -Version 2.0
@@ -616,8 +631,8 @@ function Import-CaptureCore {
             $versionProperty = $readerType.GetProperty('CoreVersion')
             if ($null -ne $versionProperty) { $loadedVersion = [string] $versionProperty.GetValue($null, $null) }
         }
-        if ([version] $loadedVersion -lt [version] '1.3.0') {
-            throw ("An older AudioLoopbackCapture.cs build ({0}) is already loaded in this PowerShell session; 1.3.0 or later is required and .NET cannot unload it. Start a new PowerShell process, for example: powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Start-AudioLoopbackRecorder.ps1 ..." -f $loadedVersion)
+        if ([version] $loadedVersion -lt [version] '1.4.0') {
+            throw ("An older AudioLoopbackCapture.cs build ({0}) is already loaded in this PowerShell session; 1.4.0 or later is required and .NET cannot unload it. Start a new PowerShell process, for example: powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Start-AudioLoopbackRecorder.ps1 ..." -f $loadedVersion)
         }
         return
     }
@@ -729,6 +744,7 @@ Write-RecorderLog -Path $LogPath -Level $(if ($aclResult.Protected) { 'INFO' } e
 $gateQuietDbfs = if ($AbsoluteTrigger) { 0 } else { $OnsetQuietDbfs }
 $gateQuietSeconds = if ($AbsoluteTrigger) { 0 } else { $OnsetQuietSeconds }
 $recorder = New-CaptureRecorder -Path $resolvedOutput -EndpointId $DeviceId -SegmentLength $SegmentSeconds -SegmentsToRetain $RetainSegments -ThresholdDbfs $TriggerThresholdDbfs -QuietDbfs $gateQuietDbfs -QuietSeconds $gateQuietSeconds
+$recorder.CaptureEndpoint = [bool] $CaptureEndpoint
 $generation = 1
 $recorder.Generation = $generation
 $completedTriggerCount = [long] 0
@@ -741,7 +757,7 @@ try {
     Write-EndpointGenerationEvent -Path $generationLogPath -Generation $generation -EventName 'Started' -EndpointId $recorder.DeviceId -Details $startedDetails
 
     Write-RecorderLog -Path $LogPath -Level 'INFO' -Message ''
-    Write-RecorderLog -Path $LogPath -Level 'INFO' -Message 'Loopback recorder started.'
+    Write-RecorderLog -Path $LogPath -Level 'INFO' -Message $(if ($CaptureEndpoint) { 'Capture-endpoint (microphone) recorder started.' } else { 'Loopback recorder started.' })
     Write-RecorderLog -Path $LogPath -Level 'INFO' -Message ("  Endpoint    : {0}" -f $recorder.DeviceId)
     Write-RecorderLog -Path $LogPath -Level 'INFO' -Message ("  Format      : {0} Hz, {1} channel(s)" -f $recorder.SampleRate, $recorder.Channels)
     Write-RecorderLog -Path $LogPath -Level 'INFO' -Message ("  Output      : {0}" -f $resolvedOutput)
@@ -804,6 +820,7 @@ try {
         ComputerName         = $env:COMPUTERNAME
         UserSid              = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
         EndpointId           = $recorder.DeviceId
+        CaptureEndpoint      = [bool] $CaptureEndpoint
         SampleRate           = $recorder.SampleRate
         Channels             = $recorder.Channels
         SegmentSeconds       = $SegmentSeconds
@@ -866,6 +883,7 @@ try {
                 $attempts++
                 try {
                     $candidate = New-CaptureRecorder -Path $resolvedOutput -EndpointId $null -SegmentLength $SegmentSeconds -SegmentsToRetain $RetainSegments -ThresholdDbfs $TriggerThresholdDbfs -QuietDbfs $gateQuietDbfs -QuietSeconds $gateQuietSeconds
+                    $candidate.CaptureEndpoint = [bool] $CaptureEndpoint
                     $candidate.Generation = $generation
                     $candidate.Start()
                     $recorder = $candidate

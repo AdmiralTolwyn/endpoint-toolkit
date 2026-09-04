@@ -33,6 +33,14 @@
                          SND_NODEFAULT is set, so a blanked binding plays
                          nothing and the row reads NotPlayed rather than
                          falling back to the default beep.
+      OutlookSelfMail    Sends an e-mail to the user's own address through the
+                         running classic Outlook (COM automation). On arrival,
+                         seconds to a minute later, Outlook raises its real
+                         desktop alert and new-mail sound, the end-to-end
+                         trigger users report. The row records the send; the
+                         alert shows up in the recorder and monitor at arrival.
+                         Requires Outlook running with the user's profile.
+                         Not in the default sequence.
       ManualCue          Fires nothing. Prints a prompt so an operator can
                          trigger an external (Teams/Webex) stimulus by hand and
                          logs a Cue row. Only used when -IncludeManualCue is
@@ -108,8 +116,13 @@
     Ordered list of stimulus type names to run once per cycle. Defaults to
     @('ToastDefaultSound','MailBeep','DirectWav','SystemSound','ToastSilent').
     Each value must be one of ToastDefaultSound, ToastSilent, DirectWav,
-    SystemSound, MailBeep, ManualCue. Including 'ManualCue' also requires
-    -IncludeManualCue. ToastDefaultSound plus MailBeep together reproduce what
+    SystemSound, MailBeep, OutlookSelfMail, ManualCue. Including 'ManualCue'
+    also requires -IncludeManualCue. Teams notification sounds cannot be
+    fired by a script on the local system: under VDI optimization the
+    endpoint media engine renders them in response to Teams service events.
+    Use ManualCue and have the operator trigger Teams by hand at the cue
+    (Settings > Devices > Make a test call, or the notification-sound preview
+    under Settings > Notifications and activity). ToastDefaultSound plus MailBeep together reproduce what
     a classic Outlook desktop alert with sound does on Path 1.
 
 .PARAMETER Cycles
@@ -239,7 +252,7 @@
 param(
     [string] $OutputDirectory,
 
-    [ValidateSet('ToastDefaultSound', 'ToastSilent', 'DirectWav', 'SystemSound', 'MailBeep', 'ManualCue')]
+    [ValidateSet('ToastDefaultSound', 'ToastSilent', 'DirectWav', 'SystemSound', 'MailBeep', 'OutlookSelfMail', 'ManualCue')]
     [string[]] $Sequence = @('ToastDefaultSound', 'MailBeep', 'DirectWav', 'SystemSound', 'ToastSilent'),
 
     [ValidateRange(1, 1000)]
@@ -350,7 +363,9 @@ function Resolve-DefaultNotificationWav {
         if ($null -ne $subKey) {
             $rawValue = $subKey.GetValue('', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
             if (-not [string]::IsNullOrWhiteSpace($rawValue)) {
-                $expandedPath = [System.Environment]::ExpandEnvironmentVariables($rawValue)
+                $expandedPath = [System.Environment]::ExpandEnvironmentVariables($rawValue).Trim().Trim('"')
+                # A binding carrying a reserved character would make Test-Path throw.
+                if ($expandedPath.IndexOfAny([System.IO.Path]::GetInvalidPathChars()) -ge 0) { $expandedPath = $null }
             }
         }
     } catch {
@@ -550,6 +565,66 @@ public static extern bool PlaySound(string pszSound, IntPtr hmod, uint fdwSound)
 .OUTPUTS
     PSCustomObject with Result ('Cue'), HResult (''), Error ('').
 #>
+<#
+.SYNOPSIS
+    Sends an e-mail to the current user's own mailbox through the running
+    classic Outlook, so Outlook's real new-mail alert fires on arrival.
+
+.DESCRIPTION
+    Attaches to the running Outlook.Application (never starts one), resolves
+    the user's primary SMTP address from the current profile and sends a
+    short message to it. Delivery is asynchronous: the desktop alert and the
+    MailBeep sound occur when the message arrives, typically seconds to a
+    minute later, and are visible as a System Sounds session in the monitor
+    and as a level event in the recorder rather than in this row's after
+    snapshot. Outlook's object-model guard may prompt "A program is trying to
+    send an e-mail"; a blocked send is logged as Failed with that text.
+
+.OUTPUTS
+    PSCustomObject with Result ('Sent' or 'Failed'), HResult, Error, Asset.
+#>
+function Invoke-OutlookSelfMailStimulus {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string] $Subject
+    )
+
+    try {
+        $outlook = $null
+        try { $outlook = [System.Runtime.InteropServices.Marshal]::GetActiveObject('Outlook.Application') } catch { }
+        if ($null -eq $outlook) {
+            return [pscustomobject] @{
+                Result  = 'Failed'
+                HResult = ''
+                Error   = 'Classic Outlook is not running in this session; start it with the user profile first.'
+                Asset   = 'outlook'
+            }
+        }
+
+        $address = $null
+        try { $address = [string] $outlook.Session.CurrentUser.AddressEntry.GetExchangeUser().PrimarySmtpAddress } catch { }
+        if ([string]::IsNullOrWhiteSpace($address)) { $address = [string] $outlook.Session.CurrentUser.Address }
+        if ([string]::IsNullOrWhiteSpace($address)) {
+            return [pscustomobject] @{ Result = 'Failed'; HResult = ''; Error = 'Could not resolve the current user address from the Outlook profile.'; Asset = 'outlook' }
+        }
+
+        $mail = $outlook.CreateItem(0)
+        $mail.To = $address
+        $mail.Subject = $Subject
+        $mail.Body = 'Audio stimulus test message. Safe to delete.'
+        $mail.Send()
+
+        return [pscustomobject] @{ Result = 'Sent'; HResult = '0x00000000'; Error = ''; Asset = $address }
+    } catch {
+        return [pscustomobject] @{
+            Result  = 'Failed'
+            HResult = (Get-ExceptionHResultText -ExceptionObject $_.Exception)
+            Error   = $_.Exception.Message
+            Asset   = 'outlook'
+        }
+    }
+}
+
 function Invoke-ManualCueStimulus {
     [CmdletBinding()]
     param(
@@ -803,8 +878,8 @@ try {
         $versionProperty = $coreType.GetProperty('CoreVersion')
         $loadedVersion = '0.0.0'
         if ($null -ne $versionProperty) { $loadedVersion = [string] $versionProperty.GetValue($null, $null) }
-        if ([version] $loadedVersion -lt [version] '1.3.0') {
-            throw ("An older AudioLoopbackCapture.cs build ({0}) is already loaded in this PowerShell session; 1.3.0 or later is required and .NET cannot unload it. Start a new PowerShell process, for example: powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Invoke-AudioStimulus.ps1 ..." -f $loadedVersion)
+        if ([version] $loadedVersion -lt [version] '1.4.0') {
+            throw ("An older AudioLoopbackCapture.cs build ({0}) is already loaded in this PowerShell session; 1.4.0 or later is required and .NET cannot unload it. Start a new PowerShell process, for example: powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Invoke-AudioStimulus.ps1 ..." -f $loadedVersion)
         }
     }
 
@@ -966,6 +1041,7 @@ try {
                     'DirectWav'         { Invoke-DirectWavStimulus -WavFilePath $resolvedWavPath }
                     'SystemSound'       { Invoke-SystemSoundStimulus }
                     'MailBeep'          { Invoke-MailBeepStimulus }
+                    'OutlookSelfMail'   { Invoke-OutlookSelfMailStimulus -Subject ('Audio stimulus {0:o}' -f $fireUtc) }
                     'ManualCue'         { Invoke-ManualCueStimulus -StopFilePath $stopFilePath }
                 }
 
@@ -978,6 +1054,7 @@ try {
                     'DirectWav'         { $resolvedWavPath }
                     'SystemSound'       { 'SystemSounds.Asterisk' }
                     'MailBeep'          { $mailBeepBinding }
+                    'OutlookSelfMail'   { [string] $stimulusResult.Asset }
                     'ManualCue'         { 'external' }
                 }
 
