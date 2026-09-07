@@ -157,6 +157,18 @@ param(
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
+$pocNotice = @'
+===============================================================================
+ AudioArtifactHunter - PROOF OF CONCEPT
+ Sample code provided AS IS, without warranty. Not an official Microsoft
+ product and not supported under Microsoft support programs or services.
+ Test and validate in a non-production environment before customer use.
+ The customer is responsible for approvals, deployment, and operation.
+ This notice applies to this code, not to support for underlying products.
+===============================================================================
+'@
+Write-Host $pocNotice -ForegroundColor Yellow
+
 $LEVEL_NAMES = @{ 0 = 'LogAlways'; 1 = 'Critical'; 2 = 'Error'; 3 = 'Warning'; 4 = 'Information'; 5 = 'Verbose' }
 $MAX_ZIP_DEPTH = 3
 

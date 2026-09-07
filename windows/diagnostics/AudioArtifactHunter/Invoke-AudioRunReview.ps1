@@ -70,6 +70,18 @@ param(
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
+$pocNotice = @'
+===============================================================================
+ AudioArtifactHunter - PROOF OF CONCEPT
+ Sample code provided AS IS, without warranty. Not an official Microsoft
+ product and not supported under Microsoft support programs or services.
+ Test and validate in a non-production environment before customer use.
+ The customer is responsible for approvals, deployment, and operation.
+ This notice applies to this code, not to support for underlying products.
+===============================================================================
+'@
+Write-Host $pocNotice -ForegroundColor Yellow
+
 if ([string]::IsNullOrWhiteSpace($Path)) { throw '-Path is required.' }
 if (-not (Test-Path -LiteralPath $Path -PathType Container)) { throw "Directory not found: $Path" }
 $root = (Resolve-Path -LiteralPath $Path).ProviderPath
@@ -294,7 +306,6 @@ foreach ($s in @($sessionChanges | Where-Object { $_.Muted -eq 'True' -or ($_.Vo
 foreach ($g in @($generations | Where-Object { $_.Event -in @('Stopped', 'StartFailed', 'HashDeferred', 'RetentionDeleted', 'MarkerStuck', 'RollingRetained') })) {
     Add-Candidate -Kind 'RecorderLifecycle' -Strength $(if ($g.Event -in @('Stopped', 'StartFailed')) { 'Strong' } else { 'Weak' }) -Utc (ConvertTo-Utc $g.TimestampUtc) -Detail ("{0} generation {1}: {2}" -f $g.Event, $g.Generation, $g.Details)
 }
-$seenFirst = @{}
 foreach ($c in $captureEvents) {
     if ($c.Event -eq 'DataDiscontinuity' -and $c.Details -like 'Expected discontinuity*') { continue }
     Add-Candidate -Kind 'CaptureEvent' -Strength 'Medium' -Utc (ConvertTo-Utc $c.TimestampUtc) -Detail ("{0} hr={1} flags={2} frames={3}: {4}" -f $c.Event, $c.HResult, $c.Flags, $c.Frames, $c.Details)

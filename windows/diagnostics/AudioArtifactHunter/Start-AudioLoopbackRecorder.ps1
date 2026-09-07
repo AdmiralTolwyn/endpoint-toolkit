@@ -332,6 +332,18 @@ param(
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
+$pocNotice = @'
+===============================================================================
+ AudioArtifactHunter - PROOF OF CONCEPT
+ Sample code provided AS IS, without warranty. Not an official Microsoft
+ product and not supported under Microsoft support programs or services.
+ Test and validate in a non-production environment before customer use.
+ The customer is responsible for approvals, deployment, and operation.
+ This notice applies to this code, not to support for underlying products.
+===============================================================================
+'@
+Write-Host $pocNotice -ForegroundColor Yellow
+
 $MMDEVICES_RENDER = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render'
 $RENDER_ID_PREFIX = '{0.0.0.00000000}.'
 $GUID_PATTERN = '\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\}'

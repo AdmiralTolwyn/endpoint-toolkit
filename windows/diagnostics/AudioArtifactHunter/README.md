@@ -2,7 +2,7 @@
 
 **Author:** Anton Romanyuk
 
-> **Disclaimer:** These scripts are provided "as-is" without warranty of any kind, express or implied. Use at your own risk. The author assumes no liability for any damage or data loss resulting from their use. Always test in a non-production environment before deployment.
+> **Proof of concept / support notice:** AudioArtifactHunter is sample proof-of-concept code provided **AS IS**, without warranty. It is not an official Microsoft product and is not supported under Microsoft support programs or services. The customer must test and validate it in a non-production environment and is responsible for privacy, legal and security approvals, deployment, operation, retention and resulting data. This notice applies to the sample toolkit, not to the support status of underlying Microsoft or third-party products.
 
 A set of evidence-collection tools for investigating **intermittent audio artifacts** on Windows endpoints — an unexpected loud transient ("pop", "bang", "screech") in a headset, a volume level that changes on its own, a mute that does not stick, or a notification sound that arrives at the wrong level.
 
@@ -45,7 +45,7 @@ Only `Set-NotificationSoundState.ps1` modifies the system. Everything else is re
 
 Two of these tools need an explicit acknowledgement, and both gates are deliberate.
 
-**`Start-AudioLoopbackRecorder.ps1` records audio.** Loopback capture records everything the machine renders — which in practice includes meeting audio and the voice of anyone on the far end of a call. `-AcknowledgeAudioCapture` is a **mandatory** parameter; the script will not run without it. Before deploying it:
+**`Start-AudioLoopbackRecorder.ps1` records audio.** Loopback capture records everything *this machine* renders, which is not the same as everything the user hears. On a physical machine that includes meeting audio and the voice of anyone on the far end of a call. On a remoted session it depends on media optimisation: when Teams or Webex offload media to the endpoint, that call audio never reaches this machine's render endpoint and is **not** captured — but it *is* captured the moment optimisation falls back, and browser-based calls are always captured. Treat the output as potentially containing call audio either way. `-AcknowledgeAudioCapture` is a **mandatory** parameter; the script will not run without it. Before deploying it:
 
 - Confirm you have authorization to record on that endpoint, from whoever owns that decision in your organisation (privacy/works council/legal, as applicable).
 - `-CaptureEndpoint` records the **microphone**, not the render mix. That captures the user's own speech and their surroundings, which is a broader intrusion than loopback and needs its own approval — do not treat it as covered by the loopback sign-off.

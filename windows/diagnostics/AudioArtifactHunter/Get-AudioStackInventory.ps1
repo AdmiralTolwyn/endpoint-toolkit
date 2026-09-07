@@ -150,6 +150,18 @@ param(
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
+$pocNotice = @'
+===============================================================================
+ AudioArtifactHunter - PROOF OF CONCEPT
+ Sample code provided AS IS, without warranty. Not an official Microsoft
+ product and not supported under Microsoft support programs or services.
+ Test and validate in a non-production environment before customer use.
+ The customer is responsible for approvals, deployment, and operation.
+ This notice applies to this code, not to support for underlying products.
+===============================================================================
+'@
+Write-Host $pocNotice -ForegroundColor Yellow
+
 $MMDEVICES_ROOT = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio'
 $CLSID_ROOT = 'HKLM:\SOFTWARE\Classes\CLSID'
 $CURRENT_VERSION = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
