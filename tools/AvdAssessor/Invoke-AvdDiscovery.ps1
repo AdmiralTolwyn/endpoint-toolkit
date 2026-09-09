@@ -8,7 +8,8 @@
     Can be run independently without the GUI tool.
 .PARAMETER SubscriptionId
     Azure subscription ID(s) to assess. Accepts a single ID or array.
-    If omitted, uses current Az context subscription.
+    If omitted, prompts for enabled subscriptions; Enter selects the current subscription.
+    Include shared hub and storage subscriptions even when they contain no host pools.
 .PARAMETER OutputPath
     Path to save the discovery JSON file. Defaults to
     AvdAssessor\assessments\discovery_<timestamp>.json
@@ -28,8 +29,8 @@
     .\Invoke-AvdDiscovery.ps1 -IncludeGuestChecks
 .NOTES
     Author : Anton Romanyuk
-    Version: 0.6.4
-    Date   : 2026-08-26
+    Version: 0.6.5
+    Date   : 2026-09-09
 #>
 
 [CmdletBinding()]
@@ -57,7 +58,7 @@ $env:PSModulePath = ($env:PSModulePath -split ';' |
 $ScriptRoot = $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($ScriptRoot)) { $ScriptRoot = $PWD.Path }
 
-$ScriptVersion = '0.6.4'
+$ScriptVersion = '0.6.5'
 
 # ═══════════════════════════════════════════════════════════════════════════
 # HELPERS
@@ -181,6 +182,65 @@ function New-CheckResult {
         Timestamp      = (Get-Date -Format 'o')
         Source         = 'Automated'
     }
+}
+
+function Get-AvdArmList {
+    param([string]$Path)
+    $VisitedPages = @{}
+    while ($Path) {
+        if ($VisitedPages.ContainsKey($Path)) { throw 'ARM pagination returned a repeated nextLink.' }
+        $VisitedPages[$Path] = $true
+        $Response = Invoke-AzRestMethod -Path $Path -Method GET -ErrorAction Stop
+        if (-not $Response -or $Response.StatusCode -ne 200) {
+            throw "ARM list failed for $Path (HTTP $($Response.StatusCode))."
+        }
+        $Page = ConvertFrom-Json -InputObject $Response.Content -ErrorAction Stop
+        if ($null -eq $Page.value -or $Page.value -isnot [array]) {
+            throw "ARM list returned an invalid value array for $Path."
+        }
+        $Page.value
+        $Path = [string]$Page.nextLink
+        if ($Path -match '^https?://') {
+            $NextUri = [uri]$Path
+            $Path = $NextUri.PathAndQuery
+        }
+        if ($Path -and -not $Path.StartsWith('/')) { throw 'ARM nextLink is not an absolute resource path.' }
+    }
+}
+
+function Get-AvdReservationScopeMatch {
+    param($Reservation, [object[]]$Subscriptions, [object[]]$SessionHosts)
+    $Properties = $Reservation.properties
+    $MatchedSubscriptions = @()
+    $ScopeState = 'Unknown'
+    if ($Properties.appliedScopeType -eq 'Single') {
+        $ScopeState = 'OutsideSelectedAvdScope'
+        $Scopes = if ($Properties.appliedScopeProperties.resourceGroupId) {
+            @($Properties.appliedScopeProperties.resourceGroupId)
+        } else {
+            @($Properties.appliedScopes) + @($Properties.appliedScopeProperties.subscriptionId)
+        }
+        $Scopes = @($Scopes | Where-Object { $_ })
+        if ($Scopes.Count -eq 0) { $ScopeState = 'Unknown' }
+        foreach ($Subscription in $Subscriptions) {
+            $SubscriptionPath = "/subscriptions/$($Subscription.Id)"
+            foreach ($Scope in $Scopes) {
+                $ScopePath = ([string]$Scope).TrimEnd('/')
+                if ($ScopePath -eq $Subscription.Id -or $ScopePath -eq $SubscriptionPath) {
+                    $MatchedSubscriptions += $Subscription.Id
+                } elseif ($ScopePath.StartsWith("$SubscriptionPath/resourceGroups/", [System.StringComparison]::OrdinalIgnoreCase)) {
+                    $ScopedHosts = @($SessionHosts | Where-Object {
+                        $_.ResourceId -and $_.ResourceId.StartsWith("$ScopePath/", [System.StringComparison]::OrdinalIgnoreCase)
+                    })
+                    if ($ScopedHosts.Count -gt 0) { $MatchedSubscriptions += $Subscription.Id }
+                }
+            }
+        }
+        if ($MatchedSubscriptions.Count -gt 0) { $ScopeState = 'MatchesSelectedScope' }
+    } elseif ($Properties.appliedScopeType -in @('Shared', 'ManagementGroup')) {
+        $ScopeState = "$($Properties.appliedScopeType)ScopeUnverified"
+    }
+    [PSCustomObject]@{ State = $ScopeState; SubscriptionIds = @($MatchedSubscriptions | Sort-Object -Unique) }
 }
 
 <#
@@ -581,12 +641,14 @@ $Discovery = [PSCustomObject]@{
         Reservations    = @()
         Firewalls       = @()
         VPNGateways     = @()
+        ExpressRouteCircuits = @()
         Subnets         = @()
         UDRs            = @()
         PrivateEndpoints = @()
     }
     CheckResults   = @()
     Errors         = @()
+    CollectionStatus = @()
 }
 
 $AllChecks = [System.Collections.ArrayList]::new()
@@ -603,6 +665,7 @@ foreach ($SubId in $SubscriptionId) {
         $Discovery.Subscriptions += [PSCustomObject]@{
             Id   = $SubId
             Name = $Sub.Subscription.Name
+            TenantId = $Sub.Tenant.Id
         }
         # Short sub id used to keep singleton check IDs unique across subscriptions (A-1).
         $SubShort = ($SubId -split '-')[0]
@@ -1913,11 +1976,37 @@ foreach ($SubId in $SubscriptionId) {
 
                 # CHECK: Subnet IP capacity
                 foreach ($SubnetEntry in $VNet.Subnets) {
-                    $SubPrefix = $SubnetEntry.AddressPrefix
-                    if ($SubPrefix -is [array]) { $SubPrefix = $SubPrefix[0] }
-                    if ($SubPrefix -match '/(\d+)$') {
-                        $CidrBits = [int]$Matches[1]
-                        $TotalAvailIPs = [math]::Pow(2, 32 - $CidrBits) - 5  # Azure reserves 5
+                    $Prefixes = @($SubnetEntry.AddressPrefix | ForEach-Object { [string]$_ })
+                    $CapacityError = ''
+                    $TotalAvailIPs = 0L
+                    if ($Prefixes.Count -eq 0) { $CapacityError = 'No subnet address prefix was returned.' }
+                    foreach ($Prefix in $Prefixes) {
+                        $PrefixMatch = [regex]::Match($Prefix, '^([^/]+)/([0-9]{1,3})$')
+                        $SubnetAddress = $null
+                        if (-not $PrefixMatch.Success -or
+                            -not [System.Net.IPAddress]::TryParse($PrefixMatch.Groups[1].Value, [ref]$SubnetAddress)) {
+                            $CapacityError = "Invalid subnet prefix: $Prefix"
+                            break
+                        }
+                        if ($SubnetAddress.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) {
+                            $CapacityError = "IPv6 or dual-stack subnet capacity is not assessed by this IPv4 check: $Prefix"
+                            break
+                        }
+                        $CidrBits = [int]$PrefixMatch.Groups[2].Value
+                        if ($CidrBits -lt 2 -or $CidrBits -gt 29) {
+                            $CapacityError = "Unsupported Azure IPv4 subnet prefix length: /$CidrBits"
+                            break
+                        }
+                        $TotalAvailIPs += [long]([math]::Pow(2, 32 - $CidrBits) - 5)
+                    }
+                    $SubPrefix = $Prefixes -join ', '
+                    if ($CapacityError) {
+                        [void]$AllChecks.Add((New-CheckResult -Id "NET-SUBCAP-$VNetName-$($SubnetEntry.Name)" `
+                            -Category 'Networking' -Name 'Subnet IP Capacity' `
+                            -Description 'AVD subnets should have sufficient IP address headroom for scaling' `
+                            -Status 'Error' -Severity 'High' -Details $CapacityError `
+                            -Evidence @{ VNet = $VNetName; Subnet = $SubnetEntry.Name; CIDR = $SubPrefix }))
+                    } else {
                         $UsedIPs = ($SubnetEntry.IpConfigurations | Measure-Object).Count
                         $UtilPct = if ($TotalAvailIPs -gt 0) { [math]::Round($UsedIPs / $TotalAvailIPs * 100, 1) } else { 0 }
                         $CapStatus = if ($UtilPct -gt 80) { 'Fail' } elseif ($UtilPct -gt 70) { 'Warning' } else { 'Pass' }
@@ -1925,10 +2014,10 @@ foreach ($SubId in $SubscriptionId) {
                             -Category 'Networking' -Name 'Subnet IP Capacity' `
                             -Description 'AVD subnets should have sufficient IP address headroom for scaling' `
                             -Status $CapStatus -Severity 'High' `
-                            -Details "Subnet: $($SubnetEntry.Name), CIDR: $SubPrefix, Used: $UsedIPs/$([int]$TotalAvailIPs) ($UtilPct%)" `
+                            -Details "Subnet: $($SubnetEntry.Name), CIDR: $SubPrefix, Used: $UsedIPs/$TotalAvailIPs ($UtilPct%)" `
                             -Recommendation 'Ensure at least 30% IP headroom for scaling and maintenance. Consider expanding the subnet or adding additional subnets.' `
                             -Reference 'https://learn.microsoft.com/en-us/azure/virtual-network/virtual-networks-faq' `
-                            -Evidence @{ VNet = $VNetName; Subnet = $SubnetEntry.Name; CIDR = $SubPrefix; Used = $UsedIPs; Total = [int]$TotalAvailIPs; Utilization = $UtilPct }))
+                            -Evidence @{ VNet = $VNetName; Subnet = $SubnetEntry.Name; CIDR = $SubPrefix; Used = $UsedIPs; Total = $TotalAvailIPs; Utilization = $UtilPct }))
                     }
                 }
 
@@ -1945,7 +2034,8 @@ foreach ($SubId in $SubscriptionId) {
                         -Reference 'https://learn.microsoft.com/en-us/azure/virtual-network/virtual-network-peering-overview'))
                 }
             } catch {
-                Write-Status "    Could not get full VNet details (Az.Network bug): $($_.Exception.Message)" -Level 'WARN'
+                Write-Status "    VNet discovery or checks failed for $VNetName`: $($_.Exception.Message)" -Level 'WARN'
+                $Discovery.Errors += "VNet discovery or checks failed for $VNetId : $($_.Exception.Message)"
                 # Fallback: capture basic VNet info via ARM so checks still have something
                 try {
                     $FallbackVNet = Get-AzResource -ResourceId $VNetId -ExpandProperties -ErrorAction Stop
@@ -2125,83 +2215,6 @@ foreach ($SubId in $SubscriptionId) {
                 }
             }
         }
-
-    # ─── HUB NETWORK RESOURCES (Firewall, VPN/ER Gateway) ────────────────
-    Write-Status "Hub Network Resources" -Level 'SECTION'
-    try {
-        # Discover Azure Firewalls in the subscription
-        $AzFirewalls = @(Get-AzFirewall -ErrorAction SilentlyContinue)
-        foreach ($Fw in $AzFirewalls) {
-            $Discovery.Inventory.Firewalls += [PSCustomObject]@{
-                Name          = $Fw.Name
-                ResourceGroup = $Fw.ResourceGroup
-                Location      = $Fw.Location
-                Sku           = $Fw.Sku.Tier
-                ThreatIntel   = $Fw.ThreatIntelMode
-                VNetId        = if ($Fw.IpConfigurations -and $Fw.IpConfigurations[0].Subnet) {
-                                    ($Fw.IpConfigurations[0].Subnet.Id -split '/subnets/')[0]
-                                } else { $null }
-            }
-        }
-        # Check if any AVD VNet peers to a VNet with a firewall
-        $FwVNetIds = @($Discovery.Inventory.Firewalls | ForEach-Object { $_.VNetId } | Where-Object { $_ })
-        $AvdVNetIds = @($Discovery.Inventory.VNets | ForEach-Object { $_.Id })
-        $PeeredFw = $false
-        foreach ($VNet in $Discovery.Inventory.VNets) {
-            if ($VNet.Peerings) {
-                foreach ($Peer in $VNet.Peerings) {
-                    if ($Peer.RemoteVNet -in $FwVNetIds) { $PeeredFw = $true }
-                }
-            }
-        }
-        $DirectFw = @($AzFirewalls | Where-Object { ($_.IpConfigurations[0].Subnet.Id -split '/subnets/')[0] -in $AvdVNetIds }).Count -gt 0
-        $HasFirewall = $PeeredFw -or $DirectFw -or ($AzFirewalls.Count -gt 0)
-        Write-Status "  Azure Firewalls: $($AzFirewalls.Count), Peered to AVD: $PeeredFw" -Level $(if ($HasFirewall) { 'SUCCESS' } else { 'WARN' })
-        [void]$AllChecks.Add((New-CheckResult -Id "NET-HUBFW-$SubShort" `
-            -Category 'Networking' -Name 'Hub Firewall Present' `
-            -Description 'Azure Firewall or NVA should exist in hub for centralized egress filtering' `
-            -Status $(if ($HasFirewall) { 'Pass' } else { 'Warning' }) `
-            -Severity 'Medium' `
-            -Details "AzureFirewalls: $($AzFirewalls.Count)$(if ($AzFirewalls.Count -gt 0) { " ($( ($AzFirewalls | ForEach-Object { "$($_.Name) [$($_.Sku.Tier)]" }) -join ', '))" }), PeeredToAVD: $PeeredFw" `
-            -Recommendation 'Deploy Azure Firewall in hub VNet for centralized egress filtering and threat intelligence.' `
-            -Reference 'https://learn.microsoft.com/en-us/azure/architecture/networking/architecture/hub-spoke' `
-            -Evidence @{ Count = $AzFirewalls.Count; PeeredToAVD = $PeeredFw }))
-
-        # Discover VPN/ExpressRoute Gateways (Get-AzResource avoids mandatory -ResourceGroupName)
-        $GwResources = @(Get-AzResource -ResourceType 'Microsoft.Network/virtualNetworkGateways' -ErrorAction SilentlyContinue)
-        $VPNGateways = @()
-        foreach ($GwRes in $GwResources) {
-            try {
-                $Gw = Get-AzVirtualNetworkGateway -ResourceGroupName $GwRes.ResourceGroupName -Name $GwRes.Name -ErrorAction Stop
-                $VPNGateways += $Gw
-                $Discovery.Inventory.VPNGateways += [PSCustomObject]@{
-                    Name          = $Gw.Name
-                    ResourceGroup = $Gw.ResourceGroupName
-                    GatewayType   = $Gw.GatewayType   # Vpn or ExpressRoute
-                    VpnType       = $Gw.VpnType
-                    Sku           = $Gw.Sku.Name
-                    Active        = $Gw.ActiveActive
-                    Location      = $Gw.Location
-                }
-            } catch {
-                Write-Status "    Could not get gateway $($GwRes.Name): $($_.Exception.Message)" -Level 'WARN'
-            }
-        }
-        $HasGateway = $VPNGateways.Count -gt 0
-        $GwTypes = @($VPNGateways | ForEach-Object { $_.GatewayType } | Sort-Object -Unique) -join ', '
-        Write-Status "  VPN/ER Gateways: $($VPNGateways.Count) ($GwTypes)" -Level $(if ($HasGateway) { 'SUCCESS' } else { 'WARN' })
-        [void]$AllChecks.Add((New-CheckResult -Id "NET-HUBGW-$SubShort" `
-            -Category 'Networking' -Name 'VPN/ExpressRoute Gateway' `
-            -Description 'Hub network should have VPN or ExpressRoute gateway for hybrid connectivity' `
-            -Status $(if ($HasGateway) { 'Pass' } else { 'Warning' }) `
-            -Severity 'Low' `
-            -Details "Gateways: $($VPNGateways.Count)$(if ($VPNGateways.Count -gt 0) { " ($( ($VPNGateways | ForEach-Object { "$($_.Name) [$($_.GatewayType)/$($_.Sku.Name)]" }) -join ', '))" })" `
-            -Recommendation 'Deploy VPN or ExpressRoute gateway for hybrid connectivity to on-premises AD DS and file shares.' `
-            -Reference 'https://learn.microsoft.com/en-us/azure/cloud-adoption-framework/ready/azure-best-practices/define-an-azure-network-topology' `
-            -Evidence @{ Count = $VPNGateways.Count; Types = $GwTypes }))
-    } catch {
-        Write-Status "  Hub network error: $($_.Exception.Message)" -Level 'WARN'
-    }
 
     # ─── DIAGNOSTICS ──────────────────────────────────────────────────────
     Write-Status "Diagnostics" -Level 'SECTION'
@@ -2404,6 +2417,139 @@ foreach ($SubId in $SubscriptionId) {
             -Reference 'https://learn.microsoft.com/en-us/azure/defender-for-cloud/enable-enhanced-security'))
     }
 
+}
+
+foreach ($SharedSubscription in $Discovery.Subscriptions) {
+    $SubId = $SharedSubscription.Id
+    $Coverage = [PSCustomObject]@{
+        SubscriptionId = $SubId
+        Firewalls = 'NotScanned'
+        VPNGateways = 'NotScanned'
+        ExpressRouteCircuits = 'NotScanned'
+        StorageAccounts = 'NotScanned'
+        CapacityReservations = 'NotScanned'
+    }
+    $Discovery.CollectionStatus += $Coverage
+    Write-Status "Shared resources: $($SharedSubscription.Name)" -Level 'SECTION'
+    try {
+        Set-AzContext -SubscriptionId $SubId -ErrorAction Stop -WarningAction SilentlyContinue | Out-Null
+    } catch {
+        $Discovery.Errors += "Shared resource context failed for $SubId : $($_.Exception.Message)"
+        Write-Status $Discovery.Errors[-1] -Level 'WARN'
+        continue
+    }
+
+    try {
+        $AzFirewalls = @(Get-AzFirewall -ErrorAction Stop)
+        foreach ($Fw in $AzFirewalls) {
+            $Discovery.Inventory.Firewalls += [PSCustomObject]@{
+                Id = $Fw.Id
+                SubscriptionId = $SubId
+                Name = $Fw.Name
+                ResourceGroup = ($Fw.Id -split '/')[4]
+                Location = $Fw.Location
+                Sku = $Fw.Sku.Tier
+                ThreatIntel = $Fw.ThreatIntelMode
+                VNetId = if ($Fw.IpConfigurations -and $Fw.IpConfigurations[0].Subnet) {
+                    ($Fw.IpConfigurations[0].Subnet.Id -split '/subnets/')[0]
+                } else { $null }
+            }
+        }
+        $Coverage.Firewalls = 'Complete'
+        Write-Status "  Azure Firewalls: $($AzFirewalls.Count)" -Level 'INFO'
+    } catch {
+        $Coverage.Firewalls = 'Error'
+        $Discovery.Errors += "Firewall discovery failed for $SubId : $($_.Exception.Message)"
+        Write-Status $Discovery.Errors[-1] -Level 'WARN'
+    }
+
+    try {
+        $GwResources = @(Get-AzResource -ResourceType 'Microsoft.Network/virtualNetworkGateways' -ErrorAction Stop)
+        $Coverage.VPNGateways = 'Complete'
+        foreach ($GwRes in $GwResources) {
+            try {
+                $Gw = Get-AzVirtualNetworkGateway -ResourceGroupName $GwRes.ResourceGroupName -Name $GwRes.Name -ErrorAction Stop
+                $Discovery.Inventory.VPNGateways += [PSCustomObject]@{
+                    Id = $Gw.Id
+                    SubscriptionId = $SubId
+                    Name = $Gw.Name
+                    ResourceGroup = $Gw.ResourceGroupName
+                    GatewayType = $Gw.GatewayType
+                    VpnType = $Gw.VpnType
+                    Sku = $Gw.Sku.Name
+                    Active = $Gw.ActiveActive
+                    Location = $Gw.Location
+                    VNetId = if ($Gw.IpConfigurations -and $Gw.IpConfigurations[0].Subnet) {
+                        ($Gw.IpConfigurations[0].Subnet.Id -split '/subnets/')[0]
+                    } else { $null }
+                }
+            } catch {
+                $Coverage.VPNGateways = 'Error'
+                $Discovery.Errors += "Gateway discovery failed for $SubId/$($GwRes.Name): $($_.Exception.Message)"
+                Write-Status $Discovery.Errors[-1] -Level 'WARN'
+            }
+        }
+        Write-Status "  VPN/ER Gateways: $($GwResources.Count) resource(s) listed" -Level 'INFO'
+    } catch {
+        $Coverage.VPNGateways = 'Error'
+        $Discovery.Errors += "Gateway discovery failed for $SubId : $($_.Exception.Message)"
+        Write-Status $Discovery.Errors[-1] -Level 'WARN'
+    }
+
+    try {
+        $Circuits = @(Get-AzResource -ResourceType 'Microsoft.Network/expressRouteCircuits' -ErrorAction Stop)
+        $Coverage.ExpressRouteCircuits = 'Complete'
+        foreach ($Circuit in $Circuits) {
+            try {
+                $CircuitDetails = Get-AzResource -ResourceId $Circuit.ResourceId -ExpandProperties -ErrorAction Stop
+                $Discovery.Inventory.ExpressRouteCircuits += [PSCustomObject]@{
+                    Id = $Circuit.ResourceId
+                    SubscriptionId = $SubId
+                    Name = $Circuit.Name
+                    ResourceGroup = $Circuit.ResourceGroupName
+                    Location = $Circuit.Location
+                    ProvisioningState = $CircuitDetails.Properties.provisioningState
+                    CircuitProvisioningState = $CircuitDetails.Properties.circuitProvisioningState
+                    ServiceProviderProvisioningState = $CircuitDetails.Properties.serviceProviderProvisioningState
+                    ServiceProvider = $CircuitDetails.Properties.serviceProviderProperties.serviceProviderName
+                    PeeringLocation = $CircuitDetails.Properties.serviceProviderProperties.peeringLocation
+                    BandwidthInMbps = $CircuitDetails.Properties.serviceProviderProperties.bandwidthInMbps
+                }
+            } catch {
+                $Coverage.ExpressRouteCircuits = 'Error'
+                $Discovery.Errors += "Circuit discovery failed for $($Circuit.ResourceId): $($_.Exception.Message)"
+                Write-Status $Discovery.Errors[-1] -Level 'WARN'
+            }
+        }
+        Write-Status "  ExpressRoute circuits: $($Circuits.Count) resource(s) listed" -Level 'INFO'
+    } catch {
+        $Coverage.ExpressRouteCircuits = 'Error'
+        $Discovery.Errors += "Circuit discovery failed for $SubId : $($_.Exception.Message)"
+        Write-Status $Discovery.Errors[-1] -Level 'WARN'
+    }
+
+    try {
+        $CapacityGroups = @(Get-AvdArmList -Path "/subscriptions/$SubId/providers/Microsoft.Compute/capacityReservationGroups?api-version=2024-07-01&`$expand=virtualMachines/`$ref")
+        foreach ($CapacityGroup in $CapacityGroups) {
+            $Discovery.Inventory.CapacityReservations += [PSCustomObject]@{
+                Id = $CapacityGroup.id
+                SubscriptionId = $SubId
+                Name = $CapacityGroup.name
+                ResourceGroup = ($CapacityGroup.id -split '/')[4]
+                Location = $CapacityGroup.location
+                Zones = @($CapacityGroup.zones)
+                ReservationIds = @($CapacityGroup.properties.capacityReservations | ForEach-Object { $_.id })
+                VirtualMachinesAssociated = @($CapacityGroup.properties.virtualMachinesAssociated | ForEach-Object { $_.id })
+            }
+        }
+        $Coverage.CapacityReservations = 'Complete'
+        Write-Status "  Capacity reservation groups: $($CapacityGroups.Count)" -Level 'INFO'
+    } catch {
+        $Coverage.CapacityReservations = 'Error'
+        $Discovery.Errors += "Capacity reservation discovery failed for $SubId : $($_.Exception.Message)"
+        Write-Status $Discovery.Errors[-1] -Level 'WARN'
+    }
+
     # ─── STORAGE ──────────────────────────────────────────────────────────
     Write-Status "Storage (FSLogix)" -Level 'SECTION'
     try {
@@ -2438,6 +2584,7 @@ foreach ($SubId in $SubscriptionId) {
             $SAObj = [PSCustomObject]@{
                 Name              = $SA.StorageAccountName
                 Id                = $SA.Id
+                SubscriptionId    = $SubId
                 ResourceGroup     = $SA.ResourceGroupName
                 Kind              = $SA.Kind
                 SkuName           = $SA.Sku.Name
@@ -2611,18 +2758,63 @@ foreach ($SubId in $SubscriptionId) {
                 }
             }
         }
-        $FSLogixAccts = @($Discovery.Inventory.StorageAccounts | Where-Object { $_.LikelyFSLogix })
+        $Coverage.StorageAccounts = 'Complete'
+        $FSLogixAccts = @($Discovery.Inventory.StorageAccounts | Where-Object { $_.SubscriptionId -eq $SubId -and $_.LikelyFSLogix })
         Write-Status "  Storage accounts: $($StorageAccounts.Count), FSLogix candidates: $($FSLogixAccts.Count)" -Level $(if ($FSLogixAccts.Count -gt 0) { 'SUCCESS' } else { 'WARN' })
     } catch {
         Write-Status "  Error: $($_.Exception.Message)" -Level 'ERROR'
-        $Discovery.Errors += "Storage discovery failed: $($_.Exception.Message)"
+        $Coverage.StorageAccounts = 'Error'
+        $Discovery.Errors += "Storage discovery failed for $SubId : $($_.Exception.Message)"
     }
+}
+
+foreach ($AvdSubscription in $Discovery.Subscriptions) {
+    $SubId = $AvdSubscription.Id
+    $SubShort = ($SubId -split '-')[0]
+    if (@($Discovery.Inventory.HostPools | Where-Object { $_.SubscriptionId -eq $SubId }).Count -eq 0) { continue }
+    $AvdVNets = @($Discovery.Inventory.VNets | Where-Object { $_.SubscriptionId -eq $SubId })
+    $RelevantVNetIds = @(@($AvdVNets.Id) + @($AvdVNets | ForEach-Object { $_.Peerings } | ForEach-Object { $_.RemoteVNet }) |
+        Where-Object { $_ } | Sort-Object -Unique)
+    $RequiredSubscriptions = @($SubId) + @($RelevantVNetIds | ForEach-Object { ($_ -split '/')[2] }) | Sort-Object -Unique
+    foreach ($ResourceKind in @('Firewalls', 'VPNGateways')) {
+        $MissingSubscriptions = @($RequiredSubscriptions | Where-Object {
+            $RequiredSub = $_
+            @($Discovery.CollectionStatus | Where-Object { $_.SubscriptionId -eq $RequiredSub -and $_.$ResourceKind -eq 'Complete' }).Count -eq 0
+        })
+        $RelatedResources = @($Discovery.Inventory.$ResourceKind | Where-Object { $_.VNetId -in $RelevantVNetIds })
+        $UnknownLinks = @($Discovery.Inventory.$ResourceKind | Where-Object { $_.SubscriptionId -in $RequiredSubscriptions -and -not $_.VNetId })
+        $HubStatus = if ($AvdVNets.Count -eq 0 -or $MissingSubscriptions.Count -gt 0 -or $UnknownLinks.Count -gt 0) {
+            'Error'
+        } elseif ($RelatedResources.Count -gt 0) { 'Pass' } else { 'Warning' }
+        $HubId = if ($ResourceKind -eq 'Firewalls') { 'NET-HUBFW' } else { 'NET-HUBGW' }
+        $HubName = if ($ResourceKind -eq 'Firewalls') { 'Hub Firewall Present' } else { 'VPN/ExpressRoute Gateway' }
+        [void]$AllChecks.Add((New-CheckResult -Id "$HubId-$SubShort" `
+            -Category 'Networking' -Name $HubName -Severity 'Medium' -Status $HubStatus `
+            -Description 'Discover shared network resources in AVD VNets or directly peered VNets' `
+            -Details "Related ${ResourceKind}: $($RelatedResources.Count); AVD VNets: $($AvdVNets.Count); unscanned or failed subscriptions: $($MissingSubscriptions -join ', '); resources with unknown VNet links: $($UnknownLinks.Count). Presence does not verify routing or traffic inspection." `
+            -Recommendation 'Validate the AVD hub topology and routing. Include referenced hub subscriptions in discovery and verify read access; third-party NVAs and Virtual WAN require separate validation.' `
+            -Reference 'https://learn.microsoft.com/en-us/azure/architecture/networking/architecture/hub-spoke' `
+            -Evidence @{ SubscriptionId = $SubId; ResourceIds = @($RelatedResources.Id); MissingSubscriptions = $MissingSubscriptions; UnknownLinks = @($UnknownLinks.Id) }))
+    }
+    $AvdHostIds = @($Discovery.Inventory.SessionHosts | Where-Object { $_.ResourceId -and (($_.ResourceId -split '/')[2] -eq $SubId) } | ForEach-Object { $_.ResourceId })
+    $AssociatedGroups = @($Discovery.Inventory.CapacityReservations | Where-Object {
+        @($_.VirtualMachinesAssociated | Where-Object { $_ -in $AvdHostIds }).Count -gt 0
+    })
+    $IncompleteCapacity = @($Discovery.CollectionStatus | Where-Object { $_.CapacityReservations -ne 'Complete' })
+    [void]$AllChecks.Add((New-CheckResult -Id "GOV-CAPRESERV-$SubShort" `
+        -Category 'Governance & Cost' -Name 'Capacity Reservation' -Severity 'Low' `
+        -Description 'Identify capacity reservation groups associated with AVD session hosts' `
+        -Status 'Error' `
+        -Details "Discovered groups: $($Discovery.Inventory.CapacityReservations.Count); groups associated with this subscription's AVD hosts: $($AssociatedGroups.Count); incomplete subscription scans: $($IncompleteCapacity.Count). Association alone does not verify allocated capacity or workload requirements." `
+        -Recommendation 'Validate the associated reservations, allocated capacity, VM sizes, zones, and critical workload requirements.' `
+        -Reference 'https://learn.microsoft.com/en-us/azure/virtual-machines/capacity-reservation-overview' `
+        -Evidence @{ SubscriptionId = $SubId; AssociatedGroupIds = @($AssociatedGroups.Id); IncompleteSubscriptions = @($IncompleteCapacity.SubscriptionId) }))
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
 # PER-SUBSCRIPTION SWEEP (A-1)
-# Orphaned disks/NICs, Key Vaults, policy, alerts, quota, capacity reservations,
-# budgets, RI, Network Watcher and Private DNS previously ran only against the
+# Orphaned disks/NICs, Key Vaults, policy, alerts, quota,
+# budgets, Network Watcher and Private DNS previously ran only against the
 # LAST subscription's context. This sweep re-runs them per subscription and
 # suffixes singleton check IDs with the sub short-id so results stay unique.
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2644,7 +2836,7 @@ foreach ($SubEntry in $Discovery.Subscriptions) {
     $AvdResourceGroups = @(
         @($Discovery.Inventory.HostPools | Where-Object { $_.SubscriptionId -eq $SubId } | ForEach-Object { $_.ResourceGroup }) +
         @($Discovery.Inventory.SessionHosts | Where-Object { "$($_.ResourceId)" -match $SubPattern } | ForEach-Object { $_.ResourceGroup }) +
-        @($Discovery.Inventory.StorageAccounts | Where-Object { "$($_.Id)" -match $SubPattern } | ForEach-Object { $_.ResourceGroup })
+        @($Discovery.Inventory.StorageAccounts | Where-Object { $_.LikelyFSLogix -and "$($_.Id)" -match $SubPattern } | ForEach-Object { $_.ResourceGroup })
     ) | Sort-Object -Unique
     $AvdRegions = @($Discovery.Inventory.SessionHosts | Where-Object { "$($_.ResourceId)" -match $SubPattern } | ForEach-Object { $_.Location } | Sort-Object -Unique)
 
@@ -2946,35 +3138,6 @@ try {
     Write-Status "  Quota check error: $($_.Exception.Message)" -Level 'WARN'
 }
 
-# ─── CAPACITY RESERVATIONS (GOV-015) ──────────────────────────────────
-Write-Status "Capacity Reservations" -Level 'SECTION'
-try {
-    $CRGs = @()
-    foreach ($RG in $AvdResourceGroups) {
-        $CRGs += @(Get-AzCapacityReservationGroup -ResourceGroupName $RG -ErrorAction SilentlyContinue)
-    }
-    foreach ($CRG in $CRGs) {
-        $Discovery.Inventory.CapacityReservations += [PSCustomObject]@{
-            Name          = $CRG.Name
-            ResourceGroup = ($CRG.Id -split '/')[4]
-            Location      = $CRG.Location
-            Zones         = $CRG.Zones
-        }
-    }
-    Write-Status "  Capacity Reservation Groups: $($CRGs.Count)" -Level $(if ($CRGs.Count -gt 0) { 'SUCCESS' } else { 'WARN' })
-    [void]$AllChecks.Add((New-CheckResult -Id "GOV-CAPRESERV-$SubShort" `
-        -Category 'Governance & Cost' -Name 'Capacity Reservation' `
-        -Description 'Capacity Reservation Groups guarantee VM availability for critical workloads' `
-        -Status $(if ($CRGs.Count -gt 0) { 'Pass' } else { 'Warning' }) `
-        -Severity 'Low' `
-        -Details "CapacityReservationGroups: $($CRGs.Count)$(if ($CRGs.Count -gt 0) { " ($( ($CRGs | ForEach-Object { $_.Name }) -join ', '))" })" `
-        -Recommendation 'Consider Capacity Reservation Groups for mission-critical AVD pools to prevent allocation failures.' `
-        -Reference 'https://learn.microsoft.com/en-us/azure/virtual-machines/capacity-reservation-overview' `
-        -Evidence @{ Count = $CRGs.Count }))
-} catch {
-    Write-Status "  Capacity reservation error: $($_.Exception.Message)" -Level 'WARN'
-}
-
 # ─── BUDGETS (GOV-016) ────────────────────────────────────────────────
 Write-Status "Cost Budgets" -Level 'SECTION'
 try {
@@ -3009,44 +3172,6 @@ try {
         -Evidence @{ Count = $Budgets.Count; HasAlerts = $HasAlertThresholds }))
 } catch {
     Write-Status "  Budget check error: $($_.Exception.Message)" -Level 'WARN'
-}
-
-# ─── RESERVED INSTANCES (GOV-017) ─────────────────────────────────────
-Write-Status "Reserved Instances" -Level 'SECTION'
-try {
-    $RIResponse = Invoke-AzRestMethod -Path "/providers/Microsoft.Capacity/reservationOrders?api-version=2022-11-01" -Method GET -ErrorAction SilentlyContinue
-    $Reservations = @()
-    if ($RIResponse -and $RIResponse.StatusCode -eq 200) {
-        $RIData = $RIResponse.Content | ConvertFrom-Json -ErrorAction SilentlyContinue
-        if ($RIData -and $RIData.value) {
-            # Filter to VM reservations relevant to this subscription
-            $Reservations = @($RIData.value | Where-Object {
-                $_.properties.reservedResourceType -eq 'VirtualMachines'
-            })
-        }
-    }
-    foreach ($RI in $Reservations) {
-        $Discovery.Inventory.Reservations += [PSCustomObject]@{
-            Name        = $RI.name
-            DisplayName = $RI.properties.displayName
-            Term        = $RI.properties.term
-            Quantity    = $RI.properties.quantity
-        }
-    }
-    Write-Status "  VM Reservations/Orders: $($Reservations.Count)" -Level $(if ($Reservations.Count -gt 0) { 'SUCCESS' } else { 'WARN' })
-    # Check if there are personal/always-on host pools that would benefit
-    $AlwaysOnHPs = @($Discovery.Inventory.HostPools | Where-Object { $_.HostPoolType -eq 'Personal' })
-    [void]$AllChecks.Add((New-CheckResult -Id "GOV-RI-$SubShort" `
-        -Category 'Governance & Cost' -Name 'Reserved Instance Coverage' `
-        -Description 'Evaluate RI or Savings Plans for always-on or personal host pools' `
-        -Status $(if ($Reservations.Count -gt 0) { 'Pass' } elseif ($AlwaysOnHPs.Count -gt 0) { 'Warning' } else { 'Pass' }) `
-        -Severity 'Low' `
-        -Details "VMReservations: $($Reservations.Count), PersonalHostPools: $($AlwaysOnHPs.Count)" `
-        -Recommendation 'Evaluate Azure Reserved Instances (1yr or 3yr) for personal host pools to save 40-72% on compute.' `
-        -Reference 'https://learn.microsoft.com/en-us/azure/cost-management-billing/reservations/save-compute-costs-reservations' `
-        -Evidence @{ Reservations = $Reservations.Count; PersonalPools = $AlwaysOnHPs.Count }))
-} catch {
-    Write-Status "  RI check error: $($_.Exception.Message)" -Level 'WARN'
 }
 
 # ─── RESOURCE LOCKS (GOV-007) ─────────────────────────────────────────
@@ -3264,6 +3389,78 @@ try {
         -Reference 'https://learn.microsoft.com/en-us/azure/defender-for-cloud/plan-defender-for-servers-select-plan'))
 }
 }  # end per-subscription sweep (A-1)
+
+foreach ($ReservationTenant in @($Discovery.Subscriptions | Group-Object TenantId)) {
+    $TenantCoverage = [PSCustomObject]@{ TenantId = $ReservationTenant.Name; Reservations = 'NotScanned' }
+    $Discovery.CollectionStatus += $TenantCoverage
+    $SeenOrders = @{}
+    $SeenReservations = @{}
+    Write-Status "VM reservations: tenant $($ReservationTenant.Name)" -Level 'SECTION'
+    try {
+        Set-AzContext -SubscriptionId $ReservationTenant.Group[0].Id -ErrorAction Stop -WarningAction SilentlyContinue | Out-Null
+        $Orders = @(Get-AvdArmList -Path '/providers/Microsoft.Capacity/reservationOrders?api-version=2022-11-01')
+        $TenantCoverage.Reservations = 'Complete'
+        foreach ($Order in $Orders) {
+            if (-not $Order.id) { throw 'Reservation order response is missing its resource ID.' }
+            if ($SeenOrders.ContainsKey($Order.id)) { continue }
+            $SeenOrders[$Order.id] = $true
+            try {
+                $OrderReservations = @(Get-AvdArmList -Path "$($Order.id)/reservations?api-version=2022-11-01")
+                foreach ($Reservation in $OrderReservations) {
+                    if (-not $Reservation.id -or -not $Reservation.properties.reservedResourceType) {
+                        throw "Reservation response is missing its ID or resource type under $($Order.id)."
+                    }
+                    if ($Reservation.properties.reservedResourceType -ne 'VirtualMachines' -or $SeenReservations.ContainsKey($Reservation.id)) { continue }
+                    $SeenReservations[$Reservation.id] = $true
+                    $ScopeMatch = Get-AvdReservationScopeMatch -Reservation $Reservation -Subscriptions $ReservationTenant.Group -SessionHosts $Discovery.Inventory.SessionHosts
+                    $Discovery.Inventory.Reservations += [PSCustomObject]@{
+                        Id = $Reservation.id
+                        OrderId = $Order.id
+                        TenantId = $ReservationTenant.Name
+                        Name = $Reservation.name
+                        DisplayName = $Reservation.properties.displayName
+                        Term = $Reservation.properties.term
+                        Quantity = $Reservation.properties.quantity
+                        Sku = $Reservation.sku.name
+                        Location = $Reservation.location
+                        ProvisioningState = $Reservation.properties.provisioningState
+                        BenefitStartTime = $Reservation.properties.benefitStartTime
+                        ExpiryDate = $Reservation.properties.expiryDate
+                        ExpiryDateTime = $Reservation.properties.expiryDateTime
+                        InstanceFlexibility = $Reservation.properties.instanceFlexibility
+                        AppliedScopeType = $Reservation.properties.appliedScopeType
+                        AppliedScopes = @($Reservation.properties.appliedScopes)
+                        AppliedScopeProperties = $Reservation.properties.appliedScopeProperties
+                        ScopeMatch = $ScopeMatch.State
+                        MatchedSubscriptionIds = $ScopeMatch.SubscriptionIds
+                    }
+                }
+            } catch {
+                $TenantCoverage.Reservations = 'Error'
+                $Discovery.Errors += "Reservation discovery failed for $($Order.id): $($_.Exception.Message)"
+                Write-Status $Discovery.Errors[-1] -Level 'WARN'
+            }
+        }
+    } catch {
+        $TenantCoverage.Reservations = 'Error'
+        $Discovery.Errors += "Reservation discovery failed for tenant $($ReservationTenant.Name): $($_.Exception.Message)"
+        Write-Status $Discovery.Errors[-1] -Level 'WARN'
+    }
+    $TenantReservations = @($Discovery.Inventory.Reservations | Where-Object { $_.TenantId -eq $ReservationTenant.Name })
+    foreach ($ReservationSubscription in $ReservationTenant.Group) {
+        $SubId = $ReservationSubscription.Id
+        if (@($Discovery.Inventory.HostPools | Where-Object { $_.SubscriptionId -eq $SubId }).Count -eq 0) { continue }
+        $ScopeMatches = @($TenantReservations | Where-Object { $SubId -in $_.MatchedSubscriptionIds })
+        $UnverifiedScopes = @($TenantReservations | Where-Object { $_.ScopeMatch -in @('SharedScopeUnverified', 'ManagementGroupScopeUnverified', 'Unknown') })
+        [void]$AllChecks.Add((New-CheckResult -Id "GOV-RI-$(($SubId -split '-')[0])" `
+            -Category 'Governance & Cost' -Name 'Reserved Instance Coverage' -Severity 'Low' -Status 'Error' `
+            -Description 'Evaluate VM reservation benefits for the assessed AVD workload' `
+            -Details "Visible VM reservations: $($TenantReservations.Count); matching subscription/resource-group scopes: $($ScopeMatches.Count); unverified shared/management-group scopes: $($UnverifiedScopes.Count); collection: $($TenantCoverage.Reservations). Scope matches include all lifecycle states. Reservation inventory alone does not establish active AVD discount coverage, utilization, or savings-plan coverage." `
+            -Recommendation 'Verify reservation read permissions, active dates, benefit scope, VM size flexibility, region, quantity, and actual cost/utilization data before assessing coverage.' `
+            -Reference 'https://learn.microsoft.com/en-us/azure/cost-management-billing/reservations/view-reservations' `
+            -Evidence @{ SubscriptionId = $SubId; ReservationIds = @($ScopeMatches.Id); UnverifiedScopeIds = @($UnverifiedScopes.Id); CollectionStatus = $TenantCoverage.Reservations }))
+    }
+}
 
 # ═══════════════════════════════════════════════════════════════════════════
 # MICROSOFT GRAPH — IDENTITY (Conditional Access, MFA, token protection, passwordless)
@@ -3957,9 +4154,8 @@ if ($HPLocations.Count -gt 1) {
         -Details "Regions (all subscriptions): $(if ($HPLocations) { $HPLocations -join ', ' } else { 'None' })"))
 }
 
-# ─── DR CAPACITY RESERVATION (BCDR-011) — estate-level, reuses per-sub reservation data ────
+# ─── DR CAPACITY RESERVATION (BCDR-011) — estate-level, reuses shared reservation data ────
 $AllCapResRegions = @($Discovery.Inventory.CapacityReservations | Where-Object { $_.Location } | ForEach-Object { "$($_.Location)".ToLower() } | Sort-Object -Unique)
-$HPRegionsLower = @($HPLocations | ForEach-Object { "$_".ToLower() })
 if ($HPLocations.Count -le 1) {
     [void]$AllChecks.Add((New-CheckResult -Id "BCDR-DRCAP" `
         -Category 'BCDR' -Name 'Capacity Reservation for DR' `
@@ -3968,27 +4164,14 @@ if ($HPLocations.Count -le 1) {
         -Details "Single-region estate ($(if ($HPLocations) { $HPLocations -join ', ' } else { 'none' })) - no secondary region to reserve capacity in." `
         -Reference 'https://learn.microsoft.com/en-us/azure/virtual-machines/capacity-reservation-overview'))
 } else {
-    $PrimaryRegion = $HPRegionsLower[0]
-    $DrReservations = @($AllCapResRegions | Where-Object { $_ -ne $PrimaryRegion })
-    if ($DrReservations.Count -gt 0) {
-        [void]$AllChecks.Add((New-CheckResult -Id "BCDR-DRCAP" `
-            -Category 'BCDR' -Name 'Capacity Reservation for DR' `
-            -Description 'On-demand capacity reservations should exist in the secondary/failover region to guarantee VM availability during a regional outage' `
-            -Status 'Pass' -Severity 'Medium' `
-            -Details "Capacity reservation group(s) present in non-primary region(s): $($DrReservations -join ', ') (primary host-pool region: $PrimaryRegion)" `
-            -Recommendation 'Maintain capacity reservations in the failover region so DR host pools can allocate VMs during a regional outage.' `
-            -Reference 'https://learn.microsoft.com/en-us/azure/virtual-machines/capacity-reservation-overview' `
-            -Evidence @{ DrRegions = $DrReservations; PrimaryRegion = $PrimaryRegion }))
-    } else {
-        [void]$AllChecks.Add((New-CheckResult -Id "BCDR-DRCAP" `
-            -Category 'BCDR' -Name 'Capacity Reservation for DR' `
-            -Description 'On-demand capacity reservations should exist in the secondary/failover region to guarantee VM availability during a regional outage' `
-            -Status 'Warning' -Severity 'Medium' `
-            -Details "Multi-region estate ($($HPLocations -join ', ')) but no capacity reservation group found outside the primary region ($PrimaryRegion). Reservations found in: $(if ($AllCapResRegions.Count -gt 0) { $AllCapResRegions -join ', ' } else { 'none' })" `
-            -Recommendation 'Create on-demand capacity reservations in the secondary/failover region to guarantee VM availability during a regional outage.' `
-            -Reference 'https://learn.microsoft.com/en-us/azure/virtual-machines/capacity-reservation-overview' `
-            -Evidence @{ EstateRegions = $HPLocations; ReservationRegions = $AllCapResRegions }))
-    }
+    [void]$AllChecks.Add((New-CheckResult -Id "BCDR-DRCAP" `
+        -Category 'BCDR' -Name 'Capacity Reservation for DR' `
+        -Description 'Validate reserved capacity against the approved AVD failover design' `
+        -Status 'Error' -Severity 'Medium' `
+        -Details "Estate regions: $($HPLocations -join ', '); visible capacity reservation regions: $($AllCapResRegions -join ', '). Inventory does not identify the designated failover region or prove sufficient reserved VM capacity for AVD." `
+        -Recommendation 'Validate the failover region, reservation ownership, VM sizes, zones, and available reserved capacity against the recovery plan.' `
+        -Reference 'https://learn.microsoft.com/en-us/azure/virtual-machines/capacity-reservation-overview' `
+        -Evidence @{ EstateRegions = $HPLocations; ReservationRegions = $AllCapResRegions }))
 }
 
 # ─── AGENT VERSION CURRENCY (fleet-relative, C-9) ─────────────────────
@@ -4445,6 +4628,9 @@ $Resources = @(
     @{ L = 'Key Vaults';       V = $Discovery.Inventory.KeyVaults.Count }
     @{ L = 'Firewalls';        V = $Discovery.Inventory.Firewalls.Count }
     @{ L = 'VPN/ER Gateways';  V = $Discovery.Inventory.VPNGateways.Count }
+    @{ L = 'ER Circuits';      V = $Discovery.Inventory.ExpressRouteCircuits.Count }
+    @{ L = 'Capacity Res. Groups'; V = $Discovery.Inventory.CapacityReservations.Count }
+    @{ L = 'VM Reservations';  V = $Discovery.Inventory.Reservations.Count }
 )
 foreach ($R in $Resources) { Write-BoxKV $R.L "$($R.V)" }
 

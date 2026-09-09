@@ -127,7 +127,7 @@ The launcher auto-detects PowerShell 7 and falls back to Windows PowerShell 5.1.
 ### Option 2: Discovery Script (Automated Scan)
 
 ```powershell
-# Interactive login — scans current subscription
+# Interactive login and subscription selection
 .\Invoke-AvdDiscovery.ps1
 
 # Specific subscription
@@ -144,6 +144,25 @@ The launcher auto-detects PowerShell 7 and falls back to Windows PowerShell 5.1.
 ```
 
 Then import the discovery JSON into the GUI via **Import Discovery / Assessment**.
+
+### Collector 0.6.5 (2026-09-09)
+
+- Fixes the VNet `4294967291` / `System.Int32` overflow caused by collection-valued subnet prefixes and stale PowerShell regex captures. Valid IPv4 prefixes are parsed individually. Unsupported, malformed, IPv6, or dual-stack capacity inputs emit `Error` without skipping subsequent subnet and peering checks.
+- Collects Azure Firewalls, VPN/ExpressRoute gateways, ExpressRoute circuits, storage accounts, and capacity reservation groups across every selected subscription, including subscriptions without host pools. Select the hub and storage subscriptions as well as the AVD subscriptions; the collector does not automatically expand access or scan unselected subscriptions.
+- Evaluates hub relationships after shared inventory is complete, independently of subscription order. Resource presence does not establish routing or traffic inspection. Third-party NVAs and Virtual WAN relationships still need separate validation.
+- Retains FSLogix candidate classification evidence from account names, Azure Files identity settings, and profile-like share names. Candidate status is not proof that session hosts use that account.
+- Lists reservation orders once per selected tenant, follows child reservations and pagination, deduplicates by resource ID, and retains benefit scopes, VM SKU, region, quantity, and lifecycle state. Shared and management-group scopes remain explicitly unverified; their benefits are not automatically attributed to every selected subscription.
+- Adds `CollectionStatus` to the export, distinguishing completed visible-resource queries, failed queries, and unscanned shared-resource sections. Reservation visibility requires reservation-specific access, not merely subscription Reader. See [reservation permissions](https://learn.microsoft.com/en-us/azure/cost-management-billing/reservations/view-reservations).
+- Shows separate circuit, capacity reservation group, and VM reservation counts in the console summary. Counts include visible inventory; reservation counts include all lifecycle states.
+- Reservation coverage and multi-region DR capacity checks emit `Error` (Not Assessed in Assay) pending workload, utilization, and recovery-plan evidence. Inventory or association alone no longer produces a coverage Pass.
+
+Offline regression tests, without Azure login or resource changes:
+
+```powershell
+.\Test-AvdDiscovery.ps1
+```
+
+Validated on Windows PowerShell 5.1 and PowerShell 7. A live recollection is still required to validate tenant permissions, API responses, and the actual shared-resource topology.
 
 ---
 
