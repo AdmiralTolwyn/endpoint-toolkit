@@ -298,8 +298,8 @@
       "origin": "SEC",
       "reference": "https://learn.microsoft.com/en-us/azure/virtual-desktop/security-recommendations",
       "effort": "Some Effort",
-      "impact": "Session hosts without MDE lack real-time threat detection, leaving the multi-user environment vulnerable to malware spread.",
-      "remediation": "Set-AzVMExtension -VMName <vm> -ResourceGroupName <rg> -Name MDE.Windows -Publisher Microsoft.Azure.AzureDefenderForServers -ExtensionType MDE.Windows -TypeHandlerVersion 1.0"
+      "impact": "Incorrect antivirus mode, exclusions, or real-time protection settings can reduce protection or increase profile I/O. Antivirus configuration is separate from Defender for Endpoint onboarding and EDR sensor health.",
+      "remediation": "Validate antivirus mode, real-time protection, and workload-specific exclusions against current FSLogix guidance. Validate EDR onboarding and sensor health separately under SEC-006; deploying an MDE extension does not configure or verify these antivirus settings."
     },
     {
       "id": "SH-007",
@@ -519,15 +519,15 @@
       "id": "MON-004",
       "category": "Monitoring",
       "name": "Azure Monitor Agent",
-      "description": "Azure Monitor Agent (AMA) should be installed on all session hosts to collect performance counters (CPU, memory, disk, network) and Windows event logs required for AVD Insights and custom alerting",
+      "description": "Verify the Microsoft.Azure.Monitor / AzureMonitorWindowsAgent extension and successful provisioning on each Azure VM session host. Pass confirms extension deployment only, not agent runtime health or telemetry coverage. Inspect VM-associated DCRs, their destinations, and resource-matched AMA heartbeats separately; validate required performance counters and Windows event logs under MON-008/MON-009.",
       "severity": "Medium",
       "type": "Auto",
       "weight": 3,
       "origin": "WAF",
-      "reference": "https://learn.microsoft.com/en-us/azure/azure-monitor/agents/agents-overview",
+      "reference": "https://learn.microsoft.com/en-us/azure/azure-monitor/agents/azure-monitor-agent-troubleshoot-windows-vm",
       "effort": "Some Effort",
-      "impact": "Without Azure Monitor Agent, session hosts have no performance telemetry — CPU exhaustion, disk pressure, and memory leaks go undetected.",
-      "remediation": "Set-AzVMExtension -VMName <vm> -ResourceGroupName <rg> -Name AzureMonitorWindowsAgent -Publisher Microsoft.Azure.Monitor -ExtensionType AzureMonitorWindowsAgent -TypeHandlerVersion 1.0"
+      "impact": "An absent or unsuccessfully provisioned AMA extension prevents the expected AMA-based AVD Insights collection. Other monitoring may exist; extension presence alone does not prove that the required data reaches Log Analytics.",
+      "remediation": "Verify read access to the VM extension inventory first. Install or repair the Microsoft.Azure.Monitor / AzureMonitorWindowsAgent extension where required, then verify VM-associated DCRs, actual destinations, and AMA heartbeat by VM resource ID. Account for stopped hosts and recent deployments before diagnosing missing telemetry."
     },
     {
       "id": "MON-005",
@@ -558,7 +558,7 @@
       "id": "BCDR-002",
       "category": "BCDR",
       "name": "Storage Replication",
-      "description": "Profile storage should use ZRS (zone-resilient) or GRS (geo-redundant) replication instead of LRS. LRS provides no protection against zone-level failures, which can make all user profiles inaccessible. Note: Premium Azure Files (required by PROF-003) supports only LRS/ZRS — GRS/GZRS apply to Standard tier only, so do not flag Premium tier with ZRS as non-compliant",
+      "description": "Assess profile storage redundancy against workload recovery requirements and the account's region, kind, and SKU family. Use the subscription's Microsoft.Storage SKU listing to establish ZRS availability and location restrictions; region-wide availability-zone support alone is insufficient. Where the matching ZRS SKU is not offered or is restricted, document the constraint and assess an alternative region or FSLogix resilience design; LRS still carries zone-level risk and is not automatically exempt. Unknown availability requires assessment. Premium Azure Files supports LRS/ZRS, not GRS/GZRS. ZRS protects against zone failure; GRS is asynchronous geo-replication, not equivalent zone redundancy. A redundancy SKU alone does not establish workload recovery.",
       "severity": "Medium",
       "type": "Auto",
       "weight": 3,
@@ -848,7 +848,7 @@
       "id": "SEC-006",
       "category": "Security",
       "name": "EDR Product Deployed",
-      "description": "Microsoft Defender for Endpoint (MDE) should be deployed on all session hosts for real-time threat detection, automated investigation, endpoint detection and response (EDR), and integration with Microsoft 365 Defender",
+      "description": "Verify EDR deployment on every session host. Automated MDE assessment requires a recent Defender DeviceInfo snapshot matched to the Azure resource ID and current VM instance ID, reporting Onboarded and an Active sensor. An MDE.Windows deployment extension, Defender Antivirus, or Defender for Servers licensing alone is insufficient. Missing access, stale or ambiguous identities, stopped/unknown-power VMs, and no visible device match remain Not Assessed. The snapshot does not establish complete EDR policy coverage or absence of threats. Alternative EDR products require separate assessor evidence; lack of MDE does not prove absence of all EDR.",
       "severity": "High",
       "type": "Auto",
       "weight": 4,

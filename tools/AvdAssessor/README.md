@@ -145,6 +145,133 @@ The launcher auto-detects PowerShell 7 and falls back to Windows PowerShell 5.1.
 
 Then import the discovery JSON into the GUI via **Import Discovery / Assessment**.
 
+### Collector 0.6.9 (2026-09-10)
+
+MDE deployment and EDR protection are separate evidence layers. The default scan
+matches the ARM extension publisher `Microsoft.Azure.AzureDefenderForServers`
+and type `MDE.Windows` regardless of resource name. Provisioning state is a
+deployment hint only: an extension, Defender Antivirus, MMA, or Defender for
+Servers licensing does not establish MDE onboarding or sensor health. Missing
+extensions do not prove absence; onboarding may use Intune, GPO, or scripts.
+
+For device-level evidence, opt in:
+
+```powershell
+.\Invoke-AvdDiscovery.ps1 -IncludeMdeDeviceChecks
+```
+
+This uses [Graph security runHuntingQuery](https://learn.microsoft.com/en-us/graph/api/security-security-runhuntingquery?view=graph-rest-1.0)
+against [DeviceInfo](https://learn.microsoft.com/en-us/defender-xdr/advanced-hunting-deviceinfo-table),
+not the retiring legacy MDE hunting API. The existing Az sign-in must obtain a
+Graph token with **ThreatHunting.Read.All**, with consent and appropriate
+Defender data/device-group access. Subscription Reader alone is insufficient;
+an Az login does not automatically grant hunting permissions. No permissions,
+policies, extensions, or guest configuration are changed. This integration
+targets Azure public cloud; other clouds report unavailable evidence without
+calling the public endpoint.
+
+- Queries run per selected tenant in batches of at most 100 distinct VM IDs.
+  They select the latest ingested DeviceInfo record per device over seven days,
+  then match its current Azure resource mapping. Hostnames are not used as an
+  identity fallback. The Azure context is restored afterward.
+- A record must match both `AzureResourceId` and the current `AzureVmId`.
+  Missing VM instance metadata, reused resource paths, multiple current device
+  identities, and merged-only records remain Not Assessed.
+- The 48-hour snapshot freshness threshold is an assessment limit, not a live
+  heartbeat SLA. Old, invalid, future, or missing timestamps are Not Assessed.
+
+| Recent, uniquely matched record on a running VM | Outcome |
+|---|---|
+| Onboarded and Active sensor | Pass for service-reported onboarding/sensor state at the recorded time. |
+| Onboarded with known inactive, impaired-communication, or no-sensor-data state | Warning: investigate the reported sensor condition. |
+| Explicitly not onboarded / can be onboarded / offboarded | Fail for MDE onboarding, not proof that no third-party EDR exists. |
+| Unknown/unsupported states or stopped/unknown-power VM | Error (Not Assessed in Assay). |
+
+No visible match, access failures, schema errors, result-limit overflow, and
+partial/error responses are Not Assessed. Empty visible inventory does not
+prove tenant-wide absence. Results do not establish antivirus active/passive
+mode, exclusions, policy completeness, licensing, response capabilities, or
+absence of threats. Third-party EDR needs separate assessor evidence.
+
+`Inventory.SessionHosts[].MDEDiscovery` retains deployment hints, matched
+records, timestamps, onboarding, and sensor state. The nullable `MDEInstalled`
+field now represents verified service onboarding, not extension presence.
+Without the switch, `DeviceInventoryStatus` is `NotRequested`. Credentials,
+extension settings, logged-on users, IPs, and raw HTTP exception bodies are not
+exported. Queries have timeouts; access/throttling failures are recorded without
+automatic retry. Expect extra extension reads per VM and hunting calls when
+enabled.
+
+Assay converts the exact older automated `MDE.Windows extension installed`
+Pass without structured evidence to Not Assessed. The original text is retained;
+manual and structured outcomes are preserved. A new collection is needed to
+establish device facts. Offline tests cover identity, freshness, health,
+onboarding, query failures, tenant isolation, batching, and export retention;
+live Defender service validation has not yet been performed.
+
+### Collector 0.6.8 (2026-09-10)
+
+FSLogix profile storage replication checks now consult the subscription's
+[Storage SKU API](https://learn.microsoft.com/en-us/rest/api/storagerp/skus/list?view=rest-storagerp-2025-06-01).
+The paginated response is cached per subscription and matched against the
+account's exact kind, SKU family (including StandardV2/PremiumV2), and region.
+No region list is hard-coded, and availability-zone support is not treated as
+proof that a specific storage product supports ZRS.
+
+| ZRS availability evidence | LRS assessment |
+|---|---|
+| Matching ZRS SKU lists the region without a location restriction | Warning: evaluate ZRS and account-specific conversion eligibility. |
+| Matching ZRS SKU is listed elsewhere, but not in the account's region | Warning: explicitly identify the regional product limitation and assess alternatives instead of prescribing an unavailable SKU. |
+| Region is listed but restricted for the subscription | Warning: retain the restriction reason; do not call it region-wide unavailability. |
+| Query failed, metadata incomplete, or no exact SKU/kind entry | Error (Not Assessed in Assay): availability is unknown, not unsupported. |
+
+The existing zone/geo-redundant SKU verdict is preserved. An account already
+using ZRS/GZRS does not require an availability lookup to prove its current
+configuration. Neither SKU availability nor a currently configured SKU proves
+capacity for a new deployment, in-place conversion eligibility, or end-to-end
+workload recovery. GRS alone is not synchronous zone redundancy. Premium Files
+is never advised to use an unsupported GRS SKU.
+
+Availability state, matching target SKU, subscription, region, account kind,
+query timestamp, and applicable restrictions are stored in the check's
+`Evidence.ZrsAvailability` and the FSLogix candidate's storage inventory entry.
+Non-candidate storage accounts keep this field null. LRS risk remains visible
+even when ZRS is unavailable; N/A requires an assessor decision, not an inferred
+exemption. The collector only queries availability; it makes no Azure changes.
+
+Tests cover region/kind/tier matching, subscription restrictions, V2 SKU
+families, paging, cache isolation, existing ZRS, and failed/incomplete reads on
+PowerShell 5.1 and 7. A new collection is required to obtain regional facts;
+an old export containing only the replication SKU cannot establish them.
+
+### Collector 0.6.7 (2026-09-10)
+
+AMA discovery now records three separate evidence layers for each Azure VM session host:
+
+| Layer | Evidence and limits |
+|---|---|
+| Extension installation (`MON-004`) | Queries the VM's paginated ARM extension list by full resource ID. Matches publisher `Microsoft.Azure.Monitor` and type `AzureMonitorWindowsAgent`, regardless of extension resource name. Succeeded = Pass; verified absence or Failed provisioning = Fail; other provisioning states = Warning; incomplete/denied/malformed reads = Error. Pass is not a runtime-health claim. |
+| Configuration | Reads the VM's DCR associations, then each referenced DCR, including references in other subscriptions. Records performance counters, event sources, data flows, and Log Analytics destinations actually referenced by those flows. A DCE-only association is not a DCR. DCR existence/configuration does not prove delivery. |
+| AMA heartbeat | Queries only `Category == "Azure Monitor Agent"` and matches full VM `_ResourceId` in associated Log Analytics destinations. Records last seen with a 24-hour query window and 15-minute freshness threshold. No recent heartbeat is an observation, not proof of agent failure. Stopped/unknown-power VMs, query failures, and configurations without a known Log Analytics destination are explicitly distinguished. |
+
+- `Inventory.SessionHosts[].AMAInstalled` is true for verified successful provisioning, false for verified extension absence, and null when installation cannot be established. `AMADiscovery` retains the detailed extension/configuration/heartbeat evidence. The session host's existing AVD `LastHeartBeat` is not used as an AMA heartbeat.
+- Queries and check IDs use subscription/resource-group/VM identity, avoiding same-name collisions. Extension reads are cached per VM, rule reads per DCR, and heartbeat queries are batched at up to 100 VMs per workspace. This adds extension and DCR-association reads per distinct VM plus reads for referenced DCRs and workspace queries; expect additional collection time.
+- Read access is required on VM extensions, DCR associations, referenced DCRs, and referenced workspaces, plus Log Analytics query permissions. Missing optional Az.OperationalInsights or partial query responses are recorded as unavailable telemetry, never as verified absence. No guest Run Command is required for these checks.
+- This does not validate every required AVD performance counter/event stream, continuous uptime, or all monitoring pipelines. `MON-008`/`MON-009` remain separate checks; their workspace-level results should not be taken as proof that every host is delivering every required signal.
+- The scope here is Azure VM session hosts. Arc-enabled machines and VM scale-set instance extension inheritance are not inferred from this VM-only query path. Unsupported resource IDs are reported as unavailable evidence.
+- Assay recognizes the older exact `AMA Extension: Not found` / `Installed` automated messages without structured evidence and marks them Not Assessed pending recollection. It does not infer what is installed from those historical messages or overwrite explicit manual decisions.
+
+Regression tests cover renamed extensions, MMA/wrong publishers, provisioning states, absent versus unreadable inventory, pagination, cross-subscription references and cache keys, DCE-only/metrics-only rules, ignored unused destinations, heartbeat scope, stopped VMs, partial results, and query batching. Live tenant validation still requires a new collection and comparison with known VM extensions/DCRs.
+
+Reference: [Microsoft AMA troubleshooting guidance](https://learn.microsoft.com/en-us/azure/azure-monitor/agents/azure-monitor-agent-troubleshoot-windows-vm).
+
+### Collector 0.6.6 (2026-09-10)
+
+- Private Link checks `NET-PL-*` and `SEC-HPPL-*` no longer infer N/A from zero endpoints or Pass from endpoint presence. They retain endpoint counts and explicitly report unknown applicability and unverified private-access configuration.
+- Successful inventory reads include `CollectionStatus: Complete`, `Applicability: Unknown`, and `AssessmentBasis: InventoryOnly`. Missing or denied resource reads include `CollectionStatus: Error` without inventing a zero count. Resource reads request expanded properties and stop on query errors.
+- Both cases use the collector's existing `Error` status, imported as Not Assessed in Assay. Private Link remains optional, not a universal requirement. Record N/A only after confirming that private-only access is not required; otherwise assess endpoint approval, public-access settings, DNS, and connectivity against the customer's requirements.
+- The offline regression suite covers zero, approved, and pending endpoints as well as denied, null, and incomplete resource responses. A live recollection is still required to verify Azure results.
+
 ### Collector 0.6.5 (2026-09-09)
 
 - Fixes the VNet `4294967291` / `System.Int32` overflow caused by collection-valued subnet prefixes and stale PowerShell regex captures. Valid IPv4 prefixes are parsed individually. Unsupported, malformed, IPv6, or dual-stack capacity inputs emit `Error` without skipping subsequent subnet and peering checks.

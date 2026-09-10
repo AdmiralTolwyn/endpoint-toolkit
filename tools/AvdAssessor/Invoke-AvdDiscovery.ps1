@@ -15,6 +15,10 @@
     AvdAssessor\assessments\discovery_<timestamp>.json
 .PARAMETER SkipLogin
     Skip interactive login and use existing Az context.
+.PARAMETER IncludeMdeDeviceChecks
+    Opt-in Microsoft Graph security hunting against DeviceInfo for collected Azure VM IDs.
+    Requires ThreatHunting.Read.All and Defender data/device-group access in each tenant.
+    Matches AzureResourceId and AzureVmId; no guest commands or policy changes are performed.
 .PARAMETER IncludeGuestChecks
     Opt-in in-guest FSLogix inspection. When set, the script runs a single consolidated
     PowerShell script (via Invoke-AzVMRunCommand) against up to 3 representative RUNNING
@@ -27,10 +31,11 @@
     .\Invoke-AvdDiscovery.ps1 -SubscriptionId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
     .\Invoke-AvdDiscovery.ps1 -SubscriptionId @("sub1","sub2") -OutputPath "C:\temp\discovery.json"
     .\Invoke-AvdDiscovery.ps1 -IncludeGuestChecks
+    .\Invoke-AvdDiscovery.ps1 -IncludeMdeDeviceChecks
 .NOTES
     Author : Anton Romanyuk
-    Version: 0.6.5
-    Date   : 2026-09-09
+    Version: 0.6.9
+    Date   : 2026-09-10
 #>
 
 [CmdletBinding()]
@@ -45,7 +50,10 @@ param(
     [switch]$SkipLogin,
 
     [Parameter(Mandatory = $false)]
-    [switch]$IncludeGuestChecks
+    [switch]$IncludeGuestChecks,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$IncludeMdeDeviceChecks
 )
 
 $ErrorActionPreference = 'Stop'
@@ -58,7 +66,7 @@ $env:PSModulePath = ($env:PSModulePath -split ';' |
 $ScriptRoot = $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($ScriptRoot)) { $ScriptRoot = $PWD.Path }
 
-$ScriptVersion = '0.6.5'
+$ScriptVersion = '0.6.9'
 
 # ═══════════════════════════════════════════════════════════════════════════
 # HELPERS
@@ -205,6 +213,581 @@ function Get-AvdArmList {
             $Path = $NextUri.PathAndQuery
         }
         if ($Path -and -not $Path.StartsWith('/')) { throw 'ARM nextLink is not an absolute resource path.' }
+    }
+}
+
+function Get-AvdStorageZrsAvailability {
+    param($StorageAccount, [hashtable]$Cache)
+    $Location = ([string]$StorageAccount.PrimaryLocation -replace '\s', '').ToLowerInvariant()
+    $Kind = [string]$StorageAccount.Kind
+    $SkuMatch = [regex]::Match([string]$StorageAccount.Sku.Name, '^(StandardV2|PremiumV2|Standard|Premium)_(LRS|ZRS|GRS|RAGRS|GZRS|RAGZRS)$', 'IgnoreCase')
+    $SubscriptionMatch = [regex]::Match([string]$StorageAccount.Id, '^/subscriptions/([^/]+)/resourceGroups/[^/]+/providers/Microsoft\.Storage/storageAccounts/[^/]+$', 'IgnoreCase')
+    $Availability = [PSCustomObject]@{
+        State = 'Unknown'
+        SubscriptionId = $SubscriptionMatch.Groups[1].Value
+        Location = $Location
+        Kind = $Kind
+        TargetSku = if ($SkuMatch.Success) { "$($SkuMatch.Groups[1].Value)_ZRS" } else { $null }
+        CheckedAt = [DateTime]::UtcNow.ToString('o')
+        Source = 'Microsoft.Storage/skus?api-version=2025-06-01'
+        Restrictions = @()
+        Details = ''
+    }
+    if (-not $SkuMatch.Success -or -not $SubscriptionMatch.Success -or -not $Location -or $Kind -notin @('Storage', 'StorageV2', 'FileStorage')) {
+        $Availability.Details = 'Account resource ID, region, kind, or SKU family is missing or unsupported by this availability check.'
+        return $Availability
+    }
+    if ($SkuMatch.Groups[2].Value -in @('ZRS', 'GZRS', 'RAGZRS')) {
+        $Availability.State = 'AlreadyConfigured'
+        $Availability.Source = 'Storage account SKU'
+        $Availability.Details = 'The current account SKU already includes zone redundancy.'
+        return $Availability
+    }
+    $SubscriptionId = $Availability.SubscriptionId
+    if (-not $Cache.ContainsKey($SubscriptionId)) {
+        $Listing = [PSCustomObject]@{ Items = @(); Error = $null; CheckedAt = [DateTime]::UtcNow.ToString('o') }
+        try {
+            $Listing.Items = @(Get-AvdArmList -Path "/subscriptions/$SubscriptionId/providers/Microsoft.Storage/skus?api-version=2025-06-01")
+            if ($Listing.Items.Count -eq 0) { throw 'Storage SKU list is empty; availability cannot be established.' }
+        } catch { $Listing.Error = $_.Exception.Message }
+        $Cache[$SubscriptionId] = $Listing
+    }
+    $Listing = $Cache[$SubscriptionId]
+    $Availability.CheckedAt = $Listing.CheckedAt
+    if ($Listing.Error) {
+        $Availability.Details = "Could not establish regional ZRS availability: $($Listing.Error)"
+        return $Availability
+    }
+    $Candidates = @($Listing.Items | Where-Object {
+        $_.name -ieq $Availability.TargetSku -and $_.kind -ieq $Kind -and $_.resourceType -ieq 'storageAccounts'
+    })
+    if ($Candidates.Count -eq 0) {
+        $Availability.Details = "No exact $($Availability.TargetSku) / $Kind entry was returned; do not infer regional unavailability from another kind or tier."
+        return $Availability
+    }
+    $RegionListed = $false
+    $Incomplete = $false
+    foreach ($Candidate in $Candidates) {
+        $Locations = @(@($Candidate.locations) + @($Candidate.locationInfo | ForEach-Object { $_.location }) |
+            Where-Object { $_ } | ForEach-Object { ([string]$_ -replace '\s', '').ToLowerInvariant() } | Sort-Object -Unique)
+        if ($Locations.Count -eq 0) { $Incomplete = $true; continue }
+        if ($Location -notin $Locations) { continue }
+        $RegionListed = $true
+        if ($null -eq $Candidate.restrictions) { $Incomplete = $true; continue }
+        foreach ($Restriction in @($Candidate.restrictions)) {
+            if ($Restriction.type -ine 'location' -or $Restriction.values -isnot [array] -or $Restriction.values.Count -eq 0 -or
+                @($Restriction.values | Where-Object { $_ -isnot [string] -or [string]::IsNullOrWhiteSpace($_) }).Count -gt 0) {
+                $Incomplete = $true
+                continue
+            }
+            $RestrictedLocations = @($Restriction.values | Where-Object { $_ } | ForEach-Object { ([string]$_ -replace '\s', '').ToLowerInvariant() })
+            if ($RestrictedLocations.Count -eq 0) {
+                $Incomplete = $true
+                continue
+            }
+            if ($Location -in $RestrictedLocations) {
+                $Availability.Restrictions += [PSCustomObject]@{ Type = $Restriction.type; Locations = $RestrictedLocations; ReasonCode = $Restriction.reasonCode }
+            }
+        }
+    }
+    if ($Availability.Restrictions.Count -gt 0) {
+        $Availability.State = 'RestrictedForSubscription'
+        $Reasons = @($Availability.Restrictions | ForEach-Object { $_.ReasonCode } | Sort-Object -Unique) -join ', '
+        $Availability.Details = "$($Availability.TargetSku) / $Kind is listed in $Location but restricted for this subscription ($Reasons). This is not proof of a region-wide lack of ZRS."
+    } elseif ($Incomplete) {
+        $Availability.Details = 'SKU location or restriction metadata is incomplete or unrecognized; availability is unknown.'
+    } elseif ($RegionListed) {
+        $Availability.State = 'Available'
+        $Availability.Details = "$($Availability.TargetSku) / $Kind is listed in $Location with no applicable location restriction. This does not guarantee capacity or in-place conversion eligibility."
+    } else {
+        $Availability.State = 'NotOfferedInRegion'
+        $Availability.Details = "$($Availability.TargetSku) / $Kind is not listed in $Location in the complete subscription SKU response. This constraint is specific to this account kind and SKU family."
+    }
+    return $Availability
+}
+
+function Get-AvdStorageReplicationAssessment {
+    param($StorageAccount, [hashtable]$Cache)
+    $Replication = [string]$StorageAccount.Sku.Name
+    $Availability = Get-AvdStorageZrsAvailability -StorageAccount $StorageAccount -Cache $Cache
+    $Status = 'Error'
+    $Recommendation = 'Confirm regional SKU availability and the workload recovery requirements before recommending a replication change.'
+    if ($Replication -match '^(StandardV2|PremiumV2|Standard|Premium)_(ZRS|GZRS|RAGZRS|GRS|RAGRS)$') {
+        $Status = 'Pass'
+        $Recommendation = 'Validate replication against zone and regional recovery requirements; GRS alone is not synchronous zone redundancy, and a redundancy SKU alone does not prove workload recovery.'
+    } elseif ($Replication -match '^(StandardV2|PremiumV2|Standard|Premium)_LRS$') {
+        switch ($Availability.State) {
+            'Available' {
+                $Status = 'Warning'
+                $Recommendation = "Evaluate $($Availability.TargetSku) for zone resilience after checking this account's conversion eligibility. LRS has no zone-level protection."
+            }
+            'NotOfferedInRegion' {
+                $Status = 'Warning'
+                $Recommendation = 'ZRS is not offered for this account kind/SKU family in the region. Do not prescribe an unavailable SKU; assess a supported region or an alternative FSLogix resilience design such as Cloud Cache, and document residual LRS risk.'
+            }
+            'RestrictedForSubscription' {
+                $Status = 'Warning'
+                $Recommendation = 'Confirm the subscription/location restriction with Azure support or assess an alternative region or FSLogix resilience design. LRS risk remains; this is not an automatic exemption.'
+            }
+        }
+    }
+    [PSCustomObject]@{
+        Status = $Status
+        Details = "Replication: $Replication; region: $($Availability.Location); kind: $($Availability.Kind). ZRS availability: $($Availability.State). $($Availability.Details)"
+        Recommendation = $Recommendation
+        Evidence = [PSCustomObject]@{ StorageAccount = $StorageAccount.StorageAccountName; ResourceId = $StorageAccount.Id; Replication = $Replication; ZrsAvailability = $Availability }
+    }
+}
+
+function Get-AvdAmaEvidence {
+    param([string]$ResourceId, [hashtable]$Cache)
+    $CacheKey = ([string]$ResourceId).TrimEnd('/').ToLowerInvariant()
+    if ($Cache.ContainsKey($CacheKey)) { return $Cache[$CacheKey] }
+    $Evidence = [PSCustomObject]@{
+        ResourceId = $ResourceId
+        VM = ($CacheKey -split '/')[-1]
+        CollectionStatus = 'Error'
+        Installed = $null
+        Status = 'Error'
+        Extensions = @()
+        Details = ''
+        RuntimeHealth = 'NotAssessed'
+        Configuration = $null
+        Heartbeats = @()
+    }
+    try {
+        if ($CacheKey -notmatch '^/subscriptions/[^/]+/resourcegroups/[^/]+/providers/microsoft\.compute/virtualmachines/[^/]+$') {
+            throw 'A complete Azure VM resource ID is required for AMA extension discovery.'
+        }
+        $Extensions = @(Get-AvdArmList -Path "$CacheKey/extensions?api-version=2024-07-01")
+        $UnknownIdentity = $false
+        foreach ($Extension in $Extensions) {
+            $Properties = $Extension.properties
+            if (-not $Properties.publisher -or -not $Properties.type) {
+                $UnknownIdentity = $true
+                continue
+            }
+            if ($Properties.publisher -ieq 'Microsoft.Azure.Monitor' -and $Properties.type -ieq 'AzureMonitorWindowsAgent') {
+                $Evidence.Extensions += [PSCustomObject]@{
+                    Id = $Extension.id
+                    Name = $Extension.name
+                    Publisher = $Properties.publisher
+                    Type = $Properties.type
+                    TypeHandlerVersion = $Properties.typeHandlerVersion
+                    ProvisioningState = $Properties.provisioningState
+                    AutoUpgradeMinorVersion = $Properties.autoUpgradeMinorVersion
+                    EnableAutomaticUpgrade = $Properties.enableAutomaticUpgrade
+                }
+            }
+        }
+        $Evidence.CollectionStatus = if ($UnknownIdentity) { 'Partial' } else { 'Complete' }
+        if ($Evidence.Extensions.Count -eq 0) {
+            if ($UnknownIdentity) {
+                $Evidence.Details = 'Extension inventory contains entries without publisher/type; AMA presence is unknown.'
+            } else {
+                $Evidence.Installed = $false
+                $Evidence.Status = 'Fail'
+                $Evidence.Details = 'Complete VM extension inventory contains no Microsoft.Azure.Monitor / AzureMonitorWindowsAgent extension.'
+            }
+        } else {
+            $States = @($Evidence.Extensions | ForEach-Object { [string]$_.ProvisioningState })
+            if ($States -contains 'Failed') {
+                $Evidence.Status = 'Fail'
+                $Evidence.Details = 'AMA extension is present but Azure reports failed provisioning.'
+            } elseif ($UnknownIdentity -or @($States | Where-Object { -not $_ }).Count -gt 0) {
+                $Evidence.Details = 'AMA extension is present, but extension inventory or provisioning state is incomplete.'
+            } elseif (@($States | Where-Object { $_ -ine 'Succeeded' }).Count -gt 0) {
+                $Evidence.Status = 'Warning'
+                $Evidence.Details = "AMA extension is present; provisioning has not succeeded: $($States -join ', ')."
+            } else {
+                $Evidence.Installed = $true
+                $Evidence.Status = 'Pass'
+                $Evidence.Details = 'Microsoft.Azure.Monitor / AzureMonitorWindowsAgent extension provisioning succeeded.'
+            }
+        }
+    } catch {
+        $Evidence.CollectionStatus = 'Error'
+        $Evidence.Details = "Could not establish AMA extension state: $($_.Exception.Message)"
+    }
+    $Evidence.Details += ' This checks extension installation/provisioning only; DCR association, agent runtime health, and telemetry delivery require separate evidence.'
+    $Cache[$CacheKey] = $Evidence
+    return $Evidence
+}
+
+function Get-AvdMdeEvidence {
+    param([string]$ResourceId, [hashtable]$Cache)
+    $CacheKey = ([string]$ResourceId).TrimEnd('/').ToLowerInvariant()
+    if ($Cache.ContainsKey($CacheKey)) { return $Cache[$CacheKey] }
+    $Evidence = [PSCustomObject]@{
+        ResourceId = $ResourceId
+        VM = ($CacheKey -split '/')[-1]
+        Status = 'Error'
+        Onboarded = $null
+        SensorHealth = 'NotAssessed'
+        ExtensionCollectionStatus = 'Error'
+        DeploymentExtensionPresent = $null
+        Extensions = @()
+        DeviceInventoryStatus = 'NotRequested'
+        DeviceMatch = 'NotAssessed'
+        Devices = @()
+        DeviceAssessmentDetails = 'Defender DeviceInfo was not queried. Use -IncludeMdeDeviceChecks with the required Graph and Defender permissions.'
+        FreshnessHours = 48
+        LookbackDays = 7
+        CheckedAt = $null
+        Details = ''
+    }
+    try {
+        if ($CacheKey -notmatch '^/subscriptions/[^/]+/resourcegroups/[^/]+/providers/microsoft\.compute/virtualmachines/[^/]+$') {
+            throw 'A complete Azure VM resource ID is required for MDE extension discovery.'
+        }
+        $Extensions = @(Get-AvdArmList -Path "$CacheKey/extensions?api-version=2024-07-01")
+        $UnknownIdentity = $false
+        foreach ($Extension in $Extensions) {
+            $Properties = $Extension.properties
+            if (-not $Properties.publisher -or -not $Properties.type) { $UnknownIdentity = $true; continue }
+            if ($Properties.publisher -ieq 'Microsoft.Azure.AzureDefenderForServers' -and $Properties.type -ieq 'MDE.Windows') {
+                $Evidence.Extensions += [PSCustomObject]@{
+                    Id = $Extension.id
+                    Name = $Extension.name
+                    Publisher = $Properties.publisher
+                    Type = $Properties.type
+                    ProvisioningState = $Properties.provisioningState
+                    TypeHandlerVersion = $Properties.typeHandlerVersion
+                }
+            }
+        }
+        $Evidence.ExtensionCollectionStatus = if ($UnknownIdentity) { 'Partial' } else { 'Complete' }
+        if ($Evidence.Extensions.Count -gt 0) {
+            $Evidence.DeploymentExtensionPresent = $true
+            $States = @($Evidence.Extensions | ForEach-Object { $_.ProvisioningState }) -join ', '
+            $Evidence.Details = "Microsoft MDE deployment extension found; provisioning state: $States."
+        } elseif ($UnknownIdentity) {
+            $Evidence.Details = 'Extension identity metadata is incomplete; MDE deployment extension presence is unknown.'
+        } else {
+            $Evidence.DeploymentExtensionPresent = $false
+            $Evidence.Details = 'Complete VM extension inventory contains no Microsoft MDE.Windows deployment extension. MDE may be onboarded via Intune, GPO, script, or another supported path.'
+        }
+    } catch { $Evidence.Details = "Could not read MDE deployment extension inventory: $($_.Exception.Message)" }
+    $Evidence.Details += ' Extension deployment does not establish EDR onboarding or sensor health. Defender Antivirus/MMA presence and Defender for Servers licensing do not prove MDE onboarding either.'
+    $Cache[$CacheKey] = $Evidence
+    return $Evidence
+}
+
+function Invoke-AvdMdeHuntingQuery {
+    param([string[]]$ResourceIds, [string]$Token)
+    try {
+        if (-not $Token) { throw 'No Graph token is available. ThreatHunting.Read.All and Defender data access are required.' }
+        if ($ResourceIds.Count -eq 0 -or $ResourceIds.Count -gt 100) { throw 'MDE query requires between 1 and 100 Azure VM resource IDs.' }
+        foreach ($ResourceId in $ResourceIds) {
+            if ($ResourceId -notmatch '^/subscriptions/[^/]+/resourceGroups/[^/]+/providers/Microsoft\.Compute/virtualMachines/[^/]+$') { throw 'MDE query received an invalid Azure VM resource ID.' }
+        }
+        $ResourceJson = ConvertTo-Json -InputObject @($ResourceIds | ForEach-Object { $_.ToLowerInvariant() }) -Compress
+        $Query = "let avdResources = dynamic($ResourceJson); DeviceInfo | where Timestamp > ago(7d) | extend SnapshotIngestedAt = ingestion_time() | summarize arg_max(SnapshotIngestedAt, *) by DeviceId | where tolower(AzureResourceId) in (avdResources) | project DeviceId, DeviceName, AzureResourceId, AzureVmId, Timestamp, SnapshotIngestedAt, OnboardingStatus, SensorHealthState, ClientVersion, MergedToDeviceId | take 10001"
+        $Body = ConvertTo-Json -InputObject @{ Query = $Query; Timespan = 'P7D' } -Compress
+        $Response = Invoke-RestMethod -Uri 'https://graph.microsoft.com/v1.0/security/runHuntingQuery' `
+            -Method POST -Headers @{ Authorization = "Bearer $Token" } -ContentType 'application/json; charset=utf-8' `
+            -Body $Body -TimeoutSec 210 -MaximumRedirection 0 -ErrorAction Stop
+        if (-not $Response -or $Response.error -or $Response.'@odata.nextLink' -or $Response.results -isnot [array] -or $Response.results.Count -ge 10001) {
+            throw 'Defender hunting returned an error, incomplete response, or result-limit overflow.'
+        }
+        $Rows = @($Response.results | ForEach-Object {
+            [PSCustomObject]@{
+                DeviceId = $_.DeviceId
+                DeviceName = $_.DeviceName
+                AzureResourceId = $_.AzureResourceId
+                AzureVmId = $_.AzureVmId
+                Timestamp = $_.Timestamp
+                SnapshotIngestedAt = $_.SnapshotIngestedAt
+                OnboardingStatus = $_.OnboardingStatus
+                SensorHealthState = $_.SensorHealthState
+                ClientVersion = $_.ClientVersion
+                MergedToDeviceId = $_.MergedToDeviceId
+            }
+        })
+        return [PSCustomObject]@{ Ok = $true; Rows = $Rows; Error = $null }
+    } catch {
+        $HttpStatus = $null
+        if ($_.Exception.Response) { $HttpStatus = $_.Exception.Response.StatusCode }
+        return [PSCustomObject]@{ Ok = $false; Rows = @(); Error = "Defender hunting unavailable (HTTP $HttpStatus; $($_.Exception.GetType().Name)). Verify Graph ThreatHunting.Read.All, Defender data access, supported cloud/schema, and service limits." }
+    }
+}
+
+function Set-AvdMdeDeviceEvidence {
+    param($SessionHost, $QueryResult, [DateTimeOffset]$Now = [DateTimeOffset]::UtcNow)
+    $Evidence = $SessionHost.MDEDiscovery
+    $Evidence.Status = 'Error'
+    $Evidence.Onboarded = $null
+    $Evidence.SensorHealth = 'NotAssessed'
+    $Evidence.DeviceMatch = 'NotAssessed'
+    $Evidence.Devices = @()
+    $Evidence.CheckedAt = $Now.ToString('o')
+    $Evidence.DeviceInventoryStatus = if ($QueryResult.Ok) { 'CompleteVisibleResults' } else { 'Error' }
+    if (-not $QueryResult.Ok) { $Evidence.DeviceAssessmentDetails = $QueryResult.Error; return }
+    $Evidence.Devices = @($QueryResult.Rows | Where-Object { $_.AzureResourceId -and $_.AzureResourceId -ieq $SessionHost.ResourceId })
+    $CurrentDevices = @($Evidence.Devices | Where-Object { -not $_.MergedToDeviceId })
+    if ($CurrentDevices.Count -eq 0) {
+        $Evidence.DeviceMatch = 'NoCurrentVisibleMatch'
+        $Evidence.DeviceAssessmentDetails = 'No current Defender record matched this Azure VM resource ID in the visible seven-day results. Permissions, retention, missing cloud metadata, or device merging may explain this; absence is not established.'
+        return
+    }
+    if ($CurrentDevices.Count -ne 1 -or -not $CurrentDevices[0].DeviceId) {
+        $Evidence.DeviceMatch = 'Ambiguous'
+        $Evidence.DeviceAssessmentDetails = 'Multiple or incomplete current Defender identities match the VM resource ID; resolve device identity before assessing EDR.'
+        return
+    }
+    $Device = $CurrentDevices[0]
+    $CurrentVmId = [guid]::Empty
+    $ReportedVmId = [guid]::Empty
+    if (-not [guid]::TryParse([string]$SessionHost.AzureVmId, [ref]$CurrentVmId) -or $CurrentVmId -eq [guid]::Empty -or
+        -not [guid]::TryParse([string]$Device.AzureVmId, [ref]$ReportedVmId) -or $ReportedVmId -eq [guid]::Empty) {
+        $Evidence.DeviceMatch = 'ResourceIdOnly'
+        $Evidence.DeviceAssessmentDetails = 'Resource ID matched, but the current VM instance ID cannot be verified. A rebuilt AVD host may reuse the same resource path; no EDR verdict is inferred.'
+        return
+    }
+    if ($CurrentVmId -ne $ReportedVmId) {
+        $Evidence.DeviceMatch = 'VmInstanceMismatch'
+        $Evidence.DeviceAssessmentDetails = 'Defender AzureVmId differs from the current Azure VM instance ID; the record may belong to an earlier deployment.'
+        return
+    }
+    $Evidence.DeviceMatch = 'ResourceAndVmId'
+    $Timestamp = [DateTimeOffset]::MinValue
+    try { $Timestamp = [DateTimeOffset]$Device.Timestamp } catch { }
+    if (-not $Device.Timestamp -or $Timestamp -eq [DateTimeOffset]::MinValue -or $Timestamp -gt $Now -or ($Now - $Timestamp).TotalHours -gt $Evidence.FreshnessHours) {
+        $Evidence.DeviceAssessmentDetails = 'Defender device information is missing, invalid, in the future, or older than the 48-hour assessment threshold. This is a snapshot freshness limit, not an EDR heartbeat SLA.'
+        return
+    }
+    $Onboarding = ([string]$Device.OnboardingStatus).Trim()
+    $Health = ([string]$Device.SensorHealthState).Trim()
+    $Evidence.DeviceAssessmentDetails = "Defender snapshot $($Timestamp.ToString('o')): onboarding=$Onboarding; sensor=$Health; power=$($SessionHost.PowerStateCode). This is service-reported onboarding/sensor state, not proof of full EDR policy coverage, antivirus mode, or absence of threats."
+    if ($Onboarding -ieq 'Onboarded') { $Evidence.Onboarded = $true }
+    if ($Health) { $Evidence.SensorHealth = $Health }
+    if ($SessionHost.PowerStateCode -ine 'PowerState/running') {
+        $Evidence.DeviceAssessmentDetails += ' VM is stopped or current power state is unknown; active protection is not assessed.'
+        return
+    }
+    switch -Regex ($Onboarding) {
+        '^(?i:Onboarded)$' {
+            if ($Health -ieq 'Active') { $Evidence.Status = 'Pass' }
+            elseif ($Health -in @('Inactive', 'ImpairedCommunication', 'NoSensorData', 'NoSensorDataImpairedCommunication')) { $Evidence.Status = 'Warning' }
+        }
+        '^(?i:CanBeOnboarded|Can be onboarded|NotOnboarded|Not onboarded|Offboarded)$' {
+            $Evidence.Onboarded = $false
+            $Evidence.Status = 'Fail'
+            $Evidence.DeviceAssessmentDetails += ' This reports missing MDE onboarding, not absence of any third-party EDR product.'
+        }
+        default { $Evidence.DeviceAssessmentDetails += ' Onboarding status is unsupported or unknown; manual validation is required.' }
+    }
+}
+
+function Update-AvdMdeDeviceInventory {
+    param([object[]]$SessionHosts, [object[]]$Subscriptions, [System.Collections.ArrayList]$Checks)
+    $OriginalContext = Get-AzContext -ErrorAction Stop
+    try {
+        foreach ($Tenant in @($Subscriptions | Group-Object TenantId)) {
+            $Hosts = @($SessionHosts | Where-Object {
+                $_.MDEDiscovery -and $_.ResourceId -and (($_.ResourceId -split '/')[2] -in @($Tenant.Group.Id))
+            } | Sort-Object ResourceId -Unique)
+            if ($Hosts.Count -eq 0) { continue }
+            $Token = $null
+            $TenantError = $null
+            try {
+                if (-not $Tenant.Name) { throw 'Tenant identity was not collected.' }
+                Set-AzContext -SubscriptionId $Tenant.Group[0].Id -ErrorAction Stop -WarningAction SilentlyContinue | Out-Null
+                $ActiveContext = Get-AzContext -ErrorAction Stop
+                if ($ActiveContext.Tenant.Id -ine $Tenant.Name -or $ActiveContext.Environment.Name -ne 'AzureCloud') { throw 'MDE hunting requires the matching tenant in Azure public cloud.' }
+                $Token = Get-GraphTokenString
+                if (-not $Token) { throw 'No Graph token available.' }
+            } catch { $TenantError = 'Could not establish the matching public-cloud tenant and Graph token for MDE hunting. No EDR absence is inferred.' }
+            try {
+                for ($Offset = 0; $Offset -lt $Hosts.Count; $Offset += 100) {
+                    $Batch = @($Hosts | Select-Object -Skip $Offset -First 100)
+                    $Result = if ($TenantError) { [PSCustomObject]@{ Ok = $false; Rows = @(); Error = $TenantError } } else {
+                        Invoke-AvdMdeHuntingQuery -ResourceIds @($Batch.ResourceId) -Token $Token
+                    }
+                    foreach ($SessionHost in $Batch) {
+                        Set-AvdMdeDeviceEvidence -SessionHost $SessionHost -QueryResult $Result
+                    }
+                }
+            } finally { $Token = $null }
+        }
+    } finally {
+        if ($OriginalContext) { Set-AzContext -Context $OriginalContext -ErrorAction Stop -WarningAction SilentlyContinue | Out-Null }
+    }
+    foreach ($SessionHost in $SessionHosts | Where-Object { $_.MDEDiscovery }) {
+        $Evidence = $SessionHost.MDEDiscovery
+        $SessionHost.MDEInstalled = $Evidence.Onboarded
+        foreach ($Check in $Checks | Where-Object { $_.Id -like 'SEC-MDE-*' -and $_.Evidence.ResourceId -ieq $SessionHost.ResourceId }) {
+            $Check.Status = $Evidence.Status
+            $Check.Details = "$($Evidence.DeviceAssessmentDetails) $($Evidence.Details)"
+        }
+    }
+}
+
+function Get-AvdAmaConfiguration {
+    param([string]$ResourceId, [hashtable]$RuleCache)
+    $Configuration = [PSCustomObject]@{
+        CollectionStatus = 'Error'
+        Associations = @()
+        Rules = @()
+        LogAnalyticsWorkspaceIds = @()
+        Errors = @()
+    }
+    try {
+        if ($ResourceId -notmatch '^/subscriptions/[^/]+/resourceGroups/[^/]+/providers/Microsoft\.Compute/virtualMachines/[^/]+$') {
+            throw 'A complete Azure VM resource ID is required for DCR association discovery.'
+        }
+        $Associations = @(Get-AvdArmList -Path "$ResourceId/providers/Microsoft.Insights/dataCollectionRuleAssociations?api-version=2024-03-11")
+        $Configuration.CollectionStatus = 'Complete'
+        foreach ($Association in $Associations) {
+            $Properties = $Association.properties
+            if (-not $Properties.dataCollectionRuleId -and -not $Properties.dataCollectionEndpointId) {
+                $Configuration.CollectionStatus = 'Partial'
+                $Configuration.Errors += 'Association returned neither a DCR nor a data collection endpoint ID.'
+                continue
+            }
+            $Configuration.Associations += [PSCustomObject]@{
+                Id = $Association.id
+                DataCollectionRuleId = $Properties.dataCollectionRuleId
+                DataCollectionEndpointId = $Properties.dataCollectionEndpointId
+                ProvisioningState = $Properties.provisioningState
+            }
+        }
+        $RuleIds = @($Configuration.Associations | ForEach-Object { $_.DataCollectionRuleId } | Where-Object { $_ } | Sort-Object -Unique)
+        foreach ($RuleId in $RuleIds) {
+            if (-not $RuleCache.ContainsKey($RuleId)) {
+                $RuleFacts = [PSCustomObject]@{
+                    Id = $RuleId
+                    CollectionStatus = 'Error'
+                    ProvisioningState = $null
+                    LogAnalyticsWorkspaceIds = @()
+                    PerformanceCounters = @()
+                    WindowsEventLogs = @()
+                    DataFlows = @()
+                    Error = $null
+                }
+                try {
+                    if ($RuleId -notmatch '^/subscriptions/[^/]+/resourceGroups/[^/]+/providers/Microsoft\.Insights/dataCollectionRules/[^/]+$') {
+                        throw 'Invalid data collection rule resource ID.'
+                    }
+                    $Response = Invoke-AzRestMethod -Path "${RuleId}?api-version=2024-03-11" -Method GET -ErrorAction Stop
+                    if (-not $Response -or $Response.StatusCode -ne 200) { throw "DCR read failed (HTTP $($Response.StatusCode))." }
+                    $Rule = ConvertFrom-Json -InputObject $Response.Content -ErrorAction Stop
+                    if (-not $Rule.properties -or $Rule.id -ine $RuleId) { throw 'DCR response is missing properties or does not match the requested rule.' }
+                    $RuleFacts.ProvisioningState = $Rule.properties.provisioningState
+                    $UsedDestinations = @($Rule.properties.dataFlows | ForEach-Object { $_.destinations } | Where-Object { $_ } | Sort-Object -Unique)
+                    $RuleFacts.LogAnalyticsWorkspaceIds = @($Rule.properties.destinations.logAnalytics |
+                        Where-Object { $_.name -in $UsedDestinations } |
+                        ForEach-Object { $_.workspaceResourceId } | Where-Object { $_ } | Sort-Object -Unique)
+                    $RuleFacts.PerformanceCounters = @($Rule.properties.dataSources.performanceCounters | Where-Object { $_ } | ForEach-Object {
+                        [PSCustomObject]@{ Streams = @($_.streams); CounterSpecifiers = @($_.counterSpecifiers); SamplingFrequencyInSeconds = $_.samplingFrequencyInSeconds }
+                    })
+                    $RuleFacts.WindowsEventLogs = @($Rule.properties.dataSources.windowsEventLogs | Where-Object { $_ } | ForEach-Object {
+                        [PSCustomObject]@{ Streams = @($_.streams); XPathQueries = @($_.xPathQueries) }
+                    })
+                    $RuleFacts.DataFlows = @($Rule.properties.dataFlows | Where-Object { $_ } | ForEach-Object {
+                        [PSCustomObject]@{ Streams = @($_.streams); Destinations = @($_.destinations); OutputStream = $_.outputStream; HasTransform = [bool]$_.transformKql }
+                    })
+                    $RuleFacts.CollectionStatus = 'Complete'
+                } catch { $RuleFacts.Error = $_.Exception.Message }
+                $RuleCache[$RuleId] = $RuleFacts
+            }
+            $RuleFacts = $RuleCache[$RuleId]
+            $Configuration.Rules += $RuleFacts
+            if ($RuleFacts.CollectionStatus -ne 'Complete') {
+                $Configuration.CollectionStatus = 'Partial'
+                $Configuration.Errors += "$RuleId : $($RuleFacts.Error)"
+            }
+            $Configuration.LogAnalyticsWorkspaceIds += $RuleFacts.LogAnalyticsWorkspaceIds
+        }
+        $Configuration.LogAnalyticsWorkspaceIds = @($Configuration.LogAnalyticsWorkspaceIds | Sort-Object -Unique)
+    } catch {
+        $Configuration.CollectionStatus = 'Error'
+        $Configuration.Errors += $_.Exception.Message
+    }
+    return $Configuration
+}
+
+function Update-AvdAmaHeartbeats {
+    param([object[]]$SessionHosts, [System.Collections.ArrayList]$Checks)
+    $WorkspaceHosts = @{}
+    $UniqueHosts = @($SessionHosts | Where-Object { $_.AMADiscovery } | Sort-Object ResourceId -Unique)
+    foreach ($SessionHost in $UniqueHosts) {
+        $Ama = $SessionHost.AMADiscovery
+        $Ama.Heartbeats = @()
+        $Ama.RuntimeHealth = 'NotAssessed'
+        foreach ($WorkspaceId in @($Ama.Configuration.LogAnalyticsWorkspaceIds)) {
+            if (-not $WorkspaceHosts.ContainsKey($WorkspaceId)) { $WorkspaceHosts[$WorkspaceId] = @() }
+            $WorkspaceHosts[$WorkspaceId] += $SessionHost
+        }
+    }
+    $OriginalContext = Get-AzContext -ErrorAction Stop
+    try {
+        foreach ($WorkspaceId in $WorkspaceHosts.Keys) {
+            $Hosts = @($WorkspaceHosts[$WorkspaceId])
+            for ($Offset = 0; $Offset -lt $Hosts.Count; $Offset += 100) {
+                $Batch = @($Hosts | Select-Object -Skip $Offset -First 100)
+                $ResourceIds = @($Batch | ForEach-Object { $_.ResourceId.ToLowerInvariant() })
+                $ResourceJson = ConvertTo-Json -InputObject $ResourceIds -Compress
+                $Query = "let avdResources = dynamic($ResourceJson); Heartbeat | where TimeGenerated > ago(24h) | where Category == 'Azure Monitor Agent' | where tolower(_ResourceId) in (avdResources) | summarize LastSeen = max(TimeGenerated) by ResourceId = tolower(_ResourceId) | extend AgeMinutes = datetime_diff('minute', now(), LastSeen)"
+                $QueryResult = Invoke-AvdLaQuery -WorkspaceResourceId $WorkspaceId -Query $Query -TimespanDays 1
+                foreach ($SessionHost in $Batch) {
+                    $Observation = [PSCustomObject]@{
+                        WorkspaceResourceId = $WorkspaceId
+                        QueryStatus = if ($QueryResult.Ok) { 'Complete' } else { 'Error' }
+                        State = 'NotAssessed'
+                        LastSeen = $null
+                        AgeMinutes = $null
+                        LookbackHours = 24
+                        FreshnessMinutes = 15
+                        Error = $QueryResult.Error
+                    }
+                    if ($QueryResult.Ok) {
+                        $Rows = @($QueryResult.Rows | Where-Object { $_.ResourceId -ieq $SessionHost.ResourceId })
+                        if ($Rows.Count -eq 1 -and $null -ne $Rows[0].AgeMinutes -and $Rows[0].LastSeen) {
+                            $Age = 0.0
+                            if ([double]::TryParse([string]$Rows[0].AgeMinutes, [System.Globalization.NumberStyles]::Float, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$Age) -and $Age -ge 0) {
+                                $Observation.LastSeen = [string]$Rows[0].LastSeen
+                                $Observation.AgeMinutes = $Age
+                                $Observation.State = if ($Age -le 15) { 'RecentHeartbeat' } else { 'StaleHeartbeat' }
+                            } else {
+                                $Observation.QueryStatus = 'Error'
+                                $Observation.Error = 'Heartbeat age is invalid or in the future.'
+                            }
+                        } elseif ($Rows.Count -eq 0) {
+                            $Observation.State = 'NoHeartbeatInWindow'
+                        } else {
+                            $Observation.QueryStatus = 'Error'
+                            $Observation.Error = 'Heartbeat query returned malformed or duplicate VM rows.'
+                        }
+                    }
+                    $SessionHost.AMADiscovery.Heartbeats += $Observation
+                }
+            }
+        }
+    } finally {
+        if ($OriginalContext) { Set-AzContext -Context $OriginalContext -ErrorAction Stop -WarningAction SilentlyContinue | Out-Null }
+    }
+    foreach ($SessionHost in $UniqueHosts) {
+        $Ama = $SessionHost.AMADiscovery
+        $Observed = @($Ama.Heartbeats)
+        if (@($Observed | Where-Object { $_.State -eq 'RecentHeartbeat' }).Count -gt 0) {
+            $Ama.RuntimeHealth = 'RecentHeartbeatObserved'
+        } elseif (@($Observed | Where-Object { $_.QueryStatus -eq 'Error' }).Count -gt 0 -or $Ama.Configuration.CollectionStatus -ne 'Complete') {
+            $Ama.RuntimeHealth = 'NotAssessed'
+        } elseif ($Observed.Count -eq 0) {
+            $Ama.RuntimeHealth = 'NoLogAnalyticsDestination'
+        } elseif ($SessionHost.PowerStateCode -in @('PowerState/deallocated', 'PowerState/stopped', 'PowerState/deallocating', 'PowerState/stopping')) {
+            $Ama.RuntimeHealth = 'NotAssessedVmStopped'
+        } elseif ($SessionHost.PowerStateCode -ine 'PowerState/running') {
+            $Ama.RuntimeHealth = 'NotAssessedPowerStateUnknown'
+        } else {
+            $Ama.RuntimeHealth = 'NoRecentHeartbeatObserved'
+        }
+        $WorkspaceSummary = @($Observed | ForEach-Object { "$($_.WorkspaceResourceId): $($_.State)$(if ($_.Error) { " ($($_.Error))" })" }) -join '; '
+        foreach ($Check in $Checks | Where-Object { $_.Id -like 'MON-AMA-*' -and $_.Evidence.ResourceId -ieq $SessionHost.ResourceId }) {
+            $Check.Details = "$($Ama.Details) DCR discovery: $($Ama.Configuration.CollectionStatus); associated rules: $($Ama.Configuration.Rules.Count); runtime evidence: $($Ama.RuntimeHealth). $WorkspaceSummary"
+            if ($Ama.Configuration.Errors.Count -gt 0) { $Check.Details += " DCR errors: $($Ama.Configuration.Errors -join '; ')" }
+        }
     }
 }
 
@@ -408,6 +991,9 @@ function Invoke-AvdLaQuery {
         $CustId = if ($Ws.CustomerId -and $Ws.CustomerId.Guid) { $Ws.CustomerId.Guid } else { "$($Ws.CustomerId)" }
         if (-not $CustId) { return @{ Ok = $false; Error = "Workspace $WsName has no CustomerId"; Rows = @() } }
         $Res = Invoke-AzOperationalInsightsQuery -WorkspaceId $CustId -Query $Query -Timespan (New-TimeSpan -Days $TimespanDays) -ErrorAction Stop
+        if (-not $Res -or $Res.Error -or $null -eq $Res.Results) {
+            return @{ Ok = $false; Error = "Log Analytics returned an error or incomplete result: $($Res.Error)"; Rows = @() }
+        }
         return @{ Ok = $true; Error = $null; Rows = @($Res.Results) }
     } catch {
         return @{ Ok = $false; Error = $_.Exception.Message; Rows = @() }
@@ -655,6 +1241,10 @@ $AllChecks = [System.Collections.ArrayList]::new()
 
 # Log Analytics workspace resource IDs harvested from host-pool diagnostic settings (feeds MON-SIEM / MON-012).
 $LAWorkspaceIds = @{}
+$AmaEvidenceCache = @{}
+$MdeEvidenceCache = @{}
+$AmaRuleCache = @{}
+$StorageSkuCache = @{}
 
 foreach ($SubId in $SubscriptionId) {
     Write-Status "Subscription: $SubId" -Level 'SECTION'
@@ -899,48 +1489,52 @@ foreach ($SubId in $SubscriptionId) {
 
             # ─── CHECK: Host Pool Private Link (SEC-024) ───
             try {
-                $HPResource = Get-AzResource -ResourceId $HP.Id -ErrorAction SilentlyContinue
+                $HPResource = Get-AzResource -ResourceId $HP.Id -ExpandProperties -ErrorAction Stop
+                if (-not $HPResource -or -not $HPResource.Properties) { throw 'Host pool resource properties were not returned.' }
                 $HPPrivateEndpoints = if ($HPResource -and $HPResource.Properties.privateEndpointConnections) {
                     @($HPResource.Properties.privateEndpointConnections)
                 } else { @() }
                 [void]$AllChecks.Add((New-CheckResult -Id "SEC-HPPL-$($HP.Name)" `
                     -Category 'Security' -Name 'Host Pool Private Link' `
                     -Description 'Private Link is an optional isolation control for environments requiring private-only AVD control-plane access' `
-                    -Status $(if ($HPPrivateEndpoints.Count -gt 0) { 'Pass' } else { 'N/A' }) `
+                    -Status 'Error' `
                     -Severity 'Medium' `
-                    -Details "PrivateEndpoints: $($HPPrivateEndpoints.Count)$(if ($HPPrivateEndpoints.Count -eq 0) { ' (optional; public AVD endpoints remain Microsoft-managed and TLS-protected)' })" `
+                    -Details "PrivateEndpoints: $($HPPrivateEndpoints.Count). Applicability not assessed: confirm whether private-only AVD access is required. Endpoint count alone does not verify approval, public-access settings, DNS, or connectivity." `
                     -Recommendation 'Consider AVD Private Link only when policy requires private-only control-plane access and clients have connectivity through peering, VPN, or ExpressRoute.' `
                     -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/private-link-overview' `
-                    -Evidence @{ HostPool = $HP.Name; PECount = $HPPrivateEndpoints.Count }))
+                    -Evidence @{ HostPool = $HP.Name; PECount = $HPPrivateEndpoints.Count; Applicability = 'Unknown'; CollectionStatus = 'Complete'; AssessmentBasis = 'InventoryOnly' }))
             } catch {
                 [void]$AllChecks.Add((New-CheckResult -Id "SEC-HPPL-$($HP.Name)" `
                     -Category 'Security' -Name 'Host Pool Private Link' `
-                    -Description 'AVD host pools should use Private Link for control-plane traffic' `
+                    -Description 'Private Link is optional; applicability requires confirmation of private-access requirements' `
                     -Status 'Error' -Severity 'Medium' `
                     -Details "Could not assess host pool Private Link: $($_.Exception.Message)" `
-                    -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/private-link-overview'))
+                    -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/private-link-overview' `
+                    -Evidence @{ HostPool = $HP.Name; Applicability = 'Unknown'; CollectionStatus = 'Error' }))
             }
 
             # ─── CHECK: Private Link / Private Endpoints (NET-005) — reuses HP privateEndpointConnections ───
             try {
-                $HPRes2 = Get-AzResource -ResourceId $HP.Id -ErrorAction SilentlyContinue
+                $HPRes2 = Get-AzResource -ResourceId $HP.Id -ExpandProperties -ErrorAction Stop
+                if (-not $HPRes2 -or -not $HPRes2.Properties) { throw 'Host pool resource properties were not returned.' }
                 $HPPE = if ($HPRes2 -and $HPRes2.Properties.privateEndpointConnections) { @($HPRes2.Properties.privateEndpointConnections) } else { @() }
                 [void]$AllChecks.Add((New-CheckResult -Id "NET-PL-$($HP.Name)" `
                     -Category 'Networking' -Name 'Private Link / Private Endpoints' `
                     -Description 'Private Link is an optional architecture pattern for private-only AVD control-plane access' `
-                    -Status $(if ($HPPE.Count -gt 0) { 'Pass' } else { 'N/A' }) `
+                    -Status 'Error' `
                     -Severity 'Medium' `
-                    -Details "HostPool $($HP.Name): privateEndpointConnections: $($HPPE.Count)$(if ($HPPE.Count -eq 0) { ' (optional; no private-access requirement identified)' })" `
+                    -Details "HostPool $($HP.Name): privateEndpointConnections: $($HPPE.Count). Applicability not assessed: confirm whether private-only AVD access is required. Endpoint count alone does not verify approval, public-access settings, DNS, or connectivity." `
                     -Recommendation 'Use AVD Private Link when policy requires private-only feed, broker, or gateway access. Validate DNS, routing, and client connectivity through peering, VPN, or ExpressRoute before adoption.' `
                     -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/private-link-overview' `
-                    -Evidence @{ HostPool = $HP.Name; PECount = $HPPE.Count }))
+                    -Evidence @{ HostPool = $HP.Name; PECount = $HPPE.Count; Applicability = 'Unknown'; CollectionStatus = 'Complete'; AssessmentBasis = 'InventoryOnly' }))
             } catch {
                 [void]$AllChecks.Add((New-CheckResult -Id "NET-PL-$($HP.Name)" `
                     -Category 'Networking' -Name 'Private Link / Private Endpoints' `
                     -Description 'Private Link is an optional architecture pattern for private-only AVD control-plane access' `
                     -Status 'Error' -Severity 'Medium' `
                     -Details "Could not assess Private Link: $($_.Exception.Message)" `
-                    -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/private-link-overview'))
+                        -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/private-link-overview' `
+                        -Evidence @{ HostPool = $HP.Name; Applicability = 'Unknown'; CollectionStatus = 'Error' }))
             }
 
             # ─── CHECK: Session Host Update feature (SH-020) — GA June 2026, automated management ───
@@ -1058,8 +1652,6 @@ foreach ($SubId in $SubscriptionId) {
                 $ExtList = @()
                 $SHJoinType = 'Unknown'
                 $HasTrustedLaunch = $false
-                $HasAMAExt = $false
-                $HasMDEExt = $false
                 # Prefer instance-view extensions (running VMs); fall back to ARM model extensions (deallocated VMs)
                 $RawExts = if ($VMInstance -and $VMInstance.Extensions) {
                     $VMInstance.Extensions
@@ -1084,18 +1676,21 @@ foreach ($SubId in $SubscriptionId) {
                     # plus Entra Connect sync, which is not visible from VM extensions), so report both (C-8).
                     $SHJoinType = if ($HasAADExt -and $HasDJExt) { 'Hybrid' } elseif ($HasAADExt) { 'Entra ID' } elseif ($HasDJExt) { 'AD DS or Hybrid' } else { 'Unknown' }
                     $JoinDataAvailable = $SHJoinType -ne 'Unknown'
-                    $HasAMAExt = @($ExtList | Where-Object { $_ -match '(^|[./])AzureMonitorWindowsAgent$' }).Count -gt 0
-                    # MicrosoftMonitoringAgent (MMA) was retired Aug 2024 and is NOT MDE - only MDE.Windows counts (B-4).
-                    $HasMDEExt = @($ExtList | Where-Object { $_ -match '(^|[./])MDE\.Windows$' }).Count -gt 0
                 }
                 if ($VMModel -and $VMModel.SecurityProfile) {
                     $HasTrustedLaunch = $VMModel.SecurityProfile.SecurityType -eq 'TrustedLaunch'
+                }
+                $AmaEvidence = Get-AvdAmaEvidence -ResourceId $SH.ResourceId -Cache $AmaEvidenceCache
+                $MdeEvidence = Get-AvdMdeEvidence -ResourceId $SH.ResourceId -Cache $MdeEvidenceCache
+                if (-not $AmaEvidence.Configuration) {
+                    $AmaEvidence.Configuration = Get-AvdAmaConfiguration -ResourceId $SH.ResourceId -RuleCache $AmaRuleCache
                 }
 
                 $SHObj = [PSCustomObject]@{
                     HostPoolName        = $HP.Name
                     Name                = $SH.Name
                     ResourceId          = $SH.ResourceId
+                    AzureVmId           = if ($VMModel -and $VMModel.Id -ieq $SH.ResourceId) { $VMModel.VmId } else { $null }
                     ResourceGroup       = $VMRG
                     Location            = if ($VMModel) { $VMModel.Location } else { $HP.Location }
                     Status              = [string]$SH.Status
@@ -1121,13 +1716,16 @@ foreach ($SubId in $SubscriptionId) {
                     } else { $null }
                     TrustedLaunch       = $HasTrustedLaunch
                     PowerState          = if ($VMInstance) { ($VMInstance.Statuses | Where-Object Code -like 'PowerState/*').DisplayStatus } else { $null }
+                    PowerStateCode      = if ($VMInstance -and $VMInstance.Id -ieq $SH.ResourceId) { @($VMInstance.Statuses | Where-Object Code -like 'PowerState/*' | Select-Object -First 1).Code } else { $null }
                     AcceleratedNetworking = $null
                     AvailabilityZone    = if ($VMModel) { $VMModel.Zones } else { $null }
                     ImageReference      = if ($VMModel) { $VMModel.StorageProfile.ImageReference } else { $null }
                     JoinType            = $SHJoinType
                     JoinDataAvailable   = $JoinDataAvailable
-                    AMAInstalled        = $HasAMAExt
-                    MDEInstalled        = $HasMDEExt
+                    AMAInstalled        = $AmaEvidence.Installed
+                    AMADiscovery        = $AmaEvidence
+                    MDEInstalled        = $MdeEvidence.Onboarded
+                    MDEDiscovery        = $MdeEvidence
                     Extensions          = $ExtList
                     Tags                = if ($VMModel) { $VMModel.Tags } else { $null }
                     # NIC facts cached here (E-7) so the networking pass need not re-fetch VM + NIC.
@@ -1431,24 +2029,26 @@ foreach ($SubId in $SubscriptionId) {
                     -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/prerequisites#identity'))
 
                 # ─── CHECK: Azure Monitor Agent (AMA) ───
-                [void]$AllChecks.Add((New-CheckResult -Id "MON-AMA-$VMName" `
+                [void]$AllChecks.Add((New-CheckResult -Id "MON-AMA-$(($SH.ResourceId -split '/')[2])-$VMRG-$VMName" `
                     -Category 'Monitoring' -Name 'Azure Monitor Agent Installed' `
-                    -Description 'AMA should be installed on session hosts for AVD Insights telemetry' `
-                    -Status $(if ($SHObj.AMAInstalled) { 'Pass' } else { 'Fail' }) `
+                    -Description 'Verify the Windows AMA extension publisher, type, and provisioning state on the session host VM' `
+                    -Status $AmaEvidence.Status `
                     -Severity 'Medium' `
-                    -Details "AMA Extension: $(if ($SHObj.AMAInstalled) { 'Installed' } else { 'Not found' })" `
-                    -Recommendation 'Install Azure Monitor Agent for AVD Insights and performance monitoring.' `
-                    -Reference 'https://learn.microsoft.com/en-us/azure/azure-monitor/agents/agents-overview'))
+                    -Details $AmaEvidence.Details `
+                    -Recommendation 'Resolve extension discovery or provisioning failures; verify VM-associated DCRs and AMA heartbeat independently before claiming telemetry coverage.' `
+                    -Reference 'https://learn.microsoft.com/en-us/azure/azure-monitor/agents/azure-monitor-agent-troubleshoot-windows-vm' `
+                    -Evidence $AmaEvidence))
 
                 # ─── CHECK: Endpoint Protection (MDE) ───
-                [void]$AllChecks.Add((New-CheckResult -Id "SEC-MDE-$VMName" `
+                [void]$AllChecks.Add((New-CheckResult -Id "SEC-MDE-$(($SH.ResourceId -split '/')[2])-$VMRG-$VMName" `
                     -Category 'Security' -Name 'Endpoint Protection (MDE)' `
-                    -Description 'Microsoft Defender for Endpoint should be deployed on session hosts' `
-                    -Status $(if ($SHObj.MDEInstalled) { 'Pass' } else { 'Error' }) `
+                    -Description 'Verify Microsoft Defender for Endpoint onboarding and EDR sensor health separately from deployment extensions' `
+                    -Status $MdeEvidence.Status `
                     -Severity 'High' `
-                    -Details "$(if ($SHObj.MDEInstalled) { 'MDE.Windows extension installed' } else { 'MDE.Windows extension not found; extension inventory cannot prove whether MDE was onboarded via Intune, GPO, script, or Defender for Cloud.' })" `
-                    -Recommendation 'Deploy Microsoft Defender for Endpoint via VM extension, Intune, or Defender for Cloud auto-provisioning.' `
-                    -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/security-recommendations'))
+                    -Details "$($MdeEvidence.DeviceAssessmentDetails) $($MdeEvidence.Details)" `
+                    -Recommendation 'Validate onboarding and sensor health in Defender for Endpoint for this VM; do not equate deployment extension presence or antivirus status with EDR protection.' `
+                    -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/security-recommendations' `
+                    -Evidence $MdeEvidence))
 
                 # ─── CHECK: OS End-of-Support Risk (SH-029) ───
                 if ($SHObj.ImageReference) {
@@ -2596,6 +3196,7 @@ foreach ($SharedSubscription in $Discovery.Subscriptions) {
                 LikelyFSLogix     = $IsFSLogix
                 FSLogixEvidence   = $FSLogixReasons
                 Replication       = $SA.Sku.Name  # LRS, ZRS, GRS, etc.
+                ZrsAvailability   = $null
                 LargeFileShares   = $SA.LargeFileSharesState
                 Tags              = $SA.Tags
             }
@@ -2651,16 +3252,17 @@ foreach ($SharedSubscription in $Discovery.Subscriptions) {
                     -Details "MinTLS: $($SA.MinimumTlsVersion)"))
 
                 # CHECK: Storage replication for DR
-                $RepType = $SA.Sku.Name
+                $ReplicationAssessment = Get-AvdStorageReplicationAssessment -StorageAccount $SA -Cache $StorageSkuCache
+                $SAObj.ZrsAvailability = $ReplicationAssessment.Evidence.ZrsAvailability
                 [void]$AllChecks.Add((New-CheckResult -Id "BCDR-STOR-$($SA.StorageAccountName)" `
                     -Category 'BCDR' -Name 'Profile Storage Replication' `
-                    -Description 'FSLogix storage should use ZRS or GRS for resilience' `
-                    -Status $(if ($RepType -match 'ZRS|GRS|GZRS') { 'Pass' }
-                              elseif ($RepType -match 'LRS') { 'Warning' } else { 'Warning' }) `
+                    -Description 'Assess FSLogix storage redundancy with region, account kind, SKU family, and subscription availability constraints' `
+                    -Status $ReplicationAssessment.Status `
                     -Severity 'Medium' `
-                    -Details "Replication: $RepType" `
-                    -Recommendation 'Use ZRS for zone-level resilience or GRS for region-level DR.' `
-                    -Reference 'https://learn.microsoft.com/en-us/azure/storage/common/storage-redundancy'))
+                    -Details $ReplicationAssessment.Details `
+                    -Recommendation $ReplicationAssessment.Recommendation `
+                    -Reference 'https://learn.microsoft.com/en-us/azure/storage/common/storage-redundancy' `
+                    -Evidence $ReplicationAssessment.Evidence))
 
                 # CHECK: Premium tier for profiles
                 [void]$AllChecks.Add((New-CheckResult -Id "PROF-TIER-$($SA.StorageAccountName)" `
@@ -3477,6 +4079,15 @@ $WclAppId     = $AvdAppIds['Windows Cloud Login']
 $MrdAppId     = $AvdAppIds['Microsoft Remote Desktop']
 
 $GraphToken = Get-GraphTokenString
+if ($IncludeMdeDeviceChecks) {
+    Write-Status 'Defender for Endpoint device evidence' -Level 'SECTION'
+    try {
+        Update-AvdMdeDeviceInventory -SessionHosts $Discovery.Inventory.SessionHosts -Subscriptions $Discovery.Subscriptions -Checks $AllChecks
+    } catch {
+        $Discovery.Errors += "MDE device evidence collection could not complete: $($_.Exception.GetType().Name)."
+        Write-Status $Discovery.Errors[-1] -Level 'WARN'
+    }
+}
 $GraphPermMsg = 'insufficient Graph permissions — grant Policy.Read.All / AuditLog.Read.All for identity checks'
 
 # --- Conditional Access derived checks: IAM-002 (MFA), IAM-003 (CA), IAM-011 (WCL), IAM-010 (token protection) ---
@@ -3926,6 +4537,12 @@ if ($WsIds.Count -eq 0) {
 # Reuses the workspace resource IDs harvested from host-pool diagnostic settings.
 # ═══════════════════════════════════════════════════════════════════════════
 Write-Status "AVD Insights (Log Analytics KQL)" -Level 'SECTION'
+try {
+    Update-AvdAmaHeartbeats -SessionHosts $Discovery.Inventory.SessionHosts -Checks $AllChecks
+} catch {
+    $Discovery.Errors += "AMA heartbeat discovery failed: $($_.Exception.Message)"
+    Write-Status $Discovery.Errors[-1] -Level 'WARN'
+}
 $KqlWsIds = @($LAWorkspaceIds.Keys)
 $OpInsightsPresent = [bool](Get-Module -ListAvailable -Name Az.OperationalInsights -ErrorAction SilentlyContinue)
 
