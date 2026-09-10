@@ -3,15 +3,16 @@
     Downloads Microsoft Store Stub App payloads via winget for AVD Golden Image baking.
 
 .DESCRIPTION
-    Fixes the well-known "Stub App" provisioning issue on multi-session / shared
-    Windows images where some inbox Store apps ship as stubs and never finish
-    provisioning for new users. The workaround is to pre-stage the offline
-    .msixbundle / .appxbundle + license files inside the image and side-load them
-    during Packer image build (or first-boot script).
+    Downloads full Store app payloads for offline provisioning on reference
+    images, including images where inbox apps are initially provisioned as
+    stubs. Stage the packages, dependencies, and licenses inside the image and
+    provision them during image build. Validate per-user registration and launch
+    on the target Windows build; downloading alone does not repair existing users.
 
     This script is intended to be run LOCALLY on an interactive workstation,
-    signed in to the Microsoft Store with an Entra ID account that has rights
-    to acquire the listed packages. It is NOT a session-host runtime script.
+    with WinGet Entra ID authentication when retrieving offline licenses.
+    The account needs a supported role (License Administrator, User
+    Administrator, or Global Administrator). It is NOT a host runtime script.
 
     Workflow:
       1. Loads the app list from a JSON manifest (default: .\StubApps.json).
@@ -37,11 +38,15 @@
     winget source to query. Default: msstore. Override only if you have a
     private REST source mirroring Store packages.
 
+.PARAMETER SkipLicense
+    Omit offline license retrieval. Removes the license authorization requirement.
+    Use only for apps that permit provisioning without an offline license.
+
 .NOTES
     File:    avd/scripts/Get-StubAppPayloads.ps1
     Author:  Anton Romanyuk
     Version: 1.0.0
-    Context: Run locally with Entra ID auth (interactive). Requires winget 1.6+.
+    Context: Run locally (interactive). Requires winget with download support.
 
 .DISCLAIMER
     This script is provided "AS IS" with no warranties and confers no rights.
@@ -61,13 +66,17 @@
 
 [CmdletBinding()]
 param(
+    [ValidateNotNullOrEmpty()]
     [string]$DownloadPath  = 'C:\Temp\AVD_Stubs_Payload',
+    [ValidateNotNullOrEmpty()]
     [string]$ManifestPath  = (Join-Path $PSScriptRoot 'StubApps.json'),
     [string]$Architecture,
-    [string]$Source
+    [string]$Source,
+    [switch]$SkipLicense
 )
 
 $ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $false
 
 # -----------------------------------------------------------------------------
 # HELPERS
@@ -111,11 +120,17 @@ function Test-Prerequisite {
     before attempting any download. Required because this script depends
     entirely on `winget download --source msstore`.
 #>
-    $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
+    $winget = Get-Command winget.exe -CommandType Application -ErrorAction SilentlyContinue
     if (-not $winget) {
         throw "winget.exe not found in PATH. Install App Installer from the Microsoft Store."
     }
     Write-Log "winget located: $($winget.Source)" -Level INFO
+    $helpText = (& $winget.Source download --help | Out-String)
+    if ($LASTEXITCODE -ne 0 -or $helpText -notmatch '--download-directory' -or
+        $helpText -notmatch '--skip-license') {
+        throw 'Update App Installer: winget must support download and --skip-license.'
+    }
+    return $winget.Source
 }
 
 function Read-StubManifest {
@@ -142,8 +157,23 @@ function Read-StubManifest {
     catch {
         throw "Failed to parse manifest '$Path': $($_.Exception.Message)"
     }
-    if (-not $json.apps -or $json.apps.Count -eq 0) {
-        throw "Manifest '$Path' contains no apps."
+    if ($json.apps -isnot [array] -or $json.apps.Count -eq 0) {
+        throw "Manifest '$Path' must contain a nonempty apps array."
+    }
+    $ids = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $names = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($app in $json.apps) {
+        if ($app.Id -isnot [string] -or [string]::IsNullOrWhiteSpace($app.Id) -or $app.Id -match '^\s|\s$|["\r\n]') {
+            throw 'Every manifest app must have a nonempty string Id without quotes or surrounding whitespace.'
+        }
+        if ($app.Name -isnot [string] -or [string]::IsNullOrWhiteSpace($app.Name) -or
+            $app.Name.IndexOfAny([IO.Path]::GetInvalidFileNameChars()) -ge 0 -or
+            $app.Name -match '(^\s|[. ]$|^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])($|\.))') {
+            throw "Manifest app '$($app.Id)' must have a valid Windows folder name."
+        }
+        if (-not $ids.Add($app.Id) -or -not $names.Add($app.Name)) {
+            throw "Duplicate manifest app Id or Name: $($app.Id) / $($app.Name)"
+        }
     }
     return $json
 }
@@ -155,7 +185,6 @@ Write-Log "*** AVD Stub App Payload Downloader ***" -Level HEADER
 Write-Log "Manifest      : $ManifestPath"
 Write-Log "DownloadPath  : $DownloadPath"
 
-Test-Prerequisite
 $manifest = Read-StubManifest -Path $ManifestPath
 
 # Resolve effective defaults: explicit param > manifest defaults > hard default
@@ -165,6 +194,14 @@ $effectiveSource = if ($Source)       { $Source }
 $effectiveArch   = if ($Architecture) { $Architecture }
                    elseif ($manifest.defaults.architecture) { $manifest.defaults.architecture }
                    else                                     { 'x64' }
+
+if ($effectiveArch -notin @('x86', 'x64', 'arm', 'arm64')) {
+    throw "Unsupported architecture: $effectiveArch"
+}
+if ($effectiveSource -isnot [string] -or [string]::IsNullOrWhiteSpace($effectiveSource)) {
+    throw 'Source must be a nonempty string.'
+}
+$wingetPath = Test-Prerequisite
 
 Write-Log "Source        : $effectiveSource"
 Write-Log "Architecture  : $effectiveArch"
@@ -180,26 +217,31 @@ foreach ($app in $manifest.apps) {
     Write-Log "--- Processing: $($app.Name) ($($app.Id)) ---" -Level HEADER
 
     $targetDir = Join-Path $DownloadPath $app.Name
-    if (-not (Test-Path -LiteralPath $targetDir)) {
-        New-Item -Path $targetDir -ItemType Directory -Force | Out-Null
-    }
 
     $wingetArgs = @(
         'download'
         '--id',                 $app.Id
+        '--exact'
         '--download-directory', $targetDir
         '--source',             $effectiveSource
         '--architecture',       $effectiveArch
         '--accept-package-agreements'
         '--accept-source-agreements'
-        '--skip-license'
     )
+    if ($SkipLicense) { $wingetArgs += '--skip-license' }
 
-    Write-Log "Running: winget $($wingetArgs -join ' ')"
-    $proc = Start-Process -FilePath 'winget.exe' -ArgumentList $wingetArgs `
-                          -Wait -NoNewWindow -PassThru
+    $exitCode = -1
+    try {
+        New-Item -Path $targetDir -ItemType Directory -Force | Out-Null
+        Write-Log "Running: winget $($wingetArgs -join ' ')"
+        & $wingetPath @wingetArgs | Out-Host
+        $exitCode = $LASTEXITCODE
+    }
+    catch {
+        Write-Log "Download '$($app.Name)' failed: $($_.Exception.Message)" -Level ERROR
+    }
 
-    if ($proc.ExitCode -eq 0) {
+    if ($exitCode -eq 0) {
         Write-Log "Downloaded -> $targetDir" -Level SUCCESS
         $results.Add([pscustomobject]@{
             Name     = $app.Name
@@ -210,11 +252,11 @@ foreach ($app in $manifest.apps) {
         })
     }
     else {
-        Write-Log "winget exited with code $($proc.ExitCode) for $($app.Name)" -Level ERROR
+        Write-Log "winget exited with code $exitCode for $($app.Name)" -Level ERROR
         $results.Add([pscustomobject]@{
             Name     = $app.Name
             Id       = $app.Id
-            ExitCode = $proc.ExitCode
+            ExitCode = $exitCode
             Status   = 'Failed'
             Path     = $targetDir
         })
@@ -224,8 +266,8 @@ foreach ($app in $manifest.apps) {
 # -----------------------------------------------------------------------------
 # SUMMARY
 # -----------------------------------------------------------------------------
-$ok   = ($results | Where-Object Status -EQ 'Success').Count
-$fail = ($results | Where-Object Status -EQ 'Failed').Count
+$ok   = @($results | Where-Object Status -EQ 'Success').Count
+$fail = @($results | Where-Object Status -EQ 'Failed').Count
 
 Write-Log "*** DOWNLOAD COMPLETE ***" -Level HEADER
 Write-Log "Succeeded: $ok / $($results.Count)" -Level $(if ($fail -eq 0) { 'SUCCESS' } else { 'WARN' })
@@ -235,7 +277,13 @@ if ($fail -gt 0) {
         Format-Table Name, Id, ExitCode -AutoSize | Out-String | Write-Host
 }
 
-Write-Log "Zip '$DownloadPath' and add it to your Packer file provisioner." -Level INFO
+if ($fail -eq 0) {
+    Write-Log "Zip '$DownloadPath' and add it to your Packer file provisioner." -Level INFO
+}
+else {
+    Write-Log 'Resolve failed downloads before using this payload tree in an image.' -Level WARN
+}
 
 # Emit results object for pipeline / programmatic callers
 $results
+if ($fail -gt 0) { exit 1 } else { exit 0 }

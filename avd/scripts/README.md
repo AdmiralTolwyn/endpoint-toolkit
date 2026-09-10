@@ -44,6 +44,107 @@ that output — each deploy stage mints its own fresh token in-stage instead
 | [Get-StubAppPayloads.ps1](Get-StubAppPayloads.ps1) | Downloads Microsoft Store Stub App offline payloads via `winget download --source msstore` for side-loading during Packer image build. App list is data-driven via [StubApps.json](StubApps.json). Run locally with Entra ID auth. |
 | [Install-AppxPayloads.ps1](Install-AppxPayloads.ps1) | Side-loads / re-provisions inbox AppX/MSIX packages from a local payload tree via `Add-AppxProvisionedPackage`. `-Mode Install` (default) for the stub-app fix; `-Mode UpdateProvisioned` to refresh built-in apps from a mounted FoD / Language ISO (legacy AIB workflow). Pairs with `Get-StubAppPayloads.ps1`. |
 
+#### Inbox App Manifest
+
+[StubApps.json](StubApps.json) contains 19 inbox or commonly preinstalled Store
+app candidates. This is a download catalog, not a recommended AVD application
+baseline: inbox inclusion varies by Windows release and image SKU. Trim the list
+to your image, particularly consumer apps such as Xbox and Phone Link. Store IDs
+were checked against Microsoft's product listings on 2026-09-10; a valid listing
+does not guarantee WinGet offline-download eligibility or AVD support.
+
+| App | Store ID / Verified Listing |
+|-----|-----------------------------|
+| Microsoft Photos | [9WZDNCRFJBH4](https://apps.microsoft.com/detail/9WZDNCRFJBH4) |
+| Windows Calculator | [9WZDNCRFHVN5](https://apps.microsoft.com/detail/9WZDNCRFHVN5) |
+| Windows Camera | [9WZDNCRFJBBG](https://apps.microsoft.com/detail/9WZDNCRFJBBG) |
+| Windows Clock | [9WZDNCRFJ3PR](https://apps.microsoft.com/detail/9WZDNCRFJ3PR) |
+| Windows Notepad | [9MSMLRH6LZF3](https://apps.microsoft.com/detail/9MSMLRH6LZF3) |
+| Paint | [9PCFS5B6T72H](https://apps.microsoft.com/detail/9PCFS5B6T72H) |
+| Snipping Tool | [9MZ95KL8MR0L](https://apps.microsoft.com/detail/9MZ95KL8MR0L) |
+| Windows Media Player | [9WZDNCRFJ3PT](https://apps.microsoft.com/detail/9WZDNCRFJ3PT) |
+| Windows Terminal | [9N0DX20HK701](https://apps.microsoft.com/detail/9N0DX20HK701) |
+| Microsoft Clipchamp | [9P1J8S7CCWWT](https://apps.microsoft.com/detail/9P1J8S7CCWWT) |
+| Quick Assist | [9P7BP5VNWKX5](https://apps.microsoft.com/detail/9P7BP5VNWKX5) |
+| Feedback Hub | [9NBLGGH4R32N](https://apps.microsoft.com/detail/9NBLGGH4R32N) |
+| Microsoft To Do | [9NBLGGH5R558](https://apps.microsoft.com/detail/9NBLGGH5R558) |
+| Phone Link | [9NMPJ99VJBWV](https://apps.microsoft.com/detail/9NMPJ99VJBWV) |
+| Windows Sound Recorder | [9WZDNCRFHWKN](https://apps.microsoft.com/detail/9WZDNCRFHWKN) |
+| Microsoft Sticky Notes | [9NBLGGH4QGHW](https://apps.microsoft.com/detail/9NBLGGH4QGHW) |
+| Xbox App | [9MV0B5HZVK9Z](https://apps.microsoft.com/detail/9MV0B5HZVK9Z) |
+| MSN Weather | [9WZDNCRFJ3Q2](https://apps.microsoft.com/detail/9WZDNCRFJ3Q2) |
+| Microsoft News | [9WZDNCRFHVFW](https://apps.microsoft.com/detail/9WZDNCRFHVFW) |
+
+Photos Legacy was replaced with current Photos. The former Dev Home entry was
+removed because its ID `XP89DCGQ3K6VLD` actually identifies
+[Microsoft PowerToys](https://apps.microsoft.com/detail/XP89DCGQ3K6VLD).
+Power Automate was also excluded from this AVD catalog: its verified Store ID is
+[9NFTCH6J7FHV](https://apps.microsoft.com/detail/9NFTCH6J7FHV), but Microsoft's
+[installation documentation](https://learn.microsoft.com/power-automate/desktop-flows/install)
+states that Windows multi-session is unsupported.
+
+#### Download and Provision
+
+Run the downloader locally in an interactive session with a current App Installer
+that supports `winget download` and `--skip-license`. Offline licenses are retrieved
+by default. WinGet authenticates an Entra ID account with License Administrator,
+User Administrator, or Global Administrator privileges for license retrieval;
+being signed in to the Store app alone is not the prerequisite check.
+
+```powershell
+.\Get-StubAppPayloads.ps1 -DownloadPath 'C:\BuildArtifacts\AVD Stubs'
+```
+
+Transfer the entire tree to the reference image. Keep one Store product per folder
+and retain its `Dependencies` subfolder. The installer recognizes FoD
+`<package-basename>.xml` and WinGet `<StoreId>_License.xml` licenses. Loose `.appx`
+and `.msix` applications are distinguished from frameworks by their embedded
+manifests, not by extension or license presence.
+
+Run provisioning elevated on the reference image, not your download workstation:
+
+```powershell
+.\Install-AppxPayloads.ps1 -SourcePath 'C:\BuildArtifacts\AVD Stubs' -LogDirectory 'C:\BuildArtifacts\Logs'
+```
+
+The installer requests `-StubPackageOption InstallFull` and passes each app's
+frameworks from the same directory or its descendants through
+`-DependencyPackagePath`. Use a payload set appropriate to the target OS and
+architecture; do not combine unrelated products or multiple releases in one app
+folder. DISM remains responsible for signature, version, and dependency validation.
+
+For FoD refreshes, add `-Mode UpdateProvisioned`. The installer compares embedded
+Identity Name with provisioned DisplayName exactly, ignoring case. It does not use
+the download filename or a name-prefix heuristic. Skipped apps do not cause their
+dependencies to be provisioned independently. This selects existing apps; it is
+not a version-newness check.
+
+**License behavior changed:** omission is now explicit on both scripts. Use
+`-SkipLicense` on the downloader and installer only for apps that permit offline
+provisioning without a license on the target edition. Missing licenses fail
+provisioning by default; ambiguous license files also fail. See
+[WinGet download](https://learn.microsoft.com/windows/package-manager/winget/download)
+and [DISM provisioning](https://learn.microsoft.com/powershell/module/dism/add-appxprovisionedpackage).
+
+Both scripts emit result objects and exit `1` on failures. An empty or
+framework-only installation tree also exits `1`. Validate provisioning and actual
+launch with a newly created user before publishing the image. This is not a
+guaranteed repair of existing users' registrations or a field-validated stub fix.
+
+#### Local Validation
+
+```powershell
+Invoke-Pester -Path .\avd\scripts\tests\AppxPayloads.Tests.ps1 -Output Detailed
+```
+
+Requires Pester 5. Tests create synthetic package archives and mock WinGet/DISM;
+they do not download apps or change Windows provisioning. The installer test copy
+is built from its parsed parameter block and statements, omitting only script-level
+requirements so no elevation is needed. Coverage includes both entry points,
+manifest validation, path arguments, licenses, package classification, update
+filtering, dependency isolation, logging-directory creation, and failure exits.
+Live Store acquisition and provisioning on an AVD image remain separate checks.
+
 ## Usage in Pipelines
 
 The update pipelines call these scripts in the order the stages actually run —

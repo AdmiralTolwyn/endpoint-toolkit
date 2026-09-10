@@ -4,11 +4,11 @@
 
 .DESCRIPTION
     Companion to Get-StubAppPayloads.ps1. Walks a payload root and provisions
-    every package it finds for all current and future users via DISM
+    application packages for new user profiles via DISM
     (`Add-AppxProvisionedPackage`). Designed to fix two recurring image-build
-    problems:
+    scenarios (validate provisioning and launch on your target image):
 
-      1. STUB APPS  - Some inbox Microsoft Store apps (Photos Legacy, Clock,
+    1. STUB APPS  - Some inbox Microsoft Store apps (Photos, Clock,
          Phone Link, Xbox, Sticky Notes, ...) ship as stubs and never finish
          provisioning for new users on multi-session / shared images. Fix is
          to pre-stage the offline payloads (via the companion downloader) and
@@ -25,8 +25,8 @@
         already present. Use this for the stub-app fix.
 
       -Mode UpdateProvisioned
-        Only provision a bundle when its package family name (or DisplayName
-        prefix) already exists in Get-AppxProvisionedPackage. Use this when
+        Only provision an app when its embedded Identity Name matches a
+        DisplayName in Get-AppxProvisionedPackage. Use this when
         refreshing inbox apps from a FoD/Language ISO so you don't accidentally
         add Store apps that were never part of the base image.
 
@@ -35,16 +35,14 @@
       <SourcePath>\
         <AppName-or-arch>\
           *.msixbundle | *.appxbundle | *.msix | *.appx   <- main package
-          *.xml                                            <- matching license
-                                                              (basename.xml)
-          *.appx                                           <- dependencies
-                                                              (Microsoft.VCLibs,
-                                                               Microsoft.UI.Xaml, ...)
+          <basename>.xml | <StoreId>_License.xml             <- license
+          Dependencies\*.appx | *.msix                      <- frameworks
 
     The script:
-      - Recursively discovers all bundles and dependency .appx files
-      - Installs dependency packages first (with -SkipLicense)
-      - Installs each bundle, attaching <basename>.xml license when present
+    - Discovers bundles and classifies loose apps/frameworks from manifests
+    - Passes frameworks beside/below each app via -DependencyPackagePath
+    - Requests InstallFull and attaches the matching license
+    - Requires explicit -SkipLicense when a main app has no license
       - Returns a result object per package and a summary at the end
 
 .PARAMETER SourcePath
@@ -55,11 +53,16 @@
 
 .PARAMETER Mode
     Install            -> provision every bundle (stub-app fix). Default.
-    UpdateProvisioned  -> only refresh bundles whose package family / display
-                          name already exists in Get-AppxProvisionedPackage.
+    UpdateProvisioned  -> only refresh apps whose embedded Identity Name
+                          already exists in Get-AppxProvisionedPackage.
 
 .PARAMETER LogDirectory
     Directory for the log file. Default: $env:TEMP.
+
+.PARAMETER SkipLicense
+    Allow provisioning main apps without a license when none is found. Use only
+    for apps that do not require an offline license on the target OS edition.
+    A matching license is always preferred when present.
 
 .NOTES
     File:    avd/scripts/Install-AppxPayloads.ps1
@@ -99,7 +102,10 @@ param(
     [ValidateSet('Install','UpdateProvisioned')]
     [string]$Mode = 'Install',
 
-    [string]$LogDirectory = $env:TEMP
+    [ValidateNotNullOrEmpty()]
+    [string]$LogDirectory = $env:TEMP,
+
+    [switch]$SkipLicense
 )
 
 $ErrorActionPreference = 'Stop'
@@ -145,11 +151,41 @@ function Write-Log {
 # DISCOVERY
 # -----------------------------------------------------------------------------
 
-# Bundle/main-package extensions, in priority order.
-$BundleExtensions = @('.msixbundle', '.appxbundle', '.msix')
+function Get-PackageMetadata {
+    param([Parameter(Mandatory)][System.IO.FileInfo]$Package)
 
-# A loose .appx that is NOT a main package (because no matching license) is
-# treated as a dependency (e.g. Microsoft.VCLibs.x64.14.00.Desktop.appx).
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive = [System.IO.Compression.ZipFile]::OpenRead($Package.FullName)
+    try {
+        $entry = $archive.GetEntry('AppxManifest.xml')
+        if (-not $entry) { $entry = $archive.GetEntry('AppxMetadata/AppxBundleManifest.xml') }
+        if (-not $entry) { throw "Package manifest not found: $($Package.FullName)" }
+        $stream = $entry.Open()
+        try {
+            $settings = [System.Xml.XmlReaderSettings]::new()
+            $settings.DtdProcessing = [System.Xml.DtdProcessing]::Prohibit
+            $settings.XmlResolver = $null
+            $reader = [System.Xml.XmlReader]::Create($stream, $settings)
+            try {
+                $document = [System.Xml.XmlDocument]::new()
+                $document.XmlResolver = $null
+                $document.Load($reader)
+            }
+            finally { $reader.Dispose() }
+        }
+        finally { $stream.Dispose() }
+        $identity = $document.DocumentElement.SelectSingleNode('*[local-name()="Identity"]')
+        if (-not $identity -or -not $identity.GetAttribute('Name')) {
+            throw "Package identity not found: $($Package.FullName)"
+        }
+        $framework = $document.DocumentElement.SelectSingleNode('*[local-name()="Properties"]/*[local-name()="Framework"]')
+        [pscustomobject]@{
+            Name = $identity.GetAttribute('Name')
+            IsFramework = $null -ne $framework -and $framework.InnerText -ieq 'true'
+        }
+    }
+    finally { $archive.Dispose() }
+}
 
 function Get-Payload {
 <#
@@ -157,9 +193,8 @@ function Get-Payload {
     Recursively discovers AppX/MSIX bundles and dependency .appx files under a root.
 .DESCRIPTION
     Walks $Root and partitions every file into two buckets:
-      * Bundles      - .msixbundle / .appxbundle / .msix (the main packages)
-      * Dependencies - loose .appx files that are not themselves bundles
-                       (e.g. Microsoft.VCLibs, Microsoft.UI.Xaml redistributables)
+    * Bundles      - bundles and loose .appx / .msix applications
+    * Dependencies - .appx / .msix packages declaring Framework=true
     Throws if $Root does not exist.
 .PARAMETER Root
     Folder to scan recursively.
@@ -169,25 +204,28 @@ function Get-Payload {
     param(
         [Parameter(Mandatory)][string]$Root
     )
-    if (-not (Test-Path -LiteralPath $Root)) {
+    if (-not (Test-Path -LiteralPath $Root -PathType Container)) {
         throw "SourcePath not found: $Root"
     }
 
     $all = Get-ChildItem -LiteralPath $Root -Recurse -File -ErrorAction Stop
-
-    $bundles = $all | Where-Object { $BundleExtensions -contains $_.Extension.ToLowerInvariant() }
-
-    # Build the dependency set: standalone .appx files in the tree that are
-    # NOT also picked up as a main package (rare, but defensive).
-    $bundleFullNames = [System.Collections.Generic.HashSet[string]]::new(
-        [string[]]($bundles.FullName), [System.StringComparer]::OrdinalIgnoreCase)
-    $dependencies = $all | Where-Object {
-        $_.Extension -ieq '.appx' -and -not $bundleFullNames.Contains($_.FullName)
+    $bundles = [System.Collections.Generic.List[System.IO.FileInfo]]::new()
+    $dependencies = [System.Collections.Generic.List[System.IO.FileInfo]]::new()
+    foreach ($file in $all) {
+        if ($file.Extension -in @('.msixbundle', '.appxbundle')) {
+            $bundles.Add($file)
+        }
+        elseif ($file.Extension -in @('.msix', '.appx')) {
+            if ((Get-PackageMetadata -Package $file).IsFramework) {
+                $dependencies.Add($file)
+            }
+            else { $bundles.Add($file) }
+        }
     }
 
     [pscustomobject]@{
-        Bundles      = @($bundles)
-        Dependencies = @($dependencies)
+        Bundles      = $bundles.ToArray()
+        Dependencies = $dependencies.ToArray()
     }
 }
 
@@ -196,18 +234,20 @@ function Resolve-LicensePath {
 .SYNOPSIS
     Returns the path to the license XML that pairs with a bundle, or $null.
 .DESCRIPTION
-    Convention used by both winget downloads and Microsoft FoD ISOs:
-        <BundleBaseName>.xml lives in the same directory as the bundle.
-    When no matching XML exists the caller falls back to -SkipLicense.
+    Prefer <BundleBaseName>.xml (FoD), otherwise use the single
+    <StoreId>_License.xml (WinGet) in the same per-app directory.
+    Multiple WinGet license files are ambiguous and cause an error.
 .PARAMETER Bundle
     FileInfo for the .msixbundle / .appxbundle / .msix to look up.
 .OUTPUTS
     [string] license file path, or $null when none is found.
 #>
     param([Parameter(Mandatory)][System.IO.FileInfo]$Bundle)
-    # Convention: <bundle-basename>.xml in the same directory.
     $candidate = Join-Path $Bundle.DirectoryName ("{0}.xml" -f $Bundle.BaseName)
-    if (Test-Path -LiteralPath $candidate) { return $candidate }
+    if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+    $licenses = @(Get-ChildItem -LiteralPath $Bundle.DirectoryName -Filter '*_License.xml' -File)
+    if ($licenses.Count -eq 1) { return $licenses[0].FullName }
+    if ($licenses.Count -gt 1) { throw "Ambiguous license files in '$($Bundle.DirectoryName)'. Keep one Store product per folder." }
     return $null
 }
 
@@ -215,81 +255,53 @@ function Resolve-LicensePath {
 # INSTALL
 # -----------------------------------------------------------------------------
 
-function Install-Dependency {
-<#
-.SYNOPSIS
-    Provisions a dependency .appx (no license) for all current and future users.
-.DESCRIPTION
-    Wraps Add-AppxProvisionedPackage -Online -SkipLicense and converts both
-    success and failure into a uniform PSCustomObject so the caller can build a
-    summary table without try/catch wrappers.
-.PARAMETER Appx
-    FileInfo for the dependency package (typically a Microsoft.VCLibs or
-    Microsoft.UI.Xaml redistributable that ships next to a stub-app bundle).
-.OUTPUTS
-    PSCustomObject (Name, Path, Kind='Dependency', Status, Error).
-#>
-    param([Parameter(Mandatory)][System.IO.FileInfo]$Appx)
-    Write-Log "Installing dependency: $($Appx.Name)"
-    try {
-        Add-AppxProvisionedPackage -Online -PackagePath $Appx.FullName -SkipLicense | Out-Null
-        return [pscustomobject]@{
-            Name   = $Appx.BaseName
-            Path   = $Appx.FullName
-            Kind   = 'Dependency'
-            Status = 'Success'
-            Error  = $null
-        }
-    }
-    catch {
-        $msg = ($_.Exception.Message -replace "[`r`n]+", ' ').Trim()
-        Write-Log "Dependency '$($Appx.Name)' failed: $msg" -Level ERROR
-        return [pscustomobject]@{
-            Name   = $Appx.BaseName
-            Path   = $Appx.FullName
-            Kind   = 'Dependency'
-            Status = 'Failed'
-            Error  = $msg
-        }
-    }
-}
-
 function Install-Bundle {
 <#
 .SYNOPSIS
     Provisions an AppX/MSIX bundle, attaching its license XML when present.
 .DESCRIPTION
     Calls Add-AppxProvisionedPackage -Online -PackagePath <bundle> with either
-    -LicensePath <xml> (preferred) or -SkipLicense (fallback, with a WARN log
-    line). All exceptions are converted to a Status='Failed' result object so
+    -LicensePath <xml> (preferred) or an explicitly allowed -SkipLicense.
+    All exceptions are converted to a Status='Failed' result object so
     the main loop can carry on and surface a single summary at the end.
 .PARAMETER Bundle
     FileInfo for the .msixbundle / .appxbundle / .msix to provision.
 .PARAMETER LicensePath
-    Optional path to the matching <basename>.xml license file. When omitted /
-    null, the bundle is provisioned with -SkipLicense and a warning is logged.
+    Optional path to the matching license XML.
+.PARAMETER DependencyPackagePath
+    Framework packages located beside or below this application.
+.PARAMETER SkipLicense
+    Allow installation without a license XML for apps that permit it.
 .OUTPUTS
     PSCustomObject (Name, Path, Kind='Bundle', LicensePath, Status, Error).
 #>
     param(
         [Parameter(Mandatory)][System.IO.FileInfo]$Bundle,
-        [string]$LicensePath
+        [string]$LicensePath,
+        [string[]]$DependencyPackagePath,
+        [switch]$SkipLicense
     )
 
     $base = @{
         Online      = $true
         PackagePath = $Bundle.FullName
+        StubPackageOption = 'InstallFull'
+        ErrorAction = 'Stop'
     }
+    if ($DependencyPackagePath.Count -gt 0) { $base.DependencyPackagePath = $DependencyPackagePath }
     if ($LicensePath) {
         $base.LicensePath = $LicensePath
         Write-Log "Installing bundle:    $($Bundle.Name)  (license: $(Split-Path $LicensePath -Leaf))"
     }
-    else {
+    elseif ($SkipLicense) {
         $base.SkipLicense = $true
         Write-Log "Installing bundle:    $($Bundle.Name)  (no license file -> -SkipLicense)" -Level WARN
     }
 
     try {
+        if (-not $LicensePath -and -not $SkipLicense) {
+            throw 'No license found. Supply a license, or use -SkipLicense only for apps that permit it.'
+        }
         Add-AppxProvisionedPackage @base | Out-Null
         return [pscustomobject]@{
             Name        = $Bundle.BaseName
@@ -323,11 +335,8 @@ function Test-ShouldUpdateProvisioned {
     the base image, so refreshing inbox apps from a FoD/Language ISO does not
     accidentally inject Store apps that were never present.
 
-    Match heuristic: the bundle BaseName must start (case-insensitive) with one
-    of the provisioned DisplayNames. This handles the typical
-        Microsoft.WindowsCalculator_2024.1234.0_neutral_~_8wekyb3d8bbwe
-    vs the provisioned
-        Microsoft.WindowsCalculator
+    Compares the embedded package Identity Name against the provisioned
+    DisplayNames, case-insensitively. Download filenames are not identities.
 .PARAMETER Bundle
     FileInfo for the bundle being considered.
 .PARAMETER ProvisionedNames
@@ -337,20 +346,16 @@ function Test-ShouldUpdateProvisioned {
 #>
     param(
         [Parameter(Mandatory)][System.IO.FileInfo]$Bundle,
-        [Parameter(Mandatory)][string[]]$ProvisionedNames
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$ProvisionedNames
     )
-    foreach ($name in $ProvisionedNames) {
-        if ([string]::IsNullOrWhiteSpace($name)) { continue }
-        if ($Bundle.BaseName.StartsWith($name, [System.StringComparison]::OrdinalIgnoreCase)) {
-            return $true
-        }
-    }
-    return $false
+    $metadata = Get-PackageMetadata -Package $Bundle
+    return $ProvisionedNames -contains $metadata.Name
 }
 
 # -----------------------------------------------------------------------------
 # MAIN
 # -----------------------------------------------------------------------------
+New-Item -Path $LogDirectory -ItemType Directory -Force -ErrorAction Stop | Out-Null
 Write-Log "=== $ScriptName starting (Mode=$Mode) ===" -Level HEADER
 Write-Log "SourcePath  : $SourcePath"
 Write-Log "Log file    : $LogFile"
@@ -359,22 +364,13 @@ $payload = Get-Payload -Root $SourcePath
 Write-Log ("Discovered  : {0} bundle(s), {1} dependency package(s)" -f `
     $payload.Bundles.Count, $payload.Dependencies.Count)
 
-if ($payload.Bundles.Count -eq 0 -and $payload.Dependencies.Count -eq 0) {
-    Write-Log "No payload found under '$SourcePath'. Nothing to do." -Level WARN
-    exit 0
+if ($payload.Bundles.Count -eq 0) {
+    Write-Log "No application payload found under '$SourcePath'. Check the download/export step." -Level ERROR
+    exit 1
 }
 
 $results = New-Object System.Collections.Generic.List[object]
 
-# --- Step 1: dependencies first (.appx without matching license) ----------
-if ($payload.Dependencies.Count -gt 0) {
-    Write-Log "--- Installing $($payload.Dependencies.Count) dependency package(s) ---" -Level HEADER
-    foreach ($dep in $payload.Dependencies) {
-        $results.Add((Install-Dependency -Appx $dep))
-    }
-}
-
-# --- Step 2: bundles ------------------------------------------------------
 if ($Mode -eq 'UpdateProvisioned') {
     $provisioned = @(Get-AppxProvisionedPackage -Online | Select-Object -ExpandProperty DisplayName)
     Write-Log "Mode=UpdateProvisioned: $($provisioned.Count) provisioned package(s) currently on image."
@@ -397,17 +393,35 @@ if ($payload.Bundles.Count -gt 0) {
             continue
         }
 
-        $licensePath = Resolve-LicensePath -Bundle $bundle
-        $results.Add((Install-Bundle -Bundle $bundle -LicensePath $licensePath))
+        try {
+            $licensePath = Resolve-LicensePath -Bundle $bundle
+            $packageDirectory = $bundle.DirectoryName.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+            $dependencyPaths = @($payload.Dependencies | Where-Object {
+                $_.FullName.StartsWith($packageDirectory, [StringComparison]::OrdinalIgnoreCase)
+            } | Select-Object -ExpandProperty FullName)
+            $results.Add((Install-Bundle -Bundle $bundle -LicensePath $licensePath -DependencyPackagePath $dependencyPaths -SkipLicense:$SkipLicense))
+        }
+        catch {
+            $message = ($_.Exception.Message -replace "[`r`n]+", ' ').Trim()
+            Write-Log "Bundle '$($bundle.Name)' failed: $message" -Level ERROR
+            $results.Add([pscustomobject]@{
+                Name        = $bundle.BaseName
+                Path        = $bundle.FullName
+                Kind        = 'Bundle'
+                LicensePath = $null
+                Status      = 'Failed'
+                Error       = $message
+            })
+        }
     }
 }
 
 # -----------------------------------------------------------------------------
 # SUMMARY
 # -----------------------------------------------------------------------------
-$ok      = ($results | Where-Object Status -EQ 'Success').Count
-$failed  = ($results | Where-Object Status -EQ 'Failed').Count
-$skipped = ($results | Where-Object Status -EQ 'Skipped').Count
+$ok      = @($results | Where-Object Status -EQ 'Success').Count
+$failed  = @($results | Where-Object Status -EQ 'Failed').Count
+$skipped = @($results | Where-Object Status -EQ 'Skipped').Count
 
 Write-Log "=== Summary ===" -Level HEADER
 Write-Log ("Succeeded: {0} / {1}" -f $ok, $results.Count) -Level $(if ($failed -eq 0) { 'SUCCESS' } else { 'WARN' })
