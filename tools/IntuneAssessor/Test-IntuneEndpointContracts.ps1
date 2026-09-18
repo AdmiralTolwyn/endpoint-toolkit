@@ -28,6 +28,7 @@ foreach ($Clause in $Switches[0].Clauses) {
     foreach ($Field in $Fields) { if ($Field -cnotin $SourceFields) { throw ('Field has no source: ' + $Name + '.' + $Field) } }
     $Probe = [ordered]@{ unreviewed = 'DO_NOT_EXPORT' }
     foreach ($Field in $Fields) { $Probe[$Field] = 'documented-field' }
+    if ($Name -eq 'DefenderStatus') { $Probe['AntivirusSignatureLastUpdated'] = '2026-09-18T08:00:00.0000000Z' }
     $Safe = ConvertTo-IntuneEndpointModules @{ $Name = @{ State = 'Complete'; Rows = @($Probe) } }
     if ($Safe[$Name].Rows[0].Count -ne $Fields.Count -or ($Safe | ConvertTo-Json -Depth 10) -match 'DO_NOT_EXPORT') { throw ('Importer projection drift: ' + $Name) }
     if ($CheckDocumentation) {

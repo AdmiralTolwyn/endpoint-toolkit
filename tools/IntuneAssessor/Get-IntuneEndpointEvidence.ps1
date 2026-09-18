@@ -4,9 +4,24 @@ param([string]$TenantId, [string]$OutputPath, [switch]$LibraryOnly)
 
 function New-IntuneEndpointEvidence {
     param([string]$SelectedTenant, [string]$DeviceId, [scriptblock]$Read)
+    . (Join-Path $PSScriptRoot 'IntuneEndpointTimestamps.ps1')
     $Modules = [ordered]@{}
     foreach ($Module in @('DefenderStatus', 'DefenderPreferences', 'FirewallProfiles', 'BitLockerVolumes', 'DeviceGuard')) {
-        try { $Rows = @(& $Read $Module); $Modules[$Module] = @{ State = 'Complete'; Rows = $Rows } }
+        try {
+            $Rows = @(& $Read $Module)
+            if ($Module -eq 'DefenderStatus') {
+                foreach ($Row in $Rows) {
+                    if ($Row -is [Collections.IDictionary]) {
+                        if ($Row.Contains('AntivirusSignatureLastUpdated')) {
+                            $Row['AntivirusSignatureLastUpdated'] = ConvertTo-IntuneSignatureTimestamp $Row['AntivirusSignatureLastUpdated']
+                        }
+                    } elseif ($null -ne $Row -and $null -ne $Row.PSObject.Properties['AntivirusSignatureLastUpdated']) {
+                        $Row.AntivirusSignatureLastUpdated = ConvertTo-IntuneSignatureTimestamp $Row.AntivirusSignatureLastUpdated
+                    }
+                }
+            }
+            $Modules[$Module] = @{ State = 'Complete'; Rows = $Rows }
+        }
         catch { $Modules[$Module] = @{ State = 'Error'; Rows = @() } }
     }
     return @{ SchemaVersion = '1.0'; TenantId = $SelectedTenant; DeviceId = $DeviceId; CollectedAtUtc = [datetime]::UtcNow.ToString('o'); Modules = $Modules }

@@ -1,6 +1,6 @@
 # Intune Discovery for Assay
 
-Version 0.5.4. Experimental pending a live tenant pilot. Offline-tested with
+Version 0.5.5. Experimental pending a live tenant pilot. Offline-tested with
 Windows PowerShell 5.1 and PowerShell 7.
 
 The [contract audit](AUDIT.md) currently verifies 49 enabled Graph GET contracts
@@ -83,6 +83,7 @@ see the audit's data-handling limits.
 .\Test-IntuneEpmRules.ps1
 .\Test-IntuneMamLaunch.ps1
 .\Test-IntuneCfaEvidence.ps1
+.\Test-IntuneSignatureTimestamp.ps1
 powershell.exe -NoProfile -File .\Test-IntuneDiscovery.ps1
 powershell.exe -NoProfile -File .\Test-IntuneExpansion.ps1
 powershell.exe -NoProfile -File .\Test-IntuneDefenderEvidence.ps1
@@ -91,6 +92,7 @@ powershell.exe -NoProfile -File .\Test-IntuneTunnel.ps1
 powershell.exe -NoProfile -File .\Test-IntuneEpmRules.ps1
 powershell.exe -NoProfile -File .\Test-IntuneMamLaunch.ps1
 powershell.exe -NoProfile -File .\Test-IntuneCfaEvidence.ps1
+powershell.exe -NoProfile -File .\Test-IntuneSignatureTimestamp.ps1
 ```
 
 Tests load library-only functions and use synthetic HTTP responses, never a
@@ -100,6 +102,30 @@ responses and counts with portal evidence for the same visible scope before
 production-validation claims.
 
 ## Configuration Expansion
+
+### Signature Timestamp Integrity (0.5.5)
+
+**Keep `IntuneEndpointTimestamps.ps1` beside the endpoint companion and discovery
+scripts.** The companion now serializes AntivirusSignatureLastUpdated as an
+explicit UTC ISO string before JSON export. UTC/offset dates and unambiguous Local
+DateTime values are supported; Unspecified DateTime never inherits the importing
+machine's timezone. This fixes the [.NET local-time assumption](https://learn.microsoft.com/en-us/dotnet/api/system.datetime.touniversaltime).
+
+PowerShell 7's [automatic JSON date conversion](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.utility/convertfrom-json?view=powershell-7.5)
+can erase original syntax. The file-import adapter restores this field's raw
+string using System.Text.Json before validating it; other fields are unchanged.
+The reviewed Windows PowerShell 5.1 path preserves JSON strings. No 7.5-only
+DateKind parameter or module installation is required.
+
+ISO strings must include Z or a numeric offset and at most seven fractional
+digits. Missing timezone, unknown-offset -00:00, legacy /Date(...), invalid values
+or unreviewed types stay unavailable; no default is inferred. Adjacent Defender
+fields survive. Rules 1.5.2-preview apply corresponding guards to direct native
+imports. Historical lost timezone information requires recollection, not guessing.
+Valid syntax is not clock accuracy, signature freshness or update-health proof.
+No new fields, commands, permissions, findings or scores. Freshness comparison
+remains unimplemented. Test-IntuneSignatureTimestamp uses injected values only;
+ASSAY_INTUNE_SIGNATURE_TIME_FIXTURE optionally writes native-test cases.
 
 ### Defender Update Cadence (0.5.4)
 

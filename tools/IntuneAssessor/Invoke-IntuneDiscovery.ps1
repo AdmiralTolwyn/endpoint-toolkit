@@ -352,9 +352,10 @@ function Invoke-IntuneDiscoveryCore {
         $States['AppControlPolicies'] = @{ State = 'Complete'; ApiVersion = 'xml-1.0'; Endpoint = 'Explicit App Control XML files'; PagesRead = 1; RowsRead = $Inventory.AppControlPolicies.Count; ScopeComplete = $false; ErrorCode = $null; Details = 'Explicit source-policy metadata only; not tenant or device coverage.'; CompletedParentIds = @() }
     }
     if ($EndpointPaths.Count) {
+        . (Join-Path $PSScriptRoot 'IntuneEndpointTimestamps.ps1')
         $EndpointRows = @(foreach ($EvidencePath in $EndpointPaths) {
             if ((Get-Item -LiteralPath $EvidencePath).Length -gt 1MB) { throw 'Endpoint evidence exceeds 1 MB.' }
-            $Local = [IO.File]::ReadAllText((Resolve-Path -LiteralPath $EvidencePath).Path) | ConvertFrom-Json
+            $Local = ConvertFrom-IntuneEndpointJson ([IO.File]::ReadAllText((Resolve-Path -LiteralPath $EvidencePath).Path))
             if ((Get-IntuneValue $Local 'TenantId') -ne $SelectedTenant -or (Get-IntuneValue $Local 'SchemaVersion') -ne '1.0') { throw 'Endpoint evidence tenant/schema mismatch.' }
             $LocalRow = @{ id = (Get-IntuneValue $Local 'DeviceId'); collectedAtUtc = (Get-IntuneValue $Local 'CollectedAtUtc'); modules = (Get-IntuneValue $Local 'Modules') }
             ConvertTo-IntuneSafeRow -Row $LocalRow -Module EndpointEvidence
@@ -385,7 +386,7 @@ function Invoke-IntuneDiscoveryCore {
     if ($Requirements.Count) { $Requirements['AssessmentAsOfUtc'] = $Completed; $Requirements['ConfirmedAtUtc'] = $Completed }
     return [ordered]@{
         SchemaVersion = '1.0'; PackId = 'intune'; CollectionId = [guid]::NewGuid().ToString()
-        Collector = @{ Name = 'Invoke-IntuneDiscovery'; Version = '0.5.4' }; Tenant = @{ Id = $SelectedTenant; Cloud = 'Global' }
+        Collector = @{ Name = 'Invoke-IntuneDiscovery'; Version = '0.5.5' }; Tenant = @{ Id = $SelectedTenant; Cloud = 'Global' }
         StartedAtUtc = $Started.ToString('o'); CompletedAtUtc = $Completed
         Scope = @{ RequestedModules = @($States.Keys | Where-Object { $States[$_].State -ne 'NotRequested' }); RequestedPlatforms = @('All'); Visibility = 'Unknown'; ScopeEvidenceRefs = @() }
         CollectionStatus = $States; Inventory = $Inventory; Observations = @($Observations.ToArray()); AssessmentRequirements = $Requirements
@@ -443,7 +444,7 @@ try {
     $script:IntuneHttpClient.Timeout = [timespan]::FromSeconds(120)
     $script:IntuneHttpClient.MaxResponseContentBufferSize = 16MB
     $script:IntuneHttpClient.DefaultRequestHeaders.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::new('Bearer', $PlainToken)
-    $script:IntuneHttpClient.DefaultRequestHeaders.UserAgent.ParseAdd('IntuneAssessor/0.5.4')
+    $script:IntuneHttpClient.DefaultRequestHeaders.UserAgent.ParseAdd('IntuneAssessor/0.5.5')
     $PlainToken = $null
     $Requirements = @{}
     if ($Assessor -and $ScopeDescription) {

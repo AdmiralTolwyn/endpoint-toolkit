@@ -2,6 +2,15 @@
 
 Date: 2026-09-17. Status: **partial audit, not production certification**.
 
+September 18 timestamp repair (collector 0.5.5 / Assay rules 1.5.2-preview):
+AntivirusSignatureLastUpdated no longer gains an assumed timezone from an
+Unspecified DateTime. The required IntuneEndpointTimestamps companion normalizes
+reviewed provider instants before JSON export and preserves raw signature strings
+across PowerShell 7 parsing. Direct native imports reject unqualified/invalid
+forms. The regression reproduced timezone guessing and legacy JSON coercion;
+tests use injected dates, not Defender reads. No freshness verdict, new field,
+permission or provider. See [timestamp limits](README.md#signature-timestamp-integrity-055).
+
 September 18 cadence follow-up (collector 0.5.4 / Assay rules 1.5.1-preview):
 SignatureScheduleDay and SignatureUpdateInterval join the existing preference
 projection. The [specific scheduling guide](https://learn.microsoft.com/en-us/defender-endpoint/manage-protection-update-schedule-microsoft-defender-antivirus)

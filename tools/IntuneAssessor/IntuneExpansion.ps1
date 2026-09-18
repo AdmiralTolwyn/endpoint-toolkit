@@ -132,6 +132,7 @@ function ConvertTo-IntuneSettingFacts {
 
 function ConvertTo-IntuneEndpointModules {
     param($Modules)
+    . (Join-Path $PSScriptRoot 'IntuneEndpointTimestamps.ps1')
     $Fields = @{
         DefenderStatus = @('AMRunningMode', 'AMProductVersion', 'AMEngineVersion', 'AntivirusEnabled', 'RealTimeProtectionEnabled', 'BehaviorMonitorEnabled', 'AntivirusSignatureLastUpdated', 'IsTamperProtected', 'ControlledConfigurationState', 'TamperProtectionSource')
         DefenderPreferences = @('AttackSurfaceReductionRules_Ids', 'AttackSurfaceReductionRules_Actions', 'EnableNetworkProtection', 'PUAProtection', 'DisableRealtimeMonitoring', 'DisableBehaviorMonitoring', 'DisableScriptScanning', 'MAPSReporting', 'EnableControlledFolderAccess', 'SignatureFallbackOrder', 'SignatureScheduleDay', 'SignatureUpdateInterval')
@@ -147,7 +148,10 @@ function ConvertTo-IntuneEndpointModules {
             $OutputRow = [ordered]@{}
             foreach ($Field in $Fields[$Module]) {
                 $Value = Get-IntuneValue $InputRow $Field
-                if ($null -ne $Value) { $OutputRow[$Field] = ConvertTo-IntuneExpansionValue $Value }
+                if ($Module -eq 'DefenderStatus' -and $Field -eq 'AntivirusSignatureLastUpdated') {
+                    $Timestamp = ConvertTo-IntuneSignatureTimestamp $Value
+                    if ($null -ne $Timestamp) { $OutputRow[$Field] = $Timestamp }
+                } elseif ($null -ne $Value) { $OutputRow[$Field] = ConvertTo-IntuneExpansionValue $Value }
             }
             $OutputRow
         }) }

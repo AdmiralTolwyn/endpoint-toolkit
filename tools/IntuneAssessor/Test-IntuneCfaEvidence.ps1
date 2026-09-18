@@ -20,7 +20,7 @@ function Get-MpPreference {
 function Get-MpComputerStatus {
     [CmdletBinding()]param()
     if ($script:StatusFails) { throw 'Synthetic status failure' }
-    [pscustomobject]@{ AMRunningMode = 'Normal'; AntivirusEnabled = $true; RealTimeProtectionEnabled = $true; Unreviewed = 'DO_NOT_EXPORT' }
+    [pscustomobject]@{ AMRunningMode = 'Normal'; AntivirusEnabled = $true; RealTimeProtectionEnabled = $true; AntivirusSignatureLastUpdated = [datetimeoffset]::new(2026,9,18,10,0,0,[timespan]::FromHours(2)); Unreviewed = 'DO_NOT_EXPORT' }
 }
 function Get-NetFirewallProfile { [CmdletBinding()]param($PolicyStore) throw 'Synthetic unavailable provider' }
 function Get-BitLockerVolume { [CmdletBinding()]param() throw 'Synthetic unavailable provider' }
@@ -87,6 +87,7 @@ try {
         ConfigurationReview = @{ DeviceIds = @('device') }
     }
     if ($Document.CollectionStatus.EndpointEvidence.State -cne 'Complete' -or $Document.Inventory.EndpointEvidence[0].modules.DefenderPreferences.Rows[0].EnableControlledFolderAccess -ne 3) { throw 'Production import dropped CFA evidence' }
+    if ($Document.Inventory.EndpointEvidence[0].modules.DefenderStatus.Rows[0].AntivirusSignatureLastUpdated -cne '2026-09-18T08:00:00.0000000Z') { throw 'Production file import changed signature instant' }
     if ($Document.Inventory.EndpointEvidence[0].modules.DefenderPreferences.Rows[0].SignatureFallbackOrder -cne $script:SourceOrder) { throw 'Production import dropped or reordered update sources' }
     if ($Document.Inventory.EndpointEvidence[0].modules.DefenderPreferences.Rows[0].SignatureScheduleDay -ne 8 -or $Document.Inventory.EndpointEvidence[0].modules.DefenderPreferences.Rows[0].SignatureUpdateInterval -ne 0) { throw 'Production import lost cadence values' }
     if (($Document | ConvertTo-Json -Depth 30) -match 'PRIVATE_PATH|DO_NOT_EXPORT') { throw 'Unreviewed fields retained' }
