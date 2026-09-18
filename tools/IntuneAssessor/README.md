@@ -335,14 +335,39 @@ fields after checking local device/tenant identity. No automatic elevation or
 remediation. Attach samples using `-EndpointEvidencePaths '.\endpoint.json'` in
 the discovery command. The tenant collector never remotely runs the companion.
 
-Assay exposes 102 supplementary unscored findings: by default 63 bounded comparison
-entries and 39 evidence entries (64/38 with either an explicit CFA target or a
-signature-age limit; 65/37 with both). All have
+Assay exposes 103 supplementary unscored findings: by default 63 bounded comparison
+entries and 40 evidence entries (64/39 with either an explicit CFA target or a
+signature-age limit; 65/38 with both). All have
 handlers, but several cover only part of their
 feature; evidence collection is not complete automatic assessment. The original
 50-control scoring catalog remains unchanged. Set reference/scenario scope in
 the native evidence dialog. `ASSAY_INTUNE_EXPANSION_FIXTURE` optionally writes a
 synthetic expanded snapshot, including companion imports, from the offline test.
+
+## Selected Real-Time Policy Correlation
+
+Assay rules 1.7.0-preview add RTP-01 without changing collector production 0.5.7.
+Use the existing `-IncludeConfiguration` and `-EndpointEvidencePaths` workflow,
+then select exactly one modern Windows policy in Reference `PolicyIds` and a
+device cohort in `DeviceIds`. The policy is an analyst reference, not a proven
+assignment. Complete supported collections and selected-parent settings coverage
+must expose exactly one Resolved integer 0/1
+[AllowRealtimeMonitoring](https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-defender#allowrealtimemonitoring).
+
+RTP-01 compares that value with the inverse Boolean DisableRealtimeMonitoring
+preference and independently with reported Boolean RealTimeProtectionEnabled.
+Both fields are already collected. Each comparison is Aligned or Different;
+the finding stays Observed / Evidence, never a protection or deployment verdict.
+Missing/ambiguous/partial evidence, malformed values and stale/future samples stay
+NotAssessed. A disabled reference can align without being approved as secure.
+Assignment filters/groups, applicability, precedence, intervening changes, tamper
+protection and runtime health are not resolved. Snapshots are not atomic.
+
+No new route, provider, field, permission or action. Test-IntuneCfaEvidence can
+write `ASSAY_INTUNE_REALTIME_FIXTURE` from the actual mocked provider callback,
+definition decoder and companion import. It verifies opaque option-value joins,
+typed fields and unavailable assignment coverage on PowerShell 5.1/7. Native
+tests cover reference switching, unknown coverage, persistence and reports.
 
 ## MAM, Remote Help And Platform Services
 

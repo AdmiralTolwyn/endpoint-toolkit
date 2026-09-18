@@ -2,6 +2,16 @@
 
 Date: 2026-09-17. Status: **partial audit, not production certification**.
 
+Assay rules 1.7.0-preview add real-time policy/endpoint alignment as Evidence.
+Collector production remains 0.5.7. The existing definition join resolves exact
+AllowRealtimeMonitoring integers; endpoint preference/runtime Booleans already
+exist. Test-IntuneCfaEvidence now generates ASSAY_INTUNE_REALTIME_FIXTURE through
+production decoding and import, with all reads/HTTP mocked, ambiguous option
+suffixes and deliberately unavailable assignment coverage. Native scope/type/
+time gates and save/load/report tests do not establish assignment, propagation,
+applicability, precedence or protection. No new route, permission or provider.
+See [correlation limits](README.md#selected-real-time-policy-correlation).
+
 Collector 0.5.7 / Assay rules 1.6.2-preview: N-03 also observes path-free
 SignatureFileSharesState from SignatureDefinitionUpdateFileSharesSources. The
 exact plural property is source-backed; Empty/NonEmpty/Unknown is Assay-derived.

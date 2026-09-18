@@ -15,7 +15,7 @@ $ReadProviders = [scriptblock]::Create($Text.Substring(1, $Text.Length - 2))
 function Get-MpPreference {
     [CmdletBinding()]param()
     if ($script:PreferenceFails) { throw 'Synthetic preference failure' }
-    [pscustomobject]@{ EnableControlledFolderAccess = $script:CfaMode; SignatureFallbackOrder = $script:SourceOrder; SignatureScheduleDay = $script:ScheduleDay; SignatureUpdateInterval = $script:UpdateInterval; SignatureScheduleTime = 'DO_NOT_EXPORT'; SharedSignaturesPath = 'PRIVATE_PATH'; SignatureDefinitionUpdateFileSharesSources = 'PRIVATE_PATH'; ControlledFolderAccessProtectedFolders = @('PRIVATE_PATH'); ControlledFolderAccessAllowedApplications = @('PRIVATE_PATH'); Unreviewed = 'DO_NOT_EXPORT' }
+    [pscustomobject]@{ EnableControlledFolderAccess = $script:CfaMode; DisableRealtimeMonitoring = $false; SignatureFallbackOrder = $script:SourceOrder; SignatureScheduleDay = $script:ScheduleDay; SignatureUpdateInterval = $script:UpdateInterval; SignatureScheduleTime = 'DO_NOT_EXPORT'; SharedSignaturesPath = 'PRIVATE_PATH'; SignatureDefinitionUpdateFileSharesSources = 'PRIVATE_PATH'; ControlledFolderAccessProtectedFolders = @('PRIVATE_PATH'); ControlledFolderAccessAllowedApplications = @('PRIVATE_PATH'); Unreviewed = 'DO_NOT_EXPORT' }
 }
 function Get-MpComputerStatus {
     [CmdletBinding()]param()
@@ -158,6 +158,35 @@ try {
         }
         if ($Limited.AssessmentRequirements.ConfigurationReview.MaxSignatureAgeHours -ne $Limit -or $Limited.Inventory.EndpointEvidence[0].modules.DefenderStatus.Rows[0].AntivirusSignatureLastUpdated -cne '2026-09-18T08:00:00.0000000Z') { throw 'Signature-age requirement or evidence changed during import' }
     }
+    $CorrelationRequest = {
+        param($Uri)
+        $Path = ([uri]$Uri).AbsolutePath
+        $Rows = @()
+        switch -Regex ($Path) {
+            '/managedDevices$' { $Rows = @(@{ id = 'device'; azureADDeviceId = '33333333-3333-4333-8333-333333333333'; operatingSystem = 'Windows' }) }
+            '/configurationPolicies$' { $Rows = @(@{ id = 'policy-on'; name = 'Synthetic allow'; platforms = 'windows10'; isAssigned = $false }, @{ id = 'policy-off'; name = 'Synthetic disallow'; platforms = 'windows10'; isAssigned = $false }) }
+            '/configurationPolicies/(policy-on|policy-off)/settings$' {
+                $Choice = if ($Path -eq '/beta/deviceManagement/configurationPolicies/policy-on/settings') { 'opaque_enabled_0' } else { 'opaque_disabled_1' }
+                $Rows = @(@{ id = '0'; settingInstance = @{ settingDefinitionId = 'rtp'; choiceSettingValue = @{ value = $Choice } } })
+            }
+            '/settingDefinitions$' { $Rows = @(@{ id = 'rtp'; baseUri = './Device/Vendor/MSFT/Policy/Config/Defender'; offsetUri = 'AllowRealtimeMonitoring'; version = '1'; options = @(@{ itemId = 'opaque_enabled_0'; optionValue = @{ value = 1 } }, @{ itemId = 'opaque_disabled_1'; optionValue = @{ value = 0 } }) }) }
+        }
+        @{ StatusCode = 200; Body = (@{ value = $Rows } | ConvertTo-Json -Depth 20 | ConvertFrom-Json) }
+    }
+    $Correlation = Invoke-IntuneDiscoveryCore -SelectedTenant $Tenant -Configuration $true -EndpointPaths @($Temporary) -Request $CorrelationRequest -Requirements @{
+        ScopeConfirmed = $true; ScopeDescription = 'Synthetic analyst reference, not assigned policy'; Assessor = 'Test'; MaxCollectionAgeHours = 24
+        ConfigurationReview = @{ DeviceIds = @('device'); PolicyIds = @('policy-on') }
+    }
+    if ($Correlation.CollectionStatus.SecuritySettings.State -cne 'Complete' -or $Correlation.CollectionStatus.SecuritySettings.CompletedParentIds.Count -ne 2 -or $Correlation.Inventory.SecuritySettings.Count -ne 2) { throw 'Real-time settings coverage lost' }
+    foreach ($Fact in $Correlation.Inventory.SecuritySettings) {
+        $Expected = if ($Fact.parentId -ceq 'policy-on') { 1 } else { 0 }
+        if ($Fact.cspUri -cne 'Policy/Config/Defender/AllowRealtimeMonitoring' -or $Fact.resolution -cne 'Resolved' -or $Fact.value -ne $Expected) { throw 'Real-time setting definition join changed or guessed an option suffix' }
+    }
+    if ($Correlation.Inventory.EndpointEvidence[0].modules.DefenderPreferences.Rows[0].DisableRealtimeMonitoring -isnot [bool] -or $Correlation.Inventory.EndpointEvidence[0].modules.DefenderPreferences.Rows[0].DisableRealtimeMonitoring -or -not $Correlation.Inventory.EndpointEvidence[0].modules.DefenderStatus.Rows[0].RealTimeProtectionEnabled) { throw 'Endpoint correlation booleans lost' }
+    if ($Correlation.CollectionStatus.ModernAssignments.State -cne 'Unsupported') { throw 'Synthetic correlation invented assignment coverage' }
+    $CorrelationJson = $Correlation | ConvertTo-Json -Depth 30
+    if ($CorrelationJson -match 'PRIVATE_PATH|DO_NOT_EXPORT') { throw 'Correlation export leaked unreviewed fields' }
+    if ($env:ASSAY_INTUNE_REALTIME_FIXTURE) { [IO.File]::WriteAllText($env:ASSAY_INTUNE_REALTIME_FIXTURE, $CorrelationJson, [Text.UTF8Encoding]::new($false)) }
     $Sample.TenantId = '44444444-4444-4444-8444-444444444444'
     [IO.File]::WriteAllText($Temporary, ($Sample | ConvertTo-Json -Depth 15), [Text.UTF8Encoding]::new($false))
     $Rejected = $false
