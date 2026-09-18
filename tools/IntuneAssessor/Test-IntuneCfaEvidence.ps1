@@ -40,9 +40,13 @@ try {
         $Decoded = ($Sample | ConvertTo-Json -Depth 15) | ConvertFrom-Json
         $SharedProperty = $Decoded.Modules.DefenderPreferences.Rows[0].PSObject.Properties['SharedSignaturesPathState']
         if ($null -eq $SharedProperty -or $SharedProperty.Value -cne 'NonEmpty') { throw 'Shared-signature observation was not derived from the provider value' }
+        $FileSharesProperty = $Decoded.Modules.DefenderPreferences.Rows[0].PSObject.Properties['SignatureFileSharesState']
+        if ($null -eq $FileSharesProperty -or $FileSharesProperty.Value -cne 'NonEmpty') { throw 'File-share source observation was not derived from the provider value' }
+        if ($null -ne $Decoded.Modules.DefenderPreferences.Rows[0].PSObject.Properties['SignatureDefinitionUpdateFileSharesSources']) { throw 'Raw file-share source paths exported' }
         if ($null -ne $Decoded.Modules.DefenderPreferences.Rows[0].PSObject.Properties['SharedSignaturesPath']) { throw 'Raw shared-signature path exported' }
         $Safe = ConvertTo-IntuneEndpointModules $Decoded.Modules
         if ($Safe.DefenderPreferences.Rows[0]['SharedSignaturesPathState'] -cne 'NonEmpty') { throw 'Shared-signature state lost during import' }
+        if ($Safe.DefenderPreferences.Rows[0]['SignatureFileSharesState'] -cne 'NonEmpty') { throw 'File-share state lost during import' }
         if ($Safe.DefenderPreferences.State -cne 'Complete' -or $Safe.DefenderPreferences.Rows.Count -ne 1) { throw 'Provider shape changed' }
         $Value = $Safe.DefenderPreferences.Rows[0]['EnableControlledFolderAccess']
         if ($null -eq $Mode) { if ($null -ne $Value) { throw 'Missing CFA mode fabricated' } }
@@ -60,6 +64,8 @@ try {
         @{ Value = ''; Expected = 'Empty' },
         @{ Value = '\\PRIVATE_PATH\share'; Expected = 'NonEmpty' },
         @{ Value = 'not-a-validated-path'; Expected = 'NonEmpty' },
+        @{ Value = '|'; Expected = 'NonEmpty' },
+        @{ Value = '\\PRIVATE_PATH\one | \\PRIVATE_PATH\two'; Expected = 'NonEmpty' },
         @{ Value = $null; Expected = 'Unknown' },
         @{ Value = ' '; Expected = 'Unknown' },
         @{ Value = "`t`n"; Expected = 'Unknown' },
@@ -68,27 +74,34 @@ try {
         @{ Value = @('PRIVATE_PATH'); Expected = 'Unknown' },
         @{ Value = @{ Path = 'PRIVATE_PATH' }; Expected = 'Unknown' }
     )) {
-        foreach ($AsObject in @($false, $true)) {
-            foreach ($Missing in @($false, $true)) {
-                $script:SharedRow = @{ SharedSignaturesPath = $Case.Value; SharedSignaturesPathState = 'Empty'; SignatureFallbackOrder = 'MMPC' }
-                if ($Missing) { $script:SharedRow.Remove('SharedSignaturesPath') }
-                if ($AsObject) { $script:SharedRow = [pscustomobject]$script:SharedRow }
-                $Sample = New-IntuneEndpointEvidence -SelectedTenant $Tenant -DeviceId $Device -Read {
-                    param($Module)
-                    if ($Module -eq 'DefenderPreferences') { $script:SharedRow }
+        foreach ($Binding in @(
+            @{ Source = 'SharedSignaturesPath'; State = 'SharedSignaturesPathState'; Other = 'SignatureFileSharesState' },
+            @{ Source = 'SignatureDefinitionUpdateFileSharesSources'; State = 'SignatureFileSharesState'; Other = 'SharedSignaturesPathState' }
+        )) {
+            foreach ($AsObject in @($false, $true)) {
+                foreach ($Missing in @($false, $true)) {
+                    $script:PathRow = @{ SharedSignaturesPath = 'PRIVATE_PATH'; SignatureDefinitionUpdateFileSharesSources = 'PRIVATE_PATH'; SharedSignaturesPathState = 'Empty'; SignatureFileSharesState = 'Empty'; SignatureFallbackOrder = 'MMPC' }
+                    $script:PathRow[$Binding.Source] = $Case.Value
+                    if ($Missing) { $script:PathRow.Remove($Binding.Source) }
+                    if ($AsObject) { $script:PathRow = [pscustomobject]$script:PathRow }
+                    $Sample = New-IntuneEndpointEvidence -SelectedTenant $Tenant -DeviceId $Device -Read {
+                        param($Module)
+                        if ($Module -eq 'DefenderPreferences') { $script:PathRow }
+                    }
+                    $Serialized = $Sample | ConvertTo-Json -Depth 15
+                    if ($Serialized -match 'PRIVATE_PATH|not-a-validated-path|"(SharedSignaturesPath|SignatureDefinitionUpdateFileSharesSources)"') { throw 'Raw path value survived reduction' }
+                    $Safe = ConvertTo-IntuneEndpointModules (($Serialized | ConvertFrom-Json).Modules)
+                    $Expected = if ($Missing) { 'Unknown' } else { $Case.Expected }
+                    if ($Safe.DefenderPreferences.Rows[0][$Binding.State] -cne $Expected) { throw 'Path reduction fabricated a state' }
+                    if ($Safe.DefenderPreferences.Rows[0][$Binding.Other] -cne 'NonEmpty') { throw 'Path reduction crossed independent settings' }
+                    if ($Safe.DefenderPreferences.Rows[0]['SignatureFallbackOrder'] -cne 'MMPC') { throw 'Path reduction lost adjacent preference' }
                 }
-                $Serialized = $Sample | ConvertTo-Json -Depth 15
-                if ($Serialized -match 'PRIVATE_PATH|not-a-validated-path|"SharedSignaturesPath"') { throw 'Shared-signature raw value survived reduction' }
-                $Safe = ConvertTo-IntuneEndpointModules (($Serialized | ConvertFrom-Json).Modules)
-                $Expected = if ($Missing) { 'Unknown' } else { $Case.Expected }
-                if ($Safe.DefenderPreferences.Rows[0]['SharedSignaturesPathState'] -cne $Expected) { throw 'Shared-signature reduction fabricated a state' }
-                if ($Safe.DefenderPreferences.Rows[0]['SignatureFallbackOrder'] -cne 'MMPC') { throw 'Shared-signature reduction lost adjacent preference' }
             }
         }
     }
     foreach ($InvalidState in @('empty', 'NonEmpty ', 'PRIVATE_PATH', '', $null, $true, 1, @('Empty'), @{ State = 'Empty' })) {
-        $Safe = ConvertTo-IntuneEndpointModules @{ DefenderPreferences = @{ State = 'Complete'; Rows = @(@{ SharedSignaturesPathState = $InvalidState; SharedSignaturesPath = 'PRIVATE_PATH'; SignatureFallbackOrder = 'MMPC' }) } }
-        if ($Safe.DefenderPreferences.Rows[0].Contains('SharedSignaturesPathState') -or ($Safe | ConvertTo-Json -Depth 15) -match 'PRIVATE_PATH') { throw 'Importer retained unsupported state or raw path' }
+        $Safe = ConvertTo-IntuneEndpointModules @{ DefenderPreferences = @{ State = 'Complete'; Rows = @(@{ SharedSignaturesPathState = $InvalidState; SignatureFileSharesState = $InvalidState; SharedSignaturesPath = 'PRIVATE_PATH'; SignatureDefinitionUpdateFileSharesSources = 'PRIVATE_PATH'; SignatureFallbackOrder = 'MMPC' }) } }
+        if ($Safe.DefenderPreferences.Rows[0].Contains('SharedSignaturesPathState') -or $Safe.DefenderPreferences.Rows[0].Contains('SignatureFileSharesState') -or ($Safe | ConvertTo-Json -Depth 15) -match 'PRIVATE_PATH') { throw 'Importer retained unsupported state or raw path' }
     }
     $script:SourceOrder = 'InternalDefinitionUpdateServer|MicrosoftUpdateServer|MMPC'
     foreach ($Cadence in @(@(8,0),@(0,0),@(8,24),@('Monday',4),@('Never',0),@($null,$null),@('unknown',25))) {
@@ -126,6 +139,7 @@ try {
     }
     if ($Document.CollectionStatus.EndpointEvidence.State -cne 'Complete' -or $Document.Inventory.EndpointEvidence[0].modules.DefenderPreferences.Rows[0].EnableControlledFolderAccess -ne 3) { throw 'Production import dropped CFA evidence' }
     if ($Document.Inventory.EndpointEvidence[0].modules.DefenderPreferences.Rows[0].SharedSignaturesPathState -cne 'NonEmpty') { throw 'Production import lost shared-signature state' }
+    if ($Document.Inventory.EndpointEvidence[0].modules.DefenderPreferences.Rows[0].SignatureFileSharesState -cne 'NonEmpty') { throw 'Production import lost file-share state' }
     if ($Document.Inventory.EndpointEvidence[0].modules.DefenderStatus.Rows[0].AntivirusSignatureLastUpdated -cne '2026-09-18T08:00:00.0000000Z') { throw 'Production file import changed signature instant' }
     if ($Document.Inventory.EndpointEvidence[0].modules.DefenderPreferences.Rows[0].SignatureFallbackOrder -cne $script:SourceOrder) { throw 'Production import dropped or reordered update sources' }
     if ($Document.Inventory.EndpointEvidence[0].modules.DefenderPreferences.Rows[0].SignatureScheduleDay -ne 8 -or $Document.Inventory.EndpointEvidence[0].modules.DefenderPreferences.Rows[0].SignatureUpdateInterval -ne 0) { throw 'Production import lost cadence values' }

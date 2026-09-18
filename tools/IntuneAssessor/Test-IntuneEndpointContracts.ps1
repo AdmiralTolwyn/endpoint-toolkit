@@ -34,6 +34,9 @@ foreach ($Clause in $Switches[0].Clauses) {
         if ((Get-IntuneValue $DerivedFields 'SharedSignaturesPath') -cne 'SharedSignaturesPathState') { throw 'Shared-signature reduction contract missing' }
         $Probe['SharedSignaturesPathState'] = 'NonEmpty'
         $Probe['SharedSignaturesPath'] = 'DO_NOT_EXPORT'
+        if ((Get-IntuneValue $DerivedFields 'SignatureDefinitionUpdateFileSharesSources') -cne 'SignatureFileSharesState') { throw 'File-share reduction contract missing' }
+        $Probe['SignatureFileSharesState'] = 'Empty'
+        $Probe['SignatureDefinitionUpdateFileSharesSources'] = 'DO_NOT_EXPORT'
     }
     if ($Name -eq 'DefenderStatus') { $Probe['AntivirusSignatureLastUpdated'] = '2026-09-18T08:00:00.0000000Z' }
     $Safe = ConvertTo-IntuneEndpointModules @{ $Name = @{ State = 'Complete'; Rows = @($Probe) } }
@@ -57,4 +60,4 @@ foreach ($Clause in $Switches[0].Clauses) {
 if ($CheckDocumentation) {
     [IO.File]::WriteAllText((Join-Path $EvidenceDirectory 'intune-endpoint-contract-audit.json'), (@{ CheckedAtUtc = [datetime]::UtcNow.ToString('o'); Evidence = @($Evidence.ToArray()); Limit = 'Source-presence and command/projection drift checks only; not live provider availability or enum validation.' } | ConvertTo-Json -Depth 10), [Text.UTF8Encoding]::new($false))
 }
-Write-Output 'PASS: five documented provider commands, 37 read fields -> 36 direct plus one derived export field, identity read and importer drift checks; no endpoint queries executed.'
+Write-Output 'PASS: five documented provider commands, 38 read fields -> 36 direct plus two derived export fields, identity read and importer drift checks; no endpoint queries executed.'

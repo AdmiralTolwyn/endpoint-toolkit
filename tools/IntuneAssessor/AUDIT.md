@@ -2,6 +2,18 @@
 
 Date: 2026-09-17. Status: **partial audit, not production certification**.
 
+Collector 0.5.7 / Assay rules 1.6.2-preview: N-03 also observes path-free
+SignatureFileSharesState from SignatureDefinitionUpdateFileSharesSources. The
+exact plural property is source-backed; Empty/NonEmpty/Unknown is Assay-derived.
+Both path settings reduce independently before serialization, without accessing
+or exporting locations. FileShares plus Empty is linked to Microsoft's documented
+skip behavior, not asserted as an observed skipped or failed update. Five commands,
+38 read fields -> 36 direct + two derived exports; no new scope, route or score.
+Mocked tests cover independent settings, both row forms, malformed/missing data,
+raw-path exclusion and application persistence/reports. No validation of UNC
+entries, share access, contents, effective precedence or delivery. See
+[file-share limits](README.md#file-share-source-state-057).
+
 Collector 0.5.6 / Assay rules 1.6.1-preview: N-03 gains a path-free observation
 of SharedSignaturesPath. Microsoft documents the property/override; the exported
 SharedSignaturesPathState (Empty/NonEmpty/Unknown) is explicitly Assay-derived,
@@ -174,9 +186,9 @@ sensitive data was retrieved.
 
 ## Endpoint Command Ledger (2026-09-18)
 
-`EndpointContracts.json` records each of the five provider commands, all 37
+`EndpointContracts.json` records each of the five provider commands, all 38
 projected source properties and their Microsoft Learn references. It also maps
-SharedSignaturesPath to the path-free derived export; the other 36 fields are
+SharedSignaturesPath and SignatureDefinitionUpdateFileSharesSources to path-free derived exports; the other 36 fields are
 exported directly. Run
 `Test-IntuneEndpointContracts.ps1 -EvidenceDirectory <existing-directory>
 -CheckDocumentation` to compare the companion's parsed command/projection AST

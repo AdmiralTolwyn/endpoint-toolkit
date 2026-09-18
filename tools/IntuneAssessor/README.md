@@ -1,6 +1,6 @@
 # Intune Discovery for Assay
 
-Version 0.5.6. Experimental pending a live tenant pilot. Offline-tested with
+Version 0.5.7. Experimental pending a live tenant pilot. Offline-tested with
 Windows PowerShell 5.1 and PowerShell 7.
 
 The [contract audit](AUDIT.md) currently verifies 49 enabled Graph GET contracts
@@ -154,6 +154,36 @@ the limit without a new field, command, permission or update action. Offline
 production-import tests in PowerShell 5.1/7 preserve 0, 2 and 87600; native and
 application tests cover boundaries, target changes, persistence and reports.
 
+### File-Share Source State (0.5.7)
+
+The existing preference read now also projects
+`SignatureDefinitionUpdateFileSharesSources` in memory, removes the raw property
+before JSON, and emits Assay-derived `SignatureFileSharesState`. Empty means a
+typed empty string, NonEmpty a non-whitespace string, and Unknown all missing,
+null, whitespace-only or unsupported types. It is independent of
+SharedSignaturesPathState; both raw properties are removed before export.
+
+The [PowerShell reference](https://learn.microsoft.com/en-us/powershell/module/defender/set-mppreference?view=windowsserver2025-ps#-signaturedefinitionupdatefilesharessources)
+defines the exact plural property and a pipe-separated UNC string. The
+[product guide](https://learn.microsoft.com/en-us/defender-endpoint/manage-protection-updates-microsoft-defender-antivirus)
+documents skipping FileShares when no paths are entered. Its shorter singular
+command example is not used to infer a provider alias.
+
+Assay N-03 (rules 1.6.2-preview) describes FileShares listed with an empty reported
+source string, but remains Observed / Evidence. It never claims that runtime
+skipping occurred. NonEmpty is not a valid-location, access, content or delivery
+check; even an unparsed pipe-only string is NonEmpty. FileShares not listed does
+not create a requirement to add it. Shared-signature override context remains
+separate, with no effective-source or protection conclusion.
+
+Only exact derived states survive import; raw paths and malformed states are
+dropped. Older/missing evidence stays Unknown. The existing platform, selection,
+identity, freshness and complete-provider gates apply. Five provider commands
+now project 38 fields: 36 direct exports and two derived states. No new provider,
+route, scope, finding or score; no share/network probes or update operation.
+Offline tests cover both row forms, independent reduction, malformed/missing
+values, forged states, privacy, save/load and reports. Live validation remains open.
+
 ### Shared-Signature State (0.5.6)
 
 The existing Get-MpPreference read adds `SharedSignaturesPath` in memory. Before
@@ -179,8 +209,8 @@ retaining supported state evidence. Existing identity/platform/freshness/provide
 gates apply; no state yields a new health verdict or establishes effective source
 selection, network reachability, update delivery or protection.
 
-Five provider commands now project 37 source fields, exporting 36 directly and
-one as a derived state. Test-IntuneEndpointContracts distinguishes read/export
+The 0.5.6 increment projected 37 source fields, exporting 36 directly and
+one as a derived state; 0.5.7 adds the second state above. Test-IntuneEndpointContracts distinguishes read/export
 names. The production pipeline test covers dictionary/object rows, missing and
 malformed inputs, forged states and raw-path privacy; native/app tests cover
 reassessment, save/load and reports. No new provider, permission, route, finding
