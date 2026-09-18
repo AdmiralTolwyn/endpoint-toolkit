@@ -4,7 +4,34 @@ BaselinePilot is a two-component security baseline assessment tool for Windows 1
 
 > The project folder is `tools/BaselineAssessor/` (matching this repo's tool-directory convention); the product itself is named **BaselinePilot** — the two names are not a typo.
 
-**Versions**: App `0.2.0` · Collector `1.3.0` · Catalog (`checks.json`) `1.1`. See [`AUDIT.md`](AUDIT.md) for the July 2026 audit and fix-pass history behind the current versions.
+**Versions**: App `0.2.0` · Collector `1.3.1` · Catalog (`checks.json`) `1.1`. See [`AUDIT.md`](AUDIT.md) for the July 2026 audit and fix-pass history behind the current versions.
+
+### Assay SCT Audit Profiles (1.3.1)
+
+`-AssessmentProfile` also accepts `Windows11_25H2`, `WindowsServer2025Member` and
+`WindowsServer2025DC`. Each declares a separate versioned profile for **two controls
+only**: MON-005 Sensitive Privilege Use and MON-010 Audit Policy Change. These
+options do not compose with the Cloud PC overlay and do not apply policy.
+
+The reviewed [Windows 11 25H2 SCT archive](https://download.microsoft.com/download/e99be2d2-e077-4986-a06b-6078051999dd/Windows%2011%20v25H2%20Security%20Baseline.zip)
+specifies Success for both; the [Server 2025 v2602 SCT archive](https://download.microsoft.com/download/e99be2d2-e077-4986-a06b-6078051999dd/Windows%20Server%202025%20Security%20Baseline%20-%202602.zip)
+specifies Success and Failure in both member-server and DC policies. Assay requires
+base build 26200/ProductType 1/client/non-DC or build 26100/ProductType 3/server/non-DC
+or build 26100/ProductType 2/server/DC, respectively. Missing, conflicting, failed
+or unsupported platform metadata stays unassessed, with no generic substitution.
+
+Other 310 controls keep generic targets; this is not a full platform baseline.
+English audit strings and exact known GUID/name identities are supported;
+unrecognized/localized or conflicting evidence stays unassessed. Extra audit flags
+are a baseline mismatch, not automatically less secure. Effective GPO/MDM precedence,
+patch freshness and platform attestation remain outside this comparison.
+
+`Test-BaselineApplicability.ps1` also runs the actual audit parsing block using
+mocked `auditpol` CSV, then the real profile/export blocks. Optional
+`ASSAY_BASELINE_PLATFORM_FIXTURES` writes three synthetic JSON documents for native
+import/report testing. No endpoint command is executed. Assay includes a separate
+`rust/tests/Test-BaselinePlatformSources.ps1` for six exact source-row checks against
+the pinned SCT ZIPs. The legacy WPF evaluator does not implement these profiles.
 
 ### Assay Cloud PC Applicability (1.3.0)
 
@@ -210,7 +237,7 @@ Import the JSON file in the GUI → Dashboard populates with scores, findings, a
 | `-EventSummaryOnly` | `$false` | Counts + top-N stats only |
 | `-IncludeGpoData` | `$false` | Opt-in to Area 3 (`gpresult /scope computer`) — the most expensive/fragile collection step; skipped by default |
 | `-IncludeSpeculationControl` | `$false` | Query the embedded Microsoft 1.0.19 detector; export explicit mitigation state and provenance without external modules or remediation |
-| `-AssessmentProfile` | `Generic` | `Windows365CloudPc` records an operator-selected versioned applicability declaration for the updated Assay importer; no automatic detection |
+| `-AssessmentProfile` | `Generic` | `Windows365CloudPc`, `Windows11_25H2`, `WindowsServer2025Member` or `WindowsServer2025DC`: bounded operator-selected profiles for updated Assay; no automatic detection |
 | `-Quiet` | `$false` | Suppress console output |
 
 ### Join Type Awareness

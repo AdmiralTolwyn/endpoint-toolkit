@@ -32,10 +32,12 @@
 .PARAMETER AssessmentProfile
     Generic (default) preserves existing evaluation. Windows365CloudPc explicitly
     declares Cloud PC applicability for the updated Assay importer; not device detection.
+    Windows11_25H2, WindowsServer2025Member and WindowsServer2025DC select a bounded
+    two-control SCT audit target overlay. Assay verifies build and role metadata.
     This does not skip collection, change policy, or update the legacy WPF evaluator.
 .NOTES
     Author : Anton Romanyuk
-    Version: 1.3.0
+    Version: 1.3.1
     Date   : 2026-09-18
     Requires: PowerShell 5.1, Local Admin, No external modules
     Runs headless on arbitrary Windows targets (client, member server, DC, Server Core).
@@ -58,13 +60,13 @@ param(
     [switch]$EventSummaryOnly,
     [switch]$IncludeGpoData,
     [switch]$IncludeSpeculationControl,
-    [ValidateSet('Generic','Windows365CloudPc')]
+    [ValidateSet('Generic','Windows365CloudPc','Windows11_25H2','WindowsServer2025Member','WindowsServer2025DC')]
     [string]$AssessmentProfile = 'Generic',
     [switch]$Quiet
 )
 
 $ErrorActionPreference = 'Continue'
-$Script:CollectorVersion = '1.3.0'
+$Script:CollectorVersion = '1.3.1'
 $Script:StartTime        = [DateTime]::Now
 # Area 3 (GPO/gpresult) only runs when -IncludeGpoData; Area 22 (events) only when not -SkipEventCollection.
 $Script:TotalAreas       = 20
@@ -2624,10 +2626,15 @@ $output = [ordered]@{
     eventData         = $eventData
 }
 
-if ($AssessmentProfile -eq 'Windows365CloudPc') {
+if ($AssessmentProfile -ne 'Generic') {
     $output['assessmentContext'] = [ordered]@{
         schemaVersion = '1.0'
-        profileId = 'windows365-cloud-pc'
+        profileId = switch ($AssessmentProfile) {
+            'Windows365CloudPc' { 'windows365-cloud-pc' }
+            'Windows11_25H2' { 'windows-11-25h2' }
+            'WindowsServer2025Member' { 'windows-server-2025-member' }
+            'WindowsServer2025DC' { 'windows-server-2025-dc' }
+        }
         profileVersion = '2026-09-18'
         selectionSource = 'Operator'
     }

@@ -2,6 +2,14 @@
 
 ## September 18 Addendum: Assay Applicability
 
+Collector 1.3.1 adds opt-in client/member/DC profiles for two SCT audit controls.
+MON-005 and MON-010 compare Success on Windows 11 25H2 to Success and Failure on
+Server 2025 member/DC, with strict build/role matching and explicit target provenance.
+All six source rows match exact policy names/GUIDs/settings in hash-pinned Microsoft
+SCT archives. Actual audit/export blocks are tested with mocked command output;
+the broader collector parser, platform identity and all other targets remain
+outside this limited verification. See [current usage](README.md#assay-sct-audit-profiles-131).
+
 Collector 1.3.0 adds optional `-AssessmentProfile Windows365CloudPc`, based on the
 current [Windows 365 security overview](https://learn.microsoft.com/en-us/windows-365/enterprise/security-guidelines).
 It exports an operator-declared, versioned profile; default Generic is unchanged.
