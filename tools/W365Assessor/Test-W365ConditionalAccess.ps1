@@ -16,7 +16,8 @@ $AppIdWindows365Portal = '0af06dc6-e4b5-4f28-818e-e78e62d137a5'
 $CloudPcSignInAppIds = @($AppIdWindowsCloudLogin, $AppIdAzureVirtualDesktop, $AppIdWindows365Portal)
 $CaPolicyUri = 'https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies'
 function Write-Status { param($Message, $Level) }
-function Invoke-GraphPaged { param($Uri) if ($Uri -cne $CaPolicyUri) { throw 'Unexpected CA request' }; if ($script:CaReadFails) { throw 'Synthetic read failure' }; $script:TestCaPolicies }
+function Invoke-GraphPaged { param($Uri) $script:CaRequests++; if ($Uri -cne $CaPolicyUri) { throw 'Unexpected CA request' }; if ($script:CaReadFails) { throw 'Synthetic read failure' }; $script:TestCaPolicies }
+$script:CaRequests = 0
 $script:CaReadFails = $false
 $script:TestCaPolicies = @(@{
     id = 'excluded'; state = 'enabled'
@@ -116,6 +117,24 @@ foreach ($Fails in @($false,$true)) {
     & $Production
     Assert-Ca ($AllChecks.Count -eq 4 -and @($AllChecks | Where-Object Status -ne 'Error').Count -eq 0) 'Empty/failed policy read produced a verdict'
 }
+$Gates = @($Ast.FindAll({ param($Node) $Node -is [Management.Automation.Language.IfStatementAst] -and $Node.Clauses[0].Item1.Extent.Text -ceq '$IncludeConditionalAccess' -and $Node.Extent.Text.Contains('$caPolicies =') }, $true))
+Assert-Ca ($Gates.Count -eq 1) 'Expected explicit production CA gate'
+$Gate = [scriptblock]::Create($Gates[0].Extent.Text)
+$Discovery = [pscustomobject]@{ Inventory = [ordered]@{} }
+$AllChecks.Clear()
+$script:CaRequests = 0
+$script:CaReadFails = $false
+$script:TestCaPolicies = @(New-TestCaPolicy)
+$Context = @{ Scopes = @('Policy.Read.All') }
+$IncludeConditionalAccess = $false
+& $Gate
+Assert-Ca ($script:CaRequests -eq 0 -and $AllChecks.Count -eq 0 -and $Discovery.Inventory.ConditionalAccessCollectionState -eq 'NotRequested') 'Opt-out queried CA or implied absence'
+$IncludeConditionalAccess = $true
+& $Gate
+Assert-Ca ($script:CaRequests -eq 1 -and $AllChecks.Count -eq 4 -and $Discovery.Inventory.ConditionalAccessCollectionState -eq 'Collected') 'Opt-in did not collect observations'
+$script:CaReadFails = $true
+& $Gate
+Assert-Ca ($script:CaRequests -eq 2 -and $Discovery.Inventory.ConditionalAccessCollectionState -eq 'Error') 'CA failure state lost'
 if ($env:ASSAY_W365_CA_FIXTURE) {
     [IO.File]::WriteAllText($env:ASSAY_W365_CA_FIXTURE, (@{ CheckResults = $ExportedChecks } | ConvertTo-Json -Depth 10), [Text.UTF8Encoding]::new($false))
 }

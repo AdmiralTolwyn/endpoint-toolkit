@@ -15,9 +15,13 @@
     Path to save the discovery JSON file. Defaults to
     .\assessments\discovery_<timestamp>.json relative to the script.
 .PARAMETER TenantId
-    Optional Entra ID tenant ID. If omitted, uses the user's home tenant.
+    Optional explicit Entra tenant GUID. If omitted, reuses a validated existing
+    session tenant or the tenant selected during a new delegated sign-in.
 .PARAMETER SkipLogin
-    Skip interactive login and use existing Microsoft Graph context.
+    Never sign in. Requires a valid delegated Global-cloud context with the
+    requested tenant and all scopes needed for the selected collection.
+.PARAMETER IncludeConditionalAccess
+    Opt in to Conditional Access policy observations and the Policy.Read.All scope.
 .PARAMETER InactiveDays
     Threshold in days to flag Cloud PCs as inactive. Default: 30.
 .PARAMETER ImageAgeWarnDays
@@ -33,17 +37,15 @@
     .\Invoke-W365Discovery.ps1 -OutputPath "C:\temp\w365_discovery.json"
 .NOTES
     Author : Anton Romanyuk
-    Version: 0.3.5
+    Version: 0.3.6
     Date   : 2026-09-18
 
     Required Graph scopes (core tier — requested unconditionally):
       CloudPC.Read.All                          Cloud PCs, provisioning/user policies, ANCs, images, reports
-    DeviceManagementConfiguration.Read.All    Intune config/compliance profiles and tenant update summary
-    DeviceManagementManagedDevices.Read.All   Intune managed-device context and Endpoint Analytics
-      Directory.Read.All                        Tenant/account context
+            DeviceManagementConfiguration.Read.All    Intune config/compliance profiles and tenant update summary
+            DeviceManagementManagedDevices.Read.All   Intune managed-device context and Endpoint Analytics
 
-    Optional Graph scope (requested if the admin consents; checks that need it
-    degrade to a Status 'Error' CheckResult naming the missing scope when absent):
+        Optional Graph scope (requested only with IncludeConditionalAccess):
       Policy.Read.All                           Conditional Access policies targeting Cloud PC sign-in apps
 
     API versions:
@@ -68,6 +70,8 @@ param(
     [Parameter(Mandatory = $false)]
     [switch]$SkipLogin,
 
+    [switch]$IncludeConditionalAccess,
+
     [Parameter(Mandatory = $false)]
     [int]$InactiveDays = 30,
 
@@ -90,7 +94,7 @@ $env:PSModulePath = ($env:PSModulePath -split ';' |
 $ScriptRoot = $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($ScriptRoot)) { $ScriptRoot = $PWD.Path }
 
-$ScriptVersion = '0.3.5'
+$ScriptVersion = '0.3.6'
 # Windows 365 GA surface (cloudPCs, provisioningPolicies, userSettings) migrated to /v1.0.
 $GraphBaseV1   = 'https://graph.microsoft.com/v1.0/deviceManagement/virtualEndpoint'
 # Beta retained for endpoints not yet GA / verified beta-only: onPremisesConnections, deviceImages,
@@ -171,6 +175,24 @@ function New-CheckResult {
         Timestamp      = (Get-Date -Format 'o')
         Source         = 'Automated'
     }
+}
+
+function Get-W365GraphContextIssue {
+    param([object]$SessionContext, [string]$ExpectedTenantId, [string[]]$RequiredScopes)
+    if ($null -eq $SessionContext) { return 'No Graph context is available.' }
+    $ContextTenant = [guid]::Empty
+    if ($SessionContext.TenantId -isnot [string] -or -not [guid]::TryParse($SessionContext.TenantId, [ref]$ContextTenant) -or $ContextTenant -eq [guid]::Empty) { return 'Graph context has no valid tenant GUID.' }
+    if ($ExpectedTenantId -and $ContextTenant -ne [guid]$ExpectedTenantId) { return 'Graph context does not match the selected tenant.' }
+    if ([string]$SessionContext.AuthType -cne 'Delegated') { return 'This collector requires a delegated Graph context.' }
+    if ($SessionContext.Environment -cne 'Global') { return 'This collector requires the Global Graph environment.' }
+    if ($SessionContext.Account -isnot [string] -or [string]::IsNullOrWhiteSpace($SessionContext.Account)) { return 'Graph context has no delegated account metadata.' }
+    if ($SessionContext.Scopes -is [string] -or $SessionContext.Scopes -isnot [Collections.IEnumerable]) { return 'Graph scope metadata is unavailable or malformed.' }
+    foreach ($Scope in $SessionContext.Scopes) {
+        if ($Scope -isnot [string] -or [string]::IsNullOrWhiteSpace($Scope)) { return 'Graph scope metadata is malformed.' }
+    }
+    $Missing = @($RequiredScopes | Where-Object { $SessionContext.Scopes -cnotcontains $_ })
+    if ($Missing.Count) { return ('Graph context is missing required delegated scopes: ' + ($Missing -join ', ')) }
+    return $null
 }
 
 function Invoke-GraphPaged {
@@ -306,43 +328,49 @@ $Scopes = @(
     'CloudPC.Read.All'
     'DeviceManagementConfiguration.Read.All'
     'DeviceManagementManagedDevices.Read.All'
-    'Directory.Read.All'
 )
-# Optional tier: requested at connect time but NOT enforced by the missing-scope gate below, so a
-# tenant that declines it still runs (the Conditional Access checks degrade to Status 'Error').
-$OptionalScopes = @(
-    'Policy.Read.All'
-)
+$OptionalScopes = @(if ($IncludeConditionalAccess) { 'Policy.Read.All' })
 $RequestScopes = @($Scopes + $OptionalScopes)
 
-$Context = Get-MgContext -ErrorAction SilentlyContinue
-if ($SkipLogin -and -not $Context) {
-    Write-Status "SkipLogin specified but no existing Graph context found" -Level 'ERROR'
-    exit 1
-}
-
-$NeedConnect = -not $Context
-if ($Context) {
-    $missing = @($Scopes | Where-Object { $Context.Scopes -notcontains $_ })
-    if ($missing.Count -gt 0) {
-        Write-Status "Existing context missing scopes: $($missing -join ', ')" -Level 'WARN'
-        $NeedConnect = $true
+$ExpectedTenantId = ''
+if ($TenantId) {
+    $SelectedTenant = [guid]::Empty
+    if (-not [guid]::TryParse($TenantId, [ref]$SelectedTenant) -or $SelectedTenant -eq [guid]::Empty) {
+        Write-Status 'TenantId must be an explicit tenant GUID; aliases and sign-in audiences are not supported.' -Level 'ERROR'
+        exit 1
     }
+    $ExpectedTenantId = $SelectedTenant.ToString('D')
+}
+$Context = Get-MgContext -ErrorAction Stop
+if (-not $ExpectedTenantId -and $Context) {
+    $ExistingTenant = [guid]::Empty
+    if ($Context.TenantId -is [string] -and [guid]::TryParse($Context.TenantId, [ref]$ExistingTenant) -and $ExistingTenant -ne [guid]::Empty) {
+        $ExpectedTenantId = $ExistingTenant.ToString('D')
+    }
+}
+$ContextIssue = Get-W365GraphContextIssue -SessionContext $Context -ExpectedTenantId $ExpectedTenantId -RequiredScopes $RequestScopes
+$NeedConnect = [bool]$ContextIssue
+if ($SkipLogin -and $NeedConnect) {
+    Write-Status "$ContextIssue SkipLogin prevents reconnecting; discovery will not run." -Level 'ERROR'
+    exit 1
 }
 
 if ($NeedConnect -and -not $SkipLogin) {
     Write-Status "Connecting to Microsoft Graph..." -Level 'INFO'
     try {
-        if ($TenantId) {
-            Connect-MgGraph -Scopes $RequestScopes -TenantId $TenantId -NoWelcome -ErrorAction Stop | Out-Null
-        } else {
-            Connect-MgGraph -Scopes $RequestScopes -NoWelcome -ErrorAction Stop | Out-Null
-        }
+        $ConnectParameters = @{ Scopes = $RequestScopes; Environment = 'Global'; ContextScope = 'Process'; NoWelcome = $true; ErrorAction = 'Stop' }
+        if ($ExpectedTenantId) { $ConnectParameters['TenantId'] = $ExpectedTenantId }
+        Connect-MgGraph @ConnectParameters | Out-Null
+        $Context = Get-MgContext -ErrorAction Stop
     } catch {
-        Write-Status "Graph connection failed: $($_.Exception.Message)" -Level 'ERROR'
+        Write-Status 'Graph connection or context retrieval failed; discovery will not run.' -Level 'ERROR'
         exit 1
     }
-    $Context = Get-MgContext
+}
+$ContextIssue = Get-W365GraphContextIssue -SessionContext $Context -ExpectedTenantId $ExpectedTenantId -RequiredScopes $RequestScopes
+if ($ContextIssue) {
+    Write-Status "$ContextIssue Discovery will not run." -Level 'ERROR'
+    exit 1
 }
 Write-Status "Tenant: $($Context.TenantId)" -Level 'SUCCESS'
 Write-Status "Account: $($Context.Account)" -Level 'SUCCESS'
@@ -1461,51 +1489,57 @@ try {
 
 # ═══════════════════════════════════════════════════════════════════════════
 # CONDITIONAL ACCESS  (/v1.0/identity/conditionalAccess/policies — Policy.Read.All, OPTIONAL tier)
-# The entire family degrades to Status 'Error' naming Policy.Read.All when the scope is not granted.
+# The CA read runs only when explicitly requested; Graph still enforces roles and permissions.
 # ═══════════════════════════════════════════════════════════════════════════
 Write-Status "Conditional Access (Cloud PC sign-in)" -Level 'SECTION'
-try {
-    $caPolicies = @(Invoke-GraphPaged -Uri $CaPolicyUri)
-    . (Join-Path $ScriptRoot 'W365ConditionalAccess.ps1')
-    $CaEvidence = @(ConvertTo-W365ConditionalAccessEvidence -Policies $caPolicies)
-    $Discovery.Inventory['ConditionalAccessPolicyEvidence'] = $CaEvidence
-    $CaDetails = ($CaEvidence | ForEach-Object {
-        "Policy $($_.PolicyId): state=$($_.State); Windows365=$($_.ApplicationTargets.Windows365); AVD=$($_.ApplicationTargets.AzureVirtualDesktop); WindowsCloudLogin=$($_.ApplicationTargets.WindowsCloudLogin); MFA=$($_.MfaRequirement); sign-in frequency=$($_.SignInFrequencyMode) $($_.SignInFrequencyValue) $($_.SignInFrequencyUnit)."
-    }) -join ' '
-    Write-Status "Conditional Access policy observations: $($CaEvidence.Count); effective scope not evaluated" -Level 'INFO'
-    foreach ($CaCheck in @(
-        @{ Id = 'W365-IAM-003-CA'; Name = 'Conditional Access scope review'; Severity = 'High' },
-        @{ Id = 'W365-IAM-004-MFA'; Name = 'MFA policy intent review'; Severity = 'High' },
-        @{ Id = 'W365-IAM-010'; Name = 'Windows Cloud Login scope review'; Severity = 'High' },
-        @{ Id = 'W365-IAM-011'; Name = 'Session-control applicability review'; Severity = 'Medium' }
-    )) {
-        [void]$AllChecks.Add((New-CheckResult `
-            -Id $CaCheck.Id -Category 'Identity & Access' -Name $CaCheck.Name `
-            -Description 'Collected policy intent only; effective Cloud PC user/sign-in coverage has not been evaluated.' `
-            -Status 'Error' -Severity $CaCheck.Severity `
-            -Details "No enforcement verdict. Users/groups/roles, conditions, exclusions and policy interactions require review. Windows Cloud Login and every-time frequency require SSO applicability. Token protection is not collected by the reviewed v1.0 contract. $CaDetails" `
-            -Recommendation 'Review the selected users, sign-in scenarios, applicable policies and client support. Validate enforcement separately; discovery makes no policy changes.' `
-            -Reference 'https://learn.microsoft.com/en-us/windows-365/enterprise/set-conditional-access-policies' `
-            -Evidence @{ AssessmentState = 'EffectiveScopeNotEvaluated'; ApiVersion = 'v1.0'; PolicyCount = $CaEvidence.Count }))
+if ($IncludeConditionalAccess) {
+    try {
+        $caPolicies = @(Invoke-GraphPaged -Uri $CaPolicyUri)
+        . (Join-Path $ScriptRoot 'W365ConditionalAccess.ps1')
+        $CaEvidence = @(ConvertTo-W365ConditionalAccessEvidence -Policies $caPolicies)
+        $Discovery.Inventory['ConditionalAccessPolicyEvidence'] = $CaEvidence
+        $Discovery.Inventory['ConditionalAccessCollectionState'] = 'Collected'
+        $CaDetails = ($CaEvidence | ForEach-Object {
+            "Policy $($_.PolicyId): state=$($_.State); Windows365=$($_.ApplicationTargets.Windows365); AVD=$($_.ApplicationTargets.AzureVirtualDesktop); WindowsCloudLogin=$($_.ApplicationTargets.WindowsCloudLogin); MFA=$($_.MfaRequirement); sign-in frequency=$($_.SignInFrequencyMode) $($_.SignInFrequencyValue) $($_.SignInFrequencyUnit)."
+        }) -join ' '
+        Write-Status "Conditional Access policy observations: $($CaEvidence.Count); effective scope not evaluated" -Level 'INFO'
+        foreach ($CaCheck in @(
+            @{ Id = 'W365-IAM-003-CA'; Name = 'Conditional Access scope review'; Severity = 'High' },
+            @{ Id = 'W365-IAM-004-MFA'; Name = 'MFA policy intent review'; Severity = 'High' },
+            @{ Id = 'W365-IAM-010'; Name = 'Windows Cloud Login scope review'; Severity = 'High' },
+            @{ Id = 'W365-IAM-011'; Name = 'Session-control applicability review'; Severity = 'Medium' }
+        )) {
+            [void]$AllChecks.Add((New-CheckResult `
+                -Id $CaCheck.Id -Category 'Identity & Access' -Name $CaCheck.Name `
+                -Description 'Collected policy intent only; effective Cloud PC user/sign-in coverage has not been evaluated.' `
+                -Status 'Error' -Severity $CaCheck.Severity `
+                -Details "No enforcement verdict. Users/groups/roles, conditions, exclusions and policy interactions require review. Windows Cloud Login and every-time frequency require SSO applicability. Token protection is not collected by the reviewed v1.0 contract. $CaDetails" `
+                -Recommendation 'Review the selected users, sign-in scenarios, applicable policies and client support. Validate enforcement separately; discovery makes no policy changes.' `
+                -Reference 'https://learn.microsoft.com/en-us/windows-365/enterprise/set-conditional-access-policies' `
+                -Evidence @{ AssessmentState = 'EffectiveScopeNotEvaluated'; ApiVersion = 'v1.0'; PolicyCount = $CaEvidence.Count }))
+        }
+    } catch {
+        $Discovery.Inventory['ConditionalAccessCollectionState'] = 'Error'
+        Write-Status "Conditional Access unavailable: $($_.Exception.Message)" -Level 'WARN'
+        foreach ($ca in @(
+            @{ Id = 'W365-IAM-003-CA'; Name = 'Conditional Access targeting'; Sev = 'High' },
+            @{ Id = 'W365-IAM-004-MFA'; Name = 'MFA for Cloud PC sign-in'; Sev = 'High' },
+            @{ Id = 'W365-IAM-010'; Name = 'Windows Cloud Login coverage'; Sev = 'High' },
+            @{ Id = 'W365-IAM-011'; Name = 'Token protection / sign-in frequency'; Sev = 'Medium' }
+        )) {
+            [void]$AllChecks.Add((New-CheckResult `
+                -Id $ca.Id -Category 'Identity & Access' `
+                -Name "$($ca.Name) — not assessed" `
+                -Status 'Error' -Severity $ca.Sev `
+                -Description 'Conditional Access policies could not be read, so Cloud PC access-control posture was not assessed.' `
+                -Details "GET conditionalAccess/policies failed: $($_.Exception.Message)" `
+                -Recommendation 'Verify Policy.Read.All, a supported Entra reader role, tenant visibility and service availability before retrying. Discovery does not grant access.' `
+                -Reference 'https://learn.microsoft.com/en-us/graph/api/conditionalaccessroot-list-policies?view=graph-rest-1.0' `
+                -Evidence @{ RequiredScope = 'Policy.Read.All'; Error = $_.Exception.Message }))
+        }
     }
-} catch {
-    Write-Status "Conditional Access unavailable (needs Policy.Read.All): $($_.Exception.Message)" -Level 'WARN'
-    foreach ($ca in @(
-        @{ Id = 'W365-IAM-003-CA'; Name = 'Conditional Access targeting'; Sev = 'High' },
-        @{ Id = 'W365-IAM-004-MFA'; Name = 'MFA for Cloud PC sign-in'; Sev = 'High' },
-        @{ Id = 'W365-IAM-010'; Name = 'Windows Cloud Login coverage'; Sev = 'High' },
-        @{ Id = 'W365-IAM-011'; Name = 'Token protection / sign-in frequency'; Sev = 'Medium' }
-    )) {
-        [void]$AllChecks.Add((New-CheckResult `
-            -Id $ca.Id -Category 'Identity & Access' `
-            -Name "$($ca.Name) — not assessed" `
-            -Status 'Error' -Severity $ca.Sev `
-            -Description 'Conditional Access policies could not be read, so Cloud PC access-control posture was not assessed.' `
-            -Details "GET conditionalAccess/policies failed: $($_.Exception.Message)" `
-            -Recommendation 'Grant the optional Policy.Read.All scope (admin consent) and re-run to assess Conditional Access coverage for Cloud PC sign-in.' `
-            -Reference 'https://learn.microsoft.com/en-us/graph/api/resources/conditionalaccesspolicy' `
-            -Evidence @{ RequiredScope = 'Policy.Read.All'; Error = $_.Exception.Message }))
-    }
+} else {
+    $Discovery.Inventory['ConditionalAccessCollectionState'] = 'NotRequested'
 }
 
 if ($IncludeUserExperienceSync) {

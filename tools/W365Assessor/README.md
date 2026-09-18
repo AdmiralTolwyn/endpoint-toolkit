@@ -1,11 +1,46 @@
 # Windows 365 Assessor
 
-## Collector 0.3.5: Security Evidence and UX Sync
+## Collector 0.3.6: Security Evidence and UX Sync
 
 The collector optionally emits `W365-PROV-011` for **Assay** (31 Auto / 101
 Manual after reclassifying eleven unsupported evaluators). The legacy
 WPF catalog and the 41/91 counts below are unchanged; the
 legacy importer does not consume this new automatic result.
+
+In 0.3.6, authentication validates the actual SDK context before discovery and
+after any connection: nonempty tenant GUID, delegated authentication, Global
+environment, account metadata and the selected collection's required scopes.
+An explicit `-TenantId` must be a tenant GUID; aliases such as `common` or domain
+names are deliberately unsupported by this adapter. `-SkipLogin` never connects
+and stops on a missing, mismatched or under-permissioned context. Without a tenant
+argument, a reused session's tenant is retained, including when more permissions
+require reconnecting; a new session uses the tenant selected during sign-in.
+
+**Compatibility change:** use `-IncludeConditionalAccess` to collect CA evidence.
+Only this switch adds `Policy.Read.All` to the requested permissions and enables
+the CA GET. Without it, CA makes no request and records `NotRequested`, even if a
+cached context already has that scope. When requested, a missing CA scope fails
+preflight; role/visibility/service failures still produce unassessed CA results.
+The unused `Directory.Read.All` request was removed. New connections explicitly
+use `-Environment Global -ContextScope Process`; existing valid contexts are
+reused without disconnecting or changing their cache scope.
+
+```powershell
+.\Invoke-W365Discovery.ps1 -TenantId '<tenant-guid>' -SkipLogin
+.\Invoke-W365Discovery.ps1 -TenantId '<tenant-guid>' -IncludeConditionalAccess
+```
+
+App-only, unknown-auth and sovereign-cloud contexts are not supported by this
+collector adapter; this is not a limitation of Microsoft Graph itself. Context
+metadata is not token-signature, expiry, audience, role or tenant-wide-visibility
+proof. Graph performs actual authorization. Existing credentials may carry
+additional permissions; this code does not revoke grants or narrow a cached token.
+No live sign-in or tenant query was used to validate these changes.
+
+Sources: [Get-MgContext](https://learn.microsoft.com/en-us/powershell/module/microsoft.graph.authentication/get-mgcontext?view=graph-powershell-1.0),
+[Connect-MgGraph](https://learn.microsoft.com/en-us/powershell/module/microsoft.graph.authentication/connect-mggraph?view=graph-powershell-1.0),
+[authentication commands](https://learn.microsoft.com/en-us/powershell/microsoftgraph/authentication-commands),
+[CA read permission and roles](https://learn.microsoft.com/en-us/graph/api/conditionalaccessroot-list-policies?view=graph-rest-1.0).
 
 In 0.3.5, the general GET pager rejects cross-host/path/version continuations,
 changed query scope, duplicate/unknown query keys, malformed response shapes,
@@ -111,6 +146,9 @@ The comparison proves neither effective assignment nor successful profile
 persistence or capacity. UX Sync is not backup/DR; modifying existing assignments
 can deprovision Cloud PCs and delete user storage. This collector never does that.
 
+Run `Test-W365Authentication.ps1` in PowerShell 5.1/7 for mocked session reuse,
+tenant pinning, process-scoped reconnect, post-connect validation and export tests.
+The CA suite also verifies the real opt-in branch makes zero requests when omitted.
 Run `Test-W365GraphPaging.ps1` in PowerShell 5.1/7 for offline pager and real
 initialization/error-propagation tests. `ASSAY_W365_PAGING_FIXTURE` writes the
 synthetic error/summary export for native import tests.
@@ -191,7 +229,7 @@ It also pairs with **[BaselinePilot](../BaselineAssessor/)** via dedicated check
 
 ### Automated Discovery
 - Standalone `Invoke-W365Discovery.ps1` script runs against the signed-in tenant via Microsoft Graph (v1.0, plus beta where required)
-- Consents to read-only scopes (`CloudPC.Read.All`, `DeviceManagementConfiguration.Read.All`, `DeviceManagementManagedDevices.Read.All`, `Directory.Read.All`; optionally `Policy.Read.All` for the identity checks)
+- Requests three core read scopes (`CloudPC.Read.All`, `DeviceManagementConfiguration.Read.All`, `DeviceManagementManagedDevices.Read.All`); `-IncludeConditionalAccess` additionally requests `Policy.Read.All`
 - Discovers Cloud PCs, provisioning policies, user settings, Azure Network Connections, custom + gallery images, service plans, Intune security/compliance posture, Cloud PC reports, Conditional Access targeting, and the last 30 days of audit events
 - Evaluates 41 checks automatically and emits a structured JSON that can be imported into the GUI for hybrid assessment
 - Supports `‑SkipLogin` for an existing Graph context, plus tunable `-InactiveDays` and `-ImageAgeWarnDays` thresholds
@@ -262,11 +300,14 @@ The launcher auto-detects PowerShell 7 (`pwsh`) and falls back to Windows PowerS
 ### Option 2: Discovery Script (Automated Scan)
 
 ```powershell
-# Interactive sign-in to Microsoft Graph — current tenant
+# Reuse a validated session or sign in if required
 .\Invoke-W365Discovery.ps1
 
-# Reuse an existing Graph context (no sign-in prompt)
-.\Invoke-W365Discovery.ps1 -SkipLogin
+# Reuse an existing delegated Global context for a specific tenant; never sign in
+.\Invoke-W365Discovery.ps1 -TenantId '<tenant-guid>' -SkipLogin
+
+# Explicitly include Conditional Access policy observations
+.\Invoke-W365Discovery.ps1 -TenantId '<tenant-guid>' -IncludeConditionalAccess
 
 # Custom output location
 .\Invoke-W365Discovery.ps1 -OutputPath "C:\temp\w365_discovery.json"
@@ -298,8 +339,8 @@ Then in the GUI: **File → Load discovery → select the JSON**. Auto-checks po
 |---|---|
 | PowerShell | 5.1 or 7+ |
 | `Microsoft.Graph.Authentication` | Sign-in and Graph request handling |
-| Graph permissions | `CloudPC.Read.All`, `DeviceManagementConfiguration.Read.All`, `DeviceManagementManagedDevices.Read.All`, `Directory.Read.All` |
-| Optional Graph permission | `Policy.Read.All` — required for the Conditional Access / MFA identity checks (`W365-IAM-003`, `W365-IAM-004`, `W365-IAM-010`, `W365-IAM-011`); without it these checks degrade to **Error** rather than blocking the rest of discovery |
+| Graph permissions | `CloudPC.Read.All`, `DeviceManagementConfiguration.Read.All`, `DeviceManagementManagedDevices.Read.All` |
+| Optional Graph permission | `Policy.Read.All`, requested only with `-IncludeConditionalAccess`; opt-out records NotRequested. Opt-in requires the scope before discovery; Graph still enforces the documented Entra role and resource visibility. |
 | Tenant role | Cloud PC Reader, Intune Reader, or Global Reader |
 
 ```powershell
@@ -427,7 +468,7 @@ Discovery **0.2.0** adds the following automated evaluations, emitted directly u
 | `W365-SEC-003` | Security baseline profile deployed to Cloud PC groups |
 | `W365-SEC-004` | Device compliance policy targeting Cloud PCs |
 
-> The four `Policy.Read.All`-backed identity checks report **Error** (not Fail) when the optional scope is not granted.
+> CA collection requires `-IncludeConditionalAccess` and a validated context with `Policy.Read.All`. Omitted collection is NotRequested; service failures yield Error/NotAssessed, never proof of absent policy.
 
 The remaining **89 checks are Manual** — designed to drive a workshop conversation with the customer and capture decisions in the assessment record.
 
@@ -547,7 +588,7 @@ W365Assessor/
 
 | Component | Version |
 |---|---|
-| `Invoke-W365Discovery.ps1` | 0.3.5 |
+| `Invoke-W365Discovery.ps1` | 0.3.6 |
 | `checks.json` | 1.1 (schema), 132 checks |
 | `W365Assessor.ps1` | 0.2.0 |
 
