@@ -1,4 +1,6 @@
 #Requires -Version 5.1
+[CmdletBinding()]
+param([string]$AssayCatalogPath)
 $ErrorActionPreference = 'Stop'
 $Tokens = $null
 $ParseErrors = $null
@@ -54,3 +56,68 @@ function Get-CimInstance { [pscustomobject]@{ VirtualizationBasedSecurityStatus 
 try { $Result = & $DeviceGuard } finally { Remove-Item Function:\Get-CimInstance, Function:\Read-RegistryValue }
 if ($Result.VbsRunning -ne $true -or $Result.CredentialGuardIsRunning -ne $true -or $Result.MemoryIntegrityIsRunning -ne $true) { throw 'Documented Device Guard runtime state lost' }
 Write-Output 'PASS: observed Defender and Device Guard runtime evidence remains distinct from policy intent and unavailable providers.'
+
+$PowerShellArea = Get-CollectorArea '$powershellConfig'
+$systemInfo = @{ isServer = $false }
+function Read-RegistryValue { $null }
+function Get-ExecutionPolicy { 'RemoteSigned' }
+function Get-WindowsOptionalFeature {
+    param([switch]$Online, [string]$FeatureName)
+    if (-not $Online -or $FeatureName -cne 'MicrosoftWindowsPowerShellV2') { throw 'Unexpected feature query' }
+    [pscustomobject]@{ FeatureName = $FeatureName; State = $script:FeatureState }
+}
+foreach ($State in @('Enabled','Disabled','DisablePending','Unknown')) {
+    $script:FeatureState = $State
+    $Result = & $PowerShellArea
+    if ($Result.legacyEngine.collectionState -ne 'Complete' -or $Result.legacyEngine.state -cne $State) { throw 'Feature state was guessed or lost' }
+    if ($State -eq 'Disabled') { $DisabledFeature = $Result }
+}
+Remove-Item Function:\Get-WindowsOptionalFeature
+function Get-WindowsOptionalFeature { throw 'Synthetic feature query failure' }
+try { $Result = & $PowerShellArea } finally { Remove-Item Function:\Get-WindowsOptionalFeature }
+if ($Result.legacyEngine.collectionState -ne 'Error' -or $null -ne $Result.legacyEngine.state) { throw 'Feature query error inferred removal' }
+$systemInfo.isServer = $true
+function Get-WindowsFeature {
+    param([string]$Name)
+    if ($Name -cne 'PowerShell-V2') { throw 'Unexpected server feature query' }
+    [pscustomobject]@{ Name = $Name; InstallState = 'Removed' }
+}
+try { $Result = & $PowerShellArea } finally { Remove-Item Function:\Get-WindowsFeature }
+if ($Result.legacyEngine.provider -ne 'Get-WindowsFeature' -or $Result.legacyEngine.state -ne 'Removed') { throw 'Server feature identity lost' }
+$systemInfo.isServer = $null
+try { $Result = & $PowerShellArea } finally { Remove-Item Function:\Read-RegistryValue, Function:\Get-ExecutionPolicy }
+if ($Result.legacyEngine.collectionState -ne 'Unsupported') { throw 'Unknown platform was guessed' }
+if ($env:ASSAY_BASELINE_COLLECTOR_FIXTURE) {
+    [IO.File]::WriteAllText($env:ASSAY_BASELINE_COLLECTOR_FIXTURE, (@{ systemInfo = @{ hostname = 'synthetic'; isServer = $false }; powershellConfig = $DisabledFeature } | ConvertTo-Json -Depth 10), [Text.UTF8Encoding]::new($false))
+}
+Write-Output 'PASS: documented client/server PowerShell 2.0 feature reads, raw pending/unknown states and explicit errors; no feature queries executed.'
+
+if ($AssayCatalogPath) {
+    $Catalog = Get-Content -LiteralPath $AssayCatalogPath -Raw | ConvertFrom-Json
+    $RegistryArea = Get-CollectorArea '$registryBaselines'
+    function Read-RegistryValue { 1 }
+    function Read-RegistryValues {
+        param([string]$Path)
+        $Values = @{}
+        $Prefix = 'registryBaselines.' + $Path + '\'
+        foreach ($Check in $Catalog.checks) {
+            foreach ($Key in $Check.collectionKeys) {
+                if ($Key.StartsWith($Prefix, [StringComparison]::OrdinalIgnoreCase)) {
+                    $Leaf = $Key.Substring($Prefix.Length)
+                    if (-not $Leaf.Contains('\')) { $Values[$Leaf] = 1 }
+                }
+            }
+        }
+        return $Values
+    }
+    try { $Registry = & $RegistryArea } finally { Remove-Item Function:\Read-RegistryValue, Function:\Read-RegistryValues }
+    $Missing = @(foreach ($Check in $Catalog.checks | Where-Object type -eq 'Auto') {
+        foreach ($Key in $Check.collectionKeys) {
+            if ($Key.StartsWith('registryBaselines.') -and -not $Registry.ContainsKey($Key.Substring('registryBaselines.'.Length))) {
+                [pscustomobject]@{ Check = $Check.id; Key = $Key }
+            }
+        }
+    })
+    if ($Missing.Count) { $Missing | Format-List; throw ('Automatic registry bindings not collected: ' + $Missing.Count) }
+    Write-Output 'PASS: every declared automatic registry binding is covered by the current collector; provider success and policy applicability are separate.'
+}

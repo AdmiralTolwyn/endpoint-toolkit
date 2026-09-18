@@ -4,7 +4,7 @@ BaselinePilot is a two-component security baseline assessment tool for Windows 1
 
 > The project folder is `tools/BaselineAssessor/` (matching this repo's tool-directory convention); the product itself is named **BaselinePilot** — the two names are not a typo.
 
-**Versions**: App `0.2.0` · Collector `1.1.2` · Catalog (`checks.json`) `1.1`. See [`AUDIT.md`](AUDIT.md) for the July 2026 audit and fix-pass history behind the current versions.
+**Versions**: App `0.2.0` · Collector `1.1.3` · Catalog (`checks.json`) `1.1`. See [`AUDIT.md`](AUDIT.md) for the July 2026 audit and fix-pass history behind the current versions.
 
 ### Collector Evidence Review (18 September 2026)
 
@@ -23,6 +23,20 @@ BaselinePilot loads CSP metadata for UI/remediation enrichment, not as baseline
 targets; no ADMX loader is used in that app. Assay independently embeds its
 reviewed source/unified catalog and evaluates the exported JSON. The metadata
 files do not automatically change Assay checks, defaults or recommendations.
+
+Collector 1.1.3 additionally records `powershellConfig.legacyEngine` using the
+[Microsoft PowerShell team's documented feature queries](https://devblogs.microsoft.com/powershell/windows-powershell-2-0-deprecation/):
+`Get-WindowsOptionalFeature -Online -FeatureName MicrosoftWindowsPowerShellV2`
+on clients, or `Get-WindowsFeature -Name PowerShell-V2` on servers. No features
+are changed. Unknown platform, unavailable provider, absent result and query
+failure remain unsupported/error evidence, never inferred removal. DISM can
+write its own diagnostic log. Assay's updated SEC-065 consumes this evidence;
+the legacy BaselinePilot check catalog/evaluator is not updated by this change.
+
+`Test-BaselineCollector.ps1 -AssayCatalogPath <assay>/rust/catalogs/source/baseline.json`
+also checks every automatic registry binding against the actual collector read
+list with mocked named/bulk reads. This proves declared path coverage, not real
+provider success, safe policy precedence or complete coverage of nonregistry checks.
 
 ## Architecture
 

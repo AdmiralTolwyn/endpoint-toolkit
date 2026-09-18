@@ -28,7 +28,7 @@
     Suppress console output (for automation).
 .NOTES
     Author : Anton Romanyuk
-    Version: 1.1.2
+    Version: 1.1.3
     Date   : 2026-09-18
     Requires: PowerShell 5.1, Local Admin, No external modules
     Runs headless on arbitrary Windows targets (client, member server, DC, Server Core).
@@ -54,7 +54,7 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
-$Script:CollectorVersion = '1.1.2'
+$Script:CollectorVersion = '1.1.3'
 $Script:StartTime        = [DateTime]::Now
 # Area 3 (GPO/gpresult) only runs when -IncludeGpoData; Area 22 (events) only when not -SkipEventCollection.
 $Script:TotalAreas       = 20
@@ -1419,7 +1419,30 @@ $tlsConfig = Invoke-CollectionArea -Step 18 -Name 'TLS Configuration' -Sections 
 # ═══════════════════════════════════════════════════════════════════════
 
 $powershellConfig = Invoke-CollectionArea -Step 19 -Name 'PowerShell Configuration' -Sections @('powershellConfig') -Script {
+    $LegacyEngine = @{ collectionState = 'Unsupported'; provider = ''; featureName = ''; state = $null }
+    if ($systemInfo.isServer -is [bool]) {
+        try {
+            if ($systemInfo.isServer) {
+                $LegacyEngine.provider = 'Get-WindowsFeature'
+                $LegacyEngine.featureName = 'PowerShell-V2'
+                $Feature = @(Get-WindowsFeature -Name 'PowerShell-V2' -ErrorAction Stop)
+                if ($Feature.Count -ne 1 -or $Feature[0].Name -cne 'PowerShell-V2') { throw 'Unexpected feature identity' }
+                $LegacyEngine.state = [string]$Feature[0].InstallState
+            } else {
+                $LegacyEngine.provider = 'Get-WindowsOptionalFeature'
+                $LegacyEngine.featureName = 'MicrosoftWindowsPowerShellV2'
+                $Feature = @(Get-WindowsOptionalFeature -Online -FeatureName 'MicrosoftWindowsPowerShellV2' -ErrorAction Stop)
+                if ($Feature.Count -ne 1 -or $Feature[0].FeatureName -cne 'MicrosoftWindowsPowerShellV2') { throw 'Unexpected feature identity' }
+                $LegacyEngine.state = [string]$Feature[0].State
+            }
+            $LegacyEngine.collectionState = 'Complete'
+        } catch {
+            $LegacyEngine.collectionState = 'Error'
+            $LegacyEngine.state = $null
+        }
+    }
     @{
+        legacyEngine                = $LegacyEngine
         ScriptBlockLogging          = Read-RegistryValue -Path 'HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging' -Name 'EnableScriptBlockLogging'
         ScriptBlockInvocationLogging = Read-RegistryValue -Path 'HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging' -Name 'EnableScriptBlockInvocationLogging'
         Transcription               = Read-RegistryValue -Path 'HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell\Transcription' -Name 'EnableTranscripting'
