@@ -4,7 +4,7 @@ BaselinePilot is a two-component security baseline assessment tool for Windows 1
 
 > The project folder is `tools/BaselineAssessor/` (matching this repo's tool-directory convention); the product itself is named **BaselinePilot** — the two names are not a typo.
 
-**Versions**: App `0.2.0` · Collector `1.1.3` · Catalog (`checks.json`) `1.1`. See [`AUDIT.md`](AUDIT.md) for the July 2026 audit and fix-pass history behind the current versions.
+**Versions**: App `0.2.0` · Collector `1.2.0` · Catalog (`checks.json`) `1.1`. See [`AUDIT.md`](AUDIT.md) for the July 2026 audit and fix-pass history behind the current versions.
 
 ### Collector Evidence Review (18 September 2026)
 
@@ -37,6 +37,62 @@ the legacy BaselinePilot check catalog/evaluator is not updated by this change.
 also checks every automatic registry binding against the actual collector read
 list with mocked named/bulk reads. This proves declared path coverage, not real
 provider success, safe policy precedence or complete coverage of nonregistry checks.
+
+### Embedded Speculation Control (1.2.0)
+
+The collector contains Microsoft's `Get-SpeculationControlSettings` function
+from SpeculationControl 1.0.19, unchanged apart from line-ending normalization,
+with the upstream MIT license and attribution. Only the collector script needs
+to be deployed; no module installation or companion file is required.
+
+```powershell
+.\Invoke-BaselineCollection.ps1 -IncludeSpeculationControl -SkipEventCollection -OutputPath .\baseline.json
+```
+
+This opt-in calls the embedded function with `-Quiet`. It reads Windows native
+mitigation information and CIM processor/OS information, using `Add-Type` for
+the native query. It does not download, install a module, change execution policy,
+write mitigation registry values, update firmware or remediate. Normal collector
+administrator requirements and local diagnostic/output side effects still apply.
+Restricted language mode, platform/provider incompatibility and query failures
+produce explicit Error evidence, not a guessed protection status. No opt-in
+means NotRequested. The optional section has its own state; the legacy 22-area
+progress counters are unchanged.
+
+The `speculationControl` section records schema/version, UTC capture time,
+embedded source commit/hash, 39 allowlisted Boolean/null fields and five status
+strings. Unsupported types make the section Partial; absent/conditional fields
+remain absent. Arbitrary module properties and error text are not exported.
+Source hashes identify the reviewed code, not an authenticated device attestation.
+
+Assay replaces SEC-057's old registry-only comparison with 13 family results:
+BTI, KVA shadow, SSBD, L1TF OS, MDS, three MMIO families, branch confusion, GDS,
+SRSO, divide-by-zero and RFDS. Reported applicable enablement passes; reported
+unaffected/immune hardware is not a failure; observed disabled mitigations warn
+for review. Unknown reporting/applicability never becomes a clean result. BHB
+flags are observations only until their applicability/reporting contract is
+reviewed. PCID/retpoline optimizations are not independent security requirements.
+Pass is scoped to these evaluated families, not all silicon vulnerabilities or
+firmware freshness. A guest does not certify the host or L1TF VMM protection.
+The legacy BaselinePilot catalog/evaluator is not changed by this addition.
+
+Sources: [client guidance](https://support.microsoft.com/help/4073119),
+[server guidance](https://support.microsoft.com/help/4072698),
+[output interpretation](https://support.microsoft.com/help/4074629),
+[pinned source](https://github.com/microsoft/SpeculationControl/blob/f4d2a2d4f32e93279703d50283b80672e3d3a2c3/SpeculationControl.psm1).
+The implementation source is authoritative for exact field names and polarity;
+some older KB prose/examples use inconsistent names or inverse wording. Do not
+copy a single registry override value across clients, servers and CPU families.
+
+`Test-SpeculationEvidence.ps1` parses the collector without executing its main
+body, checks the embedded function SHA256 and license, and tests the wrapper
+with synthetic results. Optional `-UpstreamPath` compares a separately obtained
+pinned source file; no source download or detector execution occurs in tests.
+The normalized function SHA256 is
+`6ACA20A3EAD9E45CC9E6043223502B09DBFFB915A8D0EBF44700107985C87E21`.
+The original Authenticode block was not copied: it would not sign the combined
+collector. Organizations may sign the complete collector through their normal
+deployment process; do not bypass execution policy for this feature.
 
 ## Architecture
 
@@ -119,6 +175,7 @@ Import the JSON file in the GUI → Dashboard populates with scores, findings, a
 | `-SkipEventCollection` | `$false` | Skip Area 22 entirely (~30s total) |
 | `-EventSummaryOnly` | `$false` | Counts + top-N stats only |
 | `-IncludeGpoData` | `$false` | Opt-in to Area 3 (`gpresult /scope computer`) — the most expensive/fragile collection step; skipped by default |
+| `-IncludeSpeculationControl` | `$false` | Query the embedded Microsoft 1.0.19 detector; export explicit mitigation state and provenance without external modules or remediation |
 | `-Quiet` | `$false` | Suppress console output |
 
 ### Join Type Awareness
