@@ -23,6 +23,52 @@ Assert-Epm ($Rules.Count -eq 2 -and $Rules[0].id -ne $Rules[1].id) 'Rule group i
 Assert-Epm ($Rules[0].fileName -eq 'setup*.exe' -and $Rules[0].elevationType -ceq 'Automatic') 'Exact definition/choice binding failed'
 Assert-Epm ($null -eq $Rules[1].filePath -and $null -eq $Rules[1].elevationType) 'Missing/default values inherited from another rule'
 Assert-Epm (-not ($Rules | ConvertTo-Json -Depth 20).Contains('SECRET')) 'Unreviewed EPM rule content leaked'
+$MixedBindingCases = foreach ($Placement in @('child', 'root-definition', 'field-definition')) {
+    foreach ($Shape in @('array', 'multi-array', 'empty-array', 'number', 'boolean', 'object', 'null', 'missing')) {
+        foreach ($MalformedFirst in @($false, $true)) { @{ Placement = $Placement; Shape = $Shape; First = $MalformedFirst } }
+    }
+}
+foreach ($MixedCase in $MixedBindingCases) {
+    $MixedBinding = $MixedCase.Placement
+    foreach ($DecodeJson in @($false, $true)) {
+        $MixedDefinitions = @($Definitions)
+        $MixedInstance = @{ settingDefinitionId = $RootId; groupSettingCollectionValue = @(@{ children = @($First.children) }) }
+        if ($MixedBinding -eq 'child') {
+            $MalformedCandidate = @{ settingDefinitionId = ($RootId + '_filename'); simpleSettingValue = @{ value = 'SECRET_DUPLICATE.exe' } }
+            $IdProperty = 'settingDefinitionId'
+        } else {
+            $DefinitionIndex = if ($MixedBinding -eq 'root-definition') { 0 } else { 2 }
+            $MalformedCandidate = $Definitions[$DefinitionIndex].Clone()
+            $IdProperty = 'id'
+        }
+        $OriginalId = $MalformedCandidate[$IdProperty]
+        switch ($MixedCase.Shape) {
+            'array' { $MalformedCandidate[$IdProperty] = @($OriginalId) }
+            'multi-array' { $MalformedCandidate[$IdProperty] = @($OriginalId, 'SECRET_DUPLICATE_ID') }
+            'empty-array' { $MalformedCandidate[$IdProperty] = @() }
+            'number' { $MalformedCandidate[$IdProperty] = 1 }
+            'boolean' { $MalformedCandidate[$IdProperty] = $true }
+            'object' { $MalformedCandidate[$IdProperty] = @{ value = $OriginalId } }
+            'null' { $MalformedCandidate[$IdProperty] = $null }
+            'missing' { $MalformedCandidate.Remove($IdProperty) }
+        }
+        if ($MixedBinding -eq 'child') {
+            if ($MixedCase.First) { $MixedInstance.groupSettingCollectionValue[0].children = @($MalformedCandidate) + $First.children }
+            else { $MixedInstance.groupSettingCollectionValue[0].children += $MalformedCandidate }
+        } else {
+            if ($MixedCase.First) { $MixedDefinitions = @($MalformedCandidate) + $MixedDefinitions }
+            else { $MixedDefinitions += $MalformedCandidate }
+        }
+        if ($DecodeJson) {
+            $MixedDefinitions = $MixedDefinitions | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+            $MixedInstance = $MixedInstance | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+        }
+        $MixedRejected = $false
+        try { $null = @(ConvertTo-IntuneEpmRules $MixedInstance $MixedDefinitions 'policy' 'mixed-binding') }
+        catch { $MixedRejected = $true }
+        Assert-Epm $MixedRejected "Malformed duplicate was discarded before EPM uniqueness checks: $MixedBinding; $($MixedCase.Shape); First=$($MixedCase.First); JSON=$DecodeJson"
+    }
+}
 $BindingCases = foreach ($Binding in @('root-instance', 'root-definition', 'root-offset', 'field-instance', 'field-definition', 'field-offset')) {
     foreach ($Shape in @('valid', 'array', 'multi-array', 'empty-array', 'number', 'boolean', 'object', 'null', 'missing', 'blank', 'case', 'leading-space', 'trailing-space')) {
         @{ Binding = $Binding; Shape = $Shape }
@@ -78,6 +124,8 @@ foreach ($BindingCase in $BindingCases) {
             }
         } elseif ($Binding.StartsWith('root-')) {
             Assert-Epm $BindingRejected "Malformed EPM root definition was accepted: $Context"
+        } elseif ($Binding -in @('field-instance', 'field-definition') -and $Shape -in @('array', 'multi-array', 'empty-array', 'number', 'boolean', 'object', 'null', 'missing')) {
+            Assert-Epm $BindingRejected "Non-string EPM field identity did not invalidate coverage: $Context"
         } else {
             Assert-Epm (-not $BindingRejected -and $BindingRules.Count -eq 1 -and $null -eq $BindingRules[0].fileName -and $BindingRules[0].name -ceq 'Rule one') "Malformed EPM field binding produced evidence or hid a sibling: $Context"
         }
@@ -310,9 +358,7 @@ $script:EpmFixtureInstance = @{ settingDefinitionId = $RootId; groupSettingColle
 ) }
 $BindingDocument = Invoke-IntuneDiscoveryCore -SelectedTenant '22222222-2222-4222-8222-222222222222' -Configuration $true -Request $EpmRequest -Requirements $EpmRequirements
 $BindingRows = $BindingDocument.Inventory.EpmRules
-Assert-Epm ($BindingRows.Count -eq 2 -and $BindingDocument.CollectionStatus.EpmRules.State -ceq 'Complete' -and $BindingDocument.CollectionStatus.EpmRules.CompletedParentIds -contains 'policy') 'Malformed field bindings lost EPM group provenance'
-Assert-Epm ($BindingRows[0].name -ceq 'Rule one' -and $BindingRows[0].elevationType -ceq 'Automatic' -and $null -eq $BindingRows[0].fileName -and $null -eq $BindingRows[0].filePath) 'Malformed field identity/offset exposed EPM values'
-Assert-Epm ($BindingRows[1].name -ceq 'Rule one' -and $BindingRows[1].fileName -ceq 'other.exe' -and $null -eq $BindingRows[1].elevationType) 'Malformed elevation identity resolved or hid explicit sibling fields'
+Assert-Epm ($BindingRows.Count -eq 0 -and $BindingDocument.CollectionStatus.EpmRules.State -ceq 'Partial' -and $BindingDocument.CollectionStatus.EpmRules.CompletedParentIds.Count -eq 0) 'Malformed field identity did not invalidate EPM coverage'
 $BindingJson = $BindingDocument | ConvertTo-Json -Depth 30
 Assert-Epm (-not ($BindingJson -match 'SECRET|offsetUri|ChoiceUnresolved|TemplateUnresolved')) 'Malformed EPM binding payload exported'
 if ($env:ASSAY_INTUNE_EPM_BINDING_FIXTURE) { [IO.File]::WriteAllText($env:ASSAY_INTUNE_EPM_BINDING_FIXTURE, $BindingJson, [Text.UTF8Encoding]::new($false)) }
@@ -360,5 +406,58 @@ foreach ($MalformedRoot in @($false, $true)) {
         Assert-Epm ($MixedRootDocument.Inventory.EpmRules.Count -eq 2 -and $MixedRootDocument.CollectionStatus.EpmRules.State -ceq 'Partial' -and $MixedRootDocument.CollectionStatus.EpmRules.CompletedParentIds.Count -eq 0) 'Valid EPM sibling hid malformed root identity from collection coverage'
     } else {
         Assert-Epm ($MixedRootDocument.Inventory.EpmRules.Count -eq 4 -and $MixedRootDocument.CollectionStatus.EpmRules.State -ceq 'Complete' -and $MixedRootDocument.CollectionStatus.EpmRules.CompletedParentIds -contains 'policy') 'Two explicit EPM settings lost complete coverage'
+    }
+}
+$script:EpmDuplicateValid = @{ settingDefinitionId = $RootId; groupSettingCollectionValue = @(@{ children = @(
+    $First.children[0],
+    @{ settingDefinitionId = ($RootId + '_filename'); simpleSettingValue = @{ value = 'safe.exe' } },
+    @{ settingDefinitionId = ($RootId + '_filepath'); simpleSettingValue = @{ value = 'C:\Program Files\Review' } },
+    $First.children[3]
+) }) }
+$DuplicateRequest = {
+    param($Address)
+    $RequestPath = ([uri]$Address).AbsolutePath
+    $Rows = switch ($RequestPath) {
+        '/beta/deviceManagement/configurationPolicies' { @(@{ id = 'policy'; platforms = 'windows10'; technologies = 'endpointPrivilegeManagement'; settingCount = 2; templateReference = @{ templateFamily = 'endpointSecurityEndpointPrivilegeManagement' } }) }
+        '/beta/deviceManagement/configurationPolicies/policy/settings' {
+            @(@{ id = '0'; settingInstance = $script:EpmDuplicateValid }, @{ id = '1'; settingInstance = $script:EpmDuplicateInstance })
+        }
+        '/beta/deviceManagement/configurationPolicies/policy/settings/0/settingDefinitions' { $Definitions }
+        '/beta/deviceManagement/configurationPolicies/policy/settings/1/settingDefinitions' {
+            $script:EpmDuplicateDefinitionsRead = $true
+            $script:EpmDuplicateDefinitions
+        }
+        default { @() }
+    }
+    @{ StatusCode = 200; Body = (@{ value = @($Rows) } | ConvertTo-Json -Depth 30 | ConvertFrom-Json) }
+}
+foreach ($DuplicateCase in @('valid', 'child', 'root-definition', 'field-definition')) {
+    foreach ($MalformedFirst in @($false, $true)) {
+        $script:EpmDuplicateInstance = @{ settingDefinitionId = $RootId; groupSettingCollectionValue = @(@{ children = @($script:EpmDuplicateValid.groupSettingCollectionValue[0].children) }) }
+        $script:EpmDuplicateDefinitions = @($Definitions)
+        if ($DuplicateCase -eq 'child') {
+            $MalformedChild = @{ settingDefinitionId = @(($RootId + '_filename')); simpleSettingValue = @{ value = 'SECRET_DUPLICATE*.exe' } }
+            if ($MalformedFirst) { $script:EpmDuplicateInstance.groupSettingCollectionValue[0].children = @($MalformedChild) + $script:EpmDuplicateInstance.groupSettingCollectionValue[0].children }
+            else { $script:EpmDuplicateInstance.groupSettingCollectionValue[0].children += $MalformedChild }
+        } elseif ($DuplicateCase -ne 'valid') {
+            $DefinitionIndex = if ($DuplicateCase -eq 'root-definition') { 0 } else { 2 }
+            $MalformedDefinition = $Definitions[$DefinitionIndex].Clone()
+            $MalformedDefinition.id = @($MalformedDefinition.id, 'SECRET_DUPLICATE_ID')
+            if ($MalformedFirst) { $script:EpmDuplicateDefinitions = @($MalformedDefinition) + $script:EpmDuplicateDefinitions }
+            else { $script:EpmDuplicateDefinitions += $MalformedDefinition }
+        }
+        $script:EpmDuplicateDefinitionsRead = $false
+        $DuplicateDocument = Invoke-IntuneDiscoveryCore -SelectedTenant '22222222-2222-4222-8222-222222222222' -Configuration $true -Request $DuplicateRequest -Requirements $EpmRequirements
+        Assert-Epm $script:EpmDuplicateDefinitionsRead 'Mixed duplicate test did not reach the second definitions response'
+        if ($DuplicateCase -eq 'valid') {
+            Assert-Epm ($DuplicateDocument.Inventory.EpmRules.Count -eq 2 -and $DuplicateDocument.CollectionStatus.EpmRules.State -ceq 'Complete' -and $DuplicateDocument.CollectionStatus.EpmRules.CompletedParentIds -contains 'policy') 'Wildcard-free duplicate control lost complete coverage'
+        } else {
+            Assert-Epm ($DuplicateDocument.Inventory.EpmRules.Count -eq 1 -and $DuplicateDocument.CollectionStatus.EpmRules.State -ceq 'Partial' -and $DuplicateDocument.CollectionStatus.EpmRules.CompletedParentIds.Count -eq 0) "Malformed duplicate retained complete coverage: $DuplicateCase; First=$MalformedFirst"
+        }
+        Assert-Epm ($DuplicateDocument.Inventory.EpmRules[0].fileName -ceq 'safe.exe' -and $DuplicateDocument.Inventory.EpmRules[0].elevationType -ceq 'Automatic') 'Independent valid EPM setting lost evidence'
+        $DuplicateJson = $DuplicateDocument | ConvertTo-Json -Depth 30
+        Assert-Epm (-not ($DuplicateJson -match 'SECRET')) 'Malformed duplicate input leaked into export'
+        if ($DuplicateCase -eq 'valid' -and $env:ASSAY_INTUNE_EPM_DUPLICATE_CONTROL_FIXTURE) { [IO.File]::WriteAllText($env:ASSAY_INTUNE_EPM_DUPLICATE_CONTROL_FIXTURE, $DuplicateJson, [Text.UTF8Encoding]::new($false)) }
+        if ($DuplicateCase -eq 'child' -and $env:ASSAY_INTUNE_EPM_DUPLICATE_FIXTURE) { [IO.File]::WriteAllText($env:ASSAY_INTUNE_EPM_DUPLICATE_FIXTURE, $DuplicateJson, [Text.UTF8Encoding]::new($false)) }
     }
 }

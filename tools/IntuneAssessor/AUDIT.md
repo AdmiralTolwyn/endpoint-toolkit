@@ -2,6 +2,31 @@
 
 Date: 2026-09-17. Status: **partial audit, not production certification**.
 
+September 19, collector 0.5.16: fixes reviewed 0.5.15 false uniqueness. A valid
+candidate plus malformed duplicate could resolve after type filtering and leave
+Complete coverage. Recognized rule settings now reject non-string definition IDs
+before matching and non-string traversed child IDs before decoding. Missing/null
+IDs also reject. Existing failure handling preserves independent settings only as
+partial evidence, without completed-parent coverage. It cannot yield a clean Pass;
+known warnings remain visible. This supersedes field-only unknown handling for
+malformed identities; unsupported offsets on typed identities remain unchanged.
+
+Previously reviewed [setting instance](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationsettinginstance?view=graph-rest-beta)
+revision `c03b91d7953293f0cad86ef442f29398f359b69c` and
+[setting definition](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationsettingdefinition?view=graph-rest-beta)
+revision `e8eace7fa9bfa9e7afacfe9f5dec1ba42ffd493f` establish String identity
+types. Whole-setting rejection is Assay's conservative boundary, not product
+enforcement. Exact EPM bindings remain sample-backed. Full schema/collection,
+base/parent relationships, dependencies, applicability and live behavior remain open.
+
+96 mixed-duplicate cases plus revised 156 binding cases and actual mocked discovery
+controls cover the regression. Native/app complete control EPM-03 Pass becomes
+NotAssessed with partial coverage even while an independently valid rule survives;
+save/load, overrides and HTML/PDF are checked. No new fields, providers, routes,
+permissions or scores. Recollect affected older flattened exports; no live defect
+occurrence or automatic migration claimed. See
+[malformed duplicate limits](README.md#epm-malformed-duplicates-0516).
+
 September 19, collector 0.5.15: reproduced array-shaped root identity accepted
 as scalar EPM binding. All six root/field instance-ID, definition-ID and offset
 checks now require string types and exact ordinal matches. Unsupported fields

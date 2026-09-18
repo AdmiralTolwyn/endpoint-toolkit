@@ -1,6 +1,6 @@
 # Intune Discovery for Assay
 
-Version 0.5.15. Experimental pending a live tenant pilot. Offline-tested with
+Version 0.5.16. Experimental pending a live tenant pilot. Offline-tested with
 Windows PowerShell 5.1 and PowerShell 7.
 
 The [contract audit](AUDIT.md) currently verifies 49 enabled Graph GET contracts
@@ -10,6 +10,33 @@ remain separate gates; do not label the full collector audit complete.
 Exports read-only observations for Assay's Intune pack. Assay owns control
 definitions and scores: 50 source-linked controls, two bounded automatic checks,
 and 48 evidence-assisted manual checks. The collector does not mutate a tenant.
+
+## EPM Malformed Duplicates (0.5.16)
+
+Fixes a reviewed regression in 0.5.15: filtering malformed IDs before duplicate
+counting could make a valid plus malformed candidate look unique. For recognized
+rule roots, definition IDs are checked before matching; traversed child IDs are
+checked before decoding/filtering. Non-string, missing or null identities reject
+the affected setting, giving Partial coverage and no completed-parent marker.
+An invalid ID cannot safely identify just one affected field. Independent settings
+remain as partial evidence; they cannot restore a clean Pass. Known warnings remain
+visible. This supersedes the previous field-only unknown behavior for malformed IDs.
+
+Microsoft's [instance ID](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationsettinginstance?view=graph-rest-beta)
+and [definition ID](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationsettingdefinition?view=graph-rest-beta)
+contracts specify strings. Rejection is conservative Assay handling; EPM-specific
+bindings remain sample-backed. Full schema, collection shapes, dependencies,
+base/parent relationships, applicability and live behavior are not certified.
+
+96 mixed-duplicate cases cover malformed child/root/field-definition IDs, both
+orders and dictionary/JSON forms. Actual mocked discovery includes a wildcard-free
+complete control and partial exports with a valid sibling retained.
+`ASSAY_INTUNE_EPM_DUPLICATE_FIXTURE` remains NotAssessed for EPM-03/EPM-04;
+`ASSAY_INTUNE_EPM_DUPLICATE_CONTROL_FIXTURE` gives Pass/Observed respectively,
+through native reassessment and app save/load/HTML/PDF. EPM_BINDING now exports
+Partial coverage with no rules for malformed field IDs. No new fields, routes,
+permissions, providers, findings or scores; rules remain 1.8.0-preview. Recollect
+affected older flattened exports; no live occurrence or automatic migration claimed.
 
 ## EPM Typed Bindings (0.5.15)
 

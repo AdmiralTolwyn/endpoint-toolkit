@@ -2,12 +2,13 @@ function Get-IntuneEpmRuleChildren {
     param($Children, [int]$Depth = 0, $Definitions = @(), [bool]$InheritedTemplateUnresolved = $false, [bool]$InheritedChoiceUnresolved = $false)
     if ($Depth -gt 12) { throw 'EPM rule depth limit' }
     foreach ($Child in $Children) {
+        $ChildId = Get-IntuneValue $Child 'settingDefinitionId'
+        if ($ChildId -isnot [string]) { throw 'Invalid EPM child setting definition identity' }
         $Choice = Get-IntuneValue $Child 'choiceSettingValue'
         $Simple = Get-IntuneValue $Child 'simpleSettingValue'
         $TemplateUnresolved = $InheritedTemplateUnresolved -or (Test-IntuneTemplateUnresolved $Choice) -or (Test-IntuneTemplateUnresolved $Simple)
         $ChoiceUnresolved = $InheritedChoiceUnresolved -or ($null -ne $Choice -and $null -ne $Simple)
         if ($null -ne $Choice) {
-            $ChildId = Get-IntuneValue $Child 'settingDefinitionId'
             $ChildDefinitions = @(foreach ($Candidate in $Definitions) {
                 $CandidateId = Get-IntuneValue $Candidate 'id'
                 if ($ChildId -is [string] -and $CandidateId -is [string] -and [string]::Equals($ChildId, $CandidateId, [StringComparison]::Ordinal)) { $Candidate }
@@ -27,6 +28,9 @@ function ConvertTo-IntuneEpmRules {
     $InstanceId = Get-IntuneValue $Instance 'settingDefinitionId'
     if ($InstanceId -isnot [string]) { throw 'Invalid EPM setting definition identity' }
     if (-not [string]::Equals($InstanceId, $RootId, [StringComparison]::Ordinal)) { return }
+    foreach ($Candidate in $Definitions) {
+        if ((Get-IntuneValue $Candidate 'id') -isnot [string]) { throw 'Invalid EPM definition identity' }
+    }
     $Root = @($Definitions | Where-Object {
         $CandidateId = Get-IntuneValue $_ 'id'
         $CandidateId -is [string] -and [string]::Equals($CandidateId, $RootId, [StringComparison]::Ordinal)
