@@ -1,6 +1,6 @@
 # Intune Discovery for Assay
 
-Version 0.5.12. Experimental pending a live tenant pilot. Offline-tested with
+Version 0.5.13. Experimental pending a live tenant pilot. Offline-tested with
 Windows PowerShell 5.1 and PowerShell 7.
 
 The [contract audit](AUDIT.md) currently verifies 49 enabled Graph GET contracts
@@ -10,6 +10,32 @@ remain separate gates; do not label the full collector audit complete.
 Exports read-only observations for Assay's Intune pack. Assay owns control
 definitions and scores: 50 source-linked controls, two bounded automatic checks,
 and 48 evidence-assisted manual checks. The collector does not mutate a tenant.
+
+## EPM Template Context (0.5.13)
+
+The separate EPM elevation-rule decoder now retains ancestor template context
+when flattening choice children. Previously a template-defaulted ancestor could
+produce explicit rule fields. Group, field, choice and uniquely selected option
+references now use strict Boolean useTemplateDefault handling: absent/null or
+false permits existing explicit decoding; true or malformed references withhold
+affected values. Child false flags cannot clear inherited uncertainty.
+
+Unresolved children remain visible to duplicate-field detection. Explicit sibling
+fields and other rule groups stay independent. The output shape is unchanged;
+unknown name/fileName/filePath/elevationType fields remain null and rule identities
+are retained. No raw unresolved payload or internal traversal wrapper is exported.
+
+The [Graph template-reference contract](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationsettingvaluetemplatereference?view=graph-rest-beta)
+defines the Boolean. Descendant withholding is conservative Assay interpretation,
+not a runtime inheritance claim. EPM rule IDs/offsets remain sample-backed, and
+the separate decoder's full identity/shape/choice-resolution and applicability
+audit remains open. No new source field, provider, route, permission or score.
+
+Test-IntuneEpmRules covers 120 template cases plus transitive/duplicate controls.
+`ASSAY_INTUNE_EPM_TEMPLATE_FIXTURE` writes actual mocked discovery output for
+native reassessment, application persistence and HTML/PDF regression tests.
+Affected EPM checks stay NotAssessed, not clean Pass. No live occurrence is claimed;
+recollect affected old flattened rule evidence because lost context is unrecoverable.
 
 ## Typed CSP Paths (0.5.12)
 

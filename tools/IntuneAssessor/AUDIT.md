@@ -2,6 +2,26 @@
 
 Date: 2026-09-17. Status: **partial audit, not production certification**.
 
+September 19, collector 0.5.13: repaired reproduced loss of ancestor template
+context in the separate EPM rule walker. Internal child records now retain their
+instance and unresolved-template flag; duplicate detection includes unresolved
+children. Group/field/choice/uniquely selected option references use the shared
+strict Boolean helper, with ancestor uncertainty propagated transitively.
+Explicit siblings and rule groups remain independent. Output schema unchanged:
+affected fields null, stable group IDs, no raw values or traversal internals.
+
+Source: [template-reference Boolean](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationsettingvaluetemplatereference?view=graph-rest-beta),
+revision `4b837f772f711c890ec02678db6b05845a40b419`. Propagation is a conservative
+evidence boundary, not runtime dependency evaluation. EPM exact identities remain
+sample-backed. This does not complete the EPM decoder's identity, shape, unresolved
+choice or applicability audit. No new permission, route or source field.
+
+120 matrix cases plus transitive/sibling/duplicate controls and a mocked actual
+discovery export verify null preservation. Native and application tests retain
+NotAssessed through reassessment/save/load/HTMLPDF alongside healthy warning
+controls. No live occurrence is asserted. Recollect affected historical exports;
+see [EPM template limits](README.md#epm-template-context-0513).
+
 September 19, collector 0.5.12: repaired CSP path coercion in
 ConvertTo-IntuneSettingFacts. Base/offset arrays could become valid strings;
 generic binding now requires typed strings before unchanged normalization and
