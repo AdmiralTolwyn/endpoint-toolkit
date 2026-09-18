@@ -2,6 +2,24 @@
 
 Date: 2026-09-17. Status: **partial audit, not production certification**.
 
+September 19, collector 0.5.12: repaired CSP path coercion in
+ConvertTo-IntuneSettingFacts. Base/offset arrays could become valid strings;
+generic binding now requires typed strings before unchanged normalization and
+allowlist checks. Get-IntuneEpmPath also rejects non-string IDs/offsets and
+non-string supplied bases while preserving its absent/null/string-base support.
+That guard covers four sample-bound client-setting mappings, not the separate
+EPM elevation-rule decoder or a new Microsoft CSP authority.
+
+The [setting-definition contract](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationsettingdefinition?view=graph-rest-beta)
+declares baseUri/offsetUri as String, revision
+`e8eace7fa9bfa9e7afacfe9f5dec1ba42ffd493f`. Tests include 24 malformed generic
+path cases, four string controls, an independent child and 56 EPM mapping cases
+across dictionary/JSON forms. Production mocked exports stay unsupported through
+native sanitization, persistence and reports. No new provider, scope, route or
+score; no live occurrence, applicability or full URI/schema validation claimed.
+Recollect affected older exports whose original path types were discarded. See
+[typed-path limits](README.md#typed-csp-paths-0512).
+
 September 19, collector 0.5.11: reproduced and repaired unresolved singular or
 collection choices emitting Resolved children. ConvertTo-IntuneSettingFacts now
 propagates choice-resolution uncertainty separately from template defaults.

@@ -33,6 +33,38 @@ foreach ($Uri in @('https://graph.microsoft.com/v1.0/directory/deviceLocalCreden
 $Definition = @{ id = 'opaque'; baseUri = './Device/Vendor/MSFT/Policy/Config/Defender'; offsetUri = 'AllowCloudProtection'; version = '1'; options = @(@{ itemId = 'opaque_disabled_1'; optionValue = @{ value = 0 } }, @{ itemId = 'opaque_enabled_0'; optionValue = @{ value = 1 } }) }
 $Facts = @(ConvertTo-IntuneSettingFacts @{ settingDefinitionId = 'opaque'; choiceSettingValue = @{ value = 'opaque_disabled_1' } } @($Definition) 'policy' 'setting')
 Assert-Expansion ($Facts[0].value -eq 0 -and $Facts[0].resolution -eq 'Resolved') 'Choice suffix guessed instead of definition join'
+foreach ($PathCase in @(
+    @{ Base = @('./Device/Vendor/MSFT/Policy/Config/Defender'); Offset = 'AllowRealtimeMonitoring' },
+    @{ Base = './Device/Vendor/MSFT/Policy/Config/Defender'; Offset = @('AllowRealtimeMonitoring') },
+    @{ Base = $null; Offset = 'AllowRealtimeMonitoring' },
+    @{ Base = $false; Offset = 'AllowRealtimeMonitoring' },
+    @{ Base = 0; Offset = 'AllowRealtimeMonitoring' },
+    @{ Base = @{ path = 'PRIVATE_PATH_VALUE' }; Offset = 'AllowRealtimeMonitoring' },
+    @{ Base = @(); Offset = 'AllowRealtimeMonitoring' },
+    @{ Base = './Device/Vendor/MSFT/Policy/Config/Defender'; Offset = $null },
+    @{ Base = './Device/Vendor/MSFT/Policy/Config/Defender'; Offset = $false },
+    @{ Base = './Device/Vendor/MSFT/Policy/Config/Defender'; Offset = 0 },
+    @{ Base = './Device/Vendor/MSFT/Policy/Config/Defender'; Offset = @{ path = 'PRIVATE_PATH_VALUE' } },
+    @{ Base = './Device/Vendor/MSFT/Policy/Config/Defender'; Offset = @() }
+)) {
+    foreach ($DecodeJson in @($false, $true)) {
+        $PathDefinition = @{ id = 'path'; baseUri = $PathCase.Base; offsetUri = $PathCase.Offset }
+        if ($DecodeJson) { $PathDefinition = $PathDefinition | ConvertTo-Json -Depth 10 | ConvertFrom-Json }
+        $PathFacts = @(ConvertTo-IntuneSettingFacts @{ settingDefinitionId = 'path'; simpleSettingValue = @{ value = 1 } } @($PathDefinition) 'policy' 'path')
+        Assert-Expansion ($PathFacts.Count -eq 1 -and $PathFacts[0].resolution -ceq 'UnsupportedDefinition' -and -not $PathFacts[0].Contains('cspUri') -and -not $PathFacts[0].Contains('value')) 'Non-string CSP path metadata produced a trusted setting'
+        Assert-Expansion (-not (($PathFacts | ConvertTo-Json -Depth 10) -match 'PRIVATE_PATH_VALUE|System.Collections')) 'Malformed path value was stringified into evidence'
+    }
+}
+foreach ($StringPathCase in @(
+    @{ Base = './Device/Vendor/MSFT/Policy/Config/Defender'; Offset = 'AllowRealtimeMonitoring' },
+    @{ Base = './Device/Vendor/MSFT/Policy/Config/Defender/'; Offset = '/AllowRealtimeMonitoring' },
+    @{ Base = './Vendor/MSFT'; Offset = 'Policy/Config/Defender/AllowRealtimeMonitoring' },
+    @{ Base = 'Policy/Config/Defender'; Offset = 'AllowRealtimeMonitoring' }
+)) {
+    $StringPathDefinition = @{ id = 'path'; baseUri = $StringPathCase.Base; offsetUri = $StringPathCase.Offset }
+    $StringPathFacts = @(ConvertTo-IntuneSettingFacts @{ settingDefinitionId = 'path'; simpleSettingValue = @{ value = 0 } } @($StringPathDefinition) 'policy' 'path')
+    Assert-Expansion ($StringPathFacts.Count -eq 1 -and $StringPathFacts[0].resolution -ceq 'Resolved' -and $StringPathFacts[0].value -eq 0 -and $StringPathFacts[0].cspUri -ceq 'Policy/Config/Defender/AllowRealtimeMonitoring') 'Existing string path normalization or zero value changed'
+}
 foreach ($IdentityCase in @(
     @{ InstanceId = 1; DefinitionId = '1'; ChoiceId = 'option'; OptionId = 'option' },
     @{ InstanceId = '1'; DefinitionId = 1; ChoiceId = 'option'; OptionId = 'option' },
@@ -94,6 +126,10 @@ foreach ($ChoiceValue in @('missing-option', 'opaque_enabled_0')) {
 }
 $ChildDefinition = @{ id = 'child'; baseUri = './Device/Vendor/MSFT/Policy/Config/Defender'; offsetUri = 'AllowBehaviorMonitoring' }
 $ChildInstance = @{ settingDefinitionId = 'child'; simpleSettingValue = @{ value = 1 } }
+$MalformedParentPath = $Definition.Clone()
+$MalformedParentPath.baseUri = @('./Device/Vendor/MSFT/Policy/Config/Defender')
+$PathChildFacts = @(ConvertTo-IntuneSettingFacts @{ settingDefinitionId = 'opaque'; choiceSettingValue = @{ value = 'opaque_enabled_0'; children = @($ChildInstance) } } @($MalformedParentPath, $ChildDefinition) 'policy' 'path-parent')
+Assert-Expansion ($PathChildFacts.Count -eq 2 -and $PathChildFacts[0].resolution -ceq 'UnsupportedDefinition' -and -not $PathChildFacts[0].Contains('cspUri') -and $PathChildFacts[1].resolution -ceq 'Resolved' -and $PathChildFacts[1].value -eq 1) 'Independent child definition was conflated with its parent path'
 foreach ($ChoiceDefect in @('missing-option', 'duplicate-option')) {
     $UnresolvedDefinition = $Definition.Clone()
     $UnresolvedChoice = 'missing-option'

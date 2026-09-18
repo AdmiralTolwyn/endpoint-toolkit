@@ -1,6 +1,6 @@
 # Intune Discovery for Assay
 
-Version 0.5.11. Experimental pending a live tenant pilot. Offline-tested with
+Version 0.5.12. Experimental pending a live tenant pilot. Offline-tested with
 Windows PowerShell 5.1 and PowerShell 7.
 
 The [contract audit](AUDIT.md) currently verifies 49 enabled Graph GET contracts
@@ -10,6 +10,31 @@ remain separate gates; do not label the full collector audit complete.
 Exports read-only observations for Assay's Intune pack. Assay owns control
 definitions and scores: 50 source-linked controls, two bounded automatic checks,
 and 48 evidence-assisted manual checks. The collector does not mutate a tenant.
+
+## Typed CSP Paths (0.5.12)
+
+The generic setting decoder now requires string baseUri and offsetUri before
+constructing an allowed CSP path. This repairs a reproduced case where singleton
+arrays were stringified into valid paths. Non-string fields remain
+UnsupportedDefinition without cspUri, scalar or ADMX values. Raw malformed path
+metadata is not exported. Existing accepted string normalization is unchanged.
+
+Microsoft's [setting-definition contract](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationsettingdefinition?view=graph-rest-beta)
+declares both fields as String. This is a type boundary, not proof of applicability,
+assignment, payload validity or enforcement. Independently decoded children keep
+their own path and existing template/choice checks.
+
+The four EPM client-setting mappings require string IDs and offsets too. Their
+existing absent/null-base or string-base handling remains supported; a supplied
+non-string base is rejected. These mappings remain sample-backed, separate from
+generic CSP construction. The EPM elevation-rule decoder is outside this repair.
+
+Tests cover dictionary/JSON forms, valid string/zero-value controls and all four
+EPM mappings. `ASSAY_INTUNE_PATH_FIXTURE` exports actual mocked discovery output
+for native/app reassessment, save/load and HTML/PDF tests. No new field, scope,
+route, provider, finding or score; native rules stay 1.8.0-preview. Recollect
+affected old evidence because a projected URI cannot recover discarded raw types.
+No live occurrence or full schema audit is claimed.
 
 ## Choice Context (0.5.11)
 

@@ -15,6 +15,33 @@ Assert-Service ($EpmFacts[0].value -eq 1 -and $EpmFacts[0].cspUri -ceq 'Privileg
 $EpmDefinition.offsetUri = 'Unknown/Secret'
 $EpmFacts = @(ConvertTo-IntuneSettingFacts @{ settingDefinitionId = $EpmDefinition.id; simpleSettingValue = @{ value = 'SECRET' } } @($EpmDefinition) 'epm' '0')
 Assert-Service (-not ($EpmFacts | ConvertTo-Json -Depth 10).Contains('SECRET')) 'EPM identity/path mismatch leaked data'
+$EpmPaths = [ordered]@{ enableepm = 'EnableEPM'; defaultelevationresponse = 'DefaultElevationResponse'; senddata = 'SendData'; reportingscope = 'ReportingScope' }
+foreach ($Suffix in $EpmPaths.Keys) {
+	$EpmId = 'device_vendor_msft_policy_elevationclientsettings_' + $Suffix
+	$EpmPath = 'PrivilegeManagement/ElevationClientSettings/' + $EpmPaths[$Suffix]
+	foreach ($DecodeJson in @($false, $true)) {
+		foreach ($Defect in @('none', 'string-base', 'array-base', 'number-base', 'array-offset', 'object-offset', 'array-id')) {
+			$BoundDefinition = @{ id = $EpmId; offsetUri = $EpmPath }
+			switch ($Defect) {
+				'string-base' { $BoundDefinition.baseUri = '' }
+				'array-base' { $BoundDefinition.baseUri = @('./Device/Vendor/MSFT') }
+				'number-base' { $BoundDefinition.baseUri = 0 }
+				'array-offset' { $BoundDefinition.offsetUri = @($EpmPath) }
+				'object-offset' { $BoundDefinition.offsetUri = @{ path = 'PRIVATE_PATH_VALUE' } }
+				'array-id' { $BoundDefinition.id = @($EpmId) }
+			}
+			if ($DecodeJson) { $BoundDefinition = $BoundDefinition | ConvertTo-Json -Depth 10 | ConvertFrom-Json }
+			$BoundPath = Get-IntuneEpmPath $BoundDefinition
+			$BoundFacts = @(ConvertTo-IntuneSettingFacts @{ settingDefinitionId = $EpmId; simpleSettingValue = @{ value = 1 } } @($BoundDefinition) 'epm' 'binding')
+			if ($Defect -in @('none', 'string-base')) {
+				Assert-Service ($BoundPath -ceq $EpmPath -and $BoundFacts[0].cspUri -ceq $EpmPath -and $BoundFacts[0].value -eq 1) 'Reviewed EPM mapping lost without a generic base URI'
+			} else {
+				Assert-Service ($null -eq $BoundPath -and $BoundFacts[0].resolution -ceq 'UnsupportedDefinition' -and -not $BoundFacts[0].Contains('cspUri') -and -not $BoundFacts[0].Contains('value')) 'Malformed EPM path or ID bypassed typed binding'
+			}
+			Assert-Service (-not (($BoundFacts | ConvertTo-Json -Depth 10) -match 'PRIVATE_PATH_VALUE')) 'Malformed EPM metadata leaked'
+		}
+	}
+}
 $script:ServicePaths = [Collections.Generic.List[string]]::new()
 $Request = {
 	param($Address)

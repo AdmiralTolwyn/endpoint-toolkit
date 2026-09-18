@@ -8,8 +8,11 @@ function Get-IntuneEpmPath {
         device_vendor_msft_policy_elevationclientsettings_senddata = 'PrivilegeManagement/ElevationClientSettings/SendData'
         device_vendor_msft_policy_elevationclientsettings_reportingscope = 'PrivilegeManagement/ElevationClientSettings/ReportingScope'
     }
-    $Identity = [string](Get-IntuneValue $Definition 'id')
-    if ($Mappings.ContainsKey($Identity) -and (Get-IntuneValue $Definition 'offsetUri') -ceq $Mappings[$Identity]) { return $Mappings[$Identity] }
+    $Identity = Get-IntuneValue $Definition 'id'
+    $BaseUri = Get-IntuneValue $Definition 'baseUri'
+    $OffsetUri = Get-IntuneValue $Definition 'offsetUri'
+    if ($Identity -isnot [string] -or $OffsetUri -isnot [string] -or ($null -ne $BaseUri -and $BaseUri -isnot [string])) { return $null }
+    if ($Mappings.ContainsKey($Identity) -and $OffsetUri -ceq $Mappings[$Identity]) { return $Mappings[$Identity] }
     return $null
 }
 

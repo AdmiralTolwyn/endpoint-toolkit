@@ -123,7 +123,12 @@ function ConvertTo-IntuneSettingFacts {
             if ($null -ne $Selected) { $ChoiceUnresolved = $InheritedChoiceUnresolved }
         } elseif ($null -eq $Choice) { $Selected = $Simple }
         $TemplateUnresolved = $TemplateUnresolved -or (Test-IntuneTemplateUnresolved $Selected)
-        $Path = (([string](Get-IntuneValue $Definition[0] 'baseUri')).TrimEnd('/') + '/' + ([string](Get-IntuneValue $Definition[0] 'offsetUri')).TrimStart('/')) -creplace '^\./(Device/)?Vendor/MSFT/', ''
+        $BaseUri = Get-IntuneValue $Definition[0] 'baseUri'
+        $OffsetUri = Get-IntuneValue $Definition[0] 'offsetUri'
+        $Path = $null
+        if ($BaseUri -is [string] -and $OffsetUri -is [string]) {
+            $Path = ($BaseUri.TrimEnd('/') + '/' + $OffsetUri.TrimStart('/')) -creplace '^\./(Device/)?Vendor/MSFT/', ''
+        }
         $EpmPath = Get-IntuneEpmPath $Definition[0]
         if ($EpmPath) { $Path = $EpmPath }
         if ($EpmPath -or (Test-IntuneSecurityPath $Path) -or (Test-IntuneExtendedPath $Path)) {

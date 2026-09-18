@@ -162,6 +162,7 @@ try {
     $script:IdentityCorrelation = $false
     $script:TemplateCorrelation = $false
     $script:ChoiceCorrelation = $false
+    $script:PathCorrelation = $false
     $CorrelationRequest = {
         param($Uri)
         $Path = ([uri]$Uri).AbsolutePath
@@ -208,6 +209,8 @@ try {
         if ($script:ChoiceCorrelation -and $Path -eq '/beta/deviceManagement/configurationPolicies/policy-off/settings/0/settingDefinitions') {
             $Rows[0].options += @{ itemId = 'opaque_disabled_1'; optionValue = @{ value = 1 } }
         }
+        if ($script:PathCorrelation -and $Path.EndsWith('/settings/0/settingDefinitions')) { $Rows[0].baseUri = @($Rows[0].baseUri) }
+        if ($script:PathCorrelation -and $Path.EndsWith('/settings/1/settingDefinitions')) { $Rows[0].offsetUri = @($Rows[0].offsetUri) }
         @{ StatusCode = 200; Body = (@{ value = $Rows } | ConvertTo-Json -Depth 20 | ConvertFrom-Json) }
     }
     $Correlation = Invoke-IntuneDiscoveryCore -SelectedTenant $Tenant -Configuration $true -EndpointPaths @($Temporary) -Request $CorrelationRequest -Requirements @{
@@ -287,6 +290,20 @@ try {
     $ChoiceJson = $ChoiceDocument | ConvertTo-Json -Depth 30
     if ($ChoiceJson -match 'PRIVATE_PATH|DO_NOT_EXPORT|missing-option|choiceSettingCollectionValue') { throw 'Raw unresolved choice payload exported' }
     if ($env:ASSAY_INTUNE_CHOICE_FIXTURE) { [IO.File]::WriteAllText($env:ASSAY_INTUNE_CHOICE_FIXTURE, $ChoiceJson, [Text.UTF8Encoding]::new($false)) }
+    $script:PathCorrelation = $true
+    try {
+        $PathDocument = Invoke-IntuneDiscoveryCore -SelectedTenant $Tenant -Configuration $true -EndpointPaths @($Temporary) -Request $CorrelationRequest -Requirements @{
+            ScopeConfirmed = $true; ScopeDescription = 'Synthetic malformed CSP path types'; Assessor = 'Test'; MaxCollectionAgeHours = 24
+            ConfigurationReview = @{ DeviceIds = @('device'); PolicyIds = @('policy-on'); ReferenceProfile = 'windows-25h2'; DefenderPrimary = $true }
+        }
+    } finally { $script:PathCorrelation = $false }
+    if ($PathDocument.Inventory.SecuritySettings.Count -ne 4) { throw 'Malformed path metadata silently dropped' }
+    foreach ($Fact in $PathDocument.Inventory.SecuritySettings) {
+        if ($Fact.resolution -cne 'UnsupportedDefinition' -or $Fact.Contains('cspUri') -or $Fact.Contains('value') -or $Fact.Contains('admx')) { throw 'Malformed CSP path produced resolved evidence' }
+    }
+    $PathJson = $PathDocument | ConvertTo-Json -Depth 30
+    if ($PathJson -match 'PRIVATE_PATH|DO_NOT_EXPORT|baseUri|offsetUri') { throw 'Raw path metadata exported' }
+    if ($env:ASSAY_INTUNE_PATH_FIXTURE) { [IO.File]::WriteAllText($env:ASSAY_INTUNE_PATH_FIXTURE, $PathJson, [Text.UTF8Encoding]::new($false)) }
     $Sample.TenantId = '44444444-4444-4444-8444-444444444444'
     [IO.File]::WriteAllText($Temporary, ($Sample | ConvertTo-Json -Depth 15), [Text.UTF8Encoding]::new($false))
     $Rejected = $false
