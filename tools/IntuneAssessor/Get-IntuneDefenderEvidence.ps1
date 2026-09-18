@@ -5,7 +5,15 @@ param([string]$TenantId, [securestring]$AccessToken, [string]$OutputPath, [switc
 function Test-IntuneDefenderUri {
     param([string]$Address)
     $Parsed = $null
-    return [uri]::TryCreate($Address, [UriKind]::Absolute, [ref]$Parsed) -and $Parsed.Scheme -eq 'https' -and $Parsed.Host -eq 'api.security.microsoft.com' -and $Parsed.IsDefaultPort -and -not $Parsed.UserInfo -and -not $Parsed.Fragment -and $Parsed.AbsolutePath -ceq '/api/machines'
+    if (-not ([uri]::TryCreate($Address, [UriKind]::Absolute, [ref]$Parsed) -and $Parsed.Scheme -eq 'https' -and $Parsed.Host -eq 'api.security.microsoft.com' -and $Parsed.IsDefaultPort -and -not $Parsed.UserInfo -and -not $Parsed.Fragment -and $Parsed.AbsolutePath -ceq '/api/machines')) { return $false }
+    if (-not ('System.Web.HttpUtility' -as [type])) { Add-Type -AssemblyName System.Web }
+    $Query = [System.Web.HttpUtility]::ParseQueryString($Parsed.Query)
+    foreach ($Key in $Query.AllKeys) {
+        if ($null -eq $Key -or $Key -cnotin @('$top', '$skip') -or $Query.GetValues($Key).Count -ne 1) { return $false }
+    }
+    if ($Query['$top'] -cne '1000') { return $false }
+    $Skip = 0
+    return $null -eq $Query['$skip'] -or ($Query['$skip'] -cmatch '^(0|[1-9][0-9]{0,5})$' -and [int]::TryParse($Query['$skip'], [ref]$Skip) -and $Skip -le 100000)
 }
 
 function Read-IntuneDefenderMachines {
@@ -52,6 +60,9 @@ function Read-IntuneDefenderMachines {
         if ($null -ne $Response.Body.PSObject.Properties['@odata.nextLink']) {
             $Next = $Response.Body.'@odata.nextLink'
             if ($Next -isnot [string] -or -not $Next) { $Failure = 'InvalidNextLink'; break }
+            if (-not (Test-IntuneDefenderUri $Next)) { $Failure = 'BlockedEndpoint'; break }
+            $NextQuery = [System.Web.HttpUtility]::ParseQueryString(([uri]$Next).Query)
+            if ($Response.Body.value.Count -eq 0 -or $NextQuery['$skip'] -cne [string]$Rows.Count) { $Failure = 'InvalidContinuation'; break }
         } elseif ($Response.Body.value.Count -eq 1000) {
             $Next = 'https://api.security.microsoft.com/api/machines?$top=1000&$skip=' + $Rows.Count
         }

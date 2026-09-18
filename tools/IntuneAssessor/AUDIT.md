@@ -63,8 +63,32 @@ Without `-CheckDocumentation`, only schema checks run.
 
 ## Remaining Audit Gates
 
+### Defender Companion (2026-09-18)
+
+The [list API](https://learn.microsoft.com/en-us/defender-endpoint/api/get-machines)
+documents GET `https://api.security.microsoft.com/api/machines`, delegated
+`Machine.Read`, `$top` (maximum 10,000) and `$skip`. This collector deliberately
+uses a page size of 1,000 and does not use filters. Its URL guard now rejects
+other queries, duplicate/encoded duplicate parameters and changed page sizes.
+Unexpected next links fail Partial rather than silently changing coverage;
+only an explicit skip equal to the number of collected rows is followed.
+The fallback advances `$skip` after a full page. This is not snapshot isolation:
+concurrent tenant changes and access/retention limits can still affect coverage.
+
+The [machine resource](https://learn.microsoft.com/en-us/defender-endpoint/api/machine)
+documents the nine exported machine properties. `lastSeen` is the last full
+device report, typically daily, not the portal's last-seen value. `version` is
+the OS version, not the Defender sensor version. The docs spell onboarding status
+with inconsistent casing; PowerShell property lookup is case-insensitive and the
+export uses `onboardingStatus`. Unknown/missing values remain unknown. The API
+documents 404 for no recent machines; the collector conservatively reports an
+error, not proof of tenant-wide absence. Tests pass in PowerShell 7 and 5.1 with
+injected responses only. No Defender authentication or live collection was run.
+
+### Open Gates
+
 - Nested object ownership, value types, enums and all policy/CSP bindings.
-- Full endpoint-provider property/enum review and Defender transport queries.
+- Full endpoint-provider property/enum review.
 - EPM exact setting IDs currently grounded in Microsoft365DSC sample fixtures,
   not a Microsoft Learn guarantee; do not describe them as a documented CSP.
 - Recommendation semantics, applicability, deprecations and reference versions.
