@@ -33,13 +33,13 @@
     .\Invoke-W365Discovery.ps1 -OutputPath "C:\temp\w365_discovery.json"
 .NOTES
     Author : Anton Romanyuk
-    Version: 0.3.2
+    Version: 0.3.3
     Date   : 2026-09-18
 
     Required Graph scopes (core tier — requested unconditionally):
       CloudPC.Read.All                          Cloud PCs, provisioning/user policies, ANCs, images, reports
-      DeviceManagementConfiguration.Read.All    Intune config/compliance/baseline profiles, Endpoint Analytics
-      DeviceManagementManagedDevices.Read.All   Intune managed devices (Cloud PC Defender/compliance health)
+    DeviceManagementConfiguration.Read.All    Intune config/compliance profiles and tenant update summary
+    DeviceManagementManagedDevices.Read.All   Intune managed-device context and Endpoint Analytics
       Directory.Read.All                        Tenant/account context
 
     Optional Graph scope (requested if the admin consents; checks that need it
@@ -90,7 +90,7 @@ $env:PSModulePath = ($env:PSModulePath -split ';' |
 $ScriptRoot = $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($ScriptRoot)) { $ScriptRoot = $PWD.Path }
 
-$ScriptVersion = '0.3.2'
+$ScriptVersion = '0.3.3'
 # Windows 365 GA surface (cloudPCs, provisioningPolicies, userSettings) migrated to /v1.0.
 $GraphBaseV1   = 'https://graph.microsoft.com/v1.0/deviceManagement/virtualEndpoint'
 # Beta retained for endpoints not yet GA / verified beta-only: onPremisesConnections, deviceImages,
@@ -1360,18 +1360,29 @@ try {
 
 # MON-001-EA: Endpoint Analytics device scores availability.
 try {
+    . (Join-Path $ScriptRoot 'W365Monitoring.ps1')
     $eaScores = @(Invoke-GraphPaged -Uri "$IntuneBase/userExperienceAnalyticsDeviceScores?`$top=50")
-    Write-Status "Endpoint Analytics device scores: $($eaScores.Count)" -Level 'SUCCESS'
+    $AnalyticsEvidence = @(ConvertTo-W365AnalyticsEvidence -Rows $eaScores)
+    $Discovery.Inventory['EndpointAnalyticsEvidence'] = $AnalyticsEvidence
+    $AnalyticsDetails = ($AnalyticsEvidence | ForEach-Object {
+        $Row = $_
+        $ScoreDetails = ($Row.Scores.Keys | ForEach-Object {
+            $Score = $Row.Scores[$_]
+            "${_}=$($Score.Value) ($($Score.State))"
+        }) -join '; '
+        "Score entry $($Row.ScoreEntryId): health=$($Row.HealthStatus); $ScoreDetails; field state=$($Row.FieldState)."
+    }) -join ' '
+    Write-Status "Tenant Endpoint Analytics observations: $($AnalyticsEvidence.Count); Cloud PC enrollment not assessed" -Level 'INFO'
     [void]$AllChecks.Add((New-CheckResult `
         -Id 'W365-MON-001-EA' -Category 'Monitoring & Diagnostics' `
-        -Name 'Endpoint Analytics device scores' `
-        -Description 'Endpoint Analytics scores (startup, app reliability, work-from-anywhere) provide the objective end-user experience baseline for Cloud PCs.' `
-        -Status $(if ($eaScores.Count -gt 0) { 'Pass' } else { 'Warning' }) `
+        -Name 'Endpoint Analytics enrollment not assessed' `
+        -Description 'Tenant score-entry observations are not proof of Cloud PC enrollment, device identity coverage or current reporting.' `
+        -Status 'Error' `
         -Severity 'Medium' `
-        -Details "Endpoint Analytics returned $($eaScores.Count) device score record(s)." `
-        -Recommendation 'Enable Endpoint Analytics for Cloud PCs and track startup/reliability scores; low scores flag SKU or image problems.' `
-        -Reference 'https://learn.microsoft.com/en-us/mem/analytics/overview' `
-        -Evidence @{ DeviceScores = $eaScores.Count }))
+        -Details "Endpoint Analytics returned $($AnalyticsEvidence.Count) tenant score entries. Entry IDs are not assumed to be managed-device IDs. Cloud PC identity, coverage and data age are not established. $AnalyticsDetails" `
+        -Recommendation 'Verify reporting enrollment and telemetry for the selected Cloud PCs using documented device identity and reporting timestamps; assess performance separately.' `
+        -Reference 'https://learn.microsoft.com/en-us/graph/api/resources/intune-devices-userexperienceanalyticsdevicescores?view=graph-rest-beta' `
+        -Evidence @{ ScoreEntries = $AnalyticsEvidence.Count; AssessmentState = 'CloudPcCoverageNotEvaluated' }))
 } catch {
     Write-Status "Endpoint Analytics unavailable: $($_.Exception.Message)" -Level 'WARN'
     [void]$AllChecks.Add((New-CheckResult `
@@ -1380,27 +1391,32 @@ try {
         -Status 'Error' -Severity 'Medium' `
         -Description 'Endpoint Analytics device scores could not be retrieved.' `
         -Details "GET userExperienceAnalyticsDeviceScores failed: $($_.Exception.Message)" `
-        -Recommendation 'Confirm the signed-in account holds DeviceManagementConfiguration.Read.All and that Endpoint Analytics is enabled.' `
-        -Reference 'https://learn.microsoft.com/en-us/mem/analytics/overview' `
-        -Evidence @{ RequiredScope = 'DeviceManagementConfiguration.Read.All'; Error = $_.Exception.Message }))
+        -Recommendation 'Confirm the signed-in account holds DeviceManagementManagedDevices.Read.All and that Endpoint Analytics is available.' `
+        -Reference 'https://learn.microsoft.com/en-us/graph/api/intune-devices-userexperienceanalyticsdevicescores-list?view=graph-rest-beta' `
+        -Evidence @{ RequiredScope = 'DeviceManagementManagedDevices.Read.All'; Error = $_.Exception.Message }))
 }
 
 # MON-005-UPD: software update status summary.
 try {
+    . (Join-Path $ScriptRoot 'W365Monitoring.ps1')
     $updSummary = Invoke-MgGraphRequest -Method GET -Uri "$IntuneBase/softwareUpdateStatusSummary" -ErrorAction Stop
-    $updCompliant = [int]("$($updSummary.compliantDeviceCount)" -replace '[^0-9]', '')
-    $updNonCompliant = [int]("$($updSummary.nonCompliantDeviceCount)" -replace '[^0-9]', '')
-    Write-Status "Update status: $updCompliant compliant / $updNonCompliant non-compliant" -Level 'SUCCESS'
+    $UpdateEvidence = ConvertTo-W365UpdateSummaryEvidence -Response $updSummary
+    $Discovery.Inventory['SoftwareUpdateSummaryEvidence'] = $UpdateEvidence
+    $UpdateDetails = ($UpdateEvidence.Counts.Keys | ForEach-Object {
+        $Count = $UpdateEvidence.Counts[$_]
+        if ($null -eq $Count) { "${_}=Unknown" } else { "${_}=$Count" }
+    }) -join '; '
+    Write-Status "Tenant update-summary fields: $($UpdateEvidence.FieldState); Cloud PC scope not evaluated" -Level 'INFO'
     [void]$AllChecks.Add((New-CheckResult `
         -Id 'W365-MON-005-UPD' -Category 'Monitoring & Diagnostics' `
-        -Name 'Software update compliance summary' `
-        -Description 'The tenant software-update status summary indicates how many managed devices (including Cloud PCs) are current on updates — a core patch-hygiene signal.' `
-        -Status $(if ($updNonCompliant -gt 0) { 'Warning' } else { 'Pass' }) `
+        -Name 'Cloud PC update monitoring not assessed' `
+        -Description 'The tenant software-update summary does not identify Cloud PCs, reporting age or compliance with a customer patch target.' `
+        -Status 'Error' `
         -Severity 'Medium' `
-        -Details "Update status summary: $updCompliant compliant, $updNonCompliant non-compliant device(s)." `
-        -Recommendation 'Drive update non-compliance to zero via Windows Autopatch / update rings scoped to Cloud PCs.' `
-        -Reference 'https://learn.microsoft.com/en-us/graph/api/resources/intune-softwareupdate-softwareupdatestatussummary?view=graph-rest-beta' `
-        -Evidence @{ Compliant = $updCompliant; NonCompliant = $updNonCompliant }))
+        -Details "Tenant summary only; field state=$($UpdateEvidence.FieldState); $UpdateDetails. Cloud PC identity, reporting age and customer patch targets are not evaluated. Zero counters do not prove a monitored or current fleet." `
+        -Recommendation 'Use device-level Windows Update or Autopatch reporting for the selected Cloud PCs, validate reporting freshness, and compare to agreed update targets.' `
+        -Reference 'https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfig-softwareupdatestatussummary?view=graph-rest-beta' `
+        -Evidence $UpdateEvidence))
 } catch {
     Write-Status "Update status summary unavailable: $($_.Exception.Message)" -Level 'WARN'
     [void]$AllChecks.Add((New-CheckResult `
@@ -1410,7 +1426,7 @@ try {
         -Description 'The software update status summary could not be retrieved.' `
         -Details "GET softwareUpdateStatusSummary failed: $($_.Exception.Message)" `
         -Recommendation 'Confirm the signed-in account holds DeviceManagementConfiguration.Read.All and re-run.' `
-        -Reference 'https://learn.microsoft.com/en-us/graph/api/resources/intune-softwareupdate-softwareupdatestatussummary?view=graph-rest-beta' `
+        -Reference 'https://learn.microsoft.com/en-us/graph/api/intune-deviceconfig-softwareupdatestatussummary-get?view=graph-rest-beta' `
         -Evidence @{ RequiredScope = 'DeviceManagementConfiguration.Read.All'; Error = $_.Exception.Message }))
 }
 

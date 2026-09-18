@@ -1,9 +1,9 @@
 # Windows 365 Assessor
 
-## Collector 0.3.2: Security Evidence and UX Sync
+## Collector 0.3.3: Security Evidence and UX Sync
 
-The collector optionally emits `W365-PROV-011` for **Assay** (35 Auto / 97
-Manual after reclassifying seven unsupported security/CA evaluators). The legacy
+The collector optionally emits `W365-PROV-011` for **Assay** (33 Auto / 99
+Manual after reclassifying nine unsupported security/CA/monitoring evaluators). The legacy
 WPF catalog and the 41/91 counts below are unchanged; the
 legacy importer does not consume this new automatic result.
 
@@ -32,6 +32,24 @@ Sources: [app targeting](https://learn.microsoft.com/en-us/graph/api/resources/c
 [beta token control](https://learn.microsoft.com/en-us/graph/api/resources/securesigninsessioncontrol?view=graph-rest-beta),
 [Windows 365 guidance](https://learn.microsoft.com/en-us/windows-365/enterprise/set-conditional-access-policies).
 
+In 0.3.3, MON-001/005 retain typed analytics and update-summary evidence without
+Cloud PC verdicts. Keep `W365Monitoring.ps1` beside the collector. Six score
+fields accept finite 0-100 values; -1 means unavailable, not poor performance.
+All seven device-state counters are retained, including error/unknown/conflict.
+Counts must be nonnegative Int32 values; missing/invalid values stay null rather
+than being stripped to digits or defaulted to zero. Direct and `value`-wrapped
+summary objects are supported; ambiguous or invalid shapes are rejected.
+
+Sources: [analytics GET/permission](https://learn.microsoft.com/en-us/graph/api/intune-devices-userexperienceanalyticsdevicescores-list?view=graph-rest-beta),
+[analytics fields](https://learn.microsoft.com/en-us/graph/api/resources/intune-devices-userexperienceanalyticsdevicescores?view=graph-rest-beta),
+[summary GET](https://learn.microsoft.com/en-us/graph/api/intune-deviceconfig-softwareupdatestatussummary-get?view=graph-rest-beta),
+[summary fields](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfig-softwareupdatestatussummary?view=graph-rest-beta).
+Analytics requires the already-requested `DeviceManagementManagedDevices.Read.All`;
+the older error guidance named the wrong scope. Score-entry IDs are not treated as
+managed-device IDs. No Cloud PC identity join, reporting age or patch target is
+inferred. FieldState Complete describes decoding, not fleet coverage or freshness.
+No new requests, permissions, service actions or live validations were added.
+
 ```powershell
 .\Invoke-W365Discovery.ps1 -TenantId '<tenant-id>' `
 	-IncludeUserExperienceSync -UserExperienceSyncTarget Enabled
@@ -53,6 +71,9 @@ The comparison proves neither effective assignment nor successful profile
 persistence or capacity. UX Sync is not backup/DR; modifying existing assignments
 can deprovision Cloud PCs and delete user storage. This collector never does that.
 
+Run `Test-W365MonitoringEvidence.ps1` in PowerShell 5.1/7 for monitoring tests;
+optional `-MetadataPath <cached-CSDL>` checks selected field types and
+`ASSAY_W365_MONITORING_FIXTURE` writes the synthetic production export.
 Run `Test-W365ConditionalAccess.ps1` in PowerShell 5.1/7 for offline CA decoding and
 production-block tests; optional `ASSAY_W365_CA_FIXTURE` writes the synthetic export.
 Run `Test-W365SecurityEvidence.ps1` in PowerShell 5.1/7 for offline production-block
@@ -62,9 +83,9 @@ reader and actual opt-in branch. Optional `ASSAY_W365_UXSYNC_FIXTURE` writes a
 synthetic production export for Assay ingest tests. No live Graph calls are made.
 Beta/runtime permissions and SDK behavior still require an authorized pilot.
 
-**Review warning:** SEC-002/003/004 and IAM-003/004/010/011 are guarded observations,
-not implemented end-to-end security assessments. Tenant-wide analytics/update
-counts, user-setting API-version mismatches and older transport remain open risks.
+**Review warning:** SEC-002/003/004, IAM-003/004/010/011 and MON-001/005 are guarded
+observations, not implemented end-to-end security/monitoring assessments. Scoped
+device evidence, user-setting API-version mismatches and older transport remain open.
 See the current [audit addendum](AUDIT.md#september-2026-review-addendum).
 
 **Assess Windows 365 (Cloud PC) Enterprise & Flex tenants against Microsoft CAF, Well-Architected Framework, Landing Zone Accelerator, and Security best practices.**
@@ -479,7 +500,7 @@ W365Assessor/
 
 | Component | Version |
 |---|---|
-| `Invoke-W365Discovery.ps1` | 0.3.2 |
+| `Invoke-W365Discovery.ps1` | 0.3.3 |
 | `checks.json` | 1.1 (schema), 132 checks |
 | `W365Assessor.ps1` | 0.2.0 |
 
