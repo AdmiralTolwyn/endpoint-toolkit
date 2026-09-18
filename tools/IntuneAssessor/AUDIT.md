@@ -161,18 +161,19 @@ This guard also applies when Assay imports an older or manually authored export.
 A published URI/format is not proof that every allowed enum, default, range,
 ADMX data ID or reference recommendation has been verified. EPM sample IDs are
 not counted among these documented CSP nodes. Unknown settings, template-default
-values and missing definitions must remain unresolved. The existing four
-reviewed ADMX payload paths and App Control XML projection still need a separate
-complete binding/schema review; XML well-formedness is not full policy validation.
+values and missing definitions must remain unresolved. Policy-specific bindings
+for the four supported ADMX paths are recorded below; effective application,
+cross-setting prerequisites and App Control XML schema review remain separate
+gates. XML well-formedness is not full policy validation.
 
 ### ADMX Fragment Boundary (18 September 2026)
 
-The parser now validates the reviewed numeric subset of Microsoft's
+The parser validates the reviewed Boolean/numeric subset of Microsoft's
 [ADMX payload structure](https://learn.microsoft.com/en-us/windows/client-management/understanding-admx-backed-policies):
 one empty enabled/disabled element, empty data elements with exactly id/value
-attributes, unique bounded identifiers and integral values. Documented lowercase
+attributes, unique bounded identifiers, Boolean literals and integral values. Documented lowercase
 and title-case element spellings are accepted. Unsupported elements/namespaces,
-nested content, extra/missing attributes, duplicate IDs, mixed states, nonnumeric
+nested content, extra/missing attributes, duplicate IDs, mixed states, unsupported
 values and disabled-plus-data combinations fail closed. The latter restrictions
 define this collector's supported subset; they are not claims that every other
 payload is invalid in Windows. Unsupported payloads are recorded unresolved and
@@ -183,9 +184,48 @@ XML-backed CSPs no longer accept numeric/boolean scalar bypasses. Assay validate
 the typed ADMX object and every retained field before accepting ResolvedAdmx;
 it no longer silently drops invalid fields or truncates a payload into a clean
 result. ADMX objects are accepted only on the four structured paths, not scalar
-CSPs. Full policy-specific required IDs/enums, OS support and App Control XSD
+CSPs. OS support, cross-setting prerequisites and App Control XSD
 validation remain open gates. Synthetic malformed-input and valid-fragment
 tests pass in both PowerShell runtimes and native Rust.
+
+### Policy-Specific ADMX Bindings (0.5.1)
+
+The [BitLocker CSP reference](https://learn.microsoft.com/en-us/windows/client-management/mdm/bitlocker-csp)
+explicitly documents the IDs and types used by the three supported policies.
+Production decoding now supplies the CSP path to `ConvertTo-IntuneAdmxMetadata`;
+the collector and native importer both validate exact case-sensitive IDs, types,
+required fields and enum values. No generic numeric field is treated as a known
+policy element. Bare `<enabled/>` is insufficient for an enabled BitLocker policy;
+`<disabled/>` requires no data. This is the fully specified supported subset, not
+a claim about every possible provider representation or Windows policy behavior.
+
+| Policy | Typed data contract |
+| --- | --- |
+| [SystemDrivesRequireStartupAuthentication](https://learn.microsoft.com/en-us/windows/client-management/mdm/bitlocker-csp#systemdrivesrequirestartupauthentication) | `ConfigureNonTPMStartupKeyUsage_Name` is Boolean; `ConfigureTPMStartupKeyUsageDropDown_Name`, `ConfigurePINUsageDropDown_Name`, `ConfigureTPMPINKeyUsageDropDown_Name`, `ConfigureTPMUsageDropDown_Name` are 0 disallowed, 1 required, 2 optional. |
+| [SystemDrivesRecoveryOptions](https://learn.microsoft.com/en-us/windows/client-management/mdm/bitlocker-csp#systemdrivesrecoveryoptions) | `OSAllowDRA_Name`, `OSHideRecoveryPage_Name`, `OSActiveDirectoryBackup_Name`, `OSRequireActiveDirectoryBackup_Name` are Boolean; `OSRecoveryPasswordUsageDropDown_Name` / `OSRecoveryKeyUsageDropDown_Name` are 0 disallowed, 1 required, 2 allowed; `OSActiveDirectoryBackupDropDown_Name` is 1 passwords plus key packages or 2 passwords only. |
+| [FixedDrivesRecoveryOptions](https://learn.microsoft.com/en-us/windows/client-management/mdm/bitlocker-csp#fixeddrivesrecoveryoptions) | Same seven element suffixes and types as operating-system recovery, using the documented `FDV` prefix instead of `OS`. |
+| [DisableInternetExplorerLaunchViaCOM](https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-internetexplorer#disableinternetexplorerlaunchviacom) | Only the reviewed enable/disable-only fragment is accepted; any data elements remain unresolved. Device and user scope exist in the source; the collector's reviewed comparison uses the device path, not an inferred user/device alias. |
+
+The CSP describes checkbox literals as `true` / `false`; do not coerce a numeric
+0/1 into a Boolean or use Boolean true as enum value 1. The source wording for
+checkbox false is "Policy not set", not a universal disabled-control verdict.
+The complete enabled payload's individual values remain configuration intent.
+Valid startup enums may still form a conflicting combination: the CSP warns
+that only one additional authentication option may be required. No clean
+encryption, escrow or recovery outcome is inferred from payload validation.
+
+`Test-IntuneAdmxContracts.ps1 -EvidenceDirectory <CSP-cache>` compares all 19
+BitLocker IDs and their types with the source's XML samples, checks the documented
+Boolean/enum descriptions and records source hashes in
+`intune-admx-binding-audit.json`. It runs synthetic positive/negative decodes;
+optional `ASSAY_INTUNE_ADMX_FIXTURE` writes four decoded policies for native
+reassessment testing. Microsoft sample values are not adopted as recommendations.
+
+In Assay rules `1.3.1-preview`, S-16 reports unresolved settings as NotAssessed
+rather than an empty decoded observation. S-26 requires Complete modern-policy
+and SecuritySettings collection plus completed-parent coverage before Pass;
+explicit disabled evidence remains Warning even with incomplete coverage.
+Original scored controls, supplementary finding count and decisions are unchanged.
 
 ## Other Script Activities
 

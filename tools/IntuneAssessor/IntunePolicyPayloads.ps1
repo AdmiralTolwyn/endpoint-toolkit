@@ -16,8 +16,33 @@ function Read-IntunePolicyXml {
     } finally { $Reader.Dispose(); $TextReader.Dispose() }
 }
 
+function Get-IntuneAdmxDataContract {
+    param([string]$CspPath)
+    switch -CaseSensitive ($CspPath) {
+        'Policy/Config/InternetExplorer/DisableInternetExplorerLaunchViaCOM' { return @{} }
+        'BitLocker/SystemDrivesRequireStartupAuthentication' {
+            return @{
+                ConfigureNonTPMStartupKeyUsage_Name = 'Boolean'
+                ConfigureTPMStartupKeyUsageDropDown_Name = 'Usage'
+                ConfigurePINUsageDropDown_Name = 'Usage'
+                ConfigureTPMPINKeyUsageDropDown_Name = 'Usage'
+                ConfigureTPMUsageDropDown_Name = 'Usage'
+            }
+        }
+        { $_ -cin @('BitLocker/SystemDrivesRecoveryOptions', 'BitLocker/FixedDrivesRecoveryOptions') } {
+            $Prefix = if ($CspPath -ceq 'BitLocker/SystemDrivesRecoveryOptions') { 'OS' } else { 'FDV' }
+            $Contract = @{}
+            foreach ($Suffix in @('AllowDRA_Name', 'HideRecoveryPage_Name', 'ActiveDirectoryBackup_Name', 'RequireActiveDirectoryBackup_Name')) { $Contract[$Prefix + $Suffix] = 'Boolean' }
+            foreach ($Suffix in @('RecoveryPasswordUsageDropDown_Name', 'RecoveryKeyUsageDropDown_Name')) { $Contract[$Prefix + $Suffix] = 'Usage' }
+            $Contract[$Prefix + 'ActiveDirectoryBackupDropDown_Name'] = 'Backup'
+            return $Contract
+        }
+        default { throw 'Unreviewed ADMX policy' }
+    }
+}
+
 function ConvertTo-IntuneAdmxMetadata {
-    param([string]$Text)
+    param([string]$Text, [string]$CspPath)
     $Document = Read-IntunePolicyXml $Text -Fragment
     $State = $null
     $Data = [ordered]@{}
@@ -32,11 +57,29 @@ function ConvertTo-IntuneAdmxMetadata {
             $Identifier = $Node.GetAttribute('id')
             $Number = [long]0
             if ($Identifier.Length -gt 128 -or -not $Identifier -or $Identifier -match '[\x00-\x1F]' -or $Data.Contains($Identifier) -or $Data.Count -ge 100) { throw 'Invalid ADMX data identity' }
-            if (-not [long]::TryParse($Node.GetAttribute('value'), [Globalization.NumberStyles]::AllowLeadingSign, [Globalization.CultureInfo]::InvariantCulture, [ref]$Number)) { throw 'Unreviewed nonnumeric ADMX value' }
-            $Data[$Identifier] = $Number
+            $RawValue = $Node.GetAttribute('value')
+            if ($RawValue -ceq 'true') { $Data[$Identifier] = $true }
+            elseif ($RawValue -ceq 'false') { $Data[$Identifier] = $false }
+            elseif ([long]::TryParse($RawValue, [Globalization.NumberStyles]::AllowLeadingSign, [Globalization.CultureInfo]::InvariantCulture, [ref]$Number)) { $Data[$Identifier] = $Number }
+            else { throw 'Unreviewed ADMX value' }
         } else { throw 'Unsupported ADMX element' }
     }
     if ($null -eq $State -or (-not $State -and $Data.Count)) { throw 'Unsupported ADMX state/data combination' }
+    if ($CspPath) {
+        $Contract = Get-IntuneAdmxDataContract $CspPath
+        if ($State) {
+            if ($Data.Count -ne $Contract.Count) { throw 'Incomplete ADMX policy data' }
+            foreach ($Key in $Data.Keys) {
+                if ($Key -cnotin @($Contract.Keys)) { throw 'Unreviewed ADMX data ID' }
+                $Value = $Data[$Key]
+                switch ($Contract[$Key]) {
+                    'Boolean' { if ($Value -isnot [bool]) { throw 'Expected Boolean ADMX value' } }
+                    'Usage' { if ($Value -isnot [long] -or $Value -lt 0 -or $Value -gt 2) { throw 'Unknown ADMX usage enum' } }
+                    'Backup' { if ($Value -isnot [long] -or $Value -notin @(1,2)) { throw 'Unknown ADMX backup enum' } }
+                }
+            }
+        }
+    }
     return @{ enabled = $State; data = $Data }
 }
 

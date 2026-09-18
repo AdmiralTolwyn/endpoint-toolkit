@@ -103,7 +103,7 @@ function ConvertTo-IntuneSettingFacts {
             $Scalar = Get-IntuneValue $Selected 'value'
             $UnreviewedAdmx = $Path -cin @('Policy/Config/MSSecurityGuide/ConfigureSMBV1ClientDriver', 'Policy/Config/MSSecurityGuide/ConfigureSMBV1Server', 'Policy/Config/WindowsPowerShell/TurnOnPowerShellScriptBlockLogging')
             if ($Scalar -is [string] -and (Test-IntuneStructuredPath $Path)) {
-                try { $Fact['admx'] = ConvertTo-IntuneAdmxMetadata $Scalar; $Fact['resolution'] = 'ResolvedAdmx' }
+                try { $Fact['admx'] = ConvertTo-IntuneAdmxMetadata $Scalar -CspPath $Path; $Fact['resolution'] = 'ResolvedAdmx' }
                 catch { $Fact['resolution'] = 'UnresolvedAdmx' }
             }
             if ((Get-IntuneValue $Template 'useTemplateDefault' $false) -or (Get-IntuneValue $ChoiceTemplate 'useTemplateDefault' $false)) {

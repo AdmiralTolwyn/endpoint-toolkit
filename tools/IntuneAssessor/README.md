@@ -1,6 +1,6 @@
 # Intune Discovery for Assay
 
-Version 0.5.0. Experimental pending a live tenant pilot. Offline-tested with
+Version 0.5.1. Experimental pending a live tenant pilot. Offline-tested with
 Windows PowerShell 5.1 and PowerShell 7.
 
 The [contract audit](AUDIT.md) currently verifies 49 enabled Graph GET contracts
@@ -264,8 +264,16 @@ No raw XML, signers or file rules are exported. Source mode does not prove polic
 assignment, runtime enforcement or Managed Installer tagging. See
 [Microsoft's App Control guidance](https://learn.microsoft.com/en-us/intune/device-configuration/endpoint-security/manage-app-control).
 
-Reviewed ADMX policy payloads retain enablement and numeric elements only;
+Reviewed ADMX policy payloads retain enablement and exact typed Boolean/enum elements;
 unsupported/default/unresolved payloads do not become successful comparisons.
+The IE COM-launch policy accepts the reviewed enable/disable-only payload. The
+three BitLocker startup/recovery policies require all documented data IDs with
+their exact Boolean or numeric enum types; unknown IDs or values remain unresolved.
+`Test-IntuneAdmxContracts.ps1` tests these bindings without tenant calls. Add
+`-EvidenceDirectory <directory>` containing the CSP source cache from
+`Test-IntunePolicyContracts.ps1` to verify the published sample IDs/types/enums.
+Set `ASSAY_INTUNE_ADMX_FIXTURE` to write synthetic production-decoded evidence
+for native import/reassessment tests. See [AUDIT.md](AUDIT.md) for source details.
 Legacy setting bodies, per-rule exclusion coverage, effective targeting, full
 BitLocker/LAPS prerequisites and runtime installer pairing still need further
 evidence. All verification here is synthetic, not a live-tenant validation claim.
