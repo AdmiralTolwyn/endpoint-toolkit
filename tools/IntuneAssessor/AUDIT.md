@@ -2,6 +2,30 @@
 
 Date: 2026-09-17. Status: **partial audit, not production certification**.
 
+September 19, collector 0.5.15: reproduced array-shaped root identity accepted
+as scalar EPM binding. All six root/field instance-ID, definition-ID and offset
+checks now require string types and exact ordinal matches. Unsupported fields
+remain null; rejected root definitions cause Partial coverage without completed
+parents. Exact typed duplicates remain unresolved. Transport duplicate filtering
+retains partial rows but does not certify complete coverage.
+Non-string root instance IDs invalidate coverage even alongside valid settings;
+the mixed-root regression isolates identity from setting-count/transport failures.
+
+Fresh Microsoft references: [setting instance](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationsettinginstance?view=graph-rest-beta)
+revision `c03b91d7953293f0cad86ef442f29398f359b69c` declares settingDefinitionId
+String; [setting definition](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationsettingdefinition?view=graph-rest-beta)
+revision `e8eace7fa9bfa9e7afacfe9f5dec1ba42ffd493f` declares id and offsetUri
+String. These are type contracts, not authority for the sample-backed EPM binding
+values. Base-URI interpretation, parent relationships, full schema/collection
+shapes, dependencies, applicability and live provider behavior remain open.
+
+156 positive/malformed dictionary/JSON cases, four direct duplicate controls and
+mocked production exports cover fields and root rejection. Native reassessment,
+app save/load and HTML/PDF retain NotAssessed alongside positive Warning controls.
+No new source field, route, permission, provider or score. Recollect affected old
+flattened rule exports; no live defect occurrence or automatic migration claimed.
+See [typed EPM binding limits](README.md#epm-typed-bindings-0515).
+
 September 19, collector 0.5.14: reproduced and repaired unmatched EPM parent
 choices yielding explicit child fields. The walker tracks ChoiceUnresolved
 alongside TemplateUnresolved, propagating ancestor uncertainty while retaining

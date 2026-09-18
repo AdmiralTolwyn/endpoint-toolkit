@@ -23,6 +23,86 @@ Assert-Epm ($Rules.Count -eq 2 -and $Rules[0].id -ne $Rules[1].id) 'Rule group i
 Assert-Epm ($Rules[0].fileName -eq 'setup*.exe' -and $Rules[0].elevationType -ceq 'Automatic') 'Exact definition/choice binding failed'
 Assert-Epm ($null -eq $Rules[1].filePath -and $null -eq $Rules[1].elevationType) 'Missing/default values inherited from another rule'
 Assert-Epm (-not ($Rules | ConvertTo-Json -Depth 20).Contains('SECRET')) 'Unreviewed EPM rule content leaked'
+$BindingCases = foreach ($Binding in @('root-instance', 'root-definition', 'root-offset', 'field-instance', 'field-definition', 'field-offset')) {
+    foreach ($Shape in @('valid', 'array', 'multi-array', 'empty-array', 'number', 'boolean', 'object', 'null', 'missing', 'blank', 'case', 'leading-space', 'trailing-space')) {
+        @{ Binding = $Binding; Shape = $Shape }
+    }
+}
+foreach ($BindingCase in $BindingCases) {
+    $Binding = $BindingCase.Binding
+    $Shape = $BindingCase.Shape
+    foreach ($DecodeJson in @($false, $true)) {
+        $BindingDefinitions = @($Definitions | ForEach-Object { $_.Clone() })
+        $BindingLeaf = $First.children[1].Clone()
+        $BindingInstance = @{ settingDefinitionId = $RootId; groupSettingCollectionValue = @(@{ children = @($First.children[0], $BindingLeaf) }) }
+        $Property = 'settingDefinitionId'
+        switch ($Binding) {
+            'root-instance' { $Target = $BindingInstance }
+            'root-definition' { $Target = $BindingDefinitions[0]; $Property = 'id' }
+            'root-offset' { $Target = $BindingDefinitions[0]; $Property = 'offsetUri' }
+            'field-instance' { $Target = $BindingLeaf }
+            'field-definition' { $Target = $BindingDefinitions[2]; $Property = 'id' }
+            'field-offset' { $Target = $BindingDefinitions[2]; $Property = 'offsetUri' }
+        }
+        $ExactValue = $Target[$Property]
+        switch ($Shape) {
+            'array' { $Target[$Property] = @($ExactValue) }
+            'multi-array' { $Target[$Property] = @($ExactValue, 'SECRET_BINDING') }
+            'empty-array' { $Target[$Property] = @() }
+            'number' { $Target[$Property] = 1 }
+            'boolean' { $Target[$Property] = $true }
+            'object' { $Target[$Property] = @{ value = $ExactValue } }
+            'null' { $Target[$Property] = $null }
+            'missing' { $Target.Remove($Property) }
+            'blank' { $Target[$Property] = '' }
+            'case' { $Target[$Property] = $ExactValue.ToUpperInvariant() }
+            'leading-space' { $Target[$Property] = ' ' + $ExactValue }
+            'trailing-space' { $Target[$Property] = $ExactValue + ' ' }
+        }
+        if ($DecodeJson) {
+            $BindingInstance = $BindingInstance | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+            $BindingDefinitions = $BindingDefinitions | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+        }
+        $BindingRejected = $false
+        $BindingRules = @()
+        try { $BindingRules = @(ConvertTo-IntuneEpmRules $BindingInstance $BindingDefinitions 'policy' 'binding') }
+        catch { $BindingRejected = $true }
+        $Context = "$Binding; $Shape; JSON=$DecodeJson"
+        if ($Shape -eq 'valid') {
+            Assert-Epm (-not $BindingRejected -and $BindingRules.Count -eq 1 -and $BindingRules[0].fileName -ceq 'setup*.exe' -and $BindingRules[0].name -ceq 'Rule one') "Exact EPM binding changed: $Context"
+        } elseif ($Binding -eq 'root-instance') {
+            if ($Shape -in @('blank', 'case', 'leading-space', 'trailing-space')) {
+                Assert-Epm (-not $BindingRejected -and $BindingRules.Count -eq 0) "Unsupported string root was treated as an EPM rule identity: $Context"
+            } else {
+                Assert-Epm $BindingRejected "Non-string EPM root identity did not invalidate coverage: $Context"
+            }
+        } elseif ($Binding.StartsWith('root-')) {
+            Assert-Epm $BindingRejected "Malformed EPM root definition was accepted: $Context"
+        } else {
+            Assert-Epm (-not $BindingRejected -and $BindingRules.Count -eq 1 -and $null -eq $BindingRules[0].fileName -and $BindingRules[0].name -ceq 'Rule one') "Malformed EPM field binding produced evidence or hid a sibling: $Context"
+        }
+        Assert-Epm (-not (($BindingRules | ConvertTo-Json -Depth 10) -match 'SECRET')) "Malformed binding leaked: $Context"
+    }
+}
+foreach ($DuplicateIndex in @(0, 2)) {
+    foreach ($DecodeJson in @($false, $true)) {
+        $DuplicateDefinitions = $Definitions + @($Definitions[$DuplicateIndex].Clone())
+        $DuplicateInstance = $Instance
+        if ($DecodeJson) {
+            $DuplicateDefinitions = $DuplicateDefinitions | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+            $DuplicateInstance = $DuplicateInstance | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+        }
+        $DuplicateRejected = $false
+        $DuplicateRules = @()
+        try { $DuplicateRules = @(ConvertTo-IntuneEpmRules $DuplicateInstance $DuplicateDefinitions 'policy' 'duplicate-binding') }
+        catch { $DuplicateRejected = $true }
+        if ($DuplicateIndex -eq 0) {
+            Assert-Epm $DuplicateRejected 'Duplicate typed root definitions resolved'
+        } else {
+            Assert-Epm (-not $DuplicateRejected -and $DuplicateRules.Count -eq 2 -and $null -eq $DuplicateRules[0].fileName -and $DuplicateRules[0].name -ceq 'Rule one') 'Duplicate typed field definitions resolved or hid a sibling'
+        }
+    }
+}
 $NestedInstance = @{ settingDefinitionId = $RootId; groupSettingCollectionValue = @(@{ children = @(
     @{ settingDefinitionId = 'parent'; choiceSettingValue = @{ value = 'chosen'; settingValueTemplateReference = @{ useTemplateDefault = $true }; children = @($First.children[1]) } },
     $First.children[0]
@@ -213,3 +293,72 @@ Assert-Epm ($ChoiceRows[1].name -ceq 'Rule one' -and $ChoiceRows[1].fileName -ce
 $ChoiceJson = $ChoiceDocument | ConvertTo-Json -Depth 30
 Assert-Epm (-not ($ChoiceJson -match 'SECRET|ChoiceUnresolved|TemplateUnresolved|choiceSettingValue')) 'Raw EPM choice payload or traversal marker exported'
 if ($env:ASSAY_INTUNE_EPM_CHOICE_FIXTURE) { [IO.File]::WriteAllText($env:ASSAY_INTUNE_EPM_CHOICE_FIXTURE, $ChoiceJson, [Text.UTF8Encoding]::new($false)) }
+$script:EpmFixtureDefinitions = @($Definitions | ForEach-Object { $_.Clone() })
+$script:EpmFixtureDefinitions[3].offsetUri = @('/PrivilegeManagement/ElevationRules/{0}/FilePath')
+$script:EpmFixtureInstance = @{ settingDefinitionId = $RootId; groupSettingCollectionValue = @(
+    @{ children = @(
+        $First.children[0],
+        $First.children[3],
+        @{ settingDefinitionId = @(($RootId + '_filename')); simpleSettingValue = @{ value = 'SECRET_BINDING_FILE.exe' } },
+        @{ settingDefinitionId = ($RootId + '_filepath'); simpleSettingValue = @{ value = 'C:\SECRET_BINDING_PATH' } }
+    ) },
+    @{ children = @(
+        $First.children[0],
+        @{ settingDefinitionId = ($RootId + '_filename'); simpleSettingValue = @{ value = 'other.exe' } },
+        @{ settingDefinitionId = @(($RootId + '_ruletype')); simpleSettingValue = @{ value = 'Automatic' } }
+    ) }
+) }
+$BindingDocument = Invoke-IntuneDiscoveryCore -SelectedTenant '22222222-2222-4222-8222-222222222222' -Configuration $true -Request $EpmRequest -Requirements $EpmRequirements
+$BindingRows = $BindingDocument.Inventory.EpmRules
+Assert-Epm ($BindingRows.Count -eq 2 -and $BindingDocument.CollectionStatus.EpmRules.State -ceq 'Complete' -and $BindingDocument.CollectionStatus.EpmRules.CompletedParentIds -contains 'policy') 'Malformed field bindings lost EPM group provenance'
+Assert-Epm ($BindingRows[0].name -ceq 'Rule one' -and $BindingRows[0].elevationType -ceq 'Automatic' -and $null -eq $BindingRows[0].fileName -and $null -eq $BindingRows[0].filePath) 'Malformed field identity/offset exposed EPM values'
+Assert-Epm ($BindingRows[1].name -ceq 'Rule one' -and $BindingRows[1].fileName -ceq 'other.exe' -and $null -eq $BindingRows[1].elevationType) 'Malformed elevation identity resolved or hid explicit sibling fields'
+$BindingJson = $BindingDocument | ConvertTo-Json -Depth 30
+Assert-Epm (-not ($BindingJson -match 'SECRET|offsetUri|ChoiceUnresolved|TemplateUnresolved')) 'Malformed EPM binding payload exported'
+if ($env:ASSAY_INTUNE_EPM_BINDING_FIXTURE) { [IO.File]::WriteAllText($env:ASSAY_INTUNE_EPM_BINDING_FIXTURE, $BindingJson, [Text.UTF8Encoding]::new($false)) }
+foreach ($RootCase in @('definition-id', 'duplicate-definition', 'offset')) {
+    $script:EpmFixtureDefinitions = @($Definitions | ForEach-Object { $_.Clone() })
+    $script:EpmFixtureInstance = $Instance
+    switch ($RootCase) {
+        'definition-id' { $script:EpmFixtureDefinitions[0].id = @($RootId) }
+        'duplicate-definition' { $script:EpmFixtureDefinitions += $Definitions[0].Clone() }
+        'offset' { $script:EpmFixtureDefinitions[0].offsetUri = @('/PrivilegeManagement/ElevationRules/{0}') }
+    }
+    $RejectedRootDocument = Invoke-IntuneDiscoveryCore -SelectedTenant '22222222-2222-4222-8222-222222222222' -Configuration $true -Request $EpmRequest -Requirements $EpmRequirements
+    $ExpectedRows = if ($RootCase -eq 'duplicate-definition') { 2 } else { 0 }
+    Assert-Epm ($RejectedRootDocument.Inventory.EpmRules.Count -eq $ExpectedRows -and $RejectedRootDocument.CollectionStatus.EpmRules.State -ceq 'Partial' -and $RejectedRootDocument.CollectionStatus.EpmRules.CompletedParentIds.Count -eq 0) "Malformed or duplicate EPM root retained complete coverage: $RootCase"
+}
+if ($env:ASSAY_INTUNE_EPM_BINDING_ROOT_FIXTURE) { [IO.File]::WriteAllText($env:ASSAY_INTUNE_EPM_BINDING_ROOT_FIXTURE, ($RejectedRootDocument | ConvertTo-Json -Depth 30), [Text.UTF8Encoding]::new($false)) }
+$script:EpmFixtureDefinitions = $Definitions
+$script:EpmFixtureInstance = $Instance
+$script:MixedRootDefinitionRead = $false
+$MixedRootRequest = {
+    param($Address)
+    if (([uri]$Address).AbsolutePath -eq '/beta/deviceManagement/configurationPolicies') {
+        return @{ StatusCode = 200; Body = @{ value = @(@{ id = 'policy'; platforms = 'windows10'; technologies = 'endpointPrivilegeManagement'; settingCount = 2; templateReference = @{ templateFamily = 'endpointSecurityEndpointPrivilegeManagement' } }) } }
+    }
+    if (([uri]$Address).AbsolutePath -eq '/beta/deviceManagement/configurationPolicies/policy/settings') {
+        $MalformedInstance = $script:EpmFixtureInstance.Clone()
+        if ($script:MixedRootMalformed) { $MalformedInstance.settingDefinitionId = @($MalformedInstance.settingDefinitionId) }
+        return @{ StatusCode = 200; Body = (@{ value = @(
+            @{ id = '0'; settingInstance = $script:EpmFixtureInstance },
+            @{ id = '1'; settingInstance = $MalformedInstance }
+        ) } | ConvertTo-Json -Depth 30 | ConvertFrom-Json) }
+    }
+    if (([uri]$Address).AbsolutePath -eq '/beta/deviceManagement/configurationPolicies/policy/settings/1/settingDefinitions') {
+        $script:MixedRootDefinitionRead = $true
+        return @{ StatusCode = 200; Body = (@{ value = $script:EpmFixtureDefinitions } | ConvertTo-Json -Depth 30 | ConvertFrom-Json) }
+    }
+    & $EpmRequest $Address
+}
+foreach ($MalformedRoot in @($false, $true)) {
+    $script:MixedRootMalformed = $MalformedRoot
+    $script:MixedRootDefinitionRead = $false
+    $MixedRootDocument = Invoke-IntuneDiscoveryCore -SelectedTenant '22222222-2222-4222-8222-222222222222' -Configuration $true -Request $MixedRootRequest -Requirements $EpmRequirements
+    Assert-Epm $script:MixedRootDefinitionRead 'Mixed-root coverage probe did not reach the second definition response'
+    if ($MalformedRoot) {
+        Assert-Epm ($MixedRootDocument.Inventory.EpmRules.Count -eq 2 -and $MixedRootDocument.CollectionStatus.EpmRules.State -ceq 'Partial' -and $MixedRootDocument.CollectionStatus.EpmRules.CompletedParentIds.Count -eq 0) 'Valid EPM sibling hid malformed root identity from collection coverage'
+    } else {
+        Assert-Epm ($MixedRootDocument.Inventory.EpmRules.Count -eq 4 -and $MixedRootDocument.CollectionStatus.EpmRules.State -ceq 'Complete' -and $MixedRootDocument.CollectionStatus.EpmRules.CompletedParentIds -contains 'policy') 'Two explicit EPM settings lost complete coverage'
+    }
+}

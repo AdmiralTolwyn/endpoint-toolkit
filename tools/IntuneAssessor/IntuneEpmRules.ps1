@@ -24,9 +24,16 @@ function Get-IntuneEpmRuleChildren {
 function ConvertTo-IntuneEpmRules {
     param($Instance, $Definitions, [string]$PolicyId, [string]$SettingId)
     $RootId = 'device_vendor_msft_policy_privilegemanagement_elevationrules_{elevationrulename}'
-    if ((Get-IntuneValue $Instance 'settingDefinitionId') -cne $RootId) { return }
-    $Root = @($Definitions | Where-Object { (Get-IntuneValue $_ 'id') -ceq $RootId })
-    if ($Root.Count -ne 1 -or (Get-IntuneValue $Root[0] 'offsetUri') -cne '/PrivilegeManagement/ElevationRules/{0}') { throw 'Unsupported EPM rule group definition' }
+    $InstanceId = Get-IntuneValue $Instance 'settingDefinitionId'
+    if ($InstanceId -isnot [string]) { throw 'Invalid EPM setting definition identity' }
+    if (-not [string]::Equals($InstanceId, $RootId, [StringComparison]::Ordinal)) { return }
+    $Root = @($Definitions | Where-Object {
+        $CandidateId = Get-IntuneValue $_ 'id'
+        $CandidateId -is [string] -and [string]::Equals($CandidateId, $RootId, [StringComparison]::Ordinal)
+    })
+    if ($Root.Count -ne 1) { throw 'Unsupported EPM rule group definition' }
+    $RootOffset = Get-IntuneValue $Root[0] 'offsetUri'
+    if ($RootOffset -isnot [string] -or -not [string]::Equals($RootOffset, '/PrivilegeManagement/ElevationRules/{0}', [StringComparison]::Ordinal)) { throw 'Unsupported EPM rule group definition' }
     $Groups = Get-IntuneValue $Instance 'groupSettingCollectionValue'
     if ($Groups -isnot [array] -or $Groups.Count -gt 100) { throw 'Invalid EPM rule groups' }
     $Fields = [ordered]@{ name = 'Name'; filename = 'FileName'; filepath = 'FilePath'; ruletype = 'RuleType' }
@@ -39,9 +46,17 @@ function ConvertTo-IntuneEpmRules {
         $Children = @(Get-IntuneEpmRuleChildren (Get-IntuneValue $Group 'children' @()) -Definitions $Definitions)
         foreach ($Suffix in $Fields.Keys) {
             $DefinitionId = $RootId + '_' + $Suffix
-            $Definition = @($Definitions | Where-Object { (Get-IntuneValue $_ 'id') -ceq $DefinitionId })
-            $Child = @($Children | Where-Object { (Get-IntuneValue $_.Instance 'settingDefinitionId') -ceq $DefinitionId })
-            if ($Definition.Count -ne 1 -or $Child.Count -ne 1 -or (Get-IntuneValue $Definition[0] 'offsetUri') -cne ('/PrivilegeManagement/ElevationRules/{0}/' + $Fields[$Suffix])) { continue }
+            $Definition = @($Definitions | Where-Object {
+                $CandidateId = Get-IntuneValue $_ 'id'
+                $CandidateId -is [string] -and [string]::Equals($CandidateId, $DefinitionId, [StringComparison]::Ordinal)
+            })
+            $Child = @($Children | Where-Object {
+                $CandidateId = Get-IntuneValue $_.Instance 'settingDefinitionId'
+                $CandidateId -is [string] -and [string]::Equals($CandidateId, $DefinitionId, [StringComparison]::Ordinal)
+            })
+            if ($Definition.Count -ne 1 -or $Child.Count -ne 1) { continue }
+            $Offset = Get-IntuneValue $Definition[0] 'offsetUri'
+            if ($Offset -isnot [string] -or -not [string]::Equals($Offset, ('/PrivilegeManagement/ElevationRules/{0}/' + $Fields[$Suffix]), [StringComparison]::Ordinal)) { continue }
             if ($Child[0].TemplateUnresolved -or $Child[0].ChoiceUnresolved) { continue }
             $Choice = Get-IntuneValue $Child[0].Instance 'choiceSettingValue'
             $Selected = Get-IntuneValue $Child[0].Instance 'simpleSettingValue'

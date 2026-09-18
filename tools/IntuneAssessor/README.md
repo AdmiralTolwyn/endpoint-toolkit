@@ -1,6 +1,6 @@
 # Intune Discovery for Assay
 
-Version 0.5.14. Experimental pending a live tenant pilot. Offline-tested with
+Version 0.5.15. Experimental pending a live tenant pilot. Offline-tested with
 Windows PowerShell 5.1 and PowerShell 7.
 
 The [contract audit](AUDIT.md) currently verifies 49 enabled Graph GET contracts
@@ -10,6 +10,33 @@ remain separate gates; do not label the full collector audit complete.
 Exports read-only observations for Assay's Intune pack. Assay owns control
 definitions and scores: 50 source-linked controls, two bounded automatic checks,
 and 48 evidence-assisted manual checks. The collector does not mutate a tenant.
+
+## EPM Typed Bindings (0.5.15)
+
+The rule decoder now requires strings and exact ordinal matches for root/field
+settingDefinitionId, definition id and offsetUri. Arrays containing recognized
+values cannot be treated as scalar bindings. Unsupported field bindings remain
+null without hiding independently bound fields; recognized roots with unsupported
+definitions/offsets fail with Partial coverage and no completed-parent marker.
+Non-string root IDs invalidate collection coverage even alongside a valid setting;
+unrecognized string root IDs do not match this adapter. Exact duplicates remain
+unresolved. Existing transport duplicate filtering may retain rows but still marks
+the policy incomplete; it is not proof of complete rule coverage.
+
+Microsoft documents [instance IDs](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationsettinginstance?view=graph-rest-beta)
+and [definition IDs/offsets](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationsettingdefinition?view=graph-rest-beta)
+as strings. The specific EPM identities/offsets remain sample-backed, not new Learn
+CSP guarantees. Base-URI interpretation, parent relationships, full collection/value
+shapes, dependencies, applicability and live behavior still require further review.
+
+Test-IntuneEpmRules covers 156 binding cases plus direct duplicate and actual
+discovery coverage controls. `ASSAY_INTUNE_EPM_BINDING_FIXTURE` exports unknown
+fields with preserved siblings; `ASSAY_INTUNE_EPM_BINDING_ROOT_FIXTURE` exports
+partial coverage after root rejection. Native/app tests keep EPM-03/EPM-04
+NotAssessed through save/load and HTML/PDF. No new source field, provider, route,
+permission, finding or score; native rules remain 1.8.0-preview. Recollect affected
+older flattened exports; discarded binding types cannot be reconstructed. No
+live defect occurrence or automatic migration is asserted.
 
 ## EPM Choice Context (0.5.14)
 
