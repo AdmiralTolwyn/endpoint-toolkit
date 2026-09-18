@@ -159,6 +159,7 @@ try {
         if ($Limited.AssessmentRequirements.ConfigurationReview.MaxSignatureAgeHours -ne $Limit -or $Limited.Inventory.EndpointEvidence[0].modules.DefenderStatus.Rows[0].AntivirusSignatureLastUpdated -cne '2026-09-18T08:00:00.0000000Z') { throw 'Signature-age requirement or evidence changed during import' }
     }
     $script:MixedCorrelation = $false
+    $script:IdentityCorrelation = $false
     $CorrelationRequest = {
         param($Uri)
         $Path = ([uri]$Uri).AbsolutePath
@@ -174,10 +175,16 @@ try {
                     $Rows[0].settingInstance.choiceSettingValue.value = 'missing-option'
                     foreach ($Row in $Rows) { $Row.settingInstance.simpleSettingValue = @{ value = 1 } }
                 }
+                if ($script:IdentityCorrelation) {
+                    $Rows[0].settingInstance.settingDefinitionId = 1
+                    $Rows[1].settingInstance.choiceSettingValue.value = '1'
+                }
             }
             '/settings/0/settingDefinitions$' { $Rows = @(@{ id = 'rtp'; baseUri = './Device/Vendor/MSFT/Policy/Config/Defender'; offsetUri = 'AllowRealtimeMonitoring'; version = '1'; options = @(@{ itemId = 'opaque_enabled_0'; optionValue = @{ value = 1 } }, @{ itemId = 'opaque_disabled_1'; optionValue = @{ value = 0 } }) }) }
             '/settings/1/settingDefinitions$' { $Rows = @(@{ id = 'behavior'; baseUri = './Device/Vendor/MSFT/Policy/Config/Defender'; offsetUri = 'AllowBehaviorMonitoring'; version = '1'; options = @(@{ itemId = 'opaque_enabled_0'; optionValue = @{ value = 1 } }, @{ itemId = 'opaque_disabled_1'; optionValue = @{ value = 0 } }) }) }
         }
+        if ($script:IdentityCorrelation -and $Path.EndsWith('/settings/0/settingDefinitions')) { $Rows[0].id = '1' }
+        if ($script:IdentityCorrelation -and $Path.EndsWith('/settings/1/settingDefinitions')) { $Rows[0].options = @(@{ itemId = 1; optionValue = @{ value = 1 } }) }
         @{ StatusCode = 200; Body = (@{ value = $Rows } | ConvertTo-Json -Depth 20 | ConvertFrom-Json) }
     }
     $Correlation = Invoke-IntuneDiscoveryCore -SelectedTenant $Tenant -Configuration $true -EndpointPaths @($Temporary) -Request $CorrelationRequest -Requirements @{
@@ -210,6 +217,25 @@ try {
     $MixedJson = $AmbiguousDocument | ConvertTo-Json -Depth 30
     if ($MixedJson -match 'PRIVATE_PATH|DO_NOT_EXPORT|missing-option|simpleSettingValue') { throw 'Ambiguous raw payload leaked into export' }
     if ($env:ASSAY_INTUNE_MIXED_SETTING_FIXTURE) { [IO.File]::WriteAllText($env:ASSAY_INTUNE_MIXED_SETTING_FIXTURE, $MixedJson, [Text.UTF8Encoding]::new($false)) }
+    $script:IdentityCorrelation = $true
+    try {
+        $IdentityDocument = Invoke-IntuneDiscoveryCore -SelectedTenant $Tenant -Configuration $true -EndpointPaths @($Temporary) -Request $CorrelationRequest -Requirements @{
+            ScopeConfirmed = $true; ScopeDescription = 'Synthetic malformed setting identities'; Assessor = 'Test'; MaxCollectionAgeHours = 24
+            ConfigurationReview = @{ DeviceIds = @('device'); PolicyIds = @('policy-on'); ReferenceProfile = 'windows-25h2'; DefenderPrimary = $true }
+        }
+    } finally { $script:IdentityCorrelation = $false }
+    if ($IdentityDocument.Inventory.SecuritySettings.Count -ne 4) { throw 'Invalid-identity settings silently dropped' }
+    foreach ($Fact in $IdentityDocument.Inventory.SecuritySettings) {
+        if ($Fact.Contains('value') -or $Fact.Contains('admx')) { throw 'Malformed identity produced a decoded reference' }
+        if ($Fact.definitionId -ceq '') {
+            if ($Fact.resolution -cne 'UnsupportedDefinition' -or $Fact.Contains('cspUri')) { throw 'Numeric instance identity was preserved or resolved' }
+        } elseif ($Fact.definitionId -ceq 'behavior') {
+            if ($Fact.resolution -cne 'UnresolvedValue' -or $Fact.cspUri -cne 'Policy/Config/Defender/AllowBehaviorMonitoring') { throw 'Numeric option identity was resolved' }
+        } else { throw 'Unexpected identity metadata' }
+    }
+    $IdentityJson = $IdentityDocument | ConvertTo-Json -Depth 30
+    if ($IdentityJson -match 'PRIVATE_PATH|DO_NOT_EXPORT|choiceSettingValue|optionValue') { throw 'Invalid identity export retained raw payload' }
+    if ($env:ASSAY_INTUNE_IDENTITY_FIXTURE) { [IO.File]::WriteAllText($env:ASSAY_INTUNE_IDENTITY_FIXTURE, $IdentityJson, [Text.UTF8Encoding]::new($false)) }
     $Sample.TenantId = '44444444-4444-4444-8444-444444444444'
     [IO.File]::WriteAllText($Temporary, ($Sample | ConvertTo-Json -Depth 15), [Text.UTF8Encoding]::new($false))
     $Rejected = $false

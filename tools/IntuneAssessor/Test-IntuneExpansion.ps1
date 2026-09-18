@@ -33,12 +33,79 @@ foreach ($Uri in @('https://graph.microsoft.com/v1.0/directory/deviceLocalCreden
 $Definition = @{ id = 'opaque'; baseUri = './Device/Vendor/MSFT/Policy/Config/Defender'; offsetUri = 'AllowCloudProtection'; version = '1'; options = @(@{ itemId = 'opaque_disabled_1'; optionValue = @{ value = 0 } }, @{ itemId = 'opaque_enabled_0'; optionValue = @{ value = 1 } }) }
 $Facts = @(ConvertTo-IntuneSettingFacts @{ settingDefinitionId = 'opaque'; choiceSettingValue = @{ value = 'opaque_disabled_1' } } @($Definition) 'policy' 'setting')
 Assert-Expansion ($Facts[0].value -eq 0 -and $Facts[0].resolution -eq 'Resolved') 'Choice suffix guessed instead of definition join'
+foreach ($IdentityCase in @(
+    @{ InstanceId = 1; DefinitionId = '1'; ChoiceId = 'option'; OptionId = 'option' },
+    @{ InstanceId = '1'; DefinitionId = 1; ChoiceId = 'option'; OptionId = 'option' },
+    @{ InstanceId = 'opaque'; DefinitionId = 'opaque'; ChoiceId = '1'; OptionId = 1 },
+    @{ InstanceId = 'opaque'; DefinitionId = 'opaque'; ChoiceId = 1; OptionId = '1' },
+    @{ InstanceId = 'opaque'; DefinitionId = 'opaque'; ChoiceId = $null; OptionId = $null },
+    @{ InstanceId = 'opaque'; DefinitionId = 'opaque'; ChoiceId = $true; OptionId = 'True' },
+    @{ InstanceId = @('opaque'); DefinitionId = 'opaque'; ChoiceId = 'option'; OptionId = 'option' },
+    @{ InstanceId = 'opaque'; DefinitionId = 'opaque'; ChoiceId = @('option'); OptionId = 'option' },
+    @{ InstanceId = 'opaque'; DefinitionId = @('opaque'); ChoiceId = 'option'; OptionId = 'option' },
+    @{ InstanceId = 'opaque'; DefinitionId = 'opaque'; ChoiceId = 'option'; OptionId = @('option') },
+    @{ InstanceId = $null; DefinitionId = ''; ChoiceId = 'option'; OptionId = 'option' },
+    @{ InstanceId = ' '; DefinitionId = ' '; ChoiceId = 'option'; OptionId = 'option' },
+    @{ InstanceId = $true; DefinitionId = 'True'; ChoiceId = 'option'; OptionId = 'option' },
+    @{ InstanceId = @{ id = 'PRIVATE_VALUE' }; DefinitionId = 'opaque'; ChoiceId = 'option'; OptionId = 'option' },
+    @{ InstanceId = 'opaque'; DefinitionId = 'OPAQUE'; ChoiceId = 'option'; OptionId = 'option' },
+    @{ InstanceId = 'opaque'; DefinitionId = 'opaque'; ChoiceId = ''; OptionId = '' },
+    @{ InstanceId = 'opaque'; DefinitionId = 'opaque'; ChoiceId = ' '; OptionId = ' ' },
+    @{ InstanceId = 'opaque'; DefinitionId = 'opaque'; ChoiceId = '01'; OptionId = '1' },
+    @{ InstanceId = 'opaque'; DefinitionId = 'opaque'; ChoiceId = 'OPTION'; OptionId = 'option' },
+    @{ InstanceId = 'opaque'; DefinitionId = 'opaque'; ChoiceId = ' option'; OptionId = 'option' },
+    @{ InstanceId = 'opaque'; DefinitionId = 'opaque'; ChoiceId = "opt`0ion"; OptionId = 'option' }
+)) {
+    foreach ($DecodeJson in @($false, $true)) {
+        $IdentityDefinition = @{ id = $IdentityCase.DefinitionId; baseUri = './Device/Vendor/MSFT/Policy/Config/Defender'; offsetUri = 'AllowRealtimeMonitoring'; options = @(@{ itemId = $IdentityCase.OptionId; optionValue = @{ value = 1 } }) }
+        $IdentityInstance = @{ settingDefinitionId = $IdentityCase.InstanceId; choiceSettingValue = @{ value = $IdentityCase.ChoiceId } }
+        if ($DecodeJson) {
+            $IdentityDefinition = $IdentityDefinition | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+            $IdentityInstance = $IdentityInstance | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+        }
+        $IdentityFacts = @(ConvertTo-IntuneSettingFacts $IdentityInstance @($IdentityDefinition) 'policy' 'identity')
+        Assert-Expansion ($IdentityFacts.Count -eq 1 -and $IdentityFacts[0].resolution -in @('UnresolvedValue', 'UnsupportedDefinition') -and -not $IdentityFacts[0].Contains('value')) 'Malformed identity was coerced into a resolved setting'
+        Assert-Expansion (-not (($IdentityFacts | ConvertTo-Json -Depth 10) -match 'PRIVATE_VALUE|System.Collections')) 'Malformed identity was stringified into export metadata'
+    }
+}
+foreach ($Token in @('0', '01', 'opaque_enabled_0')) {
+    foreach ($DecodeJson in @($false, $true)) {
+        $ExactDefinition = @{ id = $Token; baseUri = './Device/Vendor/MSFT/Policy/Config/Defender'; offsetUri = 'AllowRealtimeMonitoring'; options = @(@{ itemId = $Token; optionValue = @{ value = 0 } }) }
+        $ExactInstance = @{ settingDefinitionId = $Token; choiceSettingValue = @{ value = $Token } }
+        if ($DecodeJson) {
+            $ExactDefinition = $ExactDefinition | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+            $ExactInstance = $ExactInstance | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+        }
+        $ExactFacts = @(ConvertTo-IntuneSettingFacts $ExactInstance @($ExactDefinition) 'policy' 'exact')
+        Assert-Expansion ($ExactFacts.Count -eq 1 -and $ExactFacts[0].resolution -ceq 'Resolved' -and $ExactFacts[0].value -eq 0) 'Exact opaque string match or zero scalar was lost'
+    }
+}
+foreach ($DuplicateKind in @('definition', 'option')) {
+    $DuplicateDefinition = @{ id = 'opaque'; baseUri = './Device/Vendor/MSFT/Policy/Config/Defender'; offsetUri = 'AllowRealtimeMonitoring'; options = @(@{ itemId = 'option'; optionValue = @{ value = 1 } }) }
+    $DuplicateDefinitions = @($DuplicateDefinition)
+    if ($DuplicateKind -eq 'definition') { $DuplicateDefinitions += $DuplicateDefinition.Clone() }
+    else { $DuplicateDefinition.options += @{ itemId = 'option'; optionValue = @{ value = 0 } } }
+    $DuplicateFacts = @(ConvertTo-IntuneSettingFacts @{ settingDefinitionId = 'opaque'; choiceSettingValue = @{ value = 'option' } } $DuplicateDefinitions 'policy' 'duplicate')
+    Assert-Expansion ($DuplicateFacts.Count -eq 1 -and -not $DuplicateFacts[0].Contains('value')) 'Duplicate identity produced a resolved setting'
+}
 foreach ($ChoiceValue in @('missing-option', 'opaque_enabled_0')) {
     $AmbiguousFacts = @(ConvertTo-IntuneSettingFacts @{ settingDefinitionId = 'opaque'; choiceSettingValue = @{ value = $ChoiceValue }; simpleSettingValue = @{ value = 1 } } @($Definition) 'policy' 'ambiguous')
     Assert-Expansion ($AmbiguousFacts[0].resolution -eq 'UnresolvedValue' -and -not $AmbiguousFacts[0].Contains('value')) 'Mixed choice/simple payload fabricated a resolved value'
 }
 $ChildDefinition = @{ id = 'child'; baseUri = './Device/Vendor/MSFT/Policy/Config/Defender'; offsetUri = 'AllowBehaviorMonitoring' }
 $ChildInstance = @{ settingDefinitionId = 'child'; simpleSettingValue = @{ value = 1 } }
+foreach ($InvalidParent in @(
+    @{ settingDefinitionId = @('opaque'); groupSettingCollectionValue = @(@{ children = @($ChildInstance) }) },
+    @{ settingDefinitionId = 'opaque'; choiceSettingValue = @{ value = @('opaque_enabled_0'); children = @($ChildInstance) } },
+    @{ settingDefinitionId = 'unknown'; choiceSettingValue = @{ value = $null; children = @($ChildInstance) } }
+)) {
+    foreach ($DecodeJson in @($false, $true)) {
+        $ParentInput = $InvalidParent
+        if ($DecodeJson) { $ParentInput = $ParentInput | ConvertTo-Json -Depth 15 | ConvertFrom-Json }
+        $ParentFacts = @(ConvertTo-IntuneSettingFacts $ParentInput @($Definition, $ChildDefinition) 'policy' 'invalid-parent')
+        Assert-Expansion ($ParentFacts.Count -eq 1 -and -not $ParentFacts[0].Contains('value')) 'Malformed parent identity leaked resolved descendants'
+    }
+}
 foreach ($ParentKind in @('known', 'unknown', 'duplicate-definition', 'admx')) {
     foreach ($DecodeJson in @($false, $true)) {
         $ParentDefinition = $Definition.Clone()

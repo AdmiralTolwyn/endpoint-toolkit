@@ -78,12 +78,20 @@ function Test-IntuneSecurityPath {
 function ConvertTo-IntuneSettingFacts {
     param($Instance, $Definitions, [string]$PolicyId, [string]$SettingId, [int]$Depth = 0)
     if ($Depth -gt 12) { throw 'Setting depth limit' }
-    $DefinitionId = [string](Get-IntuneValue $Instance 'settingDefinitionId')
-    $Definition = @($Definitions | Where-Object { (Get-IntuneValue $_ 'id') -ceq $DefinitionId })
+    $DefinitionId = Get-IntuneValue $Instance 'settingDefinitionId'
+    if ($DefinitionId -isnot [string] -or [string]::IsNullOrWhiteSpace($DefinitionId)) {
+        return [ordered]@{ id = ($SettingId + ':'); parentId = $PolicyId; definitionId = ''; resolution = 'UnsupportedDefinition' }
+    }
+    $Definition = @(foreach ($Candidate in $Definitions) {
+        $CandidateId = Get-IntuneValue $Candidate 'id'
+        if ($CandidateId -is [string] -and [string]::Equals($CandidateId, $DefinitionId, [StringComparison]::Ordinal)) { $Candidate }
+    })
     $Fact = [ordered]@{ id = ($SettingId + ':' + $DefinitionId); parentId = $PolicyId; definitionId = $DefinitionId; resolution = 'UnsupportedDefinition' }
     $Choice = Get-IntuneValue $Instance 'choiceSettingValue'
     $Simple = Get-IntuneValue $Instance 'simpleSettingValue'
     $MixedValueKinds = $null -ne $Choice -and $null -ne $Simple
+    $ChoiceId = Get-IntuneValue $Choice 'value'
+    $InvalidChoiceId = $null -ne $Choice -and ($ChoiceId -isnot [string] -or [string]::IsNullOrWhiteSpace($ChoiceId))
     if ($Definition.Count -eq 1) {
         $Path = (([string](Get-IntuneValue $Definition[0] 'baseUri')).TrimEnd('/') + '/' + ([string](Get-IntuneValue $Definition[0] 'offsetUri')).TrimStart('/')) -creplace '^\./(Device/)?Vendor/MSFT/', ''
         $EpmPath = Get-IntuneEpmPath $Definition[0]
@@ -92,11 +100,12 @@ function ConvertTo-IntuneSettingFacts {
             $Fact['cspUri'] = $Path
             $Fact['definitionVersion'] = [string](Get-IntuneValue $Definition[0] 'version')
             $Fact['resolution'] = 'UnresolvedValue'
-            if ($MixedValueKinds) { return $Fact }
+            if ($MixedValueKinds -or $InvalidChoiceId) { return $Fact }
             $Selected = $null
             if ($null -ne $Choice) {
                 $Options = @(foreach ($Option in (Get-IntuneValue $Definition[0] 'options' @())) {
-                    if ((Get-IntuneValue $Option 'itemId') -ceq (Get-IntuneValue $Choice 'value')) { $Option }
+                    $OptionId = Get-IntuneValue $Option 'itemId'
+                    if ($OptionId -is [string] -and [string]::Equals($OptionId, $ChoiceId, [StringComparison]::Ordinal)) { $Option }
                 })
                 if ($Options.Count -eq 1) { $Selected = Get-IntuneValue $Options[0] 'optionValue' }
             } else { $Selected = $Simple }
@@ -121,7 +130,7 @@ function ConvertTo-IntuneSettingFacts {
         }
     }
     if ($DefinitionId) { $Fact }
-    if ($MixedValueKinds) { return }
+    if ($MixedValueKinds -or $InvalidChoiceId) { return }
     $Ordinal = 0
     foreach ($ValueName in @('choiceSettingValue', 'groupSettingCollectionValue', 'choiceSettingCollectionValue')) {
         foreach ($SettingValue in (Get-IntuneValue $Instance $ValueName @())) {

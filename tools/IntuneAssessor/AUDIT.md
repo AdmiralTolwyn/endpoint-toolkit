@@ -2,6 +2,27 @@
 
 Date: 2026-09-17. Status: **partial audit, not production certification**.
 
+September 19, collector 0.5.9: repaired type coercion in the settings decoder's
+definition/option joins. Instance settingDefinitionId and choice value must be
+nonblank strings; definition id and option itemId must be strings matched by
+ordinal equality with exactly one match. Numeric-looking strings are retained,
+never parsed; numeric/Boolean/array/null identities cannot manufacture a reference.
+Malformed instance/choice nodes retain safe unresolved metadata and do not emit
+descendants. Invalid candidate IDs are not matches. Duplicate/mixed-node and
+valid nesting controls remain in the regression suite.
+
+Sources: [setting definition](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationsettingdefinition?view=graph-rest-beta)
+revision `e8eace7fa9bfa9e7afacfe9f5dec1ba42ffd493f`;
+[choice value](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationchoicesettingvalue?view=graph-rest-beta)
+and [option definition](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationoptiondefinition?view=graph-rest-beta),
+both revision `4b837f772f711c890ec02678db6b05845a40b419`. They establish string types;
+nonblank/ordinal comparison is the adapter boundary. This is not a complete audit
+of collection kinds, OData types, templates, dependencies or other decoders.
+Synthetic production exports remain unknown through native import/reassessment/
+save/load/reports; no live Graph occurrence or new permission/read is claimed.
+Recollect affected older exports because discarded identity types are unrecoverable.
+See [repair limits](README.md#typed-setting-identities-059).
+
 Collector 0.5.8 repairs two synthetic mixed-choice/simple reproductions:
 unresolved choices could borrow a simple value, and unsupported mixed parents
 could still emit resolved descendants. Both non-null value members now leave the

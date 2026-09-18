@@ -1,6 +1,6 @@
 # Intune Discovery for Assay
 
-Version 0.5.8. Experimental pending a live tenant pilot. Offline-tested with
+Version 0.5.9. Experimental pending a live tenant pilot. Offline-tested with
 Windows PowerShell 5.1 and PowerShell 7.
 
 The [contract audit](AUDIT.md) currently verifies 49 enabled Graph GET contracts
@@ -10,6 +10,30 @@ remain separate gates; do not label the full collector audit complete.
 Exports read-only observations for Assay's Intune pack. Assay owns control
 definitions and scores: 50 source-linked controls, two bounded automatic checks,
 and 48 evidence-assisted manual checks. The collector does not mutate a tenant.
+
+## Typed Setting Identities (0.5.9)
+
+ConvertTo-IntuneSettingFacts now requires nonblank string settingDefinitionId and
+choice value identities, and matches string definition id / option itemId by
+ordinal equality. This repairs reproduced numeric/Boolean/array coercion and
+null-identity matching. No trimming, case folding or numeric conversion; exact
+opaque strings such as `0` and `01` remain supported. Exactly one match is required.
+
+Microsoft defines [setting definition id](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationsettingdefinition?view=graph-rest-beta),
+[choice value](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationchoicesettingvalue?view=graph-rest-beta)
+and [option itemId](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationoptiondefinition?view=graph-rest-beta)
+as strings. Nonblank and ordinal matching are conservative adapter rules, not a
+full service-schema guarantee. Unsupported instance IDs produce safe metadata
+with an empty definitionId; invalid choices stay unresolved. Malformed instance/
+choice IDs stop child traversal. Raw non-string IDs are not stringified into export.
+
+Tests exercise dictionary/JSON forms, exact/duplicate matches and malformed
+parents. `ASSAY_INTUNE_IDENTITY_FIXTURE` exports the actual mocked production
+pipeline's negative cases for native/app persistence and report tests. No live
+tenant occurrence is asserted; no new source field, provider, route, permission,
+finding or score. Native rules remain 1.8.0-preview. Other decoder shape/type/
+dependency checks remain open. Recollect affected older evidence: projected
+Resolved scalars cannot reconstruct original malformed identity types.
 
 ## Mixed Setting Decoder Repair (0.5.8)
 
