@@ -15,7 +15,7 @@ $ReadProviders = [scriptblock]::Create($Text.Substring(1, $Text.Length - 2))
 function Get-MpPreference {
     [CmdletBinding()]param()
     if ($script:PreferenceFails) { throw 'Synthetic preference failure' }
-    [pscustomobject]@{ EnableControlledFolderAccess = $script:CfaMode; ControlledFolderAccessProtectedFolders = @('PRIVATE_PATH'); ControlledFolderAccessAllowedApplications = @('PRIVATE_PATH'); Unreviewed = 'DO_NOT_EXPORT' }
+    [pscustomobject]@{ EnableControlledFolderAccess = $script:CfaMode; SignatureFallbackOrder = $script:SourceOrder; SharedSignaturesPath = 'PRIVATE_PATH'; SignatureDefinitionUpdateFileSharesSources = 'PRIVATE_PATH'; ControlledFolderAccessProtectedFolders = @('PRIVATE_PATH'); ControlledFolderAccessAllowedApplications = @('PRIVATE_PATH'); Unreviewed = 'DO_NOT_EXPORT' }
 }
 function Get-MpComputerStatus {
     [CmdletBinding()]param()
@@ -29,6 +29,7 @@ $Tenant = '22222222-2222-4222-8222-222222222222'
 $Device = '33333333-3333-4333-8333-333333333333'
 $script:PreferenceFails = $false
 $script:StatusFails = $false
+$script:SourceOrder = 'InternalDefinitionUpdateServer|MicrosoftUpdateServer|MMPC'
 $Temporary = Join-Path ([IO.Path]::GetTempPath()) ('intune-cfa-' + [guid]::NewGuid().ToString() + '.json')
 try {
     foreach ($Mode in @(0,1,2,3,4,'Disabled','Enabled','AuditMode','BlockDiskModificationOnly','AuditDiskModificationOnly',$null,'unreviewed')) {
@@ -42,6 +43,14 @@ try {
         elseif ($Value -cne $Mode) { throw 'CFA value changed by projection' }
         if (($Sample | ConvertTo-Json -Depth 15) -match 'PRIVATE_PATH|DO_NOT_EXPORT') { throw 'Raw provider fields escaped projection' }
     }
+    foreach ($Order in @('MicrosoftUpdateServer|MMPC',' MMPC | FileShares ','ConfigMgr|MMPC','MMPC||MicrosoftUpdateServer','',$null,42)) {
+        $script:SourceOrder = $Order
+        $Sample = New-IntuneEndpointEvidence -SelectedTenant $Tenant -DeviceId $Device -Read $ReadProviders
+        $Safe = ConvertTo-IntuneEndpointModules (($Sample | ConvertTo-Json -Depth 15 | ConvertFrom-Json).Modules)
+        if ($Safe.DefenderPreferences.Rows[0]['SignatureFallbackOrder'] -cne $Order) { throw 'Source order was guessed, reordered or discarded by projection' }
+        if (($Sample | ConvertTo-Json -Depth 15) -match 'PRIVATE_PATH|DO_NOT_EXPORT') { throw 'Unreviewed update paths escaped projection' }
+    }
+    $script:SourceOrder = 'InternalDefinitionUpdateServer|MicrosoftUpdateServer|MMPC'
     foreach ($FailedProvider in @('DefenderPreferences','DefenderStatus')) {
         $script:PreferenceFails = $FailedProvider -eq 'DefenderPreferences'
         $script:StatusFails = $FailedProvider -eq 'DefenderStatus'
@@ -66,6 +75,7 @@ try {
         ConfigurationReview = @{ DeviceIds = @('device') }
     }
     if ($Document.CollectionStatus.EndpointEvidence.State -cne 'Complete' -or $Document.Inventory.EndpointEvidence[0].modules.DefenderPreferences.Rows[0].EnableControlledFolderAccess -ne 3) { throw 'Production import dropped CFA evidence' }
+    if ($Document.Inventory.EndpointEvidence[0].modules.DefenderPreferences.Rows[0].SignatureFallbackOrder -cne $script:SourceOrder) { throw 'Production import dropped or reordered update sources' }
     if (($Document | ConvertTo-Json -Depth 30) -match 'PRIVATE_PATH|DO_NOT_EXPORT') { throw 'Unreviewed fields retained' }
     foreach ($Target in @('Disabled','Enabled','AuditMode','BlockDiskModificationOnly','AuditDiskModificationOnly')) {
         $Targeted = Invoke-IntuneDiscoveryCore -SelectedTenant $Tenant -EndpointPaths @($Temporary) -Request $Request -Requirements @{
@@ -87,4 +97,4 @@ try {
     Remove-Item Function:\Get-MpPreference, Function:\Get-MpComputerStatus, Function:\Get-NetFirewallProfile, Function:\Get-BitLockerVolume, Function:\Get-CimInstance
     if (Test-Path -LiteralPath $Temporary) { Remove-Item -LiteralPath $Temporary }
 }
-Write-Output 'PASS: production CFA provider projection, mode preservation, failure states, tenant-bound companion import and privacy; all providers and Graph calls mocked.'
+Write-Output 'PASS: production CFA/source-order projection, value preservation, failure states, tenant-bound companion import and privacy; all providers and Graph calls mocked.'

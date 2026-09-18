@@ -26,7 +26,7 @@ $Evidence = New-IntuneEndpointEvidence -SelectedTenant $TenantId -DeviceId $Devi
     param($Module)
     switch ($Module) {
         'DefenderStatus' { Get-MpComputerStatus -ErrorAction Stop | Select-Object AMRunningMode, AMProductVersion, AMEngineVersion, AntivirusEnabled, RealTimeProtectionEnabled, BehaviorMonitorEnabled, AntivirusSignatureLastUpdated, IsTamperProtected, ControlledConfigurationState, TamperProtectionSource }
-        'DefenderPreferences' { Get-MpPreference -ErrorAction Stop | Select-Object AttackSurfaceReductionRules_Ids, AttackSurfaceReductionRules_Actions, EnableNetworkProtection, PUAProtection, DisableRealtimeMonitoring, DisableBehaviorMonitoring, DisableScriptScanning, MAPSReporting, EnableControlledFolderAccess }
+        'DefenderPreferences' { Get-MpPreference -ErrorAction Stop | Select-Object AttackSurfaceReductionRules_Ids, AttackSurfaceReductionRules_Actions, EnableNetworkProtection, PUAProtection, DisableRealtimeMonitoring, DisableBehaviorMonitoring, DisableScriptScanning, MAPSReporting, EnableControlledFolderAccess, SignatureFallbackOrder }
         'FirewallProfiles' { Get-NetFirewallProfile -PolicyStore ActiveStore -ErrorAction Stop | Select-Object Name, Enabled, DefaultInboundAction, DefaultOutboundAction, LogAllowed, LogBlocked }
         'BitLockerVolumes' { Get-BitLockerVolume -ErrorAction Stop | Select-Object MountPoint, VolumeType, VolumeStatus, ProtectionStatus, EncryptionPercentage }
         'DeviceGuard' { Get-CimInstance -ClassName Win32_DeviceGuard -Namespace root\Microsoft\Windows\DeviceGuard -ErrorAction Stop | Select-Object VirtualizationBasedSecurityStatus, SecurityServicesConfigured, SecurityServicesRunning }

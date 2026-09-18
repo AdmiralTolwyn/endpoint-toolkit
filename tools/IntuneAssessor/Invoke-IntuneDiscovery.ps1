@@ -385,7 +385,7 @@ function Invoke-IntuneDiscoveryCore {
     if ($Requirements.Count) { $Requirements['AssessmentAsOfUtc'] = $Completed; $Requirements['ConfirmedAtUtc'] = $Completed }
     return [ordered]@{
         SchemaVersion = '1.0'; PackId = 'intune'; CollectionId = [guid]::NewGuid().ToString()
-        Collector = @{ Name = 'Invoke-IntuneDiscovery'; Version = '0.5.2' }; Tenant = @{ Id = $SelectedTenant; Cloud = 'Global' }
+        Collector = @{ Name = 'Invoke-IntuneDiscovery'; Version = '0.5.3' }; Tenant = @{ Id = $SelectedTenant; Cloud = 'Global' }
         StartedAtUtc = $Started.ToString('o'); CompletedAtUtc = $Completed
         Scope = @{ RequestedModules = @($States.Keys | Where-Object { $States[$_].State -ne 'NotRequested' }); RequestedPlatforms = @('All'); Visibility = 'Unknown'; ScopeEvidenceRefs = @() }
         CollectionStatus = $States; Inventory = $Inventory; Observations = @($Observations.ToArray()); AssessmentRequirements = $Requirements
@@ -443,7 +443,7 @@ try {
     $script:IntuneHttpClient.Timeout = [timespan]::FromSeconds(120)
     $script:IntuneHttpClient.MaxResponseContentBufferSize = 16MB
     $script:IntuneHttpClient.DefaultRequestHeaders.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::new('Bearer', $PlainToken)
-    $script:IntuneHttpClient.DefaultRequestHeaders.UserAgent.ParseAdd('IntuneAssessor/0.5.2')
+    $script:IntuneHttpClient.DefaultRequestHeaders.UserAgent.ParseAdd('IntuneAssessor/0.5.3')
     $PlainToken = $null
     $Requirements = @{}
     if ($Assessor -and $ScopeDescription) {

@@ -2,6 +2,15 @@
 
 Date: 2026-09-17. Status: **partial audit, not production certification**.
 
+September 18 source-order follow-up (collector 0.5.3 / Assay rules 1.5.0-preview):
+one additional Get-MpPreference field, SignatureFallbackOrder. The reviewed
+[Microsoft update-source guidance](https://learn.microsoft.com/en-us/defender-endpoint/manage-protection-updates-microsoft-defender-antivirus)
+and [PowerShell contract](https://learn.microsoft.com/en-us/powershell/module/defender/set-mppreference?view=windowsserver2025-ps#-signaturefallbackorder)
+bind four source tokens and ordered pipe syntax. N-03 reports observations only;
+effective sources, SharedSignaturesPath override, share locations, approval,
+delivery and freshness remain unverified. Production callback/import and privacy
+tests use mocked providers/HTTP. No new command, permission, route or update action.
+
 September 18 CFA follow-up (collector 0.5.2): the endpoint companion adds only
 `Get-MpPreference.EnableControlledFolderAccess`, using the documented [read and
 mode contract](https://learn.microsoft.com/en-us/defender-endpoint/controlled-folder-access-configure).
@@ -125,7 +134,7 @@ sensitive data was retrieved.
 
 ## Endpoint Command Ledger (2026-09-18)
 
-`EndpointContracts.json` records each of the five provider commands, all 33
+`EndpointContracts.json` records each of the five provider commands, all 34
 projected properties and their Microsoft Learn references. Run
 `Test-IntuneEndpointContracts.ps1 -EvidenceDirectory <existing-directory>
 -CheckDocumentation` to compare the companion's parsed command/projection AST

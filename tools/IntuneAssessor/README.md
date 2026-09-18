@@ -1,6 +1,6 @@
 # Intune Discovery for Assay
 
-Version 0.5.2. Experimental pending a live tenant pilot. Offline-tested with
+Version 0.5.3. Experimental pending a live tenant pilot. Offline-tested with
 Windows PowerShell 5.1 and PowerShell 7.
 
 The [contract audit](AUDIT.md) currently verifies 49 enabled Graph GET contracts
@@ -101,6 +101,30 @@ production-validation claims.
 
 ## Configuration Expansion
 
+### Defender Update Source Evidence (0.5.3)
+
+The existing endpoint `Get-MpPreference` projection now includes
+`SignatureFallbackOrder`. Assay N-03 (rules 1.5.0-preview) retains the order of the
+four documented tokens: InternalDefinitionUpdateServer, MicrosoftUpdateServer,
+MMPC and FileShares. One to four unique pipe-separated tokens are supported,
+including ASCII spaces around tokens; missing, malformed or unknown values stay
+unassessed without discarding tokens or inventing defaults.
+
+This is Observed/NotAssessed evidence only. It identifies MMPC's listed position
+against [Microsoft's final-fallback guidance](https://learn.microsoft.com/en-us/defender-endpoint/manage-protection-updates-microsoft-defender-antivirus),
+not a health verdict. File-share locations/access are not collected. The
+[PowerShell reference](https://learn.microsoft.com/en-us/powershell/module/defender/set-mppreference?view=windowsserver2025-ps#-signaturefallbackorder)
+also documents SharedSignaturesPath overriding fallback-order updates; that
+override is uncollected. Never treat the list as proof of the effective source,
+successful updates, WSUS approvals, signature freshness or platform/engine servicing.
+No new provider, Graph request, scope, update action or path export is added.
+
+`Test-IntuneCfaEvidence.ps1` now tests this field through the actual provider
+callback and companion/discovery import with mocked providers/HTTP. Its existing
+synthetic fixture includes both CFA and source-order observations. N-03 requires
+the selected Windows identity, fresh sample and complete preference module, but
+does not require Defender runtime status to report configuration evidence.
+
 ### Controlled Folder Access Evidence (0.5.2)
 
 The optional endpoint companion now retains `EnableControlledFolderAccess` from
@@ -177,8 +201,8 @@ fields after checking local device/tenant identity. No automatic elevation or
 remediation. Attach samples using `-EndpointEvidencePaths '.\endpoint.json'` in
 the discovery command. The tenant collector never remotely runs the companion.
 
-Assay exposes 99 supplementary unscored findings: by default 63 bounded comparison
-entries and 36 evidence entries (64/35 with an explicit CFA target). All have
+Assay exposes 100 supplementary unscored findings: by default 63 bounded comparison
+entries and 37 evidence entries (64/36 with an explicit CFA target). All have
 handlers, but several cover only part of their
 feature; evidence collection is not complete automatic assessment. The original
 50-control scoring catalog remains unchanged. Set reference/scenario scope in
