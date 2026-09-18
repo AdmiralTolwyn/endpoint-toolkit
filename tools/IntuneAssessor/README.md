@@ -335,9 +335,9 @@ fields after checking local device/tenant identity. No automatic elevation or
 remediation. Attach samples using `-EndpointEvidencePaths '.\endpoint.json'` in
 the discovery command. The tenant collector never remotely runs the companion.
 
-Assay exposes 103 supplementary unscored findings: by default 63 bounded comparison
-entries and 40 evidence entries (64/39 with either an explicit CFA target or a
-signature-age limit; 65/38 with both). All have
+Assay exposes 104 supplementary unscored findings: by default 63 bounded comparison
+entries and 41 evidence entries (64/40 with either an explicit CFA target or a
+signature-age limit; 65/39 with both). All have
 handlers, but several cover only part of their
 feature; evidence collection is not complete automatic assessment. The original
 50-control scoring catalog remains unchanged. Set reference/scenario scope in
@@ -368,6 +368,25 @@ write `ASSAY_INTUNE_REALTIME_FIXTURE` from the actual mocked provider callback,
 definition decoder and companion import. It verifies opaque option-value joins,
 typed fields and unavailable assignment coverage on PowerShell 5.1/7. Native
 tests cover reference switching, unknown coverage, persistence and reports.
+
+### Behavior Monitoring (Assay 1.8.0-preview)
+
+BM-01 independently correlates the selected policy's exact integer 0/1
+[AllowBehaviorMonitoring](https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-defender#allowbehaviormonitoring)
+with the inverse Boolean DisableBehaviorMonitoring preference and reported Boolean
+BehaviorMonitorEnabled. All are already collected; production remains 0.5.7.
+The same single-policy, complete-settings/parent-coverage, unique Windows endpoint,
+typed-provider and precise timestamp gates apply as for RTP-01. Neither finding
+borrows the other's setting or endpoint fields. Missing data stays NotAssessed;
+Aligned/Different stay Observed / Evidence, not security or deployment verdicts.
+
+The existing ASSAY_INTUNE_REALTIME_FIXTURE now includes two settings per policy
+and opposite real-time/behavior values to detect cross-wiring. Mocked production
+definition joins and endpoint imports are tested in PowerShell 5.1/7; native
+tests cover both mappings' gates, switching, persistence and HTML/PDF exports.
+No new field, provider, route, permission or action. Real-time and behavior
+monitoring runtime dependencies, applicability, assignment and enforcement are
+not established by these independent evidence labels.
 
 ## MAM, Remote Help And Platform Services
 

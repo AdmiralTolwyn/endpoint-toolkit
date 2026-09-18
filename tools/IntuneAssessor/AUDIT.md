@@ -2,6 +2,15 @@
 
 Date: 2026-09-17. Status: **partial audit, not production certification**.
 
+Assay rules 1.8.0-preview add behavior-monitoring correlation (BM-01) with no
+production collector change. Existing AllowBehaviorMonitoring values are decoded
+independently of AllowRealtimeMonitoring; preference/runtime fields are already
+projected. The mocked production fixture now uses two settings per policy and
+opposite values to detect cross-wiring, retaining unavailable assignment coverage.
+Native strict gates and application save/load/report tests do not establish
+assignment, runtime dependencies or protection. No new provider, field or scope.
+See [behavior-monitoring limits](README.md#behavior-monitoring-assay-180-preview).
+
 Assay rules 1.7.0-preview add real-time policy/endpoint alignment as Evidence.
 Collector production remains 0.5.7. The existing definition join resolves exact
 AllowRealtimeMonitoring integers; endpoint preference/runtime Booleans already
