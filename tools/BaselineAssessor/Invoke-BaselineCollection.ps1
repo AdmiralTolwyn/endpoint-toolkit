@@ -31,7 +31,7 @@
     No module installation, download, policy change or firmware action is performed.
 .NOTES
     Author : Anton Romanyuk
-    Version: 1.2.0
+    Version: 1.2.1
     Date   : 2026-09-18
     Requires: PowerShell 5.1, Local Admin, No external modules
     Runs headless on arbitrary Windows targets (client, member server, DC, Server Core).
@@ -58,7 +58,7 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
-$Script:CollectorVersion = '1.2.0'
+$Script:CollectorVersion = '1.2.1'
 $Script:StartTime        = [DateTime]::Now
 # Area 3 (GPO/gpresult) only runs when -IncludeGpoData; Area 22 (events) only when not -SkipEventCollection.
 $Script:TotalAreas       = 20
@@ -2293,6 +2293,21 @@ $tlsConfig = Invoke-CollectionArea -Step 18 -Name 'TLS Configuration' -Sections 
             $result["$proto.$side.DisabledByDefault"] = $disabled
         }
     }
+    $CipherInventory = @{ provider = 'Get-TlsCipherSuite'; collectionState = 'Error'; names = @() }
+    try {
+        $Suites = @(Get-TlsCipherSuite -ErrorAction Stop)
+        $Names = [Collections.Generic.List[string]]::new()
+        $Invalid = $false
+        foreach ($Suite in $Suites) {
+            if ($Suite.Name -is [string] -and $Suite.Name -cmatch '^TLS_[A-Z0-9_]{1,124}$') { $Names.Add($Suite.Name) }
+            else { $Invalid = $true }
+        }
+        $CipherInventory.names = @($Names.ToArray())
+        $CipherInventory.collectionState = if ($Invalid -or $Suites.Count -eq 0) { 'Partial' } else { 'Complete' }
+    } catch {
+        $CipherInventory.errorCode = 'CipherSuiteQueryFailed'
+    }
+    $result['cipherSuites'] = $CipherInventory
     $result
 }
 

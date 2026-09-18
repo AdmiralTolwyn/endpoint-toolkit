@@ -57,6 +57,23 @@ try { $Result = & $DeviceGuard } finally { Remove-Item Function:\Get-CimInstance
 if ($Result.VbsRunning -ne $true -or $Result.CredentialGuardIsRunning -ne $true -or $Result.MemoryIntegrityIsRunning -ne $true) { throw 'Documented Device Guard runtime state lost' }
 Write-Output 'PASS: observed Defender and Device Guard runtime evidence remains distinct from policy intent and unavailable providers.'
 
+$TlsArea = Get-CollectorArea '$tlsConfig'
+function Read-RegistryValue { $null }
+function Get-TlsCipherSuite { [pscustomobject]@{ Name = 'TLS_AES_256_GCM_SHA384' }; [pscustomobject]@{ Name = 'TLS_RSA_WITH_NULL_SHA256' } }
+try { $Result = & $TlsArea } finally { Remove-Item Function:\Get-TlsCipherSuite }
+if ($Result.cipherSuites.collectionState -ne 'Complete' -or $Result.cipherSuites.names.Count -ne 2 -or $Result.cipherSuites.names -cnotcontains 'TLS_RSA_WITH_NULL_SHA256') { throw 'Cipher-suite inventory incomplete' }
+$TlsFixture = $Result
+function Get-TlsCipherSuite { [pscustomobject]@{ Name = 'TLS_AES_256_GCM_SHA384' }; [pscustomobject]@{ Name = $null } }
+try { $Result = & $TlsArea } finally { Remove-Item Function:\Get-TlsCipherSuite }
+if ($Result.cipherSuites.collectionState -ne 'Partial' -or $Result.cipherSuites.names.Count -ne 1) { throw 'Malformed cipher inventory marked complete' }
+function Get-TlsCipherSuite { }
+try { $Result = & $TlsArea } finally { Remove-Item Function:\Get-TlsCipherSuite }
+if ($Result.cipherSuites.collectionState -ne 'Partial') { throw 'Empty cipher inventory marked complete' }
+function Get-TlsCipherSuite { throw 'Synthetic provider failure' }
+try { $Result = & $TlsArea } finally { Remove-Item Function:\Get-TlsCipherSuite, Function:\Read-RegistryValue }
+if ($Result.cipherSuites.collectionState -ne 'Error' -or $Result.cipherSuites.names.Count -ne 0) { throw 'Cipher query failure was hidden' }
+Write-Output 'PASS: cipher-suite inventory preserves NULL suites and distinguishes complete, malformed, empty and failed queries; no TLS commands executed.'
+
 $PowerShellArea = Get-CollectorArea '$powershellConfig'
 $systemInfo = @{ isServer = $false }
 function Read-RegistryValue { $null }
@@ -88,7 +105,7 @@ $systemInfo.isServer = $null
 try { $Result = & $PowerShellArea } finally { Remove-Item Function:\Read-RegistryValue, Function:\Get-ExecutionPolicy }
 if ($Result.legacyEngine.collectionState -ne 'Unsupported') { throw 'Unknown platform was guessed' }
 if ($env:ASSAY_BASELINE_COLLECTOR_FIXTURE) {
-    [IO.File]::WriteAllText($env:ASSAY_BASELINE_COLLECTOR_FIXTURE, (@{ systemInfo = @{ hostname = 'synthetic'; isServer = $false }; powershellConfig = $DisabledFeature } | ConvertTo-Json -Depth 10), [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText($env:ASSAY_BASELINE_COLLECTOR_FIXTURE, (@{ systemInfo = @{ hostname = 'synthetic'; isServer = $false }; powershellConfig = $DisabledFeature; tlsConfig = $TlsFixture } | ConvertTo-Json -Depth 10), [Text.UTF8Encoding]::new($false))
 }
 Write-Output 'PASS: documented client/server PowerShell 2.0 feature reads, raw pending/unknown states and explicit errors; no feature queries executed.'
 

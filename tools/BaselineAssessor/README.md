@@ -4,7 +4,15 @@ BaselinePilot is a two-component security baseline assessment tool for Windows 1
 
 > The project folder is `tools/BaselineAssessor/` (matching this repo's tool-directory convention); the product itself is named **BaselinePilot** — the two names are not a typo.
 
-**Versions**: App `0.2.0` · Collector `1.2.0` · Catalog (`checks.json`) `1.1`. See [`AUDIT.md`](AUDIT.md) for the July 2026 audit and fix-pass history behind the current versions.
+**Versions**: App `0.2.0` · Collector `1.2.1` · Catalog (`checks.json`) `1.1`. See [`AUDIT.md`](AUDIT.md) for the July 2026 audit and fix-pass history behind the current versions.
+
+Collector 1.2.1 adds a read-only [Get-TlsCipherSuite](https://learn.microsoft.com/en-us/powershell/module/tls/get-tlsciphersuite?view=windowsserver2025-ps)
+inventory under `tlsConfig.cipherSuites`, with provider, names and explicit
+Complete/Partial/Error state. Assay uses it for NET-028 instead of incorrectly
+testing legacy protocol registry switches. NULL suites require application review,
+not an inference of unencrypted traffic; see the [Microsoft cipher-suite reference](https://learn.microsoft.com/en-us/windows/win32/secauthn/tls-cipher-suites-in-windows-11-v22h2).
+No TLS settings are changed. The legacy GUI evaluator is unchanged. Offline tests
+mock the production provider block and do not query this machine's TLS settings.
 
 ### Collector Evidence Review (18 September 2026)
 
