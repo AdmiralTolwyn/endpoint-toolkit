@@ -2,6 +2,18 @@
 
 Date: 2026-09-17. Status: **partial audit, not production certification**.
 
+Collector 0.5.6 / Assay rules 1.6.1-preview: N-03 gains a path-free observation
+of SharedSignaturesPath. Microsoft documents the property/override; the exported
+SharedSignaturesPathState (Empty/NonEmpty/Unknown) is explicitly Assay-derived,
+not a provider enum. The companion removes the raw path before JSON and never
+accesses it. The register separates 37 read fields from 36 direct + one derived
+export. Missing/null/unsupported values remain Unknown, and old imported paths
+do not fabricate a state. Mocked production-pipeline tests cover both row forms,
+state preservation, invalid values and privacy; native workflow tests cover
+save/load/reports. No new command, scope, route, score or effective-update verdict.
+Path validity, share access, applicability, live serialization and runtime
+override behavior remain unverified. See [state limits](README.md#shared-signature-state-056).
+
 Assay rules 1.6.0-preview add N-04-AGE using the existing reported signature time.
 The optional customer MaxSignatureAgeHours is preserved by existing collector
 0.5.5 requirement handling, with 0/2/87600 tested through the production import
@@ -162,8 +174,10 @@ sensitive data was retrieved.
 
 ## Endpoint Command Ledger (2026-09-18)
 
-`EndpointContracts.json` records each of the five provider commands, all 36
-projected properties and their Microsoft Learn references. Run
+`EndpointContracts.json` records each of the five provider commands, all 37
+projected source properties and their Microsoft Learn references. It also maps
+SharedSignaturesPath to the path-free derived export; the other 36 fields are
+exported directly. Run
 `Test-IntuneEndpointContracts.ps1 -EvidenceDirectory <existing-directory>
 -CheckDocumentation` to compare the companion's parsed command/projection AST
 with the register and download/hash source evidence. Without the switch, this

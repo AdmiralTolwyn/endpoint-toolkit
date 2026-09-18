@@ -27,18 +27,26 @@ foreach ($Clause in $Switches[0].Clauses) {
     $SourceFields = @($Contract.sources | ForEach-Object { $_.fields })
     foreach ($Field in $Fields) { if ($Field -cnotin $SourceFields) { throw ('Field has no source: ' + $Name + '.' + $Field) } }
     $Probe = [ordered]@{ unreviewed = 'DO_NOT_EXPORT' }
-    foreach ($Field in $Fields) { $Probe[$Field] = 'documented-field' }
+    $DerivedFields = Get-IntuneValue $Contract 'derivedFields' @{}
+    $ExportFields = @(foreach ($Field in $Fields) { Get-IntuneValue $DerivedFields $Field $Field })
+    foreach ($Field in $ExportFields) { $Probe[$Field] = 'documented-field' }
+    if ($Name -eq 'DefenderPreferences') {
+        if ((Get-IntuneValue $DerivedFields 'SharedSignaturesPath') -cne 'SharedSignaturesPathState') { throw 'Shared-signature reduction contract missing' }
+        $Probe['SharedSignaturesPathState'] = 'NonEmpty'
+        $Probe['SharedSignaturesPath'] = 'DO_NOT_EXPORT'
+    }
     if ($Name -eq 'DefenderStatus') { $Probe['AntivirusSignatureLastUpdated'] = '2026-09-18T08:00:00.0000000Z' }
     $Safe = ConvertTo-IntuneEndpointModules @{ $Name = @{ State = 'Complete'; Rows = @($Probe) } }
-    if ($Safe[$Name].Rows[0].Count -ne $Fields.Count -or ($Safe | ConvertTo-Json -Depth 10) -match 'DO_NOT_EXPORT') { throw ('Importer projection drift: ' + $Name) }
+    if ((($Safe[$Name].Rows[0].Keys | Sort-Object) -join ',') -cne (($ExportFields | Sort-Object) -join ',') -or ($Safe | ConvertTo-Json -Depth 10) -match 'DO_NOT_EXPORT') { throw ('Importer projection drift: ' + $Name) }
     if ($CheckDocumentation) {
         if (-not $EvidenceDirectory -or -not (Test-Path -LiteralPath $EvidenceDirectory -PathType Container)) { throw 'Provide an existing evidence directory' }
         $Ordinal = 0
         foreach ($Source in $Contract.sources) {
             $Ordinal++
             $Path = Join-Path $EvidenceDirectory ('endpoint-' + $Name + '-' + $Ordinal + '.md')
-            $Separator = if ($Source.url.Contains('?')) { '&' } else { '?' }
-            if (-not (Test-Path -LiteralPath $Path)) { Invoke-WebRequest -UseBasicParsing -Uri ($Source.url + $Separator + 'accept=text/markdown') -OutFile $Path -TimeoutSec 60 }
+            $SourceUrl = ([uri]$Source.url).GetLeftPart([UriPartial]::Query)
+            $Separator = if ($SourceUrl.Contains('?')) { '&' } else { '?' }
+            if (-not (Test-Path -LiteralPath $Path)) { Invoke-WebRequest -UseBasicParsing -Uri ($SourceUrl + $Separator + 'accept=text/markdown') -OutFile $Path -TimeoutSec 60 }
             $Text = (Get-Content -LiteralPath $Path -Raw).Replace('\_', '_')
             if ($Text -notmatch '(?m)^canonicalUrl: https://learn.microsoft.com/') { throw 'Not a Microsoft Learn source' }
             foreach ($Field in $Source.fields) { if ($Text -notmatch ('(?<![A-Za-z0-9_])' + [regex]::Escape($Field) + '(?![A-Za-z0-9_])')) { throw ('Source no longer names field: ' + $Name + '.' + $Field) } }
@@ -49,4 +57,4 @@ foreach ($Clause in $Switches[0].Clauses) {
 if ($CheckDocumentation) {
     [IO.File]::WriteAllText((Join-Path $EvidenceDirectory 'intune-endpoint-contract-audit.json'), (@{ CheckedAtUtc = [datetime]::UtcNow.ToString('o'); Evidence = @($Evidence.ToArray()); Limit = 'Source-presence and command/projection drift checks only; not live provider availability or enum validation.' } | ConvertTo-Json -Depth 10), [Text.UTF8Encoding]::new($false))
 }
-Write-Output 'PASS: five documented provider commands, 36 projected fields, identity read and importer drift checks; no endpoint queries executed.'
+Write-Output 'PASS: five documented provider commands, 37 read fields -> 36 direct plus one derived export field, identity read and importer drift checks; no endpoint queries executed.'

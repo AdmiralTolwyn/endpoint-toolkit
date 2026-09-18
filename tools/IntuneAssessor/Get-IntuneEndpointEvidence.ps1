@@ -9,6 +9,28 @@ function New-IntuneEndpointEvidence {
     foreach ($Module in @('DefenderStatus', 'DefenderPreferences', 'FirewallProfiles', 'BitLockerVolumes', 'DeviceGuard')) {
         try {
             $Rows = @(& $Read $Module)
+            if ($Module -eq 'DefenderPreferences') {
+                foreach ($Row in $Rows) {
+                    $SharedPath = $null
+                    if ($Row -is [Collections.IDictionary]) {
+                        if ($Row.Contains('SharedSignaturesPath')) { $SharedPath = $Row['SharedSignaturesPath'] }
+                    } elseif ($null -ne $Row -and $null -ne $Row.PSObject.Properties['SharedSignaturesPath']) {
+                        $SharedPath = $Row.SharedSignaturesPath
+                    }
+                    $SharedState = 'Unknown'
+                    if ($SharedPath -is [string]) {
+                        if ($SharedPath.Length -eq 0) { $SharedState = 'Empty' }
+                        elseif (-not [string]::IsNullOrWhiteSpace($SharedPath)) { $SharedState = 'NonEmpty' }
+                    }
+                    if ($Row -is [Collections.IDictionary]) {
+                        $Row.Remove('SharedSignaturesPath') | Out-Null
+                        $Row['SharedSignaturesPathState'] = $SharedState
+                    } elseif ($null -ne $Row) {
+                        $Row.PSObject.Properties.Remove('SharedSignaturesPath')
+                        $Row | Add-Member -NotePropertyName SharedSignaturesPathState -NotePropertyValue $SharedState -Force
+                    }
+                }
+            }
             if ($Module -eq 'DefenderStatus') {
                 foreach ($Row in $Rows) {
                     if ($Row -is [Collections.IDictionary]) {
@@ -41,7 +63,7 @@ $Evidence = New-IntuneEndpointEvidence -SelectedTenant $TenantId -DeviceId $Devi
     param($Module)
     switch ($Module) {
         'DefenderStatus' { Get-MpComputerStatus -ErrorAction Stop | Select-Object AMRunningMode, AMProductVersion, AMEngineVersion, AntivirusEnabled, RealTimeProtectionEnabled, BehaviorMonitorEnabled, AntivirusSignatureLastUpdated, IsTamperProtected, ControlledConfigurationState, TamperProtectionSource }
-        'DefenderPreferences' { Get-MpPreference -ErrorAction Stop | Select-Object AttackSurfaceReductionRules_Ids, AttackSurfaceReductionRules_Actions, EnableNetworkProtection, PUAProtection, DisableRealtimeMonitoring, DisableBehaviorMonitoring, DisableScriptScanning, MAPSReporting, EnableControlledFolderAccess, SignatureFallbackOrder, SignatureScheduleDay, SignatureUpdateInterval }
+        'DefenderPreferences' { Get-MpPreference -ErrorAction Stop | Select-Object AttackSurfaceReductionRules_Ids, AttackSurfaceReductionRules_Actions, EnableNetworkProtection, PUAProtection, DisableRealtimeMonitoring, DisableBehaviorMonitoring, DisableScriptScanning, MAPSReporting, EnableControlledFolderAccess, SignatureFallbackOrder, SignatureScheduleDay, SignatureUpdateInterval, SharedSignaturesPath }
         'FirewallProfiles' { Get-NetFirewallProfile -PolicyStore ActiveStore -ErrorAction Stop | Select-Object Name, Enabled, DefaultInboundAction, DefaultOutboundAction, LogAllowed, LogBlocked }
         'BitLockerVolumes' { Get-BitLockerVolume -ErrorAction Stop | Select-Object MountPoint, VolumeType, VolumeStatus, ProtectionStatus, EncryptionPercentage }
         'DeviceGuard' { Get-CimInstance -ClassName Win32_DeviceGuard -Namespace root\Microsoft\Windows\DeviceGuard -ErrorAction Stop | Select-Object VirtualizationBasedSecurityStatus, SecurityServicesConfigured, SecurityServicesRunning }

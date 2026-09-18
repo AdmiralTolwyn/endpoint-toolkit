@@ -135,7 +135,7 @@ function ConvertTo-IntuneEndpointModules {
     . (Join-Path $PSScriptRoot 'IntuneEndpointTimestamps.ps1')
     $Fields = @{
         DefenderStatus = @('AMRunningMode', 'AMProductVersion', 'AMEngineVersion', 'AntivirusEnabled', 'RealTimeProtectionEnabled', 'BehaviorMonitorEnabled', 'AntivirusSignatureLastUpdated', 'IsTamperProtected', 'ControlledConfigurationState', 'TamperProtectionSource')
-        DefenderPreferences = @('AttackSurfaceReductionRules_Ids', 'AttackSurfaceReductionRules_Actions', 'EnableNetworkProtection', 'PUAProtection', 'DisableRealtimeMonitoring', 'DisableBehaviorMonitoring', 'DisableScriptScanning', 'MAPSReporting', 'EnableControlledFolderAccess', 'SignatureFallbackOrder', 'SignatureScheduleDay', 'SignatureUpdateInterval')
+        DefenderPreferences = @('AttackSurfaceReductionRules_Ids', 'AttackSurfaceReductionRules_Actions', 'EnableNetworkProtection', 'PUAProtection', 'DisableRealtimeMonitoring', 'DisableBehaviorMonitoring', 'DisableScriptScanning', 'MAPSReporting', 'EnableControlledFolderAccess', 'SignatureFallbackOrder', 'SignatureScheduleDay', 'SignatureUpdateInterval', 'SharedSignaturesPathState')
         FirewallProfiles = @('Name', 'Enabled', 'DefaultInboundAction', 'DefaultOutboundAction', 'LogAllowed', 'LogBlocked')
         BitLockerVolumes = @('MountPoint', 'VolumeType', 'VolumeStatus', 'ProtectionStatus', 'EncryptionPercentage')
         DeviceGuard = @('VirtualizationBasedSecurityStatus', 'SecurityServicesConfigured', 'SecurityServicesRunning')
@@ -151,6 +151,8 @@ function ConvertTo-IntuneEndpointModules {
                 if ($Module -eq 'DefenderStatus' -and $Field -eq 'AntivirusSignatureLastUpdated') {
                     $Timestamp = ConvertTo-IntuneSignatureTimestamp $Value
                     if ($null -ne $Timestamp) { $OutputRow[$Field] = $Timestamp }
+                } elseif ($Module -eq 'DefenderPreferences' -and $Field -eq 'SharedSignaturesPathState') {
+                    if ($Value -is [string] -and $Value -cin @('Empty', 'NonEmpty', 'Unknown')) { $OutputRow[$Field] = $Value }
                 } elseif ($null -ne $Value) { $OutputRow[$Field] = ConvertTo-IntuneExpansionValue $Value }
             }
             $OutputRow

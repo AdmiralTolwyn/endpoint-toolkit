@@ -1,6 +1,6 @@
 # Intune Discovery for Assay
 
-Version 0.5.5. Experimental pending a live tenant pilot. Offline-tested with
+Version 0.5.6. Experimental pending a live tenant pilot. Offline-tested with
 Windows PowerShell 5.1 and PowerShell 7.
 
 The [contract audit](AUDIT.md) currently verifies 49 enabled Graph GET contracts
@@ -149,10 +149,42 @@ This is not proof of latest security intelligence, current device state, update
 delivery, active protection or platform/engine currency. Clocks/identity are not
 authenticated; old timestamp provenance cannot be recovered.
 
-Collector production remains 0.5.5: its existing requirement pass-through retains
+This age-only increment required no collector change: existing requirement pass-through retains
 the limit without a new field, command, permission or update action. Offline
 production-import tests in PowerShell 5.1/7 preserve 0, 2 and 87600; native and
 application tests cover boundaries, target changes, persistence and reports.
+
+### Shared-Signature State (0.5.6)
+
+The existing Get-MpPreference read adds `SharedSignaturesPath` in memory. Before
+JSON serialization, the companion removes it and emits the Assay-derived
+`SharedSignaturesPathState`: `Empty` for a typed empty string, `NonEmpty` for a
+non-whitespace string, otherwise `Unknown`. Missing/null/whitespace/non-string
+values never imply an empty setting. No raw path is exported or accessed; no UNC
+syntax, path validity, applicability or runtime-use check is performed. The
+provider object can contain the raw value in memory before reduction.
+
+Assay N-03 (rules 1.6.1-preview) reports this state alongside the source list,
+with the documented [SharedSignaturesPath override](https://learn.microsoft.com/en-us/powershell/module/defender/set-mppreference?view=windowsserver2025-ps#-sharedsignaturespath)
+(revision `4a7aa7a27f92a5df33b61c78efc584abf2aad4a9`). Microsoft's
+[VDI guidance](https://learn.microsoft.com/en-us/defender-endpoint/deployment-vdi-microsoft-defender-antivirus)
+describes the feature and separate share/access prerequisites. These are source
+references; no Set cmdlet, share access or update operation is executed.
+
+The derived name/enum is an Assay contract, not a Microsoft provider field.
+Import accepts only exact Empty/NonEmpty/Unknown values and drops raw paths.
+Older or malformed state evidence stays Unknown, not a guessed empty setting.
+Valid source lists remain Observed; malformed lists remain NotAssessed while
+retaining supported state evidence. Existing identity/platform/freshness/provider
+gates apply; no state yields a new health verdict or establishes effective source
+selection, network reachability, update delivery or protection.
+
+Five provider commands now project 37 source fields, exporting 36 directly and
+one as a derived state. Test-IntuneEndpointContracts distinguishes read/export
+names. The production pipeline test covers dictionary/object rows, missing and
+malformed inputs, forged states and raw-path privacy; native/app tests cover
+reassessment, save/load and reports. No new provider, permission, route, finding
+or score. Tests mock providers and HTTP; live behavior remains unverified.
 
 ### Defender Update Cadence (0.5.4)
 
@@ -186,8 +218,8 @@ This is Observed/NotAssessed evidence only. It identifies MMPC's listed position
 against [Microsoft's final-fallback guidance](https://learn.microsoft.com/en-us/defender-endpoint/manage-protection-updates-microsoft-defender-antivirus),
 not a health verdict. File-share locations/access are not collected. The
 [PowerShell reference](https://learn.microsoft.com/en-us/powershell/module/defender/set-mppreference?view=windowsserver2025-ps#-signaturefallbackorder)
-also documents SharedSignaturesPath overriding fallback-order updates; that
-override is uncollected. Never treat the list as proof of the effective source,
+also documents SharedSignaturesPath overriding fallback-order updates; 0.5.6 adds
+only the path-free value state above. Never treat the list as proof of the effective source,
 successful updates, WSUS approvals, signature freshness or platform/engine servicing.
 No new provider, Graph request, scope, update action or path export is added.
 
