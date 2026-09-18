@@ -165,6 +165,28 @@ values and missing definitions must remain unresolved. The existing four
 reviewed ADMX payload paths and App Control XML projection still need a separate
 complete binding/schema review; XML well-formedness is not full policy validation.
 
+### ADMX Fragment Boundary (18 September 2026)
+
+The parser now validates the reviewed numeric subset of Microsoft's
+[ADMX payload structure](https://learn.microsoft.com/en-us/windows/client-management/understanding-admx-backed-policies):
+one empty enabled/disabled element, empty data elements with exactly id/value
+attributes, unique bounded identifiers and integral values. Documented lowercase
+and title-case element spellings are accepted. Unsupported elements/namespaces,
+nested content, extra/missing attributes, duplicate IDs, mixed states, nonnumeric
+values and disabled-plus-data combinations fail closed. The latter restrictions
+define this collector's supported subset; they are not claims that every other
+payload is invalid in Windows. Unsupported payloads are recorded unresolved and
+never emitted as partially resolved policy evidence. Comments/whitespace do not
+change the state. Raw XML remains unexported.
+
+XML-backed CSPs no longer accept numeric/boolean scalar bypasses. Assay validates
+the typed ADMX object and every retained field before accepting ResolvedAdmx;
+it no longer silently drops invalid fields or truncates a payload into a clean
+result. ADMX objects are accepted only on the four structured paths, not scalar
+CSPs. Full policy-specific required IDs/enums, OS support and App Control XSD
+validation remain open gates. Synthetic malformed-input and valid-fragment
+tests pass in both PowerShell runtimes and native Rust.
+
 ## Other Script Activities
 
 The main script imports an already installed Az.Accounts module only when a

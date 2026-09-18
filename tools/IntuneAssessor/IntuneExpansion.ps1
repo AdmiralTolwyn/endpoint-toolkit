@@ -110,7 +110,7 @@ function ConvertTo-IntuneSettingFacts {
                 $Fact['resolution'] = 'UnresolvedTemplateDefault'
             } elseif ($UnreviewedAdmx) {
                 $Fact['resolution'] = 'UnresolvedAdmx'
-            } elseif ($Scalar -is [int] -or $Scalar -is [long] -or $Scalar -is [bool] -or ($Scalar -is [string] -and -not (Test-IntuneStructuredPath $Path) -and ((Test-IntuneExtendedPath $Path) -or $Path -in @('LAPS/Policies/AdministratorAccountName', 'Policy/Config/Defender/AttackSurfaceReductionRules', 'Policy/Config/Defender/AttackSurfaceReductionOnlyExclusions')))) {
+            } elseif (-not (Test-IntuneStructuredPath $Path) -and ($Scalar -is [int] -or $Scalar -is [long] -or $Scalar -is [bool] -or ($Scalar -is [string] -and ((Test-IntuneExtendedPath $Path) -or $Path -in @('LAPS/Policies/AdministratorAccountName', 'Policy/Config/Defender/AttackSurfaceReductionRules', 'Policy/Config/Defender/AttackSurfaceReductionOnlyExclusions'))))) {
                 if ($Scalar -is [string] -and $Scalar.Length -gt 16384) { throw 'Setting size limit' }
                 $Fact['value'] = $Scalar
                 $Fact['resolution'] = 'Resolved'

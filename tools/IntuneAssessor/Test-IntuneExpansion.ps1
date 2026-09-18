@@ -80,8 +80,20 @@ Assert-Expansion ($SafeEndpoint.modules.DefenderStatus.Rows[0].IsTamperProtected
 Assert-Expansion ($SafeEndpoint.modules.DeviceGuard.State -eq 'Error') 'Endpoint provider error hidden'
 Assert-Expansion (-not (($SafeEndpoint | ConvertTo-Json -Depth 20).Contains('SECRET'))) 'Endpoint secret retained'
 Write-Output 'PASS: injected endpoint provider states and field projection; no local device collection executed.'
-$Admx = ConvertTo-IntuneAdmxMetadata '<enabled/><data id="UseTPMPIN" value="1"/><data id="unexpected" value="SECRET"/>'
+$Admx = ConvertTo-IntuneAdmxMetadata '<enabled/><data id="UseTPMPIN" value="1"/>'
 Assert-Expansion ($Admx.enabled -and $Admx.data.UseTPMPIN -eq 1 -and -not ($Admx | ConvertTo-Json).Contains('SECRET')) 'ADMX metadata parsing failed'
+$DisabledAdmx = ConvertTo-IntuneAdmxMetadata '<disabled/>'
+Assert-Expansion (-not $DisabledAdmx.enabled -and $DisabledAdmx.data.Count -eq 0) 'Disabled ADMX state lost'
+Assert-Expansion ((ConvertTo-IntuneAdmxMetadata '<Enabled/><Data id="Value" value="1"/>').enabled) 'Documented title-case fragment rejected'
+foreach ($Payload in @('<enabled/><unexpected/>', '<enabled>text</enabled>', '<enabled extra="1"/>', '<enabled/><disabled/>', '<enabled/><data id="same" value="1"/><data id="same" value="0"/>', '<enabled/><data id="value"/>', '<enabled/><data id="value" value="1"><nested/></data>', '<enabled/><data id="value" value="SECRET"/>', '<disabled/><data id="value" value="1"/>', '<enabled/>trailing text', '<enabled xmlns="urn:unreviewed"/>')) {
+    $Rejected = $false
+    try { ConvertTo-IntuneAdmxMetadata $Payload | Out-Null } catch { $Rejected = $true }
+    Assert-Expansion $Rejected 'Unsupported ADMX fragment was partially resolved'
+}
+$InvalidAdmxFacts = @(ConvertTo-IntuneSettingFacts @{ settingDefinitionId = 'admx'; simpleSettingValue = @{ value = '<enabled/><unexpected/>' } } @(@{ id = 'admx'; baseUri = './Device/Vendor/MSFT'; offsetUri = 'Policy/Config/InternetExplorer/DisableInternetExplorerLaunchViaCOM' }) 'policy' 'setting')
+Assert-Expansion ($InvalidAdmxFacts[0].resolution -eq 'UnresolvedAdmx' -and -not $InvalidAdmxFacts[0].Contains('admx')) 'Malformed ADMX produced resolved policy evidence'
+$ScalarAdmxFacts = @(ConvertTo-IntuneSettingFacts @{ settingDefinitionId = 'admx'; simpleSettingValue = @{ value = 1 } } @(@{ id = 'admx'; baseUri = './Device/Vendor/MSFT'; offsetUri = 'Policy/Config/InternetExplorer/DisableInternetExplorerLaunchViaCOM' }) 'policy' 'setting')
+Assert-Expansion ($ScalarAdmxFacts[0].resolution -ne 'Resolved' -and -not $ScalarAdmxFacts[0].Contains('value')) 'Numeric scalar bypassed ADMX parsing'
 $Rejected = $false
 try { Read-IntunePolicyXml '<!DOCTYPE root [<!ENTITY secret SYSTEM "file:///C:/secret">]><root>&secret;</root>' } catch { $Rejected = $true }
 Assert-Expansion $Rejected 'External XML entity accepted'

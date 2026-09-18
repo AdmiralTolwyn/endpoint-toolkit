@@ -19,17 +19,25 @@ function Read-IntunePolicyXml {
 function ConvertTo-IntuneAdmxMetadata {
     param([string]$Text)
     $Document = Read-IntunePolicyXml $Text -Fragment
-    $Enabled = @($Document.SelectNodes('/root/enabled'))
-    $Disabled = @($Document.SelectNodes('/root/disabled'))
-    if ($Enabled.Count + $Disabled.Count -ne 1) { throw 'Ambiguous ADMX enablement' }
+    $State = $null
     $Data = [ordered]@{}
-    foreach ($Node in $Document.SelectNodes('/root/data')) {
-        $Identifier = $Node.GetAttribute('id')
-        $Number = [long]0
-        if ($Identifier.Length -gt 128 -or -not $Identifier -or $Data.Contains($Identifier)) { throw 'Invalid ADMX data identity' }
-        if ([long]::TryParse($Node.GetAttribute('value'), [ref]$Number)) { $Data[$Identifier] = $Number }
+    foreach ($Node in $Document.DocumentElement.ChildNodes) {
+        if ($Node.NodeType -in @([Xml.XmlNodeType]::Whitespace, [Xml.XmlNodeType]::SignificantWhitespace, [Xml.XmlNodeType]::Comment)) { continue }
+        if ($Node.NodeType -ne [Xml.XmlNodeType]::Element -or $Node.NamespaceURI -or $Node.HasChildNodes) { throw 'Unsupported ADMX fragment structure' }
+        if ($Node.Name -cin @('enabled', 'Enabled', 'disabled', 'Disabled')) {
+            if ($null -ne $State -or $Node.Attributes.Count -ne 0) { throw 'Ambiguous ADMX enablement' }
+            $State = $Node.Name -ieq 'enabled'
+        } elseif ($Node.Name -cin @('data', 'Data')) {
+            if ($Node.Attributes.Count -ne 2 -or -not $Node.HasAttribute('id') -or -not $Node.HasAttribute('value')) { throw 'Unsupported ADMX data attributes' }
+            $Identifier = $Node.GetAttribute('id')
+            $Number = [long]0
+            if ($Identifier.Length -gt 128 -or -not $Identifier -or $Identifier -match '[\x00-\x1F]' -or $Data.Contains($Identifier) -or $Data.Count -ge 100) { throw 'Invalid ADMX data identity' }
+            if (-not [long]::TryParse($Node.GetAttribute('value'), [Globalization.NumberStyles]::AllowLeadingSign, [Globalization.CultureInfo]::InvariantCulture, [ref]$Number)) { throw 'Unreviewed nonnumeric ADMX value' }
+            $Data[$Identifier] = $Number
+        } else { throw 'Unsupported ADMX element' }
     }
-    return @{ enabled = ($Enabled.Count -eq 1); data = $Data }
+    if ($null -eq $State -or (-not $State -and $Data.Count)) { throw 'Unsupported ADMX state/data combination' }
+    return @{ enabled = $State; data = $Data }
 }
 
 function ConvertTo-IntuneAppControlMetadata {
