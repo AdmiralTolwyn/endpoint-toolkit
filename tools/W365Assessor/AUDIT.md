@@ -11,12 +11,12 @@ has completed a trust audit. Source/code review on 18 September found open risks
 - Conditional Access previously omitted app exclusions and MFA AND/OR semantics. Collector 0.3.2 now records source-bound per-policy observations without enforcement verdicts; user/sign-in scope and policy interactions remain unevaluated. Token protection is not collected by the reviewed v1.0 adapter. App filters/named collections and authentication strengths remain unresolved.
 - Tenant-wide analytics/update counts do not establish Cloud PC posture. Collector 0.3.3 retains six typed score fields (including -1 unavailable) and seven strict device counters, with no fleet verdict. Assay guards old claims; identity/freshness/coverage evaluation remains open. Corrected analytics permission guidance to ManagedDevices.Read.All and summary source URLs to intune-deviceconfig. No digit stripping or missing-as-zero conversion remains in these blocks.
 - Collector 0.3.4 removes unsupported DR/notification payloads from the v1.0 user-settings export and adds explicit collection-gap markers. The beta notificationSetting reference gives a July 14, 2026 retirement date. USER-002 now remains unassessed; no beta DR request is added. GracePeriodInHours is preserved only as a typed read-only observation, without 1-168-hour scoring, missing-as-zero or immediate-deletion claims. Assay guards both older verdicts; full resilience/process evaluation remains open.
-- The older transport, optional consent behavior, API/field versions and report POST contracts still need end-to-end audit. They are not certified by the new reader's guards.
+- Collector 0.3.5 adds general GET pager origin/path/query, shape, ID and page/row/elapsed guards with atomic failure. Original opaque nextLink URLs and valid empty pages are preserved. INV-001 no longer passes core collection errors. The production initializer now uses an ordered dictionary so key-based evidence additions work; old hashtable test fixtures had masked this. SDK redirects/retries/hard timeouts, optional consent, tenant binding, API/field contracts, report POSTs and complete dependent-check error propagation remain open.
 
 Collector 0.3.0 adds one separate opt-in Assay comparison: UX Sync on beta
 sharedByEntraGroup Windows 365 policies against an explicit Enabled/Disabled
 customer target. Review/missing/unknown remains unassessed. No new scope, writes,
-storage access or live validation. Source contracts and usage are in [README.md](README.md#collector-034-security-evidence-and-ux-sync).
+storage access or live validation. Source contracts and usage are in [README.md](README.md#collector-035-security-evidence-and-ux-sync).
 The legacy WPF catalog/importer remains unchanged. PowerShell 5.1/7 offline tests
 cover the production branch, typed enums, applicability, projection and pagination.
 

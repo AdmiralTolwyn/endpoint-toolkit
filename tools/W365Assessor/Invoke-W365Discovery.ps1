@@ -33,7 +33,7 @@
     .\Invoke-W365Discovery.ps1 -OutputPath "C:\temp\w365_discovery.json"
 .NOTES
     Author : Anton Romanyuk
-    Version: 0.3.4
+    Version: 0.3.5
     Date   : 2026-09-18
 
     Required Graph scopes (core tier — requested unconditionally):
@@ -90,7 +90,7 @@ $env:PSModulePath = ($env:PSModulePath -split ';' |
 $ScriptRoot = $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($ScriptRoot)) { $ScriptRoot = $PWD.Path }
 
-$ScriptVersion = '0.3.4'
+$ScriptVersion = '0.3.5'
 # Windows 365 GA surface (cloudPCs, provisioningPolicies, userSettings) migrated to /v1.0.
 $GraphBaseV1   = 'https://graph.microsoft.com/v1.0/deviceManagement/virtualEndpoint'
 # Beta retained for endpoints not yet GA / verified beta-only: onPremisesConnections, deviceImages,
@@ -179,18 +179,54 @@ function Invoke-GraphPaged {
         Invokes a Graph GET and follows @odata.nextLink, returning all pages.
     #>
     param(
-        [Parameter(Mandatory = $true)] [string]$Uri
+        [Parameter(Mandatory = $true)] [string]$Uri,
+        [ValidateRange(1,1000)][int]$MaxPages = 1000,
+        [ValidateRange(1,100000)][int]$MaxRows = 100000,
+        [ValidateRange(1,1800)][int]$MaxDurationSeconds = 1800
     )
+    $Origin = $null
+    if (-not [uri]::TryCreate($Uri, [UriKind]::Absolute, [ref]$Origin) -or $Origin.Scheme -cne 'https' -or $Origin.Host -cne 'graph.microsoft.com' -or $Origin.Port -ne 443 -or $Origin.UserInfo -or $Origin.Fragment -or $Origin.AbsolutePath -cnotmatch '^/(v1\.0|beta)/[A-Za-z0-9/-]+$') { throw 'Untrusted Graph collection URI' }
+    Add-Type -AssemblyName System.Web
+    $InitialQuery = [Web.HttpUtility]::ParseQueryString($Origin.Query)
+    foreach ($Key in $InitialQuery.AllKeys) {
+        if ($Key -cnotin @('$select','$expand','$filter','$orderby','$top','$count') -or $InitialQuery.GetValues($Key).Count -ne 1 -or [string]::IsNullOrWhiteSpace($InitialQuery[$Key])) { throw 'Unsupported Graph initial query' }
+    }
     $all = New-Object System.Collections.Generic.List[object]
+    $Visited = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $Identifiers = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $Clock = [Diagnostics.Stopwatch]::StartNew()
     $next = $Uri
     while ($next) {
+        $PageUri = $null
+        if ($next -isnot [string] -or -not [uri]::TryCreate($next, [UriKind]::Absolute, [ref]$PageUri) -or $PageUri.Scheme -cne 'https' -or $PageUri.Host -cne 'graph.microsoft.com' -or $PageUri.Port -ne 443 -or $PageUri.UserInfo -or $PageUri.Fragment -or $PageUri.AbsolutePath -cne $Origin.AbsolutePath) { throw 'Untrusted Graph continuation URI' }
+        $Query = [Web.HttpUtility]::ParseQueryString($PageUri.Query)
+        foreach ($Key in $Query.AllKeys) {
+            if ($Query.GetValues($Key).Count -ne 1 -or [string]::IsNullOrWhiteSpace($Query[$Key])) { throw 'Invalid Graph query value' }
+            if ($Key -cin @('$skiptoken','$skipToken')) { continue }
+            if ($Key -ceq '$skip') {
+                if ($Query[$Key] -cnotmatch '^[0-9]{1,10}$') { throw 'Invalid Graph paging offset' }
+                continue
+            }
+            if ($Key -cnotin @($InitialQuery.AllKeys) -or $Query[$Key] -cne $InitialQuery[$Key]) { throw 'Graph continuation changed query scope' }
+        }
+        foreach ($Key in $InitialQuery.AllKeys) {
+            if ($Query[$Key] -cne $InitialQuery[$Key]) { throw 'Graph continuation dropped query scope' }
+        }
+        $PageKeys = @($Query.AllKeys | Where-Object { $_ -cin @('$skiptoken','$skipToken','$skip') })
+        if ($PageKeys.Count -gt 1) { throw 'Ambiguous Graph continuation' }
+        if ($Visited.Count -ge $MaxPages -or -not $Visited.Add($PageUri.AbsoluteUri)) { throw 'Graph page limit or repeated continuation' }
+        if ($Clock.Elapsed.TotalSeconds -ge $MaxDurationSeconds) { throw 'Graph collection duration exceeded' }
         $resp = Invoke-MgGraphRequest -Method GET -Uri $next -ErrorAction Stop
-        if ($null -ne $resp.value) {
-            foreach ($v in $resp.value) { [void]$all.Add($v) }
-        } elseif ($null -ne $resp) {
-            [void]$all.Add($resp)
+        if ($Clock.Elapsed.TotalSeconds -ge $MaxDurationSeconds) { throw 'Graph collection duration exceeded' }
+        if (($resp -isnot [Collections.IDictionary] -and $resp -isnot [pscustomobject]) -or $null -ne $resp.error -or $resp.value -isnot [Collections.IList]) { throw 'Invalid Graph collection response' }
+        if ($all.Count + $resp.value.Count -gt $MaxRows) { throw 'Graph row limit exceeded' }
+        foreach ($Row in $resp.value) {
+            if ($Row -isnot [Collections.IDictionary] -and $Row -isnot [pscustomobject]) { throw 'Invalid Graph collection row' }
+            if ($Row.id -isnot [string] -or [string]::IsNullOrWhiteSpace($Row.id) -or $Row.id.Length -gt 1024 -or $Row.id -match '[\x00-\x1F\x7F]' -or -not $Identifiers.Add($Row.id)) { throw 'Missing, invalid or duplicate Graph row ID' }
+            [void]$all.Add($Row)
         }
         $next = $resp.'@odata.nextLink'
+        if ($null -ne $next -and ($next -isnot [string] -or [string]::IsNullOrWhiteSpace($next))) { throw 'Invalid Graph continuation value' }
     }
     return $all.ToArray()
 }
@@ -321,7 +357,7 @@ $Discovery = [PSCustomObject]@{
     Timestamp     = (Get-Date -Format 'o')
     AssessorId    = $Context.Account
     TenantId      = $Context.TenantId
-    Inventory     = [PSCustomObject]@{
+    Inventory     = [ordered]@{
         CloudPCs                = @()
         ProvisioningPolicies    = @()
         UserSettings            = @()
@@ -611,8 +647,8 @@ $AncHealthy = @($Discovery.Inventory.AzureNetworkConnections | Where-Object { $_
     -Id 'W365-INV-001' -Category 'Inventory & Topology' `
     -Name 'Cloud PC inventory' `
     -Description 'Snapshot of Cloud PC resources in the tenant. Use as a baseline for sizing and cost analysis.' `
-    -Status 'Pass' -Severity 'Low' `
-    -Details "Cloud PCs: $($CloudPCs.Count) ($StateSummary). Provisioning policies: $($ProvPols.Count) ($ProvAssigned assigned). User settings: $($UserSet.Count). ANCs: $($ANCs.Count) ($AncHealthy healthy). Custom images: $($DevImgs.Count). Gallery images: $($GalImgs.Count)." `
+    -Status $(if ($Discovery.Errors.Count -gt 0) { 'Error' } else { 'Pass' }) -Severity 'Low' `
+    -Details "Cloud PCs: $($CloudPCs.Count) ($StateSummary). Provisioning policies: $($ProvPols.Count) ($ProvAssigned assigned). User settings: $($UserSet.Count). ANCs: $($ANCs.Count) ($AncHealthy healthy). Custom images: $($DevImgs.Count). Gallery images: $($GalImgs.Count). Core collection errors: $($Discovery.Errors.Count); failed collections must not be interpreted as absent resources." `
     -Recommendation 'Use the Provisioning Policies and Cloud PCs panels in the GUI to drill into details. Schedule monthly inventory reviews to catch orphaned licenses and stale resources early.' `
     -Reference 'https://learn.microsoft.com/en-us/windows-365/enterprise/overview' `
     -Evidence @{ CloudPCs = $CloudPCs.Count; Policies = $ProvPols.Count; ANCs = $ANCs.Count; States = $StateSummary }))

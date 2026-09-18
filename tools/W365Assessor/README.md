@@ -1,11 +1,34 @@
 # Windows 365 Assessor
 
-## Collector 0.3.4: Security Evidence and UX Sync
+## Collector 0.3.5: Security Evidence and UX Sync
 
 The collector optionally emits `W365-PROV-011` for **Assay** (31 Auto / 101
 Manual after reclassifying eleven unsupported evaluators). The legacy
 WPF catalog and the 41/91 counts below are unchanged; the
 legacy importer does not consume this new automatic result.
+
+In 0.3.5, the general GET pager rejects cross-host/path/version continuations,
+changed query scope, duplicate/unknown query keys, malformed response shapes,
+duplicate/missing IDs, repeated pages and page/row overruns. It uses the original
+opaque nextLink URL, including encoded tokens, and accepts valid empty pages.
+Limits per collection are 1,000 pages, 100,000 rows and an elapsed budget of
+1,800 seconds checked around SDK calls. Errors discard buffered rows; the
+inventory summary no longer passes recorded core collection errors. Assay also
+guards old automatic INV-001 summaries with Errors, preserving manual decisions.
+
+The elapsed budget cannot cancel an SDK request already in progress. SDK
+redirects/retries, response-byte limits, report POSTs, the direct singleton and
+UX Sync's separate reader remain outside this helper's guarantees. Query rules
+are a conservative supported subset; unsupported continuation forms fail rather
+than being reconstructed. No new permission, login or request type is added.
+Sources: [Graph paging](https://learn.microsoft.com/en-us/graph/paging),
+[query parameters](https://learn.microsoft.com/en-us/graph/query-parameters),
+[SDK command](https://learn.microsoft.com/en-us/powershell/module/microsoft.graph.authentication/invoke-mggraphrequest?view=graph-powershell-1.0).
+
+Inventory initialization now uses an ordered dictionary, preserving the JSON
+object shape while supporting the newer evidence adapters' key-based additions.
+The production-initializer test caught this mismatch, which older hashtable-based
+helper tests had not covered.
 
 In 0.3.1, SEC-002/003/004 retain contextual metadata but emit Error (NotAssessed)
 instead of security verdicts. Intune compliance is not Defender onboarding,
@@ -88,6 +111,9 @@ The comparison proves neither effective assignment nor successful profile
 persistence or capacity. UX Sync is not backup/DR; modifying existing assignments
 can deprovision Cloud PCs and delete user storage. This collector never does that.
 
+Run `Test-W365GraphPaging.ps1` in PowerShell 5.1/7 for offline pager and real
+initialization/error-propagation tests. `ASSAY_W365_PAGING_FIXTURE` writes the
+synthetic error/summary export for native import tests.
 Run `Test-W365ResilienceEvidence.ps1` in PowerShell 5.1/7 for production projection
 and verdict regressions. Optional `-V1MetadataPath <cached-CSDL>` checks the field
 boundary; `ASSAY_W365_RESILIENCE_FIXTURE` writes the synthetic production export.
@@ -521,7 +547,7 @@ W365Assessor/
 
 | Component | Version |
 |---|---|
-| `Invoke-W365Discovery.ps1` | 0.3.4 |
+| `Invoke-W365Discovery.ps1` | 0.3.5 |
 | `checks.json` | 1.1 (schema), 132 checks |
 | `W365Assessor.ps1` | 0.2.0 |
 
