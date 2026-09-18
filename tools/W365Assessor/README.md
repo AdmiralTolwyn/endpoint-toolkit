@@ -1,9 +1,9 @@
 # Windows 365 Assessor
 
-## Collector 0.3.1: Security Evidence and UX Sync
+## Collector 0.3.2: Security Evidence and UX Sync
 
-The collector optionally emits `W365-PROV-011` for **Assay** (39 Auto / 93
-Manual after reclassifying three unsupported security evaluators). The legacy
+The collector optionally emits `W365-PROV-011` for **Assay** (35 Auto / 97
+Manual after reclassifying seven unsupported security/CA evaluators). The legacy
 WPF catalog and the 41/91 counts below are unchanged; the
 legacy importer does not consume this new automatic result.
 
@@ -14,6 +14,23 @@ Cloud PC coverage. Compliance unknowns are counted separately. Policy reads sele
 only IDs and no longer expand assignments. Assay also withholds old automated
 verdicts on import, while preserving explicit manual decisions. The legacy WPF
 importer does not gain that protection for old exports.
+
+In 0.3.2, IAM-003/004/010/011 retain per-policy observations rather than enforcement
+verdicts. Keep `W365ConditionalAccess.ps1` beside the collector. It records app
+inclusions after exclusions, policy state, MFA AND/OR intent and typed sign-in
+frequency. Named app collections, dynamic app filters, user/sign-in scope and
+authentication strengths remain unresolved. Token protection is explicitly
+uncollected by the reviewed v1.0 adapter; no beta API or new permission is added.
+Windows Cloud Login and every-time frequency require SSO applicability. Assay
+also guards old automatic CA claims while preserving explicit manual decisions.
+
+Sources: [app targeting](https://learn.microsoft.com/en-us/graph/api/resources/conditionalaccessapplications?view=graph-rest-1.0),
+[grant logic](https://learn.microsoft.com/en-us/graph/api/resources/conditionalaccessgrantcontrols?view=graph-rest-1.0),
+[conditions](https://learn.microsoft.com/en-us/graph/api/resources/conditionalaccessconditionset?view=graph-rest-1.0),
+[frequency](https://learn.microsoft.com/en-us/graph/api/resources/signinfrequencysessioncontrol?view=graph-rest-1.0),
+[v1.0 session controls](https://learn.microsoft.com/en-us/graph/api/resources/conditionalaccesssessioncontrols?view=graph-rest-1.0),
+[beta token control](https://learn.microsoft.com/en-us/graph/api/resources/securesigninsessioncontrol?view=graph-rest-beta),
+[Windows 365 guidance](https://learn.microsoft.com/en-us/windows-365/enterprise/set-conditional-access-policies).
 
 ```powershell
 .\Invoke-W365Discovery.ps1 -TenantId '<tenant-id>' `
@@ -36,6 +53,8 @@ The comparison proves neither effective assignment nor successful profile
 persistence or capacity. UX Sync is not backup/DR; modifying existing assignments
 can deprovision Cloud PCs and delete user storage. This collector never does that.
 
+Run `Test-W365ConditionalAccess.ps1` in PowerShell 5.1/7 for offline CA decoding and
+production-block tests; optional `ASSAY_W365_CA_FIXTURE` writes the synthetic export.
 Run `Test-W365SecurityEvidence.ps1` in PowerShell 5.1/7 for offline production-block
 regressions; optional `ASSAY_W365_SECURITY_FIXTURE` writes the synthetic export.
 Run `Test-W365UserExperienceSync.ps1` in PowerShell 5.1/7 for offline tests of the
@@ -43,9 +62,9 @@ reader and actual opt-in branch. Optional `ASSAY_W365_UXSYNC_FIXTURE` writes a
 synthetic production export for Assay ingest tests. No live Graph calls are made.
 Beta/runtime permissions and SDK behavior still require an authorized pilot.
 
-**Review warning:** IAM-003/004/010/011 still use incomplete targeting heuristics.
-Presence of an MFA grant does not prove Cloud PC protection. SEC-002/003/004 are
-now guarded observations, not implemented end-to-end security assessments.
+**Review warning:** SEC-002/003/004 and IAM-003/004/010/011 are guarded observations,
+not implemented end-to-end security assessments. Tenant-wide analytics/update
+counts, user-setting API-version mismatches and older transport remain open risks.
 See the current [audit addendum](AUDIT.md#september-2026-review-addendum).
 
 **Assess Windows 365 (Cloud PC) Enterprise & Flex tenants against Microsoft CAF, Well-Architected Framework, Landing Zone Accelerator, and Security best practices.**
@@ -460,7 +479,7 @@ W365Assessor/
 
 | Component | Version |
 |---|---|
-| `Invoke-W365Discovery.ps1` | 0.3.1 |
+| `Invoke-W365Discovery.ps1` | 0.3.2 |
 | `checks.json` | 1.1 (schema), 132 checks |
 | `W365Assessor.ps1` | 0.2.0 |
 

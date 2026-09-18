@@ -33,7 +33,7 @@
     .\Invoke-W365Discovery.ps1 -OutputPath "C:\temp\w365_discovery.json"
 .NOTES
     Author : Anton Romanyuk
-    Version: 0.3.1
+    Version: 0.3.2
     Date   : 2026-09-18
 
     Required Graph scopes (core tier — requested unconditionally):
@@ -90,7 +90,7 @@ $env:PSModulePath = ($env:PSModulePath -split ';' |
 $ScriptRoot = $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($ScriptRoot)) { $ScriptRoot = $PWD.Path }
 
-$ScriptVersion = '0.3.1'
+$ScriptVersion = '0.3.2'
 # Windows 365 GA surface (cloudPCs, provisioningPolicies, userSettings) migrated to /v1.0.
 $GraphBaseV1   = 'https://graph.microsoft.com/v1.0/deviceManagement/virtualEndpoint'
 # Beta retained for endpoints not yet GA / verified beta-only: onPremisesConnections, deviceImages,
@@ -99,18 +99,6 @@ $GraphBase     = 'https://graph.microsoft.com/beta/deviceManagement/virtualEndpo
 $ReportsBase   = "$GraphBase/reports"
 $IntuneBase    = 'https://graph.microsoft.com/beta/deviceManagement'
 $CaPolicyUri   = 'https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies'
-
-# First-party application IDs used to sign in to / broker Cloud PC + AVD sessions. Conditional Access
-# policies should target these to protect Cloud PC access.
-#   Windows Cloud Login  (formerly "Microsoft Remote Desktop" / brokers Cloud PC + AVD SSO)
-#   Azure Virtual Desktop (session host / gateway app, also brokers Cloud PC connections)
-#   Windows 365 (the Windows 365 web portal / provisioning app)
-# NOTE: Windows Cloud Login and Azure Virtual Desktop IDs are well-known Microsoft first-party IDs.
-# The Windows 365 portal ID below is provided per the assessment spec and flagged for doc verification.
-$AppIdWindowsCloudLogin  = '270efc09-cd0d-444b-a71f-39af4910ec45'
-$AppIdAzureVirtualDesktop = '9cdead84-a844-4324-93f2-b2e6bb768d07'
-$AppIdWindows365Portal   = '0af06dc6-e4b5-4f28-818e-e78e62d137a5'
-$CloudPcSignInAppIds     = @($AppIdWindowsCloudLogin, $AppIdAzureVirtualDesktop, $AppIdWindows365Portal)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # HELPERS
@@ -1433,77 +1421,28 @@ try {
 Write-Status "Conditional Access (Cloud PC sign-in)" -Level 'SECTION'
 try {
     $caPolicies = @(Invoke-GraphPaged -Uri $CaPolicyUri)
-    $caEnabled  = @($caPolicies | Where-Object { "$($_.state)" -eq 'enabled' })
-    Write-Status "Conditional Access policies: $($caPolicies.Count) ($($caEnabled.Count) enabled)" -Level 'SUCCESS'
-
-    # Helper: does an enabled policy target a Cloud PC sign-in app (explicitly or via 'All')?
-    $targetsCloudPc = {
-        param($p)
-        $inc = @($p.conditions.applications.includeApplications)
-        if ($inc -contains 'All') { return $true }
-        return (@($inc | Where-Object { $CloudPcSignInAppIds -contains $_ }).Count -gt 0)
+    . (Join-Path $ScriptRoot 'W365ConditionalAccess.ps1')
+    $CaEvidence = @(ConvertTo-W365ConditionalAccessEvidence -Policies $caPolicies)
+    $Discovery.Inventory['ConditionalAccessPolicyEvidence'] = $CaEvidence
+    $CaDetails = ($CaEvidence | ForEach-Object {
+        "Policy $($_.PolicyId): state=$($_.State); Windows365=$($_.ApplicationTargets.Windows365); AVD=$($_.ApplicationTargets.AzureVirtualDesktop); WindowsCloudLogin=$($_.ApplicationTargets.WindowsCloudLogin); MFA=$($_.MfaRequirement); sign-in frequency=$($_.SignInFrequencyMode) $($_.SignInFrequencyValue) $($_.SignInFrequencyUnit)."
+    }) -join ' '
+    Write-Status "Conditional Access policy observations: $($CaEvidence.Count); effective scope not evaluated" -Level 'INFO'
+    foreach ($CaCheck in @(
+        @{ Id = 'W365-IAM-003-CA'; Name = 'Conditional Access scope review'; Severity = 'High' },
+        @{ Id = 'W365-IAM-004-MFA'; Name = 'MFA policy intent review'; Severity = 'High' },
+        @{ Id = 'W365-IAM-010'; Name = 'Windows Cloud Login scope review'; Severity = 'High' },
+        @{ Id = 'W365-IAM-011'; Name = 'Session-control applicability review'; Severity = 'Medium' }
+    )) {
+        [void]$AllChecks.Add((New-CheckResult `
+            -Id $CaCheck.Id -Category 'Identity & Access' -Name $CaCheck.Name `
+            -Description 'Collected policy intent only; effective Cloud PC user/sign-in coverage has not been evaluated.' `
+            -Status 'Error' -Severity $CaCheck.Severity `
+            -Details "No enforcement verdict. Users/groups/roles, conditions, exclusions and policy interactions require review. Windows Cloud Login and every-time frequency require SSO applicability. Token protection is not collected by the reviewed v1.0 contract. $CaDetails" `
+            -Recommendation 'Review the selected users, sign-in scenarios, applicable policies and client support. Validate enforcement separately; discovery makes no policy changes.' `
+            -Reference 'https://learn.microsoft.com/en-us/windows-365/enterprise/set-conditional-access-policies' `
+            -Evidence @{ AssessmentState = 'EffectiveScopeNotEvaluated'; ApiVersion = 'v1.0'; PolicyCount = $CaEvidence.Count }))
     }
-    $cpcTargeting = @($caEnabled | Where-Object { & $targetsCloudPc $_ })
-    $wclTargeting = @($caEnabled | Where-Object {
-        $inc = @($_.conditions.applications.includeApplications)
-        ($inc -contains 'All') -or ($inc -contains $AppIdWindowsCloudLogin)
-    })
-
-    # IAM-003-CA: at least one enabled CA policy targets Cloud PC sign-in apps.
-    [void]$AllChecks.Add((New-CheckResult `
-        -Id 'W365-IAM-003-CA' -Category 'Identity & Access' `
-        -Name 'Conditional Access targets Cloud PC sign-in' `
-        -Description 'Conditional Access must target the apps used to sign in to Cloud PCs (Windows Cloud Login, Azure Virtual Desktop, Windows 365 portal), or all apps, to enforce access controls on Cloud PC sessions.' `
-        -Status $(if ($cpcTargeting.Count -gt 0) { 'Pass' } else { 'Fail' }) `
-        -Severity 'High' `
-        -Details "$($cpcTargeting.Count) enabled CA policy/policies target Cloud PC sign-in apps (or All apps) out of $($caEnabled.Count) enabled." `
-        -Recommendation 'Create/scope a Conditional Access policy to the Windows Cloud Login and Azure Virtual Desktop apps (or All apps) covering Cloud PC users.' `
-        -Reference 'https://learn.microsoft.com/en-us/windows-365/enterprise/set-conditional-access-policies' `
-        -Evidence @{ Targeting = $cpcTargeting.Count; EnabledPolicies = $caEnabled.Count; AppIds = $CloudPcSignInAppIds }))
-
-    # IAM-004-MFA: targeting policies require MFA.
-    $mfaTargeting = @($cpcTargeting | Where-Object {
-        @($_.grantControls.builtInControls) -contains 'mfa'
-    })
-    [void]$AllChecks.Add((New-CheckResult `
-        -Id 'W365-IAM-004-MFA' -Category 'Identity & Access' `
-        -Name 'MFA enforced for Cloud PC sign-in' `
-        -Description 'Cloud PC sign-in should require multi-factor authentication via a Conditional Access grant control.' `
-        -Status $(if ($cpcTargeting.Count -eq 0) { 'Fail' } elseif ($mfaTargeting.Count -gt 0) { 'Pass' } else { 'Fail' }) `
-        -Severity 'High' `
-        -Details "$($mfaTargeting.Count) of $($cpcTargeting.Count) Cloud PC-targeting CA policy/policies require MFA." `
-        -Recommendation 'Require multi-factor authentication (or a phishing-resistant authentication strength) in the Conditional Access policy covering Cloud PC sign-in apps.' `
-        -Reference 'https://learn.microsoft.com/en-us/windows-365/enterprise/set-conditional-access-policies' `
-        -Evidence @{ MfaPolicies = $mfaTargeting.Count; Targeting = $cpcTargeting.Count }))
-
-    # W365-IAM-010 (NEW): Windows Cloud Login app coverage specifically.
-    [void]$AllChecks.Add((New-CheckResult `
-        -Id 'W365-IAM-010' -Category 'Identity & Access' `
-        -Name 'Windows Cloud Login coverage' `
-        -Description 'Windows Cloud Login (app 270efc09-cd0d-444b-a71f-39af4910ec45) is the identity app that brokers Cloud PC sign-in. Conditional Access should explicitly cover it (directly or via All apps).' `
-        -Status $(if ($wclTargeting.Count -gt 0) { 'Pass' } else { 'Fail' }) `
-        -Severity 'High' `
-        -Details "$($wclTargeting.Count) enabled CA policy/policies cover the Windows Cloud Login app (directly or via All apps)." `
-        -Recommendation 'Ensure a Conditional Access policy explicitly includes the Windows Cloud Login app so Cloud PC sign-in is always governed by CA.' `
-        -Reference 'https://learn.microsoft.com/en-us/windows-365/enterprise/set-conditional-access-policies' `
-        -Evidence @{ Covering = $wclTargeting.Count; WindowsCloudLoginAppId = $AppIdWindowsCloudLogin }))
-
-    # W365-IAM-011 (NEW): token protection / sign-in frequency session controls on Cloud PC access.
-    $tokenProt = @($cpcTargeting | Where-Object { $_.sessionControls.secureSignInSession.isEnabled -eq $true })
-    $signInFreq = @($cpcTargeting | Where-Object {
-        $sif = $_.sessionControls.signInFrequency
-        $sif -and ("$($sif.frequencyInterval)" -eq 'everyTime' -or $sif.isEnabled -eq $true)
-    })
-    [void]$AllChecks.Add((New-CheckResult `
-        -Id 'W365-IAM-011' -Category 'Identity & Access' `
-        -Name 'Token protection / sign-in frequency for Cloud PC' `
-        -Description 'Session controls — token protection (secureSignInSession) and sign-in frequency — reduce token-theft and session-persistence risk for Cloud PC access.' `
-        -Status $(if ($cpcTargeting.Count -eq 0) { 'Warning' } elseif ($tokenProt.Count -gt 0 -or $signInFreq.Count -gt 0) { 'Pass' } else { 'Warning' }) `
-        -Severity 'Medium' `
-        -Details "Cloud PC-targeting CA policies with token protection: $($tokenProt.Count); with sign-in frequency configured: $($signInFreq.Count)." `
-        -Recommendation 'Add token protection (sign-in session) and an appropriate sign-in frequency to the Conditional Access policy covering Cloud PC sign-in.' `
-        -Reference 'https://learn.microsoft.com/en-us/entra/identity/conditional-access/concept-token-protection' `
-        -Evidence @{ TokenProtection = $tokenProt.Count; SignInFrequency = $signInFreq.Count; Targeting = $cpcTargeting.Count }))
 } catch {
     Write-Status "Conditional Access unavailable (needs Policy.Read.All): $($_.Exception.Message)" -Level 'WARN'
     foreach ($ca in @(
