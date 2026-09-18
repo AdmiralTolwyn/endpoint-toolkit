@@ -2,6 +2,24 @@
 
 Date: 2026-09-17. Status: **partial audit, not production certification**.
 
+September 19, collector 0.5.11: reproduced and repaired unresolved singular or
+collection choices emitting Resolved children. ConvertTo-IntuneSettingFacts now
+propagates choice-resolution uncertainty separately from template defaults.
+Get-IntuneSelectedOptionValue requires one exact typed definition/option match
+and an object-valued optionValue. Missing/duplicate matches or absent/scalar/array
+payloads withhold descendant values, retaining known metadata. A valid descendant
+cannot clear inherited uncertainty. Collection siblings and selected-option
+template context are evaluated independently; ordinary groups remain supported.
+
+Sources: [choice value](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationchoicesettingvalue?view=graph-rest-beta)
+and [choice collection](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationchoicesettingcollectioninstance?view=graph-rest-beta),
+revision `4b837f772f711c890ec02678db6b05845a40b419`. They establish option identity
+and child structure, not the conservative withholding rule or actual applicability.
+Tests cover 40 choice matrix cases plus transitive/ADMX/template controls and
+actual mocked exports. Native/app regression covers unknown results, persistence
+and reports. No live occurrence, new read/scope or full dependency audit claimed.
+Recollect affected older flattened evidence; see [limits](README.md#choice-context-0511).
+
 September 19, collector 0.5.10: repaired a reproduced defaulted-parent -> Resolved
 child path in ConvertTo-IntuneSettingFacts. Unresolved template context now flows
 through descendants, including selected options on unsupported CSP paths and

@@ -161,6 +161,7 @@ try {
     $script:MixedCorrelation = $false
     $script:IdentityCorrelation = $false
     $script:TemplateCorrelation = $false
+    $script:ChoiceCorrelation = $false
     $CorrelationRequest = {
         param($Uri)
         $Path = ([uri]$Uri).AbsolutePath
@@ -185,14 +186,27 @@ try {
                     $Rows[0].settingInstance.choiceSettingValue.children = @($Rows[1].settingInstance)
                     $Rows = @($Rows[0])
                 }
+                if ($script:ChoiceCorrelation) {
+                    $Rows[0].settingInstance.choiceSettingValue.children = @($Rows[1].settingInstance)
+                    if ($Path -eq '/beta/deviceManagement/configurationPolicies/policy-on/settings') {
+                        $Rows[0].settingInstance.choiceSettingValue.value = 'missing-option'
+                    } else {
+                        $Rows[0].settingInstance.choiceSettingCollectionValue = @($Rows[0].settingInstance.choiceSettingValue)
+                        $Rows[0].settingInstance.Remove('choiceSettingValue')
+                    }
+                    $Rows = @($Rows[0])
+                }
             }
             '/settings/0/settingDefinitions$' { $Rows = @(@{ id = 'rtp'; baseUri = './Device/Vendor/MSFT/Policy/Config/Defender'; offsetUri = 'AllowRealtimeMonitoring'; version = '1'; options = @(@{ itemId = 'opaque_enabled_0'; optionValue = @{ value = 1 } }, @{ itemId = 'opaque_disabled_1'; optionValue = @{ value = 0 } }) }) }
             '/settings/1/settingDefinitions$' { $Rows = @(@{ id = 'behavior'; baseUri = './Device/Vendor/MSFT/Policy/Config/Defender'; offsetUri = 'AllowBehaviorMonitoring'; version = '1'; options = @(@{ itemId = 'opaque_enabled_0'; optionValue = @{ value = 1 } }, @{ itemId = 'opaque_disabled_1'; optionValue = @{ value = 0 } }) }) }
         }
         if ($script:IdentityCorrelation -and $Path.EndsWith('/settings/0/settingDefinitions')) { $Rows[0].id = '1' }
         if ($script:IdentityCorrelation -and $Path.EndsWith('/settings/1/settingDefinitions')) { $Rows[0].options = @(@{ itemId = 1; optionValue = @{ value = 1 } }) }
-        if ($script:TemplateCorrelation -and $Path.EndsWith('/settings/0/settingDefinitions')) {
+        if (($script:TemplateCorrelation -or $script:ChoiceCorrelation) -and $Path.EndsWith('/settings/0/settingDefinitions')) {
             $Rows += @{ id = 'behavior'; baseUri = './Device/Vendor/MSFT/Policy/Config/Defender'; offsetUri = 'AllowBehaviorMonitoring'; version = '1'; options = @(@{ itemId = 'opaque_enabled_0'; optionValue = @{ value = 1 } }, @{ itemId = 'opaque_disabled_1'; optionValue = @{ value = 0 } }) }
+        }
+        if ($script:ChoiceCorrelation -and $Path -eq '/beta/deviceManagement/configurationPolicies/policy-off/settings/0/settingDefinitions') {
+            $Rows[0].options += @{ itemId = 'opaque_disabled_1'; optionValue = @{ value = 1 } }
         }
         @{ StatusCode = 200; Body = (@{ value = $Rows } | ConvertTo-Json -Depth 20 | ConvertFrom-Json) }
     }
@@ -259,6 +273,20 @@ try {
     $TemplateJson = $TemplateDocument | ConvertTo-Json -Depth 30
     if ($TemplateJson -match 'PRIVATE_PATH|DO_NOT_EXPORT|choiceSettingValue|useTemplateDefault') { throw 'Raw template payload exported' }
     if ($env:ASSAY_INTUNE_TEMPLATE_FIXTURE) { [IO.File]::WriteAllText($env:ASSAY_INTUNE_TEMPLATE_FIXTURE, $TemplateJson, [Text.UTF8Encoding]::new($false)) }
+    $script:ChoiceCorrelation = $true
+    try {
+        $ChoiceDocument = Invoke-IntuneDiscoveryCore -SelectedTenant $Tenant -Configuration $true -EndpointPaths @($Temporary) -Request $CorrelationRequest -Requirements @{
+            ScopeConfirmed = $true; ScopeDescription = 'Synthetic unresolved parent choices'; Assessor = 'Test'; MaxCollectionAgeHours = 24
+            ConfigurationReview = @{ DeviceIds = @('device'); PolicyIds = @('policy-on'); ReferenceProfile = 'windows-25h2'; DefenderPrimary = $true }
+        }
+    } finally { $script:ChoiceCorrelation = $false }
+    if ($ChoiceDocument.Inventory.SecuritySettings.Count -ne 4) { throw 'Unresolved choice metadata silently dropped' }
+    foreach ($Fact in $ChoiceDocument.Inventory.SecuritySettings) {
+        if ($Fact.resolution -cne 'UnresolvedValue' -or $Fact.Contains('value') -or $Fact.Contains('admx') -or $Fact.cspUri -cnotin @('Policy/Config/Defender/AllowRealtimeMonitoring', 'Policy/Config/Defender/AllowBehaviorMonitoring')) { throw 'Unresolved parent choice produced explicit evidence' }
+    }
+    $ChoiceJson = $ChoiceDocument | ConvertTo-Json -Depth 30
+    if ($ChoiceJson -match 'PRIVATE_PATH|DO_NOT_EXPORT|missing-option|choiceSettingCollectionValue') { throw 'Raw unresolved choice payload exported' }
+    if ($env:ASSAY_INTUNE_CHOICE_FIXTURE) { [IO.File]::WriteAllText($env:ASSAY_INTUNE_CHOICE_FIXTURE, $ChoiceJson, [Text.UTF8Encoding]::new($false)) }
     $Sample.TenantId = '44444444-4444-4444-8444-444444444444'
     [IO.File]::WriteAllText($Temporary, ($Sample | ConvertTo-Json -Depth 15), [Text.UTF8Encoding]::new($false))
     $Rejected = $false

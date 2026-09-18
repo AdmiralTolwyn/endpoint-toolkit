@@ -94,6 +94,51 @@ foreach ($ChoiceValue in @('missing-option', 'opaque_enabled_0')) {
 }
 $ChildDefinition = @{ id = 'child'; baseUri = './Device/Vendor/MSFT/Policy/Config/Defender'; offsetUri = 'AllowBehaviorMonitoring' }
 $ChildInstance = @{ settingDefinitionId = 'child'; simpleSettingValue = @{ value = 1 } }
+foreach ($ChoiceDefect in @('missing-option', 'duplicate-option')) {
+    $UnresolvedDefinition = $Definition.Clone()
+    $UnresolvedChoice = 'missing-option'
+    if ($ChoiceDefect -eq 'duplicate-option') {
+        $UnresolvedChoice = 'opaque_enabled_0'
+        $UnresolvedDefinition.options = @(@{ itemId = $UnresolvedChoice; optionValue = @{ value = 1 } }, @{ itemId = $UnresolvedChoice; optionValue = @{ value = 0 } })
+    }
+    $UnresolvedParent = @{ settingDefinitionId = 'opaque'; choiceSettingValue = @{ value = $UnresolvedChoice; children = @($ChildInstance) } }
+    $UnresolvedFacts = @(ConvertTo-IntuneSettingFacts $UnresolvedParent @($UnresolvedDefinition, $ChildDefinition) 'policy' 'unresolved-choice')
+    Assert-Expansion ($UnresolvedFacts.Count -eq 2 -and $UnresolvedFacts[1].resolution -ceq 'UnresolvedValue' -and -not $UnresolvedFacts[1].Contains('value')) "Unresolved $ChoiceDefect produced resolved child evidence"
+}
+foreach ($ParentCase in @('valid', 'valid-unknown-path', 'missing-option', 'duplicate-option', 'missing-definition', 'duplicate-definition', 'missing-option-value', 'scalar-option-value', 'array-option-value', 'template-option')) {
+    foreach ($CollectionChoice in @($false, $true)) {
+        foreach ($DecodeJson in @($false, $true)) {
+            $ParentDefinition = @{ id = 'parent'; baseUri = './Device/Vendor/MSFT/Policy/Config/Defender'; offsetUri = 'AllowCloudProtection'; options = @(@{ itemId = 'chosen'; optionValue = @{ value = 1 } }, @{ itemId = 'sibling'; optionValue = @{ value = 0 } }) }
+            switch ($ParentCase) {
+                'valid-unknown-path' { $ParentDefinition.offsetUri = 'Unreviewed' }
+                'missing-option' { $ParentDefinition.options = @($ParentDefinition.options[1]) }
+                'duplicate-option' { $ParentDefinition.options += @{ itemId = 'chosen'; optionValue = @{ value = 0 } } }
+                'missing-option-value' { $ParentDefinition.options[0].Remove('optionValue') }
+                'scalar-option-value' { $ParentDefinition.options[0].optionValue = 1 }
+                'array-option-value' { $ParentDefinition.options[0].optionValue = @(@{ value = 1 }) }
+                'template-option' { $ParentDefinition.options[0].optionValue.settingValueTemplateReference = @{ useTemplateDefault = $true } }
+            }
+            $ParentDefinitions = @($ParentDefinition, $ChildDefinition)
+            if ($ParentCase -eq 'missing-definition') { $ParentDefinitions = @($ChildDefinition) }
+            if ($ParentCase -eq 'duplicate-definition') { $ParentDefinitions += $ParentDefinition.Clone() }
+            $ParentInstance = @{ settingDefinitionId = 'parent' }
+            $ChosenValue = @{ value = 'chosen'; children = @($ChildInstance) }
+            if ($CollectionChoice) { $ParentInstance.choiceSettingCollectionValue = @($ChosenValue, @{ value = 'sibling'; children = @($ChildInstance) }) }
+            else { $ParentInstance.choiceSettingValue = $ChosenValue }
+            if ($DecodeJson) {
+                $ParentInstance = $ParentInstance | ConvertTo-Json -Depth 15 | ConvertFrom-Json
+                $ParentDefinitions = $ParentDefinitions | ConvertTo-Json -Depth 15 | ConvertFrom-Json
+            }
+            $ParentFacts = @(ConvertTo-IntuneSettingFacts $ParentInstance $ParentDefinitions 'policy' 'choice-parent')
+            $ExpectedChild = if ($ParentCase -in @('valid', 'valid-unknown-path')) { 'Resolved' } elseif ($ParentCase -eq 'template-option') { 'UnresolvedTemplateDefault' } else { 'UnresolvedValue' }
+            Assert-Expansion ($ParentFacts[1].resolution -ceq $ExpectedChild -and $ParentFacts[1].Contains('value') -eq ($ExpectedChild -ceq 'Resolved')) "Choice context lost: $ParentCase; collection=$CollectionChoice; JSON=$DecodeJson"
+            if ($CollectionChoice) {
+                $ExpectedSibling = if ($ParentCase -in @('missing-definition', 'duplicate-definition')) { 'UnresolvedValue' } else { 'Resolved' }
+                Assert-Expansion ($ParentFacts.Count -eq 3 -and $ParentFacts[2].resolution -ceq $ExpectedSibling) "Choice sibling state changed: $ParentCase"
+            } else { Assert-Expansion ($ParentFacts.Count -eq 2) 'Choice metadata count changed' }
+        }
+    }
+}
 foreach ($InvalidParent in @(
     @{ settingDefinitionId = @('opaque'); groupSettingCollectionValue = @(@{ children = @($ChildInstance) }) },
     @{ settingDefinitionId = 'opaque'; choiceSettingValue = @{ value = @('opaque_enabled_0'); children = @($ChildInstance) } },
@@ -161,6 +206,10 @@ foreach ($TemplateCase in @(
                 }
                 { $_ -in @('group', 'choice-collection') } {
                     $TemplateInstance.settingDefinitionId = 'group'
+                    if ($Kind -eq 'choice-collection') {
+                        $TemplateDefinition.id = 'group'
+                        $TemplateDefinition.options = @(@{ itemId = 'option'; optionValue = @{ value = 1 } }, @{ itemId = 'sibling'; optionValue = @{ value = 0 } })
+                    }
                     $Member = if ($Kind -eq 'group') { 'groupSettingCollectionValue' } else { 'choiceSettingCollectionValue' }
                     $TemplateInstance[$Member] = @(
                         @{ value = 'option'; settingValueTemplateReference = $TemplateCase.Reference; children = @($ExplicitChild) },
@@ -187,6 +236,8 @@ foreach ($TemplateCase in @(
 }
 $Grandchild = @{ settingDefinitionId = 'child'; simpleSettingValue = @{ value = 1; settingValueTemplateReference = @{ useTemplateDefault = $false } } }
 $Middle = @{ settingDefinitionId = 'opaque'; choiceSettingValue = @{ value = 'opaque_enabled_0'; settingValueTemplateReference = @{ useTemplateDefault = $false }; children = @($Grandchild) } }
+$TransitiveChoiceFacts = @(ConvertTo-IntuneSettingFacts @{ settingDefinitionId = 'opaque'; choiceSettingValue = @{ value = 'missing-option'; children = @($Middle) } } @($Definition, $ChildDefinition) 'policy' 'choice-transitive')
+Assert-Expansion ($TransitiveChoiceFacts.Count -eq 3 -and $TransitiveChoiceFacts[1].resolution -ceq 'UnresolvedValue' -and $TransitiveChoiceFacts[2].resolution -ceq 'UnresolvedValue' -and -not $TransitiveChoiceFacts[2].Contains('value')) 'Valid child choice cleared inherited selection uncertainty'
 $TransitiveFacts = @(ConvertTo-IntuneSettingFacts @{ settingDefinitionId = 'group'; groupSettingCollectionValue = @(@{ settingValueTemplateReference = @{ useTemplateDefault = $true }; children = @($Middle) }) } @($Definition, $ChildDefinition) 'policy' 'transitive')
 Assert-Expansion ($TransitiveFacts.Count -eq 3 -and $TransitiveFacts[1].resolution -ceq 'UnresolvedTemplateDefault' -and $TransitiveFacts[2].resolution -ceq 'UnresolvedTemplateDefault' -and -not $TransitiveFacts[2].Contains('value')) 'Explicit child flag cleared inherited template uncertainty'
 $AdmxChildDefinition = @{ id = 'admx-child'; baseUri = './Device/Vendor/MSFT'; offsetUri = 'Policy/Config/InternetExplorer/DisableInternetExplorerLaunchViaCOM' }
@@ -195,6 +246,9 @@ foreach ($Payload in @('<enabled/>', 'PRIVATE_UNREVIEWED_XML')) {
     $AdmxDefaultFacts = @(ConvertTo-IntuneSettingFacts @{ settingDefinitionId = 'group'; groupSettingCollectionValue = @(@{ settingValueTemplateReference = @{ useTemplateDefault = $true }; children = @($AdmxChild) }) } @($AdmxChildDefinition) 'policy' 'admx-default')
     Assert-Expansion ($AdmxDefaultFacts.Count -eq 2 -and $AdmxDefaultFacts[1].resolution -ceq 'UnresolvedTemplateDefault' -and -not $AdmxDefaultFacts[1].Contains('admx') -and -not $AdmxDefaultFacts[1].Contains('value')) 'Inherited template context decoded ADMX data'
     Assert-Expansion (-not (($AdmxDefaultFacts | ConvertTo-Json -Depth 10) -match 'PRIVATE_UNREVIEWED_XML')) 'Raw unresolved template payload escaped'
+    $AdmxChoiceFacts = @(ConvertTo-IntuneSettingFacts @{ settingDefinitionId = 'opaque'; choiceSettingValue = @{ value = 'missing-option'; children = @($AdmxChild) } } @($Definition, $AdmxChildDefinition) 'policy' 'admx-choice')
+    Assert-Expansion ($AdmxChoiceFacts.Count -eq 2 -and $AdmxChoiceFacts[1].resolution -ceq 'UnresolvedValue' -and -not $AdmxChoiceFacts[1].Contains('admx') -and -not $AdmxChoiceFacts[1].Contains('value')) 'Unresolved choice context decoded ADMX data'
+    Assert-Expansion (-not (($AdmxChoiceFacts | ConvertTo-Json -Depth 10) -match 'PRIVATE_UNREVIEWED_XML')) 'Raw unresolved choice payload escaped'
 }
 $Request = {
     param($Uri)

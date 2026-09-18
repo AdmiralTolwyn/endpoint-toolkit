@@ -84,8 +84,21 @@ function Test-IntuneTemplateUnresolved {
     return $UseDefault -isnot [bool] -or $UseDefault
 }
 
+function Get-IntuneSelectedOptionValue {
+    param($Definitions, $ChoiceId)
+    if (@($Definitions).Count -ne 1 -or $ChoiceId -isnot [string] -or [string]::IsNullOrWhiteSpace($ChoiceId)) { return $null }
+    $Options = @(foreach ($Option in (Get-IntuneValue $Definitions[0] 'options' @())) {
+        $OptionId = Get-IntuneValue $Option 'itemId'
+        if ($OptionId -is [string] -and [string]::Equals($OptionId, $ChoiceId, [StringComparison]::Ordinal)) { $Option }
+    })
+    if ($Options.Count -ne 1) { return $null }
+    $Selected = Get-IntuneValue $Options[0] 'optionValue'
+    if ($Selected -is [Collections.IDictionary] -or $Selected -is [pscustomobject]) { return ,$Selected }
+    return $null
+}
+
 function ConvertTo-IntuneSettingFacts {
-    param($Instance, $Definitions, [string]$PolicyId, [string]$SettingId, [int]$Depth = 0, [bool]$InheritedTemplateUnresolved = $false)
+    param($Instance, $Definitions, [string]$PolicyId, [string]$SettingId, [int]$Depth = 0, [bool]$InheritedTemplateUnresolved = $false, [bool]$InheritedChoiceUnresolved = $false)
     if ($Depth -gt 12) { throw 'Setting depth limit' }
     $DefinitionId = Get-IntuneValue $Instance 'settingDefinitionId'
     if ($DefinitionId -isnot [string] -or [string]::IsNullOrWhiteSpace($DefinitionId)) {
@@ -102,14 +115,12 @@ function ConvertTo-IntuneSettingFacts {
     $ChoiceId = Get-IntuneValue $Choice 'value'
     $InvalidChoiceId = $null -ne $Choice -and ($ChoiceId -isnot [string] -or [string]::IsNullOrWhiteSpace($ChoiceId))
     $TemplateUnresolved = $InheritedTemplateUnresolved -or (Test-IntuneTemplateUnresolved $Choice) -or (Test-IntuneTemplateUnresolved $Simple)
+    $ChoiceUnresolved = $InheritedChoiceUnresolved -or $null -ne $Choice
     if ($Definition.Count -eq 1) {
         $Selected = $null
         if ($null -ne $Choice -and -not $InvalidChoiceId) {
-            $Options = @(foreach ($Option in (Get-IntuneValue $Definition[0] 'options' @())) {
-                $OptionId = Get-IntuneValue $Option 'itemId'
-                if ($OptionId -is [string] -and [string]::Equals($OptionId, $ChoiceId, [StringComparison]::Ordinal)) { $Option }
-            })
-            if ($Options.Count -eq 1) { $Selected = Get-IntuneValue $Options[0] 'optionValue' }
+            $Selected = Get-IntuneSelectedOptionValue $Definition $ChoiceId
+            if ($null -ne $Selected) { $ChoiceUnresolved = $InheritedChoiceUnresolved }
         } elseif ($null -eq $Choice) { $Selected = $Simple }
         $TemplateUnresolved = $TemplateUnresolved -or (Test-IntuneTemplateUnresolved $Selected)
         $Path = (([string](Get-IntuneValue $Definition[0] 'baseUri')).TrimEnd('/') + '/' + ([string](Get-IntuneValue $Definition[0] 'offsetUri')).TrimStart('/')) -creplace '^\./(Device/)?Vendor/MSFT/', ''
@@ -121,7 +132,7 @@ function ConvertTo-IntuneSettingFacts {
             $Fact['resolution'] = 'UnresolvedValue'
             if ($MixedValueKinds -or $InvalidChoiceId) { return $Fact }
             $Scalar = $null
-            if (-not $TemplateUnresolved) { $Scalar = Get-IntuneValue $Selected 'value' }
+            if (-not $TemplateUnresolved -and -not $ChoiceUnresolved) { $Scalar = Get-IntuneValue $Selected 'value' }
             $UnreviewedAdmx = $Path -cin @('Policy/Config/MSSecurityGuide/ConfigureSMBV1ClientDriver', 'Policy/Config/MSSecurityGuide/ConfigureSMBV1Server', 'Policy/Config/WindowsPowerShell/TurnOnPowerShellScriptBlockLogging')
             if ($Scalar -is [string] -and (Test-IntuneStructuredPath $Path)) {
                 try { $Fact['admx'] = ConvertTo-IntuneAdmxMetadata $Scalar -CspPath $Path; $Fact['resolution'] = 'ResolvedAdmx' }
@@ -129,6 +140,8 @@ function ConvertTo-IntuneSettingFacts {
             }
             if ($TemplateUnresolved) {
                 $Fact['resolution'] = 'UnresolvedTemplateDefault'
+            } elseif ($ChoiceUnresolved) {
+                $Fact['resolution'] = 'UnresolvedValue'
             } elseif ($UnreviewedAdmx) {
                 $Fact['resolution'] = 'UnresolvedAdmx'
             } elseif (-not (Test-IntuneStructuredPath $Path) -and ($Scalar -is [int] -or $Scalar -is [long] -or $Scalar -is [bool] -or ($Scalar -is [string] -and ((Test-IntuneExtendedPath $Path) -or $Path -in @('LAPS/Policies/AdministratorAccountName', 'Policy/Config/Defender/AttackSurfaceReductionRules', 'Policy/Config/Defender/AttackSurfaceReductionOnlyExclusions'))))) {
@@ -144,9 +157,15 @@ function ConvertTo-IntuneSettingFacts {
     foreach ($ValueName in @('choiceSettingValue', 'groupSettingCollectionValue', 'choiceSettingCollectionValue')) {
         foreach ($SettingValue in (Get-IntuneValue $Instance $ValueName @())) {
             $ChildUnresolved = $TemplateUnresolved -or (Test-IntuneTemplateUnresolved $SettingValue)
+            $ChildChoiceUnresolved = $ChoiceUnresolved
+            if ($ValueName -eq 'choiceSettingCollectionValue') {
+                $CollectionOption = Get-IntuneSelectedOptionValue $Definition (Get-IntuneValue $SettingValue 'value')
+                $ChildChoiceUnresolved = $ChildChoiceUnresolved -or $null -eq $CollectionOption
+                $ChildUnresolved = $ChildUnresolved -or (Test-IntuneTemplateUnresolved $CollectionOption)
+            }
             foreach ($Child in (Get-IntuneValue $SettingValue 'children' @())) {
                 $Ordinal++
-                ConvertTo-IntuneSettingFacts $Child $Definitions $PolicyId ($SettingId + '.' + $Ordinal) ($Depth + 1) $ChildUnresolved
+                ConvertTo-IntuneSettingFacts $Child $Definitions $PolicyId ($SettingId + '.' + $Ordinal) ($Depth + 1) $ChildUnresolved $ChildChoiceUnresolved
             }
         }
     }

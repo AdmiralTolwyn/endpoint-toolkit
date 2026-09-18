@@ -1,6 +1,6 @@
 # Intune Discovery for Assay
 
-Version 0.5.10. Experimental pending a live tenant pilot. Offline-tested with
+Version 0.5.11. Experimental pending a live tenant pilot. Offline-tested with
 Windows PowerShell 5.1 and PowerShell 7.
 
 The [contract audit](AUDIT.md) currently verifies 49 enabled Graph GET contracts
@@ -10,6 +10,31 @@ remain separate gates; do not label the full collector audit complete.
 Exports read-only observations for Assay's Intune pack. Assay owns control
 definitions and scores: 50 source-linked controls, two bounded automatic checks,
 and 48 evidence-assisted manual checks. The collector does not mutate a tenant.
+
+## Choice Context (0.5.11)
+
+An unresolved singular choice or collection item now keeps its descendants
+unresolved, rather than exporting detached child values as Resolved. One exact
+typed definition/option match and an object-valued optionValue are required to
+establish choice context. Missing/duplicate matches and missing/scalar/array
+option payloads withhold descendant scalar/ADMX values but retain safe metadata.
+Valid children cannot clear ancestor uncertainty; valid collection siblings stay
+independent. Selected-option template flags are evaluated per item. Valid groups
+retain their existing traversal without an invented option requirement.
+
+Microsoft documents the [choice value and children](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationchoicesettingvalue?view=graph-rest-beta)
+and [choice collection](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationchoicesettingcollectioninstance?view=graph-rest-beta).
+Withholding values under unresolved context is conservative Assay interpretation,
+not proof that Windows disables a child or that matched options are effective.
+Full OData payload/dependency/applicability validation remains open.
+
+Both PowerShell runtimes test singular/collection matches, sibling isolation,
+unsupported parent paths, template interaction, transitive propagation and ADMX.
+`ASSAY_INTUNE_CHOICE_FIXTURE` exposes actual mocked discovery output for native
+and application reassessment/save/load/report tests. No new field, provider,
+scope, route, finding, score or native rule (still 1.8.0-preview). Recollect
+affected old flattened policy evidence; lost ancestor context is not recovered
+by importing a previously Resolved child. No live occurrence is asserted.
 
 ## Template Context (0.5.10)
 
