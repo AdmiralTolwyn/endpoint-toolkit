@@ -33,7 +33,7 @@
     .\Invoke-W365Discovery.ps1 -OutputPath "C:\temp\w365_discovery.json"
 .NOTES
     Author : Anton Romanyuk
-    Version: 0.3.3
+    Version: 0.3.4
     Date   : 2026-09-18
 
     Required Graph scopes (core tier — requested unconditionally):
@@ -90,7 +90,7 @@ $env:PSModulePath = ($env:PSModulePath -split ';' |
 $ScriptRoot = $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($ScriptRoot)) { $ScriptRoot = $PWD.Path }
 
-$ScriptVersion = '0.3.3'
+$ScriptVersion = '0.3.4'
 # Windows 365 GA surface (cloudPCs, provisioningPolicies, userSettings) migrated to /v1.0.
 $GraphBaseV1   = 'https://graph.microsoft.com/v1.0/deviceManagement/virtualEndpoint'
 # Beta retained for endpoints not yet GA / verified beta-only: onPremisesConnections, deviceImages,
@@ -403,6 +403,7 @@ try {
     $ProvPols = @(Invoke-GraphPaged -Uri "$GraphBaseV1/provisioningPolicies?`$expand=assignments")
     Write-Status "Found $($ProvPols.Count) provisioning policy/policies" -Level 'SUCCESS'
     foreach ($pp in $ProvPols) {
+        $GraceHours = if (($pp.gracePeriodInHours -is [int] -or $pp.gracePeriodInHours -is [long]) -and $pp.gracePeriodInHours -ge 0 -and $pp.gracePeriodInHours -le [int]::MaxValue) { $pp.gracePeriodInHours } else { $null }
         $Discovery.Inventory.ProvisioningPolicies += [PSCustomObject]@{
             Id                           = $pp.id
             DisplayName                  = $pp.displayName
@@ -419,7 +420,8 @@ try {
             MicrosoftManagedDesktop      = $pp.microsoftManagedDesktop
             WindowsSetting               = $pp.windowsSetting
             AlternateResourceUrl         = $pp.alternateResourceUrl
-            GracePeriodInHours           = $pp.gracePeriodInHours
+            GracePeriodInHours           = $GraceHours
+            GracePeriodFieldState        = $(if ($null -eq $GraceHours) { 'Unknown' } else { 'Observed' })
             AutopatchEnabled             = $pp.autopatch.autopatchGroupId -ne $null
             AssignmentCount              = (@($pp.assignments)).Count
             Assignments                  = $pp.assignments
@@ -443,8 +445,9 @@ try {
             ResetEnabled                    = $us.resetEnabled
             RestorePointFrequencyInHours    = $us.restorePointSetting.frequencyInHours
             RestorePointUserRestoreEnabled  = $us.restorePointSetting.userRestoreEnabled
-            CrossRegionDisasterRecoverySetting = $us.crossRegionDisasterRecoverySetting
-            NotificationSetting             = $us.notificationSetting
+            ApiVersion                      = 'v1.0'
+            CrossRegionDisasterRecoveryState = 'NotCollectedByV1Contract'
+            NotificationSettingState        = 'NotCollectedByV1Contract'
             AssignmentCount                 = (@($us.assignments)).Count
             Assignments                     = $us.assignments
         }
@@ -676,23 +679,18 @@ foreach ($us in $Discovery.Inventory.UserSettings) {
         -Evidence @{ Name = $us.DisplayName; AssignmentCount = $us.AssignmentCount }))
 }
 
-# USER-002: Cross-region DR enabled = resilience signal
+# USER-002: DR configuration is not collected by the reviewed v1.0 adapter.
 foreach ($us in $Discovery.Inventory.UserSettings) {
-    $crEnabled = $false
-    if ($us.CrossRegionDisasterRecoverySetting) {
-        $crEnabled = [bool]$us.CrossRegionDisasterRecoverySetting.disasterRecoveryType -and `
-                     $us.CrossRegionDisasterRecoverySetting.disasterRecoveryType -ne 'notConfigured'
-    }
     [void]$AllChecks.Add((New-CheckResult `
         -Id "W365-USER-002-$($us.Id)" -Category 'User Settings & Resilience' `
-        -Name "Cross-region DR: $($us.DisplayName)" `
-        -Description 'Cross-region disaster recovery enables a failover Cloud PC in a paired region.' `
-        -Status $(if ($crEnabled) { 'Pass' } else { 'Warning' }) `
+        -Name "Cross-region DR not assessed: $($us.DisplayName)" `
+        -Description 'The reviewed v1.0 user-settings adapter does not collect cross-region disaster-recovery configuration or readiness.' `
+        -Status 'Error' `
         -Severity 'Medium' `
-        -Details "DR type: $($us.CrossRegionDisasterRecoverySetting.disasterRecoveryType)." `
-        -Recommendation 'For business-critical personas, configure cross-region DR in the user settings policy.' `
+        -Details 'DR configuration is not collected by this API adapter. Missing fields are not evidence of disabled DR; arbitrary supplied values are not proof of enablement, licensing, applicability or recovery readiness.' `
+        -Recommendation 'Review DR requirements, applicable Cloud PCs, licenses, configuration and service health separately; discovery performs no recovery actions.' `
         -Reference 'https://learn.microsoft.com/en-us/windows-365/enterprise/cross-region-disaster-recovery' `
-        -Evidence @{ Name = $us.DisplayName; DR = $us.CrossRegionDisasterRecoverySetting }))
+        -Evidence @{ Name = $us.DisplayName; ApiVersion = 'v1.0'; AssessmentState = 'NotCollectedByApiContract' }))
 }
 
 # USER-003: Restore point frequency on user settings policies (Microsoft default = 12h; >24h is risky)
@@ -739,24 +737,19 @@ foreach ($pp in $Discovery.Inventory.ProvisioningPolicies) {
         -Evidence @{ PolicyName = $pp.DisplayName; AutopatchEnabled = $pp.AutopatchEnabled }))
 }
 
-# PROV-005: Grace period configured.
-# C-3 VERIFIED: gracePeriodInHours IS a real Int32 property on cloudPcProvisioningPolicy (v1.0 + beta) —
-# "the number of hours to wait before reprovisioning/deprovisioning happens". The audit's suspicion
-# (that grace is a fixed 7-day service constant only) is NOT correct; the policy-level value is real
-# and evaluable, so the check is kept. 0 = deprovision immediately on license loss (no recovery window).
 foreach ($pp in $Discovery.Inventory.ProvisioningPolicies) {
-    $gp = [int]($pp.GracePeriodInHours | ForEach-Object { if ($_) { $_ } else { 0 } })
-    $st = if ($gp -le 0) { 'Warning' } elseif ($gp -ge 1 -and $gp -le 168) { 'Pass' } else { 'Warning' }
-    $details = "gracePeriodInHours = $gp on '$($pp.DisplayName)' (hours to wait before deprovisioning after license loss)."
+    $gp = if (($pp.GracePeriodInHours -is [int] -or $pp.GracePeriodInHours -is [long]) -and $pp.GracePeriodInHours -ge 0 -and $pp.GracePeriodInHours -le [int]::MaxValue) { $pp.GracePeriodInHours } else { $null }
+    $ObservedHours = if ($null -eq $gp) { 'Unknown' } else { [string]$gp }
+    $details = "Observed gracePeriodInHours=$ObservedHours on '$($pp.DisplayName)'. This read-only property is not a configurable target or a per-device remaining-time measurement. Operational handling and product applicability require review."
     [void]$AllChecks.Add((New-CheckResult `
         -Id "W365-PROV-005-$($pp.Id)" -Category 'Provisioning Policies' `
-        -Name "Grace period configuration: $($pp.DisplayName)" `
-        -Description 'The grace period delays Cloud PC de-provisioning after license loss, giving the user a chance to recover data and admins a window to reassign.' `
-        -Status $st -Severity 'Medium' `
+        -Name "Grace period observation: $($pp.DisplayName)" `
+        -Description 'Read-only provisioning-policy grace hours are contextual evidence, not proof of a safe offboarding or recovery process.' `
+        -Status 'Error' -Severity 'Medium' `
         -Details $details `
-        -Recommendation 'Use a grace period of at least 1 hour (recommended 7 days / 168 hours where data recovery is critical). A grace period of 0 deprovisions immediately on license loss with no recovery window.' `
-        -Reference 'https://learn.microsoft.com/en-us/windows-365/enterprise/grace-period' `
-        -Evidence @{ PolicyName = $pp.DisplayName; GracePeriodInHours = $gp }))
+        -Recommendation 'Review the documented lifecycle for the Cloud PC type and the offboarding process. Do not infer a deadline or configuration change from this field alone.' `
+        -Reference 'https://learn.microsoft.com/en-us/windows-365/enterprise/end-grace-period' `
+        -Evidence @{ PolicyName = $pp.DisplayName; GracePeriodInHours = $gp; FieldState = $(if ($null -eq $gp) { 'Unknown' } else { 'Observed' }); ApiVersion = 'v1.0'; ReadOnly = $true; AssessmentState = 'OperationalReviewRequired' }))
 }
 
 # NET-001: ANC health check status

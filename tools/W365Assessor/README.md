@@ -1,9 +1,9 @@
 # Windows 365 Assessor
 
-## Collector 0.3.3: Security Evidence and UX Sync
+## Collector 0.3.4: Security Evidence and UX Sync
 
-The collector optionally emits `W365-PROV-011` for **Assay** (33 Auto / 99
-Manual after reclassifying nine unsupported security/CA/monitoring evaluators). The legacy
+The collector optionally emits `W365-PROV-011` for **Assay** (31 Auto / 101
+Manual after reclassifying eleven unsupported evaluators). The legacy
 WPF catalog and the 41/91 counts below are unchanged; the
 legacy importer does not consume this new automatic result.
 
@@ -50,6 +50,23 @@ managed-device IDs. No Cloud PC identity join, reporting age or patch target is
 inferred. FieldState Complete describes decoding, not fleet coverage or freshness.
 No new requests, permissions, service actions or live validations were added.
 
+In 0.3.4, USER-002 and PROV-005 no longer score unsupported resilience claims.
+The v1.0 user-settings export omits DR and notification payloads and records
+explicit `NotCollectedByV1Contract` markers. Grace hours remain a strictly typed
+read-only observation: missing/invalid is null/Unknown, and zero is not interpreted
+as an immediate-deletion verdict. No 1-168-hour target or writable setting is
+invented. Assay guards old automatic verdicts but preserves explicit manual decisions.
+
+Sources: [v1.0 user settings](https://learn.microsoft.com/en-us/graph/api/resources/cloudpcusersetting?view=graph-rest-1.0),
+[beta user settings](https://learn.microsoft.com/en-us/graph/api/resources/cloudpcusersetting?view=graph-rest-beta),
+[read-only provisioning field](https://learn.microsoft.com/en-us/graph/api/resources/cloudpcprovisioningpolicy?view=graph-rest-1.0),
+[lifecycle](https://learn.microsoft.com/en-us/windows-365/enterprise/lifecycle),
+[destructive end-grace action](https://learn.microsoft.com/en-us/windows-365/enterprise/end-grace-period),
+[DR applicability/licensing](https://learn.microsoft.com/en-us/windows-365/enterprise/cross-region-disaster-recovery).
+The beta reference gives notificationSetting a July 14, 2026 retirement date;
+absence is not proof notifications were disabled. No beta DR query, new scope,
+license change or recovery/deprovision action is added.
+
 ```powershell
 .\Invoke-W365Discovery.ps1 -TenantId '<tenant-id>' `
 	-IncludeUserExperienceSync -UserExperienceSyncTarget Enabled
@@ -71,6 +88,9 @@ The comparison proves neither effective assignment nor successful profile
 persistence or capacity. UX Sync is not backup/DR; modifying existing assignments
 can deprovision Cloud PCs and delete user storage. This collector never does that.
 
+Run `Test-W365ResilienceEvidence.ps1` in PowerShell 5.1/7 for production projection
+and verdict regressions. Optional `-V1MetadataPath <cached-CSDL>` checks the field
+boundary; `ASSAY_W365_RESILIENCE_FIXTURE` writes the synthetic production export.
 Run `Test-W365MonitoringEvidence.ps1` in PowerShell 5.1/7 for monitoring tests;
 optional `-MetadataPath <cached-CSDL>` checks selected field types and
 `ASSAY_W365_MONITORING_FIXTURE` writes the synthetic production export.
@@ -83,9 +103,10 @@ reader and actual opt-in branch. Optional `ASSAY_W365_UXSYNC_FIXTURE` writes a
 synthetic production export for Assay ingest tests. No live Graph calls are made.
 Beta/runtime permissions and SDK behavior still require an authorized pilot.
 
-**Review warning:** SEC-002/003/004, IAM-003/004/010/011 and MON-001/005 are guarded
-observations, not implemented end-to-end security/monitoring assessments. Scoped
-device evidence, user-setting API-version mismatches and older transport remain open.
+**Review warning:** SEC-002/003/004, IAM-003/004/010/011, MON-001/005, USER-002 and
+PROV-005 are guarded observations, not complete security/monitoring/resilience
+assessments. Scoped evidence, remaining user-setting semantics and older transport
+still need review.
 See the current [audit addendum](AUDIT.md#september-2026-review-addendum).
 
 **Assess Windows 365 (Cloud PC) Enterprise & Flex tenants against Microsoft CAF, Well-Architected Framework, Landing Zone Accelerator, and Security best practices.**
@@ -500,7 +521,7 @@ W365Assessor/
 
 | Component | Version |
 |---|---|
-| `Invoke-W365Discovery.ps1` | 0.3.3 |
+| `Invoke-W365Discovery.ps1` | 0.3.4 |
 | `checks.json` | 1.1 (schema), 132 checks |
 | `W365Assessor.ps1` | 0.2.0 |
 
