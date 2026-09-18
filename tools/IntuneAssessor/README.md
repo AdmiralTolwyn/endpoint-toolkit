@@ -1,6 +1,6 @@
 # Intune Discovery for Assay
 
-Version 0.5.1. Experimental pending a live tenant pilot. Offline-tested with
+Version 0.5.2. Experimental pending a live tenant pilot. Offline-tested with
 Windows PowerShell 5.1 and PowerShell 7.
 
 The [contract audit](AUDIT.md) currently verifies 49 enabled Graph GET contracts
@@ -82,6 +82,7 @@ see the audit's data-handling limits.
 .\Test-IntuneTunnel.ps1
 .\Test-IntuneEpmRules.ps1
 .\Test-IntuneMamLaunch.ps1
+.\Test-IntuneCfaEvidence.ps1
 powershell.exe -NoProfile -File .\Test-IntuneDiscovery.ps1
 powershell.exe -NoProfile -File .\Test-IntuneExpansion.ps1
 powershell.exe -NoProfile -File .\Test-IntuneDefenderEvidence.ps1
@@ -89,6 +90,7 @@ powershell.exe -NoProfile -File .\Test-IntuneServices.ps1
 powershell.exe -NoProfile -File .\Test-IntuneTunnel.ps1
 powershell.exe -NoProfile -File .\Test-IntuneEpmRules.ps1
 powershell.exe -NoProfile -File .\Test-IntuneMamLaunch.ps1
+powershell.exe -NoProfile -File .\Test-IntuneCfaEvidence.ps1
 ```
 
 Tests load library-only functions and use synthetic HTTP responses, never a
@@ -98,6 +100,34 @@ responses and counts with portal evidence for the same visible scope before
 production-validation claims.
 
 ## Configuration Expansion
+
+### Controlled Folder Access Evidence (0.5.2)
+
+The optional endpoint companion now retains `EnableControlledFolderAccess` from
+its existing `Get-MpPreference` call. No additional provider, Graph request or scope
+is added. Import the companion file using `-EndpointEvidencePaths`; select managed
+device IDs and confirm scope/freshness in the existing Assay evidence workflow.
+The cloud collector does not remotely execute the endpoint companion.
+
+Assay N-01 (rules 1.4.0-preview) distinguishes all five [CFA modes](https://learn.microsoft.com/en-us/defender-endpoint/controlled-folder-access-overview)
+and reports active-AV/real-time prerequisites separately. The [PowerShell reference](https://learn.microsoft.com/en-us/defender-endpoint/controlled-folder-access-configure#enable-and-configure-cfa-in-powershell)
+documents the exact field and integer/named values. [Defender compatibility](https://learn.microsoft.com/en-us/defender-endpoint/microsoft-defender-antivirus-compatibility)
+explains why passive/EDR-block status is not active CFA protection.
+
+This is unscored Observed/NotAssessed evidence, never an automatic Pass or Warning.
+Audit and Disabled are not universal policy violations; disk-only modes do not
+protect files in folders. No customer rollout target, folder/app lists, effective
+assignment or actual block event is evaluated. Missing/unknown fields and stale,
+ambiguous or incomplete selected-device evidence stay unassessed. Old samples
+without this field do not acquire an inferred default. Provider projection does
+not mean unrelated data was never present in the provider's in-memory object.
+
+Run `Test-IntuneCfaEvidence.ps1` in 5.1/7 for mocked production provider/import
+checks. `ASSAY_INTUNE_CFA_FIXTURE` optionally writes a synthetic discovery export
+for native reassessment/save/load/report tests. No provider or Graph query runs
+in the test. Live provider serialization and endpoint enforcement remain unverified.
+
+### Configuration Collection
 
 ```powershell
 .\Invoke-IntuneDiscovery.ps1 -TenantId '<tenant-guid>' `
@@ -138,8 +168,8 @@ fields after checking local device/tenant identity. No automatic elevation or
 remediation. Attach samples using `-EndpointEvidencePaths '.\endpoint.json'` in
 the discovery command. The tenant collector never remotely runs the companion.
 
-Assay exposes 98 supplementary unscored findings: 63 bounded comparison entries
-and 35 evidence entries. All have handlers, but several cover only part of their
+Assay exposes 99 supplementary unscored findings: 63 bounded comparison entries
+and 36 evidence entries. All have handlers, but several cover only part of their
 feature; evidence collection is not complete automatic assessment. The original
 50-control scoring catalog remains unchanged. Set reference/scenario scope in
 the native evidence dialog. `ASSAY_INTUNE_EXPANSION_FIXTURE` optionally writes a

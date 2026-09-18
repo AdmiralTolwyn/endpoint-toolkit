@@ -11,13 +11,14 @@
   {
     "module":"DefenderPreferences",
     "command":"Get-MpPreference -ErrorAction Stop",
-    "fields":["AttackSurfaceReductionRules_Ids","AttackSurfaceReductionRules_Actions","EnableNetworkProtection","PUAProtection","DisableRealtimeMonitoring","DisableBehaviorMonitoring","DisableScriptScanning","MAPSReporting"],
+    "fields":["AttackSurfaceReductionRules_Ids","AttackSurfaceReductionRules_Actions","EnableNetworkProtection","PUAProtection","DisableRealtimeMonitoring","DisableBehaviorMonitoring","DisableScriptScanning","MAPSReporting","EnableControlledFolderAccess"],
     "sources":[
       {"url":"https://learn.microsoft.com/en-us/powershell/module/defender/get-mppreference?view=windowsserver2025-ps","fields":[]},
       {"url":"https://learn.microsoft.com/en-us/previous-versions/windows/desktop/defender/msft-mppreference","fields":["DisableRealtimeMonitoring","DisableBehaviorMonitoring","DisableScriptScanning","MAPSReporting"]},
       {"url":"https://learn.microsoft.com/en-us/defender-endpoint/attack-surface-reduction-rules-configure","fields":["AttackSurfaceReductionRules_Ids","AttackSurfaceReductionRules_Actions"]},
       {"url":"https://learn.microsoft.com/en-us/defender-endpoint/enable-network-protection","fields":["EnableNetworkProtection"]},
-      {"url":"https://learn.microsoft.com/en-us/defender-endpoint/detect-block-potentially-unwanted-apps-microsoft-defender-antivirus","fields":["PUAProtection"]}
+      {"url":"https://learn.microsoft.com/en-us/defender-endpoint/detect-block-potentially-unwanted-apps-microsoft-defender-antivirus","fields":["PUAProtection"]},
+      {"url":"https://learn.microsoft.com/en-us/defender-endpoint/controlled-folder-access-configure","fields":["EnableControlledFolderAccess"]}
     ]
   },
   {

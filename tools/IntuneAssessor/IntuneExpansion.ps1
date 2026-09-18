@@ -134,7 +134,7 @@ function ConvertTo-IntuneEndpointModules {
     param($Modules)
     $Fields = @{
         DefenderStatus = @('AMRunningMode', 'AMProductVersion', 'AMEngineVersion', 'AntivirusEnabled', 'RealTimeProtectionEnabled', 'BehaviorMonitorEnabled', 'AntivirusSignatureLastUpdated', 'IsTamperProtected', 'ControlledConfigurationState', 'TamperProtectionSource')
-        DefenderPreferences = @('AttackSurfaceReductionRules_Ids', 'AttackSurfaceReductionRules_Actions', 'EnableNetworkProtection', 'PUAProtection', 'DisableRealtimeMonitoring', 'DisableBehaviorMonitoring', 'DisableScriptScanning', 'MAPSReporting')
+        DefenderPreferences = @('AttackSurfaceReductionRules_Ids', 'AttackSurfaceReductionRules_Actions', 'EnableNetworkProtection', 'PUAProtection', 'DisableRealtimeMonitoring', 'DisableBehaviorMonitoring', 'DisableScriptScanning', 'MAPSReporting', 'EnableControlledFolderAccess')
         FirewallProfiles = @('Name', 'Enabled', 'DefaultInboundAction', 'DefaultOutboundAction', 'LogAllowed', 'LogBlocked')
         BitLockerVolumes = @('MountPoint', 'VolumeType', 'VolumeStatus', 'ProtectionStatus', 'EncryptionPercentage')
         DeviceGuard = @('VirtualizationBasedSecurityStatus', 'SecurityServicesConfigured', 'SecurityServicesRunning')

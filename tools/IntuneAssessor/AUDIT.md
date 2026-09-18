@@ -2,6 +2,14 @@
 
 Date: 2026-09-17. Status: **partial audit, not production certification**.
 
+September 18 CFA follow-up (collector 0.5.2): the endpoint companion adds only
+`Get-MpPreference.EnableControlledFolderAccess`, using the documented [read and
+mode contract](https://learn.microsoft.com/en-us/defender-endpoint/controlled-folder-access-configure).
+Assay N-01 retains five-mode semantics and separate active-AV/real-time prerequisite
+observations; no target-based score, folder/app scope or block outcome is inferred.
+No new command, API or scope. Production callback/import tests mock all providers
+and HTTP, including tenant rejection and privacy. Live serialization remains open.
+
 ## Verified Slice
 
 `GraphContracts.json` registers 51 module/route contracts. The collector requires
@@ -113,7 +121,7 @@ sensitive data was retrieved.
 
 ## Endpoint Command Ledger (2026-09-18)
 
-`EndpointContracts.json` records each of the five provider commands, all 32
+`EndpointContracts.json` records each of the five provider commands, all 33
 projected properties and their Microsoft Learn references. Run
 `Test-IntuneEndpointContracts.ps1 -EvidenceDirectory <existing-directory>
 -CheckDocumentation` to compare the companion's parsed command/projection AST
