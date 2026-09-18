@@ -1,10 +1,11 @@
 function Get-IntuneEpmRuleChildren {
-    param($Children, [int]$Depth = 0, $Definitions = @(), [bool]$InheritedTemplateUnresolved = $false)
+    param($Children, [int]$Depth = 0, $Definitions = @(), [bool]$InheritedTemplateUnresolved = $false, [bool]$InheritedChoiceUnresolved = $false)
     if ($Depth -gt 12) { throw 'EPM rule depth limit' }
     foreach ($Child in $Children) {
         $Choice = Get-IntuneValue $Child 'choiceSettingValue'
         $Simple = Get-IntuneValue $Child 'simpleSettingValue'
         $TemplateUnresolved = $InheritedTemplateUnresolved -or (Test-IntuneTemplateUnresolved $Choice) -or (Test-IntuneTemplateUnresolved $Simple)
+        $ChoiceUnresolved = $InheritedChoiceUnresolved -or ($null -ne $Choice -and $null -ne $Simple)
         if ($null -ne $Choice) {
             $ChildId = Get-IntuneValue $Child 'settingDefinitionId'
             $ChildDefinitions = @(foreach ($Candidate in $Definitions) {
@@ -12,10 +13,11 @@ function Get-IntuneEpmRuleChildren {
                 if ($ChildId -is [string] -and $CandidateId -is [string] -and [string]::Equals($ChildId, $CandidateId, [StringComparison]::Ordinal)) { $Candidate }
             })
             $Selected = Get-IntuneSelectedOptionValue $ChildDefinitions (Get-IntuneValue $Choice 'value')
+            $ChoiceUnresolved = $ChoiceUnresolved -or $null -eq $Selected
             $TemplateUnresolved = $TemplateUnresolved -or (Test-IntuneTemplateUnresolved $Selected)
         }
-        @{ Instance = $Child; TemplateUnresolved = $TemplateUnresolved }
-        Get-IntuneEpmRuleChildren (Get-IntuneValue $Choice 'children' @()) ($Depth + 1) $Definitions $TemplateUnresolved
+        @{ Instance = $Child; TemplateUnresolved = $TemplateUnresolved; ChoiceUnresolved = $ChoiceUnresolved }
+        Get-IntuneEpmRuleChildren (Get-IntuneValue $Choice 'children' @()) ($Depth + 1) $Definitions $TemplateUnresolved $ChoiceUnresolved
     }
 }
 
@@ -40,13 +42,12 @@ function ConvertTo-IntuneEpmRules {
             $Definition = @($Definitions | Where-Object { (Get-IntuneValue $_ 'id') -ceq $DefinitionId })
             $Child = @($Children | Where-Object { (Get-IntuneValue $_.Instance 'settingDefinitionId') -ceq $DefinitionId })
             if ($Definition.Count -ne 1 -or $Child.Count -ne 1 -or (Get-IntuneValue $Definition[0] 'offsetUri') -cne ('/PrivilegeManagement/ElevationRules/{0}/' + $Fields[$Suffix])) { continue }
-            if ($Child[0].TemplateUnresolved) { continue }
+            if ($Child[0].TemplateUnresolved -or $Child[0].ChoiceUnresolved) { continue }
             $Choice = Get-IntuneValue $Child[0].Instance 'choiceSettingValue'
             $Selected = Get-IntuneValue $Child[0].Instance 'simpleSettingValue'
             if ($null -ne $Choice) {
-                $Options = @(foreach ($Option in (Get-IntuneValue $Definition[0] 'options' @())) { if ((Get-IntuneValue $Option 'itemId') -ceq (Get-IntuneValue $Choice 'value')) { $Option } })
-                if ($Options.Count -ne 1) { continue }
-                $Selected = Get-IntuneValue $Options[0] 'optionValue'
+                $Selected = Get-IntuneSelectedOptionValue $Definition (Get-IntuneValue $Choice 'value')
+                if ($null -eq $Selected) { continue }
             }
             if ((Test-IntuneTemplateUnresolved $Selected) -or (Test-IntuneTemplateUnresolved $Choice)) { continue }
             $Value = Get-IntuneValue $Selected 'value'

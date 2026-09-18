@@ -29,6 +29,64 @@ $NestedInstance = @{ settingDefinitionId = $RootId; groupSettingCollectionValue 
 ) }) }
 $NestedRules = @(ConvertTo-IntuneEpmRules $NestedInstance $Definitions 'policy' 'nested')
 Assert-Epm ($NestedRules.Count -eq 1 -and $null -eq $NestedRules[0].fileName -and $NestedRules[0].name -ceq 'Rule one') 'Defaulted EPM ancestor produced explicit filename evidence or hid a sibling'
+$MissingChoiceInstance = @{ settingDefinitionId = $RootId; groupSettingCollectionValue = @(@{ children = @(
+    @{ settingDefinitionId = 'parent'; choiceSettingValue = @{ value = 'missing-option'; children = @($First.children[1]) } },
+    $First.children[0]
+) }) }
+$MissingChoiceRules = @(ConvertTo-IntuneEpmRules $MissingChoiceInstance ($Definitions + @(@{ id = 'parent'; options = @(@{ itemId = 'known'; optionValue = @{ value = 1 } }) })) 'policy' 'missing-choice')
+Assert-Epm ($MissingChoiceRules.Count -eq 1 -and $null -eq $MissingChoiceRules[0].fileName -and $MissingChoiceRules[0].name -ceq 'Rule one') 'Unresolved EPM ancestor choice produced explicit child evidence or hid a sibling'
+foreach ($ChoiceCase in @('valid', 'missing-definition', 'duplicate-definition', 'missing-option', 'duplicate-option', 'numeric-choice', 'array-choice', 'null-choice', 'blank-choice', 'case-choice', 'numeric-option', 'array-option', 'missing-payload', 'scalar-payload', 'array-payload', 'mixed-values', 'template-option')) {
+    foreach ($Placement in @('field', 'ancestor')) {
+        foreach ($DecodeJson in @($false, $true)) {
+            $ChoiceId = if ($Placement -eq 'field') { $RootId + '_filename' } else { 'choice-parent' }
+            $ChoiceDefinition = @{ id = $ChoiceId; offsetUri = '/PrivilegeManagement/ElevationRules/{0}/FileName'; options = @(@{ itemId = 'chosen'; optionValue = @{ value = 'setup*.exe' } }) }
+            $ChoiceNode = @{ settingDefinitionId = $ChoiceId; choiceSettingValue = @{ value = 'chosen' } }
+            if ($Placement -eq 'ancestor') { $ChoiceNode.choiceSettingValue.children = @($First.children[1]) }
+            switch ($ChoiceCase) {
+                'missing-option' { $ChoiceNode.choiceSettingValue.value = 'missing' }
+                'duplicate-option' { $ChoiceDefinition.options += @{ itemId = 'chosen'; optionValue = @{ value = 'other.exe' } } }
+                'numeric-choice' { $ChoiceNode.choiceSettingValue.value = 1; $ChoiceDefinition.options[0].itemId = '1' }
+                'array-choice' { $ChoiceNode.choiceSettingValue.value = @('chosen') }
+                'null-choice' { $ChoiceNode.choiceSettingValue.value = $null; $ChoiceDefinition.options[0].itemId = $null }
+                'blank-choice' { $ChoiceNode.choiceSettingValue.value = ''; $ChoiceDefinition.options[0].itemId = '' }
+                'case-choice' { $ChoiceNode.choiceSettingValue.value = 'CHOSEN' }
+                'numeric-option' { $ChoiceNode.choiceSettingValue.value = '1'; $ChoiceDefinition.options[0].itemId = 1 }
+                'array-option' { $ChoiceDefinition.options[0].itemId = @('chosen') }
+                'missing-payload' { $ChoiceDefinition.options[0].Remove('optionValue') }
+                'scalar-payload' { $ChoiceDefinition.options[0].optionValue = 'SECRET_RAW_VALUE' }
+                'array-payload' { $ChoiceDefinition.options[0].optionValue = @(@{ value = 'setup*.exe' }) }
+                'mixed-values' { $ChoiceNode.simpleSettingValue = @{ value = 'SECRET_SIMPLE_VALUE' } }
+                'template-option' { $ChoiceDefinition.options[0].optionValue.settingValueTemplateReference = @{ useTemplateDefault = $true } }
+            }
+            $ChoiceDefinitions = @($Definitions | Where-Object { $_.id -cne $ChoiceId })
+            if ($ChoiceCase -ne 'missing-definition') { $ChoiceDefinitions += $ChoiceDefinition }
+            if ($ChoiceCase -eq 'duplicate-definition') { $ChoiceDefinitions += $ChoiceDefinition.Clone() }
+            $ChoiceInstance = @{ settingDefinitionId = $RootId; groupSettingCollectionValue = @(
+                @{ children = @($ChoiceNode, $First.children[0]) },
+                @{ children = @($First.children[0]) }
+            ) }
+            if ($DecodeJson) {
+                $ChoiceInstance = $ChoiceInstance | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+                $ChoiceDefinitions = $ChoiceDefinitions | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+            }
+            $ChoiceRules = @(ConvertTo-IntuneEpmRules $ChoiceInstance $ChoiceDefinitions 'policy' 'choice-matrix')
+            Assert-Epm ($ChoiceRules.Count -eq 2 -and ($null -ne $ChoiceRules[0].fileName) -eq ($ChoiceCase -eq 'valid')) "EPM choice resolution changed: $ChoiceCase; $Placement; JSON=$DecodeJson"
+            if ($ChoiceCase -eq 'valid') { Assert-Epm ($ChoiceRules[0].fileName -ceq 'setup*.exe') 'Valid EPM option did not decode its own value' }
+            Assert-Epm ($ChoiceRules[0].name -ceq 'Rule one' -and $ChoiceRules[1].name -ceq 'Rule one') 'Choice uncertainty leaked into independent EPM evidence'
+            Assert-Epm (-not (($ChoiceRules | ConvertTo-Json -Depth 10) -match 'SECRET|ChoiceUnresolved|TemplateUnresolved')) 'EPM choice traversal metadata or raw value leaked'
+        }
+    }
+}
+$ExplicitLeaf = @{ settingDefinitionId = ($RootId + '_filename'); simpleSettingValue = @{ value = 'setup*.exe' } }
+$ResolvedMiddle = @{ settingDefinitionId = 'middle'; choiceSettingValue = @{ value = 'known'; children = @($ExplicitLeaf) } }
+$UnknownAncestor = @{ settingDefinitionId = 'ancestor'; choiceSettingValue = @{ value = 'missing'; children = @($ResolvedMiddle) } }
+$ChainDefinitions = $Definitions + @(@{ id = 'middle'; options = @(@{ itemId = 'known'; optionValue = @{ value = 1 } }) })
+foreach ($DuplicateLeaf in @($false, $true)) {
+    $ChainChildren = @($UnknownAncestor, $First.children[0])
+    if ($DuplicateLeaf) { $ChainChildren += $ExplicitLeaf }
+    $ChainRules = @(ConvertTo-IntuneEpmRules @{ settingDefinitionId = $RootId; groupSettingCollectionValue = @(@{ children = $ChainChildren }) } $ChainDefinitions 'policy' 'choice-chain')
+    Assert-Epm ($null -eq $ChainRules[0].fileName -and $ChainRules[0].name -ceq 'Rule one') 'Resolved EPM descendant or explicit duplicate cleared ancestor uncertainty'
+}
 foreach ($TemplateCase in @(
     @{ Reference = $null; Explicit = $true },
     @{ Reference = @{ useTemplateDefault = $false }; Explicit = $true },
@@ -117,6 +175,7 @@ $HiddenFields = @(
     @{ settingDefinitionId = ($RootId + '_filename'); simpleSettingValue = @{ value = 'SECRET_TEMPLATE_FILE.exe' } },
     @{ settingDefinitionId = ($RootId + '_filepath'); simpleSettingValue = @{ value = 'C:\SECRET_TEMPLATE_PATH' } }
 )
+$script:EpmFixtureDefinitions = $Definitions + @(@{ id = 'template-parent'; options = @(@{ itemId = 'chosen'; optionValue = @{ value = 1 } }) })
 $script:EpmFixtureInstance = @{ settingDefinitionId = $RootId; groupSettingCollectionValue = @(
     @{ children = @(
         $First.children[0],
@@ -133,3 +192,24 @@ foreach ($Field in @('name', 'fileName', 'filePath', 'elevationType')) { Assert-
 $TemplateJson = $TemplateDocument | ConvertTo-Json -Depth 30
 Assert-Epm (-not ($TemplateJson -match 'SECRET|TemplateUnresolved|settingValueTemplateReference')) 'Unresolved EPM payload or traversal marker leaked'
 if ($env:ASSAY_INTUNE_EPM_TEMPLATE_FIXTURE) { [IO.File]::WriteAllText($env:ASSAY_INTUNE_EPM_TEMPLATE_FIXTURE, $TemplateJson, [Text.UTF8Encoding]::new($false)) }
+$script:EpmFixtureDefinitions = $Definitions + @(@{ id = 'choice-parent'; options = @(@{ itemId = 'known'; optionValue = @{ value = 1 } }) })
+$script:EpmFixtureInstance = @{ settingDefinitionId = $RootId; groupSettingCollectionValue = @(
+    @{ children = @(
+        $First.children[0],
+        $First.children[3],
+        @{ settingDefinitionId = 'choice-parent'; choiceSettingValue = @{ value = 'missing'; children = $HiddenFields } }
+    ) },
+    @{ children = @(
+        $First.children[0],
+        @{ settingDefinitionId = ($RootId + '_filename'); simpleSettingValue = @{ value = 'other.exe' } },
+        @{ settingDefinitionId = ($RootId + '_ruletype'); choiceSettingValue = @{ value = 'opaque-option' }; simpleSettingValue = @{ value = 'Deny' } }
+    ) }
+) }
+$ChoiceDocument = Invoke-IntuneDiscoveryCore -SelectedTenant '22222222-2222-4222-8222-222222222222' -Configuration $true -Request $EpmRequest -Requirements $EpmRequirements
+Assert-Epm ($ChoiceDocument.Inventory.EpmRules.Count -eq 2 -and $ChoiceDocument.CollectionStatus.EpmRules.State -ceq 'Complete' -and $ChoiceDocument.CollectionStatus.EpmRules.CompletedParentIds -contains 'policy') 'Unresolved choice groups lost EPM provenance'
+$ChoiceRows = $ChoiceDocument.Inventory.EpmRules
+Assert-Epm ($ChoiceRows[0].name -ceq 'Rule one' -and $ChoiceRows[0].elevationType -ceq 'Automatic' -and $null -eq $ChoiceRows[0].fileName -and $null -eq $ChoiceRows[0].filePath) 'Unresolved ancestor choice exposed EPM descendant values'
+Assert-Epm ($ChoiceRows[1].name -ceq 'Rule one' -and $ChoiceRows[1].fileName -ceq 'other.exe' -and $null -eq $ChoiceRows[1].elevationType) 'Mixed leaf choice exposed EPM elevation type or hid sibling evidence'
+$ChoiceJson = $ChoiceDocument | ConvertTo-Json -Depth 30
+Assert-Epm (-not ($ChoiceJson -match 'SECRET|ChoiceUnresolved|TemplateUnresolved|choiceSettingValue')) 'Raw EPM choice payload or traversal marker exported'
+if ($env:ASSAY_INTUNE_EPM_CHOICE_FIXTURE) { [IO.File]::WriteAllText($env:ASSAY_INTUNE_EPM_CHOICE_FIXTURE, $ChoiceJson, [Text.UTF8Encoding]::new($false)) }

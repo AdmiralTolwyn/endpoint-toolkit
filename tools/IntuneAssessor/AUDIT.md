@@ -2,6 +2,28 @@
 
 Date: 2026-09-17. Status: **partial audit, not production certification**.
 
+September 19, collector 0.5.14: reproduced and repaired unmatched EPM parent
+choices yielding explicit child fields. The walker tracks ChoiceUnresolved
+alongside TemplateUnresolved, propagating ancestor uncertainty while retaining
+nodes for duplicate checks. Mixed non-null choice/simple nodes are unknown.
+Leaf and ancestor choices share typed ordinal unique-option resolution and an
+object-valued optionValue requirement. Valid descendant choices cannot clear
+uncertainty; explicit sibling fields/groups remain isolated. Output schema unchanged.
+
+Previously reviewed [choice value](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationchoicesettingvalue?view=graph-rest-beta)
+and [option definition](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationoptiondefinition?view=graph-rest-beta)
+contracts, revision `4b837f772f711c890ec02678db6b05845a40b419`, establish the string
+option identity, value and child structure. Withholding is Assay's evidence rule,
+not product runtime inheritance. Exact EPM root/field identities remain sample-bound;
+full identity/path/collection/dependency validation and live applicability remain open.
+
+68 matrix cases plus transitive/duplicate controls and actual mocked discovery
+exports verify null fields and preserved siblings. Native EPM findings remain
+NotAssessed through app persistence/reports, alongside positive Warning controls.
+No new source field, provider, scope or score. Recollect affected historical rule
+exports; no live defect occurrence or automatic migration claimed. See
+[EPM choice limits](README.md#epm-choice-context-0514).
+
 September 19, collector 0.5.13: repaired reproduced loss of ancestor template
 context in the separate EPM rule walker. Internal child records now retain their
 instance and unresolved-template flag; duplicate detection includes unresolved

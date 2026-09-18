@@ -1,6 +1,6 @@
 # Intune Discovery for Assay
 
-Version 0.5.13. Experimental pending a live tenant pilot. Offline-tested with
+Version 0.5.14. Experimental pending a live tenant pilot. Offline-tested with
 Windows PowerShell 5.1 and PowerShell 7.
 
 The [contract audit](AUDIT.md) currently verifies 49 enabled Graph GET contracts
@@ -10,6 +10,29 @@ remain separate gates; do not label the full collector audit complete.
 Exports read-only observations for Assay's Intune pack. Assay owns control
 definitions and scores: 50 source-linked controls, two bounded automatic checks,
 and 48 evidence-assisted manual checks. The collector does not mutate a tenant.
+
+## EPM Choice Context (0.5.14)
+
+The EPM rule decoder now carries unresolved ancestor-choice context into its
+descendants and uses the shared strict resolver for leaf choices. One exact typed
+definition/option match and an object-valued optionValue are required. Missing or
+duplicate matches, malformed choice IDs and unusable payloads keep affected fields
+null. Mixed non-null choice/simple nodes and their descendants also stay unknown.
+A valid descendant cannot clear inherited uncertainty; explicit sibling fields
+and other groups remain available. Unresolved nodes still count as duplicates.
+
+Microsoft documents [choice value as an OptionDefinition ItemId with children](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationchoicesettingvalue?view=graph-rest-beta).
+Withholding unresolved descendants is conservative Assay handling, not proof that
+Windows disables them. EPM root/field identities and offsets remain sample-backed;
+their complete validation, collection shapes and applicability remain under audit.
+
+Test-IntuneEpmRules adds 68 choice cases and transitive/duplicate controls.
+`ASSAY_INTUNE_EPM_CHOICE_FIXTURE` writes actual mocked discovery output with an
+unresolved ancestor and a mixed leaf choice for native/app reassessment, save/load
+and HTML/PDF tests. EPM checks remain NotAssessed, not clean Pass. No new field,
+permission, route, provider, finding or score; native rules remain 1.8.0-preview.
+No live occurrence is asserted. Recollect affected older flattened rule exports;
+the original choice context cannot be reconstructed from retained values.
 
 ## EPM Template Context (0.5.13)
 
