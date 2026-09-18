@@ -1,6 +1,6 @@
 # Intune Discovery for Assay
 
-Version 0.5.16. Experimental pending a live tenant pilot. Offline-tested with
+Version 0.5.17. Experimental pending a live tenant pilot. Offline-tested with
 Windows PowerShell 5.1 and PowerShell 7.
 
 The [contract audit](AUDIT.md) currently verifies 49 enabled Graph GET contracts
@@ -10,6 +10,27 @@ remain separate gates; do not label the full collector audit complete.
 Exports read-only observations for Assay's Intune pack. Assay owns control
 definitions and scores: 50 source-linked controls, two bounded automatic checks,
 and 48 evidence-assisted manual checks. The collector does not mutate a tenant.
+
+## EPM Nonblank Identities (0.5.17)
+
+Closes a reviewed gap in the 0.5.16 guards: empty/whitespace string IDs could still
+be silently skipped while valid siblings left coverage complete. Root, supplied
+definition and traversed-child identities must now be nonblank strings. Rejection
+marks coverage Partial without completed-parent evidence. Independently valid
+settings remain available; they cannot restore a clean Pass. Nonblank strings are
+not trimmed, normalized or case-folded.
+
+This is an Assay evidence boundary, consistent with the general setting decoder;
+Microsoft's [instance](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationsettinginstance?view=graph-rest-beta)
+and [definition](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationsettingdefinition?view=graph-rest-beta)
+contracts specify String types, not the rejection behavior implemented here.
+24 dictionary/JSON cases and production coverage controls verify the fix.
+`ASSAY_INTUNE_EPM_EMPTY_ID_FIXTURE` retains a valid sibling but stays NotAssessed
+through native/app reassessment, persistence and reports; its complete control
+still gives Pass/Observed. No new fields, permissions, routes, findings or scores.
+Full schema/collection/dependency/applicability and live validation remain open.
+Recollect affected older flattened exports; no automatic migration or live defect
+occurrence is claimed.
 
 ## EPM Malformed Duplicates (0.5.16)
 

@@ -2,6 +2,22 @@
 
 Date: 2026-09-17. Status: **partial audit, not production certification**.
 
+September 19, collector 0.5.17: review reproduced empty/whitespace string IDs
+bypassing the 0.5.16 pre-filter guards. Root, supplied definition and traversed
+child IDs now require nonblank strings; valid IDs are not normalized. Invalid
+IDs use existing partial-coverage handling even alongside valid evidence.
+Nonblank is an Assay boundary consistent with the general decoder, not a claim
+about Graph's service-side validation. Previously reviewed
+[instance](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationsettinginstance?view=graph-rest-beta)
+and [definition](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationsettingdefinition?view=graph-rest-beta)
+contracts establish String types. Exact EPM constants remain sample-backed.
+24 direct dictionary/JSON cases and mocked production controls verify empty and
+whitespace identities. Native/app tests preserve one valid sibling but keep
+EPM-03/EPM-04 NotAssessed, with complete control Pass/Observed. No new source
+fields, routes, permissions, providers or scores; no live validation or automatic
+migration. Full schema/dependency/applicability audit remains open. Recollect
+affected older flattened exports. See [nonblank identities](README.md#epm-nonblank-identities-0517).
+
 September 19, collector 0.5.16: fixes reviewed 0.5.15 false uniqueness. A valid
 candidate plus malformed duplicate could resolve after type filtering and leave
 Complete coverage. Recognized rule settings now reject non-string definition IDs

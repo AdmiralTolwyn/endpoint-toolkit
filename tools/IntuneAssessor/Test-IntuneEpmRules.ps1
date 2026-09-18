@@ -23,6 +23,30 @@ Assert-Epm ($Rules.Count -eq 2 -and $Rules[0].id -ne $Rules[1].id) 'Rule group i
 Assert-Epm ($Rules[0].fileName -eq 'setup*.exe' -and $Rules[0].elevationType -ceq 'Automatic') 'Exact definition/choice binding failed'
 Assert-Epm ($null -eq $Rules[1].filePath -and $null -eq $Rules[1].elevationType) 'Missing/default values inherited from another rule'
 Assert-Epm (-not ($Rules | ConvertTo-Json -Depth 20).Contains('SECRET')) 'Unreviewed EPM rule content leaked'
+$EmptyIdentityCases = foreach ($Placement in @('root', 'definition', 'child')) {
+    foreach ($EmptyId in @('', ' ', "`t", "`r`n")) {
+        @{ Placement = $Placement; Id = $EmptyId }
+    }
+}
+foreach ($EmptyIdentityCase in $EmptyIdentityCases) {
+    foreach ($DecodeJson in @($false, $true)) {
+        $EmptyDefinitions = @($Definitions)
+        $EmptyInstance = @{ settingDefinitionId = $RootId; groupSettingCollectionValue = @(@{ children = @($First.children) }) }
+        switch ($EmptyIdentityCase.Placement) {
+            'root' { $EmptyInstance.settingDefinitionId = $EmptyIdentityCase.Id }
+            'definition' { $EmptyDefinitions += @{ id = $EmptyIdentityCase.Id; offsetUri = '/PrivilegeManagement/ElevationRules/{0}' } }
+            'child' { $EmptyInstance.groupSettingCollectionValue[0].children += @{ settingDefinitionId = $EmptyIdentityCase.Id; simpleSettingValue = @{ value = 'SECRET_EMPTY_ID' } } }
+        }
+        if ($DecodeJson) {
+            $EmptyDefinitions = $EmptyDefinitions | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+            $EmptyInstance = $EmptyInstance | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+        }
+        $EmptyRejected = $false
+        try { $null = @(ConvertTo-IntuneEpmRules $EmptyInstance $EmptyDefinitions 'policy' 'empty-identity') }
+        catch { $EmptyRejected = $true }
+        Assert-Epm $EmptyRejected "Empty EPM identity bypassed validation: $($EmptyIdentityCase.Placement); JSON=$DecodeJson"
+    }
+}
 $MixedBindingCases = foreach ($Placement in @('child', 'root-definition', 'field-definition')) {
     foreach ($Shape in @('array', 'multi-array', 'empty-array', 'number', 'boolean', 'object', 'null', 'missing')) {
         foreach ($MalformedFirst in @($false, $true)) { @{ Placement = $Placement; Shape = $Shape; First = $MalformedFirst } }
@@ -117,15 +141,15 @@ foreach ($BindingCase in $BindingCases) {
         if ($Shape -eq 'valid') {
             Assert-Epm (-not $BindingRejected -and $BindingRules.Count -eq 1 -and $BindingRules[0].fileName -ceq 'setup*.exe' -and $BindingRules[0].name -ceq 'Rule one') "Exact EPM binding changed: $Context"
         } elseif ($Binding -eq 'root-instance') {
-            if ($Shape -in @('blank', 'case', 'leading-space', 'trailing-space')) {
+            if ($Shape -in @('case', 'leading-space', 'trailing-space')) {
                 Assert-Epm (-not $BindingRejected -and $BindingRules.Count -eq 0) "Unsupported string root was treated as an EPM rule identity: $Context"
             } else {
-                Assert-Epm $BindingRejected "Non-string EPM root identity did not invalidate coverage: $Context"
+                Assert-Epm $BindingRejected "Invalid EPM root identity did not invalidate coverage: $Context"
             }
         } elseif ($Binding.StartsWith('root-')) {
             Assert-Epm $BindingRejected "Malformed EPM root definition was accepted: $Context"
-        } elseif ($Binding -in @('field-instance', 'field-definition') -and $Shape -in @('array', 'multi-array', 'empty-array', 'number', 'boolean', 'object', 'null', 'missing')) {
-            Assert-Epm $BindingRejected "Non-string EPM field identity did not invalidate coverage: $Context"
+        } elseif ($Binding -in @('field-instance', 'field-definition') -and $Shape -in @('array', 'multi-array', 'empty-array', 'number', 'boolean', 'object', 'null', 'missing', 'blank')) {
+            Assert-Epm $BindingRejected "Invalid EPM field identity did not invalidate coverage: $Context"
         } else {
             Assert-Epm (-not $BindingRejected -and $BindingRules.Count -eq 1 -and $null -eq $BindingRules[0].fileName -and $BindingRules[0].name -ceq 'Rule one') "Malformed EPM field binding produced evidence or hid a sibling: $Context"
         }
@@ -431,12 +455,16 @@ $DuplicateRequest = {
     }
     @{ StatusCode = 200; Body = (@{ value = @($Rows) } | ConvertTo-Json -Depth 30 | ConvertFrom-Json) }
 }
-foreach ($DuplicateCase in @('valid', 'child', 'root-definition', 'field-definition')) {
+foreach ($DuplicateCase in @('valid', 'child', 'root-definition', 'field-definition', 'empty-root', 'whitespace-root', 'empty-child', 'whitespace-child')) {
     foreach ($MalformedFirst in @($false, $true)) {
         $script:EpmDuplicateInstance = @{ settingDefinitionId = $RootId; groupSettingCollectionValue = @(@{ children = @($script:EpmDuplicateValid.groupSettingCollectionValue[0].children) }) }
         $script:EpmDuplicateDefinitions = @($Definitions)
-        if ($DuplicateCase -eq 'child') {
+        if ($DuplicateCase -in @('empty-root', 'whitespace-root')) {
+            $script:EpmDuplicateInstance.settingDefinitionId = if ($DuplicateCase -eq 'empty-root') { '' } else { " `t" }
+        } elseif ($DuplicateCase -in @('child', 'empty-child', 'whitespace-child')) {
             $MalformedChild = @{ settingDefinitionId = @(($RootId + '_filename')); simpleSettingValue = @{ value = 'SECRET_DUPLICATE*.exe' } }
+            if ($DuplicateCase -eq 'empty-child') { $MalformedChild.settingDefinitionId = '' }
+            if ($DuplicateCase -eq 'whitespace-child') { $MalformedChild.settingDefinitionId = " `t" }
             if ($MalformedFirst) { $script:EpmDuplicateInstance.groupSettingCollectionValue[0].children = @($MalformedChild) + $script:EpmDuplicateInstance.groupSettingCollectionValue[0].children }
             else { $script:EpmDuplicateInstance.groupSettingCollectionValue[0].children += $MalformedChild }
         } elseif ($DuplicateCase -ne 'valid') {
@@ -459,5 +487,6 @@ foreach ($DuplicateCase in @('valid', 'child', 'root-definition', 'field-definit
         Assert-Epm (-not ($DuplicateJson -match 'SECRET')) 'Malformed duplicate input leaked into export'
         if ($DuplicateCase -eq 'valid' -and $env:ASSAY_INTUNE_EPM_DUPLICATE_CONTROL_FIXTURE) { [IO.File]::WriteAllText($env:ASSAY_INTUNE_EPM_DUPLICATE_CONTROL_FIXTURE, $DuplicateJson, [Text.UTF8Encoding]::new($false)) }
         if ($DuplicateCase -eq 'child' -and $env:ASSAY_INTUNE_EPM_DUPLICATE_FIXTURE) { [IO.File]::WriteAllText($env:ASSAY_INTUNE_EPM_DUPLICATE_FIXTURE, $DuplicateJson, [Text.UTF8Encoding]::new($false)) }
+        if ($DuplicateCase -eq 'whitespace-root' -and $env:ASSAY_INTUNE_EPM_EMPTY_ID_FIXTURE) { [IO.File]::WriteAllText($env:ASSAY_INTUNE_EPM_EMPTY_ID_FIXTURE, $DuplicateJson, [Text.UTF8Encoding]::new($false)) }
     }
 }

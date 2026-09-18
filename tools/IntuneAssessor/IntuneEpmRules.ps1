@@ -3,7 +3,7 @@ function Get-IntuneEpmRuleChildren {
     if ($Depth -gt 12) { throw 'EPM rule depth limit' }
     foreach ($Child in $Children) {
         $ChildId = Get-IntuneValue $Child 'settingDefinitionId'
-        if ($ChildId -isnot [string]) { throw 'Invalid EPM child setting definition identity' }
+        if ($ChildId -isnot [string] -or [string]::IsNullOrWhiteSpace($ChildId)) { throw 'Invalid EPM child setting definition identity' }
         $Choice = Get-IntuneValue $Child 'choiceSettingValue'
         $Simple = Get-IntuneValue $Child 'simpleSettingValue'
         $TemplateUnresolved = $InheritedTemplateUnresolved -or (Test-IntuneTemplateUnresolved $Choice) -or (Test-IntuneTemplateUnresolved $Simple)
@@ -26,10 +26,11 @@ function ConvertTo-IntuneEpmRules {
     param($Instance, $Definitions, [string]$PolicyId, [string]$SettingId)
     $RootId = 'device_vendor_msft_policy_privilegemanagement_elevationrules_{elevationrulename}'
     $InstanceId = Get-IntuneValue $Instance 'settingDefinitionId'
-    if ($InstanceId -isnot [string]) { throw 'Invalid EPM setting definition identity' }
+    if ($InstanceId -isnot [string] -or [string]::IsNullOrWhiteSpace($InstanceId)) { throw 'Invalid EPM setting definition identity' }
     if (-not [string]::Equals($InstanceId, $RootId, [StringComparison]::Ordinal)) { return }
     foreach ($Candidate in $Definitions) {
-        if ((Get-IntuneValue $Candidate 'id') -isnot [string]) { throw 'Invalid EPM definition identity' }
+        $CandidateId = Get-IntuneValue $Candidate 'id'
+        if ($CandidateId -isnot [string] -or [string]::IsNullOrWhiteSpace($CandidateId)) { throw 'Invalid EPM definition identity' }
     }
     $Root = @($Definitions | Where-Object {
         $CandidateId = Get-IntuneValue $_ 'id'
