@@ -2,6 +2,12 @@
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'Invoke-IntuneDiscovery.ps1') -LibraryOnly
 function Assert-Expansion([bool]$Condition, [string]$Message) { if (-not $Condition) { throw $Message } }
+Assert-Expansion (Test-IntuneSecurityPath 'Policy/Config/LocalSecurityAuthority/ConfigureLsaProtectedProcess') 'Published LSA protection URI blocked'
+Assert-Expansion (-not (Test-IntuneSecurityPath 'Policy/Config/LSA/ConfigureLsaProtectedProcess')) 'Invented LSA URI accepted'
+foreach ($Path in @('Policy/Config/MSSecurityGuide/ConfigureSMBV1ClientDriver', 'Policy/Config/MSSecurityGuide/ConfigureSMBV1Server', 'Policy/Config/WindowsPowerShell/TurnOnPowerShellScriptBlockLogging')) {
+    $Unreviewed = @(ConvertTo-IntuneSettingFacts @{ settingDefinitionId = 'admx'; simpleSettingValue = @{ value = 1 } } @(@{ id = 'admx'; baseUri = './Device/Vendor/MSFT'; offsetUri = $Path }) 'policy' 'setting')
+    Assert-Expansion ($Unreviewed[0].resolution -eq 'UnresolvedAdmx' -and -not $Unreviewed[0].Contains('value')) 'Unreviewed ADMX number interpreted as a CSP payload'
+}
 $Assignment = @{ id = 'assignment'; target = @{ '@odata.type' = '#microsoft.graph.groupAssignmentTarget'; groupId = 'group'; entraObjectId = 'UNVERIFIED'; targetType = 'UNVERIFIED'; deviceAndAppManagementAssignmentFilterId = 'beta-filter'; deviceAndAppManagementAssignmentFilterType = 'include' } }
 foreach ($Module in @('ComplianceAssignments', 'ConfigurationAssignments', 'ApplicationAssignments', 'MamAssignments', 'AppConfigurationAssignments', 'DeviceAppConfigurationAssignments')) {
     $Projected = ConvertTo-IntuneSafeRow -Module $Module -Row $Assignment

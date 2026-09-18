@@ -94,6 +94,8 @@ injected responses only. No Defender authentication or live collection was run.
 ### Open Gates
 
 - Nested object ownership, value types, enums and all policy/CSP bindings.
+- CSP URI/format coverage is recorded below; remaining work is payload/enum
+  semantics and OS/reference applicability, not the existence of those nodes.
 - Full endpoint-provider enum/serialization review on representative devices.
 - EPM exact setting IDs currently grounded in Microsoft365DSC sample fixtures,
   not a Microsoft Learn guarantee; do not describe them as a documented CSP.
@@ -132,3 +134,52 @@ The endpoint modules retain raw selected observations, not generalized verdicts.
 Missing fields or provider errors must not become clean findings. JSON exports
 are locally authored evidence, not signed attestations; matching a tenant/device
 identifier does not prove the file's authenticity.
+
+## CSP Source Ledger (2026-09-18)
+
+`PolicyContracts.json` covers 68 fixed nodes and eight firewall-rule template
+leaves. `Test-IntunePolicyContracts.ps1 -EvidenceDirectory <existing-directory>`
+downloads/caches their Microsoft CSP references and checks exact published
+Device/Vendor URI strings and per-node Format declarations. The generated
+`intune-policy-contract-audit.json` records the source URL, SHA256 and format
+for all 76 contracts. Firewall rule-name substitution is explicit; names are
+not treated as a setting-definition identity or an effective rule instance.
+
+This check found an incorrect URI: the [LSA reference](https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-lsa#configurelsaprotectedprocess)
+publishes `Policy/Config/LocalSecurityAuthority/ConfigureLsaProtectedProcess`,
+not `Policy/Config/LSA/ConfigureLsaProtectedProcess`. Collector and Assay now
+use the published URI and reject the old guessed alias. Its documented format
+is integer, with 0 disabled, 1 enabled with UEFI lock, 2 enabled without UEFI lock.
+
+The [SMBv1 nodes](https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-mssecurityguide)
+and [PowerShell script-block logging node](https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-windowspowershell)
+are `chr` ADMX payloads. Bare numbers for these three nodes now remain
+`UnresolvedAdmx`, with no retained value, instead of being labeled Resolved.
+No new ADMX binding was inferred from a numeric choice or a display name.
+This guard also applies when Assay imports an older or manually authored export.
+
+A published URI/format is not proof that every allowed enum, default, range,
+ADMX data ID or reference recommendation has been verified. EPM sample IDs are
+not counted among these documented CSP nodes. Unknown settings, template-default
+values and missing definitions must remain unresolved. The existing four
+reviewed ADMX payload paths and App Control XML projection still need a separate
+complete binding/schema review; XML well-formedness is not full policy validation.
+
+## Other Script Activities
+
+The main script imports an already installed Az.Accounts module only when a
+SecureString token was not supplied. It reads context, optionally connects with
+process scope, requests an MSGraph token and restores the prior process context
+when available. It does not install a module or grant consent. An Az token is
+not guaranteed to have the required Intune scopes. Local JWT field checks are
+preflight restrictions, not signature authentication; the service authenticates
+the token. Opaque tokens and application-only tokens are unsupported here.
+
+Companion JSON and App Control XML are read only from explicit user-supplied
+paths. XML parsing prohibits DTDs/external resolution. Export uses CreateNew,
+not overwrite, and filenames/metadata can still be confidential. Row counts,
+timeouts, retry caps, depth/string limits and file-size limits are engineering
+constraints, not Microsoft product recommendations. The collector does not
+deploy a script, elevate privileges, apply policy, initiate an EPM elevation,
+open a Remote Help session, retrieve a LAPS password or request a BitLocker key.
+Full source/provider objects can exist in process memory before projection.

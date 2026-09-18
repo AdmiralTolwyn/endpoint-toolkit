@@ -1,0 +1,18 @@
+[
+  {"prefix":"Policy/Config/Defender/","nodes":["AllowBehaviorMonitoring","AllowCloudProtection","AllowRealtimeMonitoring","AllowScriptScanning","AllowIOAVProtection","AllowOnAccessProtection","PUAProtection","EnableNetworkProtection","CloudBlockLevel","CloudExtendedTimeout","SubmitSamplesConsent","AttackSurfaceReductionRules","AttackSurfaceReductionOnlyExclusions","ExcludedPaths","ExcludedProcesses","ExcludedExtensions"],"doc":"policy-csp-defender"},
+  {"prefix":"LAPS/Policies/","nodes":["BackupDirectory","AdministratorAccountName","PasswordAgeDays","PasswordLength","PasswordComplexity","PassphraseLength","PostAuthenticationResetDelay","PostAuthenticationActions","AutomaticAccountManagementEnabled"],"doc":"laps-csp"},
+  {"prefix":"Policy/Config/DeviceGuard/","nodes":["EnableVirtualizationBasedSecurity","LsaCfgFlags","RequirePlatformSecurityFeatures"],"doc":"policy-csp-deviceguard"},
+  {"prefix":"Policy/Config/LocalPoliciesSecurityOptions/","nodes":["MicrosoftNetworkClient_DigitallySignCommunicationsAlways","MicrosoftNetworkServer_DigitallySignCommunicationsAlways","UserAccountControl_RunAllAdministratorsInAdminApprovalMode"],"doc":"policy-csp-localpoliciessecurityoptions"},
+  {"prefix":"Policy/Config/SmartScreen/","nodes":["EnableSmartScreenInShell","PreventOverrideForFilesInShell"],"doc":"policy-csp-smartscreen"},
+  {"prefix":"Policy/Config/MSSecurityGuide/","nodes":["ConfigureSMBV1ClientDriver","ConfigureSMBV1Server"],"doc":"policy-csp-mssecurityguide"},
+  {"prefix":"Policy/Config/LanmanWorkstation/","nodes":["EnableInsecureGuestLogons"],"doc":"policy-csp-lanmanworkstation"},
+  {"prefix":"Policy/Config/InternetExplorer/","nodes":["DisableInternetExplorerLaunchViaCOM"],"doc":"policy-csp-internetexplorer"},
+  {"prefix":"Policy/Config/LocalSecurityAuthority/","nodes":["ConfigureLsaProtectedProcess"],"doc":"policy-csp-lsa"},
+  {"prefix":"Policy/Config/VirtualizationBasedTechnology/","nodes":["HypervisorEnforcedCodeIntegrity"],"doc":"policy-csp-virtualizationbasedtechnology"},
+  {"prefix":"Policy/Config/WindowsPowerShell/","nodes":["TurnOnPowerShellScriptBlockLogging"],"doc":"policy-csp-windowspowershell"},
+  {"prefix":"BitLocker/","nodes":["RequireDeviceEncryption","AllowWarningForOtherDiskEncryption","AllowStandardUserEncryption","SystemDrivesRequireStartupAuthentication","ConfigureRecoveryPasswordRotation","SystemDrivesRecoveryOptions","FixedDrivesRecoveryOptions"],"doc":"bitlocker-csp"},
+  {"prefix":"Firewall/MdmStore/DomainProfile/","nodes":["EnableFirewall","DefaultInboundAction","DefaultOutboundAction","EnableLogDroppedPackets","EnableLogSuccessConnections","AllowLocalPolicyMerge","AllowLocalIpsecPolicyMerge"],"doc":"firewall-csp"},
+  {"prefix":"Firewall/MdmStore/PrivateProfile/","nodes":["EnableFirewall","DefaultInboundAction","DefaultOutboundAction","EnableLogDroppedPackets","EnableLogSuccessConnections","AllowLocalPolicyMerge","AllowLocalIpsecPolicyMerge"],"doc":"firewall-csp"},
+  {"prefix":"Firewall/MdmStore/PublicProfile/","nodes":["EnableFirewall","DefaultInboundAction","DefaultOutboundAction","EnableLogDroppedPackets","EnableLogSuccessConnections","AllowLocalPolicyMerge","AllowLocalIpsecPolicyMerge"],"doc":"firewall-csp"},
+  {"prefix":"Firewall/MdmStore/FirewallRules/{FirewallRuleName}/","nodes":["Protocol","Direction","LocalPortRanges","RemotePortRanges","EdgeTraversal","InterfaceTypes","Action/Type","Enabled"],"doc":"firewall-csp"}
+]
