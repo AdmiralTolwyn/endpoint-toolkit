@@ -13,6 +13,15 @@ has completed a trust audit. Source/code review on 18 September found open risks
 - Collector 0.3.4 removes unsupported DR/notification payloads from the v1.0 user-settings export and adds explicit collection-gap markers. The beta notificationSetting reference gives a July 14, 2026 retirement date. USER-002 now remains unassessed; no beta DR request is added. GracePeriodInHours is preserved only as a typed read-only observation, without 1-168-hour scoring, missing-as-zero or immediate-deletion claims. Assay guards both older verdicts; full resilience/process evaluation remains open.
 - Collector 0.3.5 adds general GET pager origin/path/query, shape, ID and page/row/elapsed guards with atomic failure. Original opaque nextLink URLs and valid empty pages are preserved. INV-001 no longer passes core collection errors. The production initializer now uses an ordered dictionary so key-based evidence additions work; old hashtable test fixtures had masked this. SDK redirects/retries/hard timeouts, actual token/RBAC authorization, API/field contracts, report POSTs and complete dependent-check error propagation remain open. Context preflight and explicit CA permission selection are addressed by 0.3.6 below.
 
+Collector 0.3.7 quarantines the retired recommendation POST (documented write
+permission, December 31, 2025 retirement): zero requests, no extra scope or guessed
+replacement. Two read-permission report POSTs now have fixed selectors/columns,
+bounded table decoding and metadata-only findings. Row totals do not prove sizing,
+connection quality, sign-in duration or resource utilization. Assay guards five
+old report verdicts and the exact inactivity-report fallback; manual decisions are
+preserved. Live SDK response forms, content evaluation and transport remain open.
+Sources and test instructions are in the current README.
+
 Collector 0.3.6 adds context preflight before discovery and after connection:
 explicit tenant GUID matching, delegated Global authentication, account metadata
 and selected scope checks. SkipLogin never reconnects; new sign-ins use process
@@ -25,7 +34,7 @@ commands and exercise the actual production block, initializer and CA gate.
 Collector 0.3.0 adds one separate opt-in Assay comparison: UX Sync on beta
 sharedByEntraGroup Windows 365 policies against an explicit Enabled/Disabled
 customer target. Review/missing/unknown remains unassessed. No new scope, writes,
-storage access or live validation. Source contracts and usage are in [README.md](README.md#collector-036-security-evidence-and-ux-sync).
+storage access or live validation. Source contracts and usage are in [README.md](README.md#collector-037-security-evidence-and-ux-sync).
 The legacy WPF catalog/importer remains unchanged. PowerShell 5.1/7 offline tests
 cover the production branch, typed enums, applicability, projection and pagination.
 

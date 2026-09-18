@@ -1,11 +1,33 @@
 # Windows 365 Assessor
 
-## Collector 0.3.6: Security Evidence and UX Sync
+## Collector 0.3.7: Security Evidence and UX Sync
 
-The collector optionally emits `W365-PROV-011` for **Assay** (31 Auto / 101
-Manual after reclassifying eleven unsupported evaluators). The legacy
+The collector optionally emits `W365-PROV-011` for **Assay** (26 Auto / 106
+Manual after reclassifying sixteen unsupported evaluators). The legacy
 WPF catalog and the 41/91 counts below are unchanged; the
 legacy importer does not consume this new automatic result.
+
+In 0.3.7, the retired recommendation-report action makes **zero requests**. Its
+[reference](https://learn.microsoft.com/en-us/graph/api/cloudpcreports-retrievecloudpcrecommendationreports?view=graph-rest-beta)
+documents December 31, 2025 retirement and CloudPC.ReadWrite.All, not the read
+scope previously claimed. No write permission or unreviewed replacement is added.
+Recommendation and missing-login fallback findings stay unassessed.
+
+Keep `W365Reports.ps1` beside the collector. The two enabled
+[connection-quality](https://learn.microsoft.com/en-us/graph/api/cloudpcreports-retrieveconnectionqualityreports?view=graph-rest-beta)
+and [tenant-trend](https://learn.microsoft.com/en-us/graph/api/cloudpcreports-retrievecloudpctenantmetricsreport?view=graph-rest-beta)
+POSTs use CloudPC.Read.All, fixed reportName/select and skip=0/top=25. They retain
+validated page metadata only, with returned rows distinct from the reported total.
+Partial pages, zero rows and mere availability never establish performance or
+report-review success. Connection RTT is not sign-in duration; performanceTrendReport
+is not CPU/RAM/disk resource telemetry. Assay guards older report verdicts and
+preserves explicit manual decisions.
+
+The decoder checks exact selected column schemas, row widths and bounded counts,
+with a 1 MiB cap on JSON text/bytes/streams. Raw cells are not exported or evaluated.
+This is not a bound on SDK network buffering, redirects/retries or blocking reads.
+No pagination or live response validation is claimed. These report POSTs remain
+distinct from the general GET pager and the complete collector is not GET-only.
 
 In 0.3.6, authentication validates the actual SDK context before discovery and
 after any connection: nonempty tenant GUID, delegated authentication, Global
@@ -146,6 +168,9 @@ The comparison proves neither effective assignment nor successful profile
 persistence or capacity. UX Sync is not backup/DR; modifying existing assignments
 can deprovision Cloud PCs and delete user storage. This collector never does that.
 
+Run `Test-W365Reports.ps1` in PowerShell 5.1/7 for report contract/production tests;
+optional `-MetadataPath <cached-CSDL>` checks action signatures, and
+`ASSAY_W365_REPORT_FIXTURE` writes the synthetic production findings.
 Run `Test-W365Authentication.ps1` in PowerShell 5.1/7 for mocked session reuse,
 tenant pinning, process-scoped reconnect, post-connect validation and export tests.
 The CA suite also verifies the real opt-in branch makes zero requests when omitted.
@@ -588,7 +613,7 @@ W365Assessor/
 
 | Component | Version |
 |---|---|
-| `Invoke-W365Discovery.ps1` | 0.3.6 |
+| `Invoke-W365Discovery.ps1` | 0.3.7 |
 | `checks.json` | 1.1 (schema), 132 checks |
 | `W365Assessor.ps1` | 0.2.0 |
 

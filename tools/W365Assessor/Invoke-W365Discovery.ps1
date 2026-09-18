@@ -37,7 +37,7 @@
     .\Invoke-W365Discovery.ps1 -OutputPath "C:\temp\w365_discovery.json"
 .NOTES
     Author : Anton Romanyuk
-    Version: 0.3.6
+    Version: 0.3.7
     Date   : 2026-09-18
 
     Required Graph scopes (core tier — requested unconditionally):
@@ -94,13 +94,12 @@ $env:PSModulePath = ($env:PSModulePath -split ';' |
 $ScriptRoot = $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($ScriptRoot)) { $ScriptRoot = $PWD.Path }
 
-$ScriptVersion = '0.3.6'
+$ScriptVersion = '0.3.7'
 # Windows 365 GA surface (cloudPCs, provisioningPolicies, userSettings) migrated to /v1.0.
 $GraphBaseV1   = 'https://graph.microsoft.com/v1.0/deviceManagement/virtualEndpoint'
 # Beta retained for endpoints not yet GA / verified beta-only: onPremisesConnections, deviceImages,
 # galleryImages, servicePlans, auditEvents, and the whole reports/* surface (cloudPcReports is beta-only).
 $GraphBase     = 'https://graph.microsoft.com/beta/deviceManagement/virtualEndpoint'
-$ReportsBase   = "$GraphBase/reports"
 $IntuneBase    = 'https://graph.microsoft.com/beta/deviceManagement'
 $CaPolicyUri   = 'https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies'
 
@@ -256,28 +255,19 @@ function Invoke-GraphPaged {
 function Invoke-GraphReport {
     <#
     .SYNOPSIS
-        POSTs to a virtualEndpoint/reports/<action> endpoint and returns the raw response.
-        Report responses are columnar: { Schema:[...], Values:[[...]], TotalRowCount:n }.
+        Reads one report page through a fixed contract and returns validated page metadata only.
     #>
     param(
         [Parameter(Mandatory = $true)] [string]$Action,
         [hashtable]$Body
     )
-    if (-not $Body) { $Body = @{} }
-    $uri = "$ReportsBase/$Action"
-    return Invoke-MgGraphRequest -Method POST -Uri $uri -Body ($Body | ConvertTo-Json -Depth 6) -ContentType 'application/json' -ErrorAction Stop
-}
-
-function Get-ReportRowCount {
-    <#
-    .SYNOPSIS
-        Best-effort row count from a columnar report response (handles TotalRowCount / Values).
-    #>
-    param([object]$Report)
-    if ($null -eq $Report) { return -1 }
-    if ($null -ne $Report.TotalRowCount) { return [int]$Report.TotalRowCount }
-    if ($null -ne $Report.Values)        { return @($Report.Values).Count }
-    return -1
+    . (Join-Path $ScriptRoot 'W365Reports.ps1')
+    $Contract = Get-W365ReportContract $Action
+    if ($Body.Count -ne 1 -or $Body.Keys -cnotcontains 'top' -or ($Body.top -isnot [int] -and $Body.top -isnot [long]) -or $Body.top -ne 25) { throw 'Unsupported report request options' }
+    $RequestBody = @{ reportName = $Contract.ReportName; select = @($Contract.Columns.Keys); skip = 0; top = 25 }
+    $Uri = 'https://graph.microsoft.com/beta/deviceManagement/virtualEndpoint/reports/' + $Action
+    $Response = Invoke-MgGraphRequest -Method POST -Uri $Uri -Body ($RequestBody | ConvertTo-Json -Depth 4) -ContentType 'application/json' -ErrorAction Stop
+    return ConvertTo-W365ReportPageEvidence -Response $Response -Action $Action
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1180,99 +1170,58 @@ foreach ($pp in $Discovery.Inventory.ProvisioningPolicies) {
 
 # ═══════════════════════════════════════════════════════════════════════════
 # REPORTS API  (POST /beta/deviceManagement/virtualEndpoint/reports/* — CloudPC.Read.All)
-# Report actions are beta-only. Several spec-named actions are deprecated/renamed — current action
-# names are used and each family degrades to a Status 'Error' CheckResult on failure.
+# Only the reviewed read-permission actions are enabled; report metadata is not a posture verdict.
 # ═══════════════════════════════════════════════════════════════════════════
 Write-Status "Reports API (Cloud PC)" -Level 'SECTION'
 
-# COST-002 (right-sizing) + MON-008-REC (recommendations) + COST-001 report fallback.
-# Spec named 'getCloudPcRecommendationReports'; current action is 'retrieveCloudPcRecommendationReports'.
-try {
-    $recReport = Invoke-GraphReport -Action 'retrieveCloudPcRecommendationReports' -Body @{ top = 25 }
-    $recRows = Get-ReportRowCount $recReport
-    Write-Status "Recommendation report rows: $recRows" -Level 'SUCCESS'
+$Discovery.Inventory['RecommendationReportState'] = 'Unsupported'
+foreach ($eid in @('W365-COST-002','W365-MON-008-REC')) {
     [void]$AllChecks.Add((New-CheckResult `
-        -Id 'W365-COST-002' -Category 'Cost & Optimization' `
-        -Name 'Cloud PC right-sizing recommendations' `
-        -Description 'The Cloud PC recommendation report surfaces under- and over-utilised Cloud PCs for SKU right-sizing and license reclaim.' `
-        -Status $(if ($recRows -gt 0) { 'Warning' } else { 'Pass' }) `
-        -Severity 'Medium' `
-        -Details "Recommendation report returned $([math]::Max(0,$recRows)) row(s). Non-zero rows indicate right-sizing/reclaim opportunities to review." `
-        -Recommendation 'Review the recommendation report in Intune > Reports > Cloud PC and act on down-size / reclaim candidates.' `
-        -Reference 'https://learn.microsoft.com/en-us/windows-365/enterprise/report-cloud-pc-utilization' `
-        -Evidence @{ Rows = $recRows }))
+        -Id $eid -Category $(if ($eid -eq 'W365-COST-002') { 'Cost & Optimization' } else { 'Monitoring & Diagnostics' }) -Name 'Recommendation report not collected' `
+        -Description 'The old report action is retired and requires a write permission outside this collector permission set.' `
+        -Status 'Error' -Severity 'Medium' `
+        -Details 'No request made. Microsoft documents retirement on December 31, 2025 and CloudPC.ReadWrite.All for the old reports/retrieveCloudPcRecommendationReports action. Report row counts are not right-sizing recommendations or proof of a review process.' `
+        -Recommendation 'Review recommendations in the approved reporting workflow; a replacement API adapter needs its own permission and response-contract review.' `
+        -Reference 'https://learn.microsoft.com/en-us/graph/api/cloudpcreports-retrievecloudpcrecommendationreports?view=graph-rest-beta' `
+        -Evidence @{ Action = 'retrieveCloudPcRecommendationReports'; CollectionState = 'Unsupported'; RequestMade = $false }))
+}
+if ($CpcNoLoginCount -gt 0) {
     [void]$AllChecks.Add((New-CheckResult `
-        -Id 'W365-MON-008-REC' -Category 'Monitoring & Diagnostics' `
-        -Name 'Cloud PC recommendation reporting available' `
-        -Description 'Availability of the Cloud PC recommendation/usage reporting surface for ongoing optimisation monitoring.' `
-        -Status 'Pass' -Severity 'Low' `
-        -Details "Recommendation reporting reachable ($([math]::Max(0,$recRows)) row(s))." `
-        -Recommendation 'Schedule periodic review of Cloud PC recommendation reports as part of monthly operations.' `
-        -Reference 'https://learn.microsoft.com/en-us/windows-365/enterprise/report-cloud-pc-utilization' `
-        -Evidence @{ Rows = $recRows }))
-    if ($CpcNoLoginCount -gt 0) {
-        [void]$AllChecks.Add((New-CheckResult `
-            -Id 'W365-COST-001-REPORT' -Category 'Cost & Optimization' `
-            -Name 'Inactive Cloud PC report fallback' `
-            -Description 'Some Cloud PCs returned no LastLoginResult, so inactivity for those must be confirmed via the Cloud PC inactivity/recommendation report rather than the per-device login signal.' `
-            -Status 'Warning' -Severity 'Low' `
-            -Details "$CpcNoLoginCount Cloud PC(s) had no login data. Recommendation/inactivity report is reachable ($([math]::Max(0,$recRows)) row(s)) — use it to confirm inactivity for those devices." `
-            -Recommendation 'Cross-check the report''s inactive/underused rows against the Cloud PCs lacking login telemetry before reclaiming licenses.' `
-            -Reference 'https://learn.microsoft.com/en-us/windows-365/enterprise/report-cloud-pc-utilization' `
-            -Evidence @{ CloudPcsWithoutLoginData = $CpcNoLoginCount; ReportRows = $recRows }))
-    }
-} catch {
-    Write-Status "Recommendation report unavailable: $($_.Exception.Message)" -Level 'WARN'
-    foreach ($eid in @('W365-COST-002','W365-MON-008-REC')) {
-        [void]$AllChecks.Add((New-CheckResult `
-            -Id $eid -Category 'Cost & Optimization' `
-            -Name 'Cloud PC recommendation report unavailable' `
-            -Description 'The Cloud PC recommendation report (retrieveCloudPcRecommendationReports) could not be retrieved.' `
-            -Status 'Error' -Severity 'Medium' `
-            -Details "POST reports/retrieveCloudPcRecommendationReports failed: $($_.Exception.Message)" `
-            -Recommendation 'Confirm the signed-in account holds CloudPC.Read.All. Note: this recommendation action was deprecated by Microsoft (2025) and may be unavailable in some tenants; review recommendations in the Intune portal instead.' `
-            -Reference 'https://learn.microsoft.com/en-us/graph/api/resources/cloudpcreports?view=graph-rest-beta' `
-            -Evidence @{ Action = 'retrieveCloudPcRecommendationReports'; RequiredScope = 'CloudPC.Read.All'; Error = $_.Exception.Message }))
-    }
-    if ($CpcNoLoginCount -gt 0) {
-        [void]$AllChecks.Add((New-CheckResult `
-            -Id 'W365-COST-001-REPORT' -Category 'Cost & Optimization' `
-            -Name 'Inactive Cloud PC report fallback unavailable' `
-            -Status 'Error' -Severity 'Low' `
-            -Description 'Login data was missing for some Cloud PCs and the inactivity report fallback could not be retrieved.' `
-            -Details "$CpcNoLoginCount Cloud PC(s) lacked login data and the report fallback failed: $($_.Exception.Message)" `
-            -Recommendation 'Grant CloudPC.Read.All and re-run, or confirm inactivity manually in the Intune Cloud PC reports.' `
-            -Reference 'https://learn.microsoft.com/en-us/windows-365/enterprise/report-cloud-pc-utilization' `
-            -Evidence @{ CloudPcsWithoutLoginData = $CpcNoLoginCount; RequiredScope = 'CloudPC.Read.All' }))
-    }
+        -Id 'W365-COST-001-REPORT' -Category 'Cost & Optimization' -Name 'Inactive Cloud PC fallback not collected' `
+        -Status 'Error' -Severity 'Low' -Description 'Missing login data cannot be resolved by the retired recommendation-report adapter.' `
+        -Details "$CpcNoLoginCount Cloud PC(s) lacked login data. The report fallback is disabled; no inactivity or reclaim conclusion is inferred." `
+        -Recommendation 'Obtain scoped, timestamped usage evidence through an approved report before making reclaim decisions.' `
+        -Reference 'https://learn.microsoft.com/en-us/graph/api/cloudpcreports-retrievecloudpcrecommendationreports?view=graph-rest-beta' `
+        -Evidence @{ CloudPcsWithoutLoginData = $CpcNoLoginCount; CollectionState = 'Unsupported'; RequestMade = $false }))
 }
 
 # MON-002-Q (connection quality) + UX-002-CONN (connection round-trip UX).
 # Spec named 'getConnectionQualityReports' (deprecated); current action is 'retrieveConnectionQualityReports'.
 try {
     $cqReport = Invoke-GraphReport -Action 'retrieveConnectionQualityReports' -Body @{ top = 25 }
-    $cqRows = Get-ReportRowCount $cqReport
-    Write-Status "Connection quality report rows: $cqRows" -Level 'SUCCESS'
+    $Discovery.Inventory['ConnectionQualityReportEvidence'] = $cqReport
+    $cqDetails = "Report=$($cqReport.ReportName); returned=$($cqReport.RowsReturned); reported total=$($cqReport.ReportedTotalRowCount); page coverage=$($cqReport.PageCoverage). One bounded page only; no metrics, device coverage, freshness or customer targets evaluated."
+    Write-Status 'Connection-quality report page metadata collected; no performance verdict' -Level 'INFO'
     [void]$AllChecks.Add((New-CheckResult `
         -Id 'W365-MON-002-Q' -Category 'Monitoring & Diagnostics' `
         -Name 'Connection quality reporting' `
-        -Description 'The connection quality report exposes round-trip time, available bandwidth, and gateway region per Cloud PC connection — the primary telemetry for remoting experience.' `
-        -Status $(if ($cqRows -ge 0) { 'Pass' } else { 'Warning' }) `
+        -Description 'The selected regional connection-quality trend page provides metadata context only; individual Cloud PC coverage and connection metrics are not evaluated.' `
+        -Status 'Error' `
         -Severity 'Medium' `
-        -Details "Connection quality report reachable ($([math]::Max(0,$cqRows)) row(s))." `
+        -Details $cqDetails `
         -Recommendation 'Monitor connection quality trends; investigate personas/regions with high round-trip time or low bandwidth (RDP Shortpath, gateway region, ANC placement).' `
         -Reference 'https://learn.microsoft.com/en-us/windows-365/enterprise/report-connection-quality' `
-        -Evidence @{ Rows = $cqRows }))
+        -Evidence $cqReport))
     [void]$AllChecks.Add((New-CheckResult `
         -Id 'W365-UX-002-CONN' -Category 'User Experience' `
-        -Name 'Connection quality / round-trip posture' `
-        -Description 'End-user remoting experience is dominated by connection round-trip time and bandwidth; the connection quality report is the objective UX signal.' `
-        -Status $(if ($cqRows -ge 0) { 'Pass' } else { 'Warning' }) `
+        -Name 'Sign-in performance not assessed' `
+        -Description 'Regional network round-trip telemetry is not Cloud PC boot-to-desktop or sign-in-duration evidence.' `
+        -Status 'Error' `
         -Severity 'Medium' `
-        -Details "Connection quality telemetry available ($([math]::Max(0,$cqRows)) row(s)) for UX round-trip analysis." `
-        -Recommendation 'Baseline acceptable round-trip time per region and alert on regressions; enable RDP Shortpath and place ANCs close to users.' `
+        -Details "Sign-in duration was not collected. $cqDetails" `
+        -Recommendation 'Review actual sign-in-duration telemetry and the relevant user experience targets separately from network connection quality.' `
         -Reference 'https://learn.microsoft.com/en-us/windows-365/enterprise/report-connection-quality' `
-        -Evidence @{ Rows = $cqRows }))
+        -Evidence $cqReport))
 } catch {
     Write-Status "Connection quality report unavailable: $($_.Exception.Message)" -Level 'WARN'
     [void]$AllChecks.Add((New-CheckResult `
@@ -1286,38 +1235,36 @@ try {
         -Evidence @{ Action = 'retrieveConnectionQualityReports'; RequiredScope = 'CloudPC.Read.All'; Error = $_.Exception.Message }))
     [void]$AllChecks.Add((New-CheckResult `
         -Id 'W365-UX-002-CONN' -Category 'User Experience' `
-        -Name 'Connection quality UX signal unavailable' `
+        -Name 'Sign-in performance not assessed' `
         -Status 'Error' -Severity 'Medium' `
-        -Description 'Connection quality telemetry for UX analysis could not be retrieved.' `
+        -Description 'The connection-quality page was unavailable and would not establish sign-in duration even if retrieved.' `
         -Details "POST reports/retrieveConnectionQualityReports failed: $($_.Exception.Message)" `
         -Recommendation 'Confirm the signed-in account holds CloudPC.Read.All and re-run.' `
         -Reference 'https://learn.microsoft.com/en-us/windows-365/enterprise/report-connection-quality' `
         -Evidence @{ Action = 'retrieveConnectionQualityReports'; RequiredScope = 'CloudPC.Read.All'; Error = $_.Exception.Message }))
 }
 
-# MON-010-R (resource performance). Spec named 'getResourcePerformanceReport' (does not exist);
-# current action for Cloud PC performance is 'retrieveCloudPcTenantMetricsReport'.
 try {
     $perfReport = Invoke-GraphReport -Action 'retrieveCloudPcTenantMetricsReport' -Body @{ top = 25 }
-    $perfRows = Get-ReportRowCount $perfReport
-    Write-Status "Resource performance report rows: $perfRows" -Level 'SUCCESS'
+    $Discovery.Inventory['TenantConnectionTrendReportEvidence'] = $perfReport
+    Write-Status 'Tenant connection-trend report page metadata collected; resource performance not assessed' -Level 'INFO'
     [void]$AllChecks.Add((New-CheckResult `
         -Id 'W365-MON-010-R' -Category 'Monitoring & Diagnostics' `
-        -Name 'Resource performance reporting' `
-        -Description 'The Cloud PC tenant metrics / resource performance report exposes CPU, RAM, and disk performance signals used to detect under-provisioned SKUs and noisy-neighbour effects.' `
-        -Status $(if ($perfRows -ge 0) { 'Pass' } else { 'Warning' }) `
+        -Name 'Resource performance not assessed' `
+        -Description 'The selected tenant performanceTrendReport contains connection-quality trends, not CPU/RAM/disk utilization or evidence of resource-report review.' `
+        -Status 'Error' `
         -Severity 'Medium' `
-        -Details "Resource performance report reachable ($([math]::Max(0,$perfRows)) row(s))." `
-        -Recommendation 'Review resource performance to right-size SKUs; sustained high CPU/RAM pressure indicates the persona needs a larger SKU.' `
+        -Details "Report=$($perfReport.ReportName); returned=$($perfReport.RowsReturned); reported total=$($perfReport.ReportedTotalRowCount); page coverage=$($perfReport.PageCoverage). No CPU/RAM/disk utilization or resource-review verdict inferred." `
+        -Recommendation 'Use the documented resource-performance report and agreed workload targets; do not substitute connection-trend row counts.' `
         -Reference 'https://learn.microsoft.com/en-us/graph/api/cloudpcreports-retrievecloudpctenantmetricsreport?view=graph-rest-beta' `
-        -Evidence @{ Rows = $perfRows }))
+        -Evidence $perfReport))
 } catch {
-    Write-Status "Resource performance report unavailable: $($_.Exception.Message)" -Level 'WARN'
+    Write-Status "Tenant connection-trend report unavailable: $($_.Exception.Message)" -Level 'WARN'
     [void]$AllChecks.Add((New-CheckResult `
         -Id 'W365-MON-010-R' -Category 'Monitoring & Diagnostics' `
-        -Name 'Resource performance report unavailable' `
+        -Name 'Resource performance not assessed' `
         -Status 'Error' -Severity 'Medium' `
-        -Description 'The Cloud PC resource performance report (retrieveCloudPcTenantMetricsReport) could not be retrieved.' `
+        -Description 'The tenant connection-trend page could not be retrieved; this adapter does not collect CPU/RAM/disk resource-performance evidence.' `
         -Details "POST reports/retrieveCloudPcTenantMetricsReport failed: $($_.Exception.Message)" `
         -Recommendation 'Confirm the signed-in account holds CloudPC.Read.All and re-run.' `
         -Reference 'https://learn.microsoft.com/en-us/graph/api/cloudpcreports-retrievecloudpctenantmetricsreport?view=graph-rest-beta' `
