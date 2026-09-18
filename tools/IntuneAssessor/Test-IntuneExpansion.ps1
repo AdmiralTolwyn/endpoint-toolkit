@@ -2,6 +2,13 @@
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'Invoke-IntuneDiscovery.ps1') -LibraryOnly
 function Assert-Expansion([bool]$Condition, [string]$Message) { if (-not $Condition) { throw $Message } }
+$Assignment = @{ id = 'assignment'; target = @{ '@odata.type' = '#microsoft.graph.groupAssignmentTarget'; groupId = 'group'; entraObjectId = 'UNVERIFIED'; targetType = 'UNVERIFIED'; deviceAndAppManagementAssignmentFilterId = 'beta-filter'; deviceAndAppManagementAssignmentFilterType = 'include' } }
+foreach ($Module in @('ComplianceAssignments', 'ConfigurationAssignments', 'ApplicationAssignments', 'MamAssignments', 'AppConfigurationAssignments', 'DeviceAppConfigurationAssignments')) {
+    $Projected = ConvertTo-IntuneSafeRow -Module $Module -Row $Assignment
+    Assert-Expansion ($Projected.target.groupId -eq 'group' -and -not (($Projected | ConvertTo-Json) -match 'UNVERIFIED|beta-filter')) 'V1 assignment retained unsupported target fields'
+}
+$Projected = ConvertTo-IntuneSafeRow -Module EnrollmentAssignments -Row $Assignment
+Assert-Expansion ($Projected.target.deviceAndAppManagementAssignmentFilterId -eq 'beta-filter' -and -not (($Projected | ConvertTo-Json) -match 'UNVERIFIED')) 'Beta target field projection failed'
 $App = ConvertTo-IntuneSafeRow -Module Applications -Row @{ id = 'app'; detectionRules = @(@{ scriptContent = 'SECRET' }); rules = @(@{ ruleType = 'detection'; operationType = 'notConfigured'; scriptContent = 'SECRET' }); roleScopeTagIds = @('unsupported') }
 Assert-Expansion ($App.rules[0].ruleType -eq 'detection' -and -not (($App | ConvertTo-Json -Depth 10) -match 'SECRET|unsupported|detectionRules')) 'Documented Win32 rules not safely projected'
 $Autopilot = ConvertTo-IntuneSafeRow -Module AutopilotProfiles -Row @{ id = 'profile'; outOfBoxExperienceSettings = @{ userType = 'administrator' }; outOfBoxExperienceSetting = @{ userType = 'standard'; privacySettingsHidden = $true } }

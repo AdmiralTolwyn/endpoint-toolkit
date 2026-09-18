@@ -40,6 +40,12 @@ original two automatic controls remain available.
   collection does not fall back to the deprecated property.
 - Conditional Access uses `modifiedDateTime`, not `lastModifiedDateTime`.
 - Removed fabricated combinations from the route allowlist.
+- Assignment target projections are now version-specific. The published v1
+  `deviceAndAppManagementAssignmentTarget` has no filter properties; the beta
+  type does. Both inherit `groupId` through the group target subtype. The
+  collector removes unverified `entraObjectId` / `targetType` fields. The schema
+  verifier checks the actual projected target keys against each version, and
+  synthetic tests exercise v1 MAM/app/compliance targets and beta targets.
 
 ## Reproduce
 

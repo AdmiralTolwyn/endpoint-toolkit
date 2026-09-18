@@ -46,6 +46,15 @@ if (-not (Get-ContractMembers $Metadata['v1.0'] 'graph.managedDevice').ContainsK
 }
 foreach ($Contract in $Contracts) {
     $Enabled = [bool](Get-IntuneValue $Contract 'enabled' $true)
+    $Fields = if ($null -ne $Contract.PSObject.Properties['fields']) { @($Contract.fields) } else { @(Get-IntuneFieldList $Contract.module) }
+    if ('target' -in $Fields) {
+        $TargetMembers = Get-ContractMembers $Metadata[$Contract.version] 'graph.groupAssignmentTarget'
+        $Probe = @{ id = 'audit'; target = @{ '@odata.type' = '#microsoft.graph.groupAssignmentTarget'; groupId = 'audit'; entraObjectId = 'audit'; targetType = 'audit'; deviceAndAppManagementAssignmentFilterId = 'audit'; deviceAndAppManagementAssignmentFilterType = 'include' } }
+        $Projected = ConvertTo-IntuneSafeRow -Module $Contract.module -Row $Probe
+        foreach ($Key in $Projected.target.Keys) {
+            if ($Key -ne '@odata.type' -and -not $TargetMembers.ContainsKey($Key)) { throw ('Unsupported projected target field: ' + $Contract.module + '.' + $Key) }
+        }
+    }
     $Moniker = if ($Contract.version -eq 'v1.0') { '1.0' } else { $Contract.version }
     $Source = 'https://learn.microsoft.com/en-us/graph/api/' + $Contract.doc + '?view=graph-rest-' + $Moniker
     $Schema = $Metadata[$Contract.version]
@@ -63,7 +72,6 @@ foreach ($Contract in $Contracts) {
             $TypeName = Get-ContractTypeName $Members[$Segment].GetAttribute('Type')
         }
     }
-    $Fields = if ($null -ne $Contract.PSObject.Properties['fields']) { @($Contract.fields) } else { @(Get-IntuneFieldList $Contract.module) }
     $Family = [Collections.Generic.List[string]]::new()
     $Family.Add($TypeName)
     for ($Index = 0; $Index -lt $Family.Count; $Index++) {

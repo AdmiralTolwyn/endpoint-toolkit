@@ -127,7 +127,11 @@ function ConvertTo-IntuneSafeRow {
             $Safe[$Field] = @(foreach ($Item in $Value) { if ($Item -is [string] -and $Item.Length -le 128) { $Item } })
         } elseif ($Field -eq 'target') {
             $Target = [ordered]@{}
-            foreach ($Key in @('@odata.type', 'groupId', 'entraObjectId', 'targetType', 'deviceAndAppManagementAssignmentFilterId', 'deviceAndAppManagementAssignmentFilterType')) {
+            $TargetFields = @('@odata.type', 'groupId')
+            if ($Module -in @('ModernAssignments', 'LegacyAssignments', 'EnrollmentAssignments', 'AutopilotAssignments')) {
+                $TargetFields += @('deviceAndAppManagementAssignmentFilterId', 'deviceAndAppManagementAssignmentFilterType')
+            }
+            foreach ($Key in $TargetFields) {
                 $Item = Get-IntuneValue $Value $Key
                 if ($null -ne $Item -and $Item -is [string]) { $Target[$Key] = $Item }
             }
