@@ -1,5 +1,36 @@
 # W365Assessor Audit — July 2026
 
+## September 2026 Review Addendum
+
+The July findings below are historical, not evidence that the current collector
+has completed a trust audit. Source/code review on 18 September found open risks:
+
+- SEC-003 passes on a Windows 365-like profile name, without template/settings or effective assignment evidence.
+- SEC-002 conflates Intune compliance with Defender health and can treat missing compliance state as clean.
+- SEC-004 passes on any assigned tenant compliance policy, not demonstrated Cloud PC coverage.
+- Conditional Access checks omit app exclusions, user scope and MFA AND/OR semantics; presence of session controls is not proof of enforcement.
+- Tenant-wide analytics/update counts do not establish Cloud PC posture.
+- User-settings v1.0 does not document the projected DR/notification fields; gracePeriodInHours is read-only, not a configurable universal 1-168-hour target.
+- The older transport, optional consent behavior, API/field versions and report POST contracts still need end-to-end audit. They are not certified by the new reader's guards.
+
+Collector 0.3.0 adds one separate opt-in Assay comparison: UX Sync on beta
+sharedByEntraGroup Windows 365 policies against an explicit Enabled/Disabled
+customer target. Review/missing/unknown remains unassessed. No new scope, writes,
+storage access or live validation. Source contracts and usage are in [README.md](README.md#collector-030-assay-ux-sync-comparison).
+The legacy WPF catalog/importer remains unchanged. PowerShell 5.1/7 offline tests
+cover the production branch, typed enums, applicability, projection and pagination.
+
+Use Microsoft's [enterprise planning](https://learn.microsoft.com/en-us/windows-365/enterprise/planning-guide),
+[architecture](https://learn.microsoft.com/en-us/windows-365/enterprise/architecture),
+[security overview](https://learn.microsoft.com/en-us/windows-365/enterprise/security-guidelines),
+[baseline deployment](https://learn.microsoft.com/en-us/windows-365/enterprise/deploy-security-baselines)
+and [Conditional Access](https://learn.microsoft.com/en-us/windows-365/enterprise/set-conditional-access-policies)
+guidance as the primary authority. Cloud PCs do not support BitLocker or
+Administrator Protection per the current security overview; generic OS baselines
+need explicit applicability review.
+
+## Historical July Review
+
 Full audit mirroring the AvdAssessor program (see ../AvdAssessor/AUDIT.md for conventions): all 23
 Auto checks traced discovery→importer→catalog, all 128 checks drift-checked against July-2026
 Microsoft guidance, engine diffed against the (now-fixed) AvdAssessor defect set, 163 reference URLs

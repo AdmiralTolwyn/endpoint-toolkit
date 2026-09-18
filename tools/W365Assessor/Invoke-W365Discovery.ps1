@@ -22,14 +22,19 @@
     Threshold in days to flag Cloud PCs as inactive. Default: 30.
 .PARAMETER ImageAgeWarnDays
     Threshold in days to warn on stale custom images. Default: 90.
+.PARAMETER IncludeUserExperienceSync
+    Opt in to beta provisioning-policy metadata for User Experience Sync. Uses CloudPC.Read.All.
+.PARAMETER UserExperienceSyncTarget
+    Customer enablement target for all collected sharedByEntraGroup Windows 365 policies.
+    Review (default) retains evidence without a verdict. Enabled or Disabled compares policy intent only.
 .EXAMPLE
     .\Invoke-W365Discovery.ps1
     .\Invoke-W365Discovery.ps1 -TenantId "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
     .\Invoke-W365Discovery.ps1 -OutputPath "C:\temp\w365_discovery.json"
 .NOTES
     Author : Anton Romanyuk
-    Version: 0.2.0
-    Date   : 2026-07-18
+    Version: 0.3.0
+    Date   : 2026-09-18
 
     Required Graph scopes (core tier — requested unconditionally):
       CloudPC.Read.All                          Cloud PCs, provisioning/user policies, ANCs, images, reports
@@ -67,7 +72,12 @@ param(
     [int]$InactiveDays = 30,
 
     [Parameter(Mandatory = $false)]
-    [int]$ImageAgeWarnDays = 90
+    [int]$ImageAgeWarnDays = 90,
+
+    [switch]$IncludeUserExperienceSync,
+
+    [ValidateSet('Review','Enabled','Disabled')]
+    [string]$UserExperienceSyncTarget = 'Review'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -80,7 +90,7 @@ $env:PSModulePath = ($env:PSModulePath -split ';' |
 $ScriptRoot = $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($ScriptRoot)) { $ScriptRoot = $PWD.Path }
 
-$ScriptVersion = '0.2.0'
+$ScriptVersion = '0.3.0'
 # Windows 365 GA surface (cloudPCs, provisioningPolicies, userSettings) migrated to /v1.0.
 $GraphBaseV1   = 'https://graph.microsoft.com/v1.0/deviceManagement/virtualEndpoint'
 # Beta retained for endpoints not yet GA / verified beta-only: onPremisesConnections, deviceImages,
@@ -1511,6 +1521,31 @@ try {
             -Recommendation 'Grant the optional Policy.Read.All scope (admin consent) and re-run to assess Conditional Access coverage for Cloud PC sign-in.' `
             -Reference 'https://learn.microsoft.com/en-us/graph/api/resources/conditionalaccesspolicy' `
             -Evidence @{ RequiredScope = 'Policy.Read.All'; Error = $_.Exception.Message }))
+    }
+}
+
+if ($IncludeUserExperienceSync) {
+    try {
+        . (Join-Path $ScriptRoot 'W365UserExperienceSync.ps1')
+        $SyncEvidence = @(Invoke-W365UserExperienceSyncRead -ExpectedState $UserExperienceSyncTarget)
+        $Discovery.Inventory['UserExperienceSync'] = $SyncEvidence
+        foreach ($SyncPolicy in $SyncEvidence) {
+            [void]$AllChecks.Add((New-CheckResult `
+                -Id "W365-PROV-011-$($SyncPolicy.PolicyId)" -Category 'Provisioning Policies' `
+                -Name "User Experience Sync: $($SyncPolicy.PolicyId)" `
+                -Description 'Compare collected UX Sync intent with the explicit customer target for shared-mode policies.' `
+                -Status $SyncPolicy.Status -Severity 'High' -Details $SyncPolicy.Details `
+                -Recommendation 'Review persona requirements, assignment, actual profile persistence and pooled storage separately. Changing enablement can deprovision Cloud PCs; no changes are performed by discovery.' `
+                -Reference 'https://learn.microsoft.com/en-us/windows-365/enterprise/windows-365-flex-user-experience-sync' `
+                -Evidence $SyncPolicy))
+        }
+    } catch {
+        [void]$AllChecks.Add((New-CheckResult `
+            -Id 'W365-PROV-011-collection' -Category 'Provisioning Policies' `
+            -Name 'User Experience Sync collection incomplete' -Status 'Error' -Severity 'High' `
+            -Description 'The opt-in beta metadata collection did not complete.' `
+            -Details 'No UX Sync verdict is available. Check CloudPC.Read.All, API availability and the collector companion file.' `
+            -Reference 'https://learn.microsoft.com/en-us/graph/api/virtualendpoint-list-provisioningpolicies?view=graph-rest-beta'))
     }
 }
 

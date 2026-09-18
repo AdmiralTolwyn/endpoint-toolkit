@@ -1,5 +1,42 @@
 # Windows 365 Assessor
 
+## Collector 0.3.0: Assay UX Sync Comparison
+
+The collector now optionally emits `W365-PROV-011` for **Assay** (42 Auto / 90
+Manual). The legacy WPF catalog and the 41/91 counts below are unchanged; the
+legacy importer does not consume this new automatic result.
+
+```powershell
+.\Invoke-W365Discovery.ps1 -TenantId '<tenant-id>' `
+	-IncludeUserExperienceSync -UserExperienceSyncTarget Enabled
+```
+
+Keep `W365UserExperienceSync.ps1` beside the collector. `Enabled` or `Disabled`
+sets the customer's target for all collected shared-mode policies. `Review`
+(default) retains metadata without a verdict. Only the new opt-in slice is
+GET-only: beta provisioningPolicies, existing `CloudPC.Read.All`, four selected
+metadata fields, no settings changes or access to user storage. The older
+collector also contains report POSTs and has not completed a full contract audit.
+
+Sources: [product guidance](https://learn.microsoft.com/en-us/windows-365/enterprise/windows-365-flex-user-experience-sync),
+[GET/permissions](https://learn.microsoft.com/en-us/graph/api/virtualendpoint-list-provisioningpolicies?view=graph-rest-beta),
+[policy/applicability](https://learn.microsoft.com/en-us/graph/api/resources/cloudpcprovisioningpolicy?view=graph-rest-beta),
+[typed fields](https://learn.microsoft.com/en-us/graph/api/resources/cloudpcusersettingspersistenceconfiguration?view=graph-rest-beta).
+Unknown values stay unassessed; no default is inferred from absent properties.
+The comparison proves neither effective assignment nor successful profile
+persistence or capacity. UX Sync is not backup/DR; modifying existing assignments
+can deprovision Cloud PCs and delete user storage. This collector never does that.
+
+Run `Test-W365UserExperienceSync.ps1` in PowerShell 5.1/7 for offline tests of the
+reader and actual opt-in branch. Optional `ASSAY_W365_UXSYNC_FIXTURE` writes a
+synthetic production export for Assay ingest tests. No live Graph calls are made.
+Beta/runtime permissions and SDK behavior still require an authorized pilot.
+
+**Review warning:** existing SEC-002/003/004 and IAM-003/004/010/011 conclusions
+use incomplete posture/targeting heuristics. Do not treat a profile-name match,
+tenant policy count, or presence of an MFA grant as proof of Cloud PC protection.
+See the current [audit addendum](AUDIT.md#september-2026-review-addendum).
+
 **Assess Windows 365 (Cloud PC) Enterprise & Flex tenants against Microsoft CAF, Well-Architected Framework, Landing Zone Accelerator, and Security best practices.**
 
 Windows 365 Assessor is a PowerShell/WPF desktop application paired with a Microsoft Graph data collector. It combines automated tenant discovery with a workshop-friendly manual checklist — **132 checks across 12 categories** — to produce scored readiness reports with a six-dimension W365 maturity radar, category breakdowns, and exportable HTML / CSV / JSON deliverables.
@@ -412,7 +449,7 @@ W365Assessor/
 
 | Component | Version |
 |---|---|
-| `Invoke-W365Discovery.ps1` | 0.2.0 |
+| `Invoke-W365Discovery.ps1` | 0.3.0 |
 | `checks.json` | 1.1 (schema), 132 checks |
 | `W365Assessor.ps1` | 0.2.0 |
 
