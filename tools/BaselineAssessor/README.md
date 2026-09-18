@@ -4,7 +4,25 @@ BaselinePilot is a two-component security baseline assessment tool for Windows 1
 
 > The project folder is `tools/BaselineAssessor/` (matching this repo's tool-directory convention); the product itself is named **BaselinePilot** — the two names are not a typo.
 
-**Versions**: App `0.2.0` · Collector `1.1.0` · Catalog (`checks.json`) `1.1`. See [`AUDIT.md`](AUDIT.md) for the July 2026 audit and fix-pass history behind the current versions.
+**Versions**: App `0.2.0` · Collector `1.1.2` · Catalog (`checks.json`) `1.1`. See [`AUDIT.md`](AUDIT.md) for the July 2026 audit and fix-pass history behind the current versions.
+
+### Collector Evidence Review (18 September 2026)
+
+- Firewall profiles now use [ActiveStore](https://learn.microsoft.com/en-us/powershell/module/netsecurity/get-netfirewallprofile?view=windowsserver2025-ps), not the default PersistentStore. Unknown/NotConfigured values remain null, not false. Provider failures have explicit collection-failure markers.
+- The fields `RealTimeProtectionEnabled`, `BehaviorMonitoringEnabled` and `IoavProtectionEnabled` now represent [Get-MpComputerStatus](https://learn.microsoft.com/en-us/powershell/module/defender/get-mpcomputerstatus?view=windowsserver2025-ps) observations. Preference-derived intent is retained separately in `*Configured` fields. Missing status is not inferred from policy intent.
+- `TamperProtectionSource` retains the source property rather than duplicating `IsTamperProtected`. The [controlled-configuration reference](https://learn.microsoft.com/en-us/defender-endpoint/secure-controlled-configuration) documents their different meanings and preview limits.
+- Unavailable [Win32_DeviceGuard](https://learn.microsoft.com/en-us/windows/security/hardware-security/enable-virtualization-based-protection-of-code-integrity#use-win32_deviceguard-wmi-class) runtime evidence remains null, even if registry configuration exists. Known absent services remain false; configured and running states are distinct.
+
+Run `Test-BaselineCollector.ps1` for offline tests of the actual collector area
+bodies with mocked providers. It does not run the administrator-only collector
+or query the development device. Recollect with 1.1.2 for these fixes: older
+exports cannot recover provider provenance that was not recorded.
+
+The collector does not load `csp_metadata.json` or `admx_metadata.json`.
+BaselinePilot loads CSP metadata for UI/remediation enrichment, not as baseline
+targets; no ADMX loader is used in that app. Assay independently embeds its
+reviewed source/unified catalog and evaluates the exported JSON. The metadata
+files do not automatically change Assay checks, defaults or recommendations.
 
 ## Architecture
 

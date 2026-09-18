@@ -28,8 +28,8 @@
     Suppress console output (for automation).
 .NOTES
     Author : Anton Romanyuk
-    Version: 1.1.1
-    Date   : 2026-08-31
+    Version: 1.1.2
+    Date   : 2026-09-18
     Requires: PowerShell 5.1, Local Admin, No external modules
     Runs headless on arbitrary Windows targets (client, member server, DC, Server Core).
 .EXAMPLE
@@ -54,7 +54,7 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
-$Script:CollectorVersion = '1.1.1'
+$Script:CollectorVersion = '1.1.2'
 $Script:StartTime        = [DateTime]::Now
 # Area 3 (GPO/gpresult) only runs when -IncludeGpoData; Area 22 (events) only when not -SkipEventCollection.
 $Script:TotalAreas       = 20
@@ -1060,9 +1060,9 @@ $defenderConfig = Invoke-CollectionArea -Step 8 -Name 'Defender Configuration' -
 
     $result = @{ available = $true }
     if ($pref) {
-        $result['RealTimeProtectionEnabled']     = -not $pref.DisableRealtimeMonitoring
-        $result['BehaviorMonitoringEnabled']      = -not $pref.DisableBehaviorMonitoring
-        $result['IoavProtectionEnabled']          = -not $pref.DisableIOAVProtection
+        $result['RealTimeProtectionConfigured']   = if ($null -ne $pref.DisableRealtimeMonitoring) { -not $pref.DisableRealtimeMonitoring } else { $null }
+        $result['BehaviorMonitoringConfigured']   = if ($null -ne $pref.DisableBehaviorMonitoring) { -not $pref.DisableBehaviorMonitoring } else { $null }
+        $result['IoavProtectionConfigured']       = if ($null -ne $pref.DisableIOAVProtection) { -not $pref.DisableIOAVProtection } else { $null }
         $result['CloudBlockLevel']                = $pref.CloudBlockLevel
         $result['CloudExtendedTimeout']           = $pref.CloudExtendedTimeout
         $result['PUAProtection']                  = $pref.PUAProtection
@@ -1091,9 +1091,13 @@ $defenderConfig = Invoke-CollectionArea -Step 8 -Name 'Defender Configuration' -
         $result['AMServiceEnabled']                = $status.AMServiceEnabled
         $result['AntispywareEnabled']              = $status.AntispywareEnabled
         $result['AntivirusEnabled']                = $status.AntivirusEnabled
+        $result['RealTimeProtectionEnabled']       = $status.RealTimeProtectionEnabled
+        $result['BehaviorMonitoringEnabled']       = $status.BehaviorMonitorEnabled
+        $result['IoavProtectionEnabled']           = $status.IoavProtectionEnabled
+        $result['AMRunningMode']                   = $status.AMRunningMode
         $result['RealTimeProtectionRunning']       = $status.RealTimeProtectionEnabled
         $result['NISEnabled']                      = $status.NISEnabled
-        $result['TamperProtectionSource']          = try { $status.IsTamperProtected } catch { $null }
+        $result['TamperProtectionSource']          = try { $status.TamperProtectionSource } catch { $null }
         $result['IsTamperProtected']                = try { $status.IsTamperProtected } catch { $null }  # Alias for checks.json DEF-027
         $result['AntivirusSignatureAge']           = $status.AntivirusSignatureAge
         $result['AntivirusSignatureLastUpdated']   = try { $status.AntivirusSignatureLastUpdated.ToString('o') } catch { '' }
@@ -1111,24 +1115,34 @@ $defenderConfig = Invoke-CollectionArea -Step 8 -Name 'Defender Configuration' -
 
 $firewallProfiles = Invoke-CollectionArea -Step 9 -Name 'Firewall Profiles' -Sections @('firewall') -Script {
     $result = @{}
+    $ToBoolean = {
+        param($Value)
+        switch ([string]$Value) {
+            'True' { $true }
+            'False' { $false }
+            '1' { $true }
+            '0' { $false }
+            default { $null }
+        }
+    }
     try {
-        $profiles = Get-NetFirewallProfile -ErrorAction Stop
+        $profiles = Get-NetFirewallProfile -PolicyStore ActiveStore -ErrorAction Stop
         foreach ($p in $profiles) {
             $result[$p.Name] = @{
-                Enabled              = [bool]($p.Enabled -eq 'True' -or $p.Enabled -eq 1 -or $p.Enabled -eq 'True')
+                Enabled              = (& $ToBoolean $p.Enabled)
                 DefaultInboundAction = $p.DefaultInboundAction.ToString()
                 DefaultOutboundAction = $p.DefaultOutboundAction.ToString()
                 AllowLocalFirewallRules = $p.AllowLocalFirewallRules.ToString()
-                LogAllowed           = [bool]($p.LogAllowed -eq 'True' -or $p.LogAllowed -eq 1)
-                LogBlocked           = [bool]($p.LogBlocked -eq 'True' -or $p.LogBlocked -eq 1)
+                LogAllowed           = (& $ToBoolean $p.LogAllowed)
+                LogBlocked           = (& $ToBoolean $p.LogBlocked)
                 LogFileName          = $p.LogFileName
                 LogMaxSizeKilobytes  = $p.LogMaxSizeKilobytes
                 LogMaxSizeKB         = $p.LogMaxSizeKilobytes  # Alias used by checks.json
-                NotifyOnListen       = [bool]($p.NotifyOnListen -eq 'True' -or $p.NotifyOnListen -eq 1)
+                NotifyOnListen       = (& $ToBoolean $p.NotifyOnListen)
             }
         }
     } catch {
-        $result['error'] = $_.Exception.Message
+        $result = @{ _collectionFailed = $true; _error = $_.Exception.Message }
     }
     $result
 }
@@ -1207,21 +1221,21 @@ $credentialGuard = Invoke-CollectionArea -Step 12 -Name 'Credential Guard' -Sect
     @{
         VirtualizationBasedSecurityStatus    = if ($dg) { $dg.VirtualizationBasedSecurityStatus } else { $null }
         VbsStatusLabel                       = if ($dg) { $vbsStatusLabels[[int]$dg.VirtualizationBasedSecurityStatus] } else { $null }
-        SecurityServicesRunning              = if ($dg) { @($dg.SecurityServicesRunning | ForEach-Object { if ($secSvcLabels.ContainsKey([int]$_)) { $secSvcLabels[[int]$_] } else { $_ } }) } else { @() }
-        SecurityServicesConfigured           = if ($dg) { @($dg.SecurityServicesConfigured | ForEach-Object { if ($secSvcLabels.ContainsKey([int]$_)) { $secSvcLabels[[int]$_] } else { $_ } }) } else { @() }
+        SecurityServicesRunning              = if ($dg -and $null -ne $dg.SecurityServicesRunning) { @($dg.SecurityServicesRunning | ForEach-Object { if ($secSvcLabels.ContainsKey([int]$_)) { $secSvcLabels[[int]$_] } else { $_ } }) } else { $null }
+        SecurityServicesConfigured           = if ($dg -and $null -ne $dg.SecurityServicesConfigured) { @($dg.SecurityServicesConfigured | ForEach-Object { if ($secSvcLabels.ContainsKey([int]$_)) { $secSvcLabels[[int]$_] } else { $_ } }) } else { $null }
         RequiredSecurityProperties           = if ($dg) { @($dg.RequiredSecurityProperties | ForEach-Object { if ($secPropLabels.ContainsKey([int]$_)) { $secPropLabels[[int]$_] } else { $_ } }) } else { @() }
         AvailableSecurityProperties          = if ($dg) { @($dg.AvailableSecurityProperties | ForEach-Object { if ($secPropLabels.ContainsKey([int]$_)) { $secPropLabels[[int]$_] } else { $_ } }) } else { @() }
         CredentialGuardConfigured            = Read-RegistryValue -Path 'HKLM\SYSTEM\CurrentControlSet\Control\Lsa' -Name 'LsaCfgFlags'
         HVCIEnabled                          = Read-RegistryValue -Path 'HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity' -Name 'Enabled'
         # Summary booleans derived from WMI (see MS docs: Win32_DeviceGuard)
         # VBS status: 0=Not enabled, 1=Enabled but not running, 2=Running
-        VbsRunning                           = if ($dg -and $dg.VirtualizationBasedSecurityStatus -eq 2) { $true } else { $false }
+        VbsRunning                           = if ($dg -and $null -ne $dg.VirtualizationBasedSecurityStatus) { $dg.VirtualizationBasedSecurityStatus -eq 2 } else { $null }
         # SecurityServicesConfigured/Running: 1=Credential Guard, 2=Memory Integrity (HVCI), 3=System Guard
-        CredentialGuardIsConfigured          = if ($dg -and $dg.SecurityServicesConfigured -contains 1) { $true } else { $false }
-        CredentialGuardIsRunning             = if ($dg -and $dg.SecurityServicesRunning -contains 1) { $true } else { $false }
-        MemoryIntegrityIsConfigured          = if ($dg -and $dg.SecurityServicesConfigured -contains 2) { $true } else { $false }
-        MemoryIntegrityIsRunning             = if ($dg -and $dg.SecurityServicesRunning -contains 2) { $true } else { $false }
-        HypervisorEnforcedCodeIntegrityEnabled = if ($dg -and $dg.SecurityServicesRunning -contains 2) { $true } else { $false }
+        CredentialGuardIsConfigured          = if ($dg -and $null -ne $dg.SecurityServicesConfigured) { $dg.SecurityServicesConfigured -contains 1 } else { $null }
+        CredentialGuardIsRunning             = if ($dg -and $null -ne $dg.SecurityServicesRunning) { $dg.SecurityServicesRunning -contains 1 } else { $null }
+        MemoryIntegrityIsConfigured          = if ($dg -and $null -ne $dg.SecurityServicesConfigured) { $dg.SecurityServicesConfigured -contains 2 } else { $null }
+        MemoryIntegrityIsRunning             = if ($dg -and $null -ne $dg.SecurityServicesRunning) { $dg.SecurityServicesRunning -contains 2 } else { $null }
+        HypervisorEnforcedCodeIntegrityEnabled = if ($dg -and $null -ne $dg.SecurityServicesRunning) { $dg.SecurityServicesRunning -contains 2 } else { $null }
     }
 }
 
