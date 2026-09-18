@@ -1,5 +1,21 @@
 # BaselinePilot Audit — July 2026
 
+## September 18 Addendum: Assay Applicability
+
+Collector 1.3.0 adds optional `-AssessmentProfile Windows365CloudPc`, based on the
+current [Windows 365 security overview](https://learn.microsoft.com/en-us/windows-365/enterprise/security-guidelines).
+It exports an operator-declared, versioned profile; default Generic is unchanged.
+Assay excludes unsupported guest BitLocker and Administrator Protection controls,
+keeps removable-media scope unresolved, and rejects malformed/conflicting profiles.
+Baseline Pass plus an unknown machine now remains unassessed. No new security
+target, live collection, automatic Cloud PC detection or WPF evaluator change is
+claimed. See [current usage](README.md#assay-cloud-pc-applicability-130).
+Production export/parameter tests run offline in PowerShell 5.1/7; native import,
+persistence, reporting and mixed-machine behavior are covered in Assay tests.
+The original audit below is historical and does not certify these new paths.
+
+## Original July Audit
+
 Full audit per the AvdAssessor program conventions (../AvdAssessor/AUDIT.md). All 308 checks'
 collectionKeys resolved programmatically against the collector's modeled output shape; baseline
 values web-verified against July-2026 Microsoft guidance; engine + collector + tests + hygiene

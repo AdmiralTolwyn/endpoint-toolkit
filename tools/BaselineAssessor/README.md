@@ -4,7 +4,33 @@ BaselinePilot is a two-component security baseline assessment tool for Windows 1
 
 > The project folder is `tools/BaselineAssessor/` (matching this repo's tool-directory convention); the product itself is named **BaselinePilot** — the two names are not a typo.
 
-**Versions**: App `0.2.0` · Collector `1.2.1` · Catalog (`checks.json`) `1.1`. See [`AUDIT.md`](AUDIT.md) for the July 2026 audit and fix-pass history behind the current versions.
+**Versions**: App `0.2.0` · Collector `1.3.0` · Catalog (`checks.json`) `1.1`. See [`AUDIT.md`](AUDIT.md) for the July 2026 audit and fix-pass history behind the current versions.
+
+### Assay Cloud PC Applicability (1.3.0)
+
+```powershell
+.\Invoke-BaselineCollection.ps1 -AssessmentProfile Windows365CloudPc -OutputPath .\cloud-pc-baseline.json
+```
+
+Use only for independently identified Windows 365 Cloud PCs. This adds an explicit
+operator declaration (`assessmentContext`: schema 1.0, windows365-cloud-pc,
+profile version 2026-09-18, selectionSource Operator); it does not detect devices,
+skip collection or change configuration. Default `Generic` omits the declaration.
+
+The updated **Assay** importer excludes eight guest BitLocker controls and UAC-011
+Administrator Protection, based on Microsoft's [security overview](https://learn.microsoft.com/en-us/windows-365/enterprise/security-guidelines).
+Removable-drive encryption DATA-013 stays unassessed for scope review. This is a
+bounded exclusion overlay, not a complete Cloud PC security baseline. Other targets
+are unchanged; service-side encryption and recovery protection are not evaluated.
+Malformed/unsupported declarations or conflicting/missing client metadata stay
+unassessed. Declaration provenance is not authenticated device identity.
+
+The legacy WPF evaluator does **not** implement the profile. Existing exports and
+saved assessments are not automatically migrated. Assay retains profile evidence
+in results/reports, and mixed-machine Pass plus unknown no longer yields Pass.
+`Test-BaselineApplicability.ps1` exercises actual production parameter/export blocks
+without running the administrator collector. Set `ASSAY_BASELINE_APPLICABILITY_FIXTURE`
+to a local output path to write synthetic production JSON for native tests.
 
 Collector 1.2.1 adds a read-only [Get-TlsCipherSuite](https://learn.microsoft.com/en-us/powershell/module/tls/get-tlsciphersuite?view=windowsserver2025-ps)
 inventory under `tlsConfig.cipherSuites`, with provider, names and explicit
@@ -184,6 +210,7 @@ Import the JSON file in the GUI → Dashboard populates with scores, findings, a
 | `-EventSummaryOnly` | `$false` | Counts + top-N stats only |
 | `-IncludeGpoData` | `$false` | Opt-in to Area 3 (`gpresult /scope computer`) — the most expensive/fragile collection step; skipped by default |
 | `-IncludeSpeculationControl` | `$false` | Query the embedded Microsoft 1.0.19 detector; export explicit mitigation state and provenance without external modules or remediation |
+| `-AssessmentProfile` | `Generic` | `Windows365CloudPc` records an operator-selected versioned applicability declaration for the updated Assay importer; no automatic detection |
 | `-Quiet` | `$false` | Suppress console output |
 
 ### Join Type Awareness

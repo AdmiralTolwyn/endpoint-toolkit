@@ -29,9 +29,13 @@
 .PARAMETER IncludeSpeculationControl
     Opt-in: query mitigation state with embedded Microsoft SpeculationControl 1.0.19.
     No module installation, download, policy change or firmware action is performed.
+.PARAMETER AssessmentProfile
+    Generic (default) preserves existing evaluation. Windows365CloudPc explicitly
+    declares Cloud PC applicability for the updated Assay importer; not device detection.
+    This does not skip collection, change policy, or update the legacy WPF evaluator.
 .NOTES
     Author : Anton Romanyuk
-    Version: 1.2.1
+    Version: 1.3.0
     Date   : 2026-09-18
     Requires: PowerShell 5.1, Local Admin, No external modules
     Runs headless on arbitrary Windows targets (client, member server, DC, Server Core).
@@ -54,11 +58,13 @@ param(
     [switch]$EventSummaryOnly,
     [switch]$IncludeGpoData,
     [switch]$IncludeSpeculationControl,
+    [ValidateSet('Generic','Windows365CloudPc')]
+    [string]$AssessmentProfile = 'Generic',
     [switch]$Quiet
 )
 
 $ErrorActionPreference = 'Continue'
-$Script:CollectorVersion = '1.2.1'
+$Script:CollectorVersion = '1.3.0'
 $Script:StartTime        = [DateTime]::Now
 # Area 3 (GPO/gpresult) only runs when -IncludeGpoData; Area 22 (events) only when not -SkipEventCollection.
 $Script:TotalAreas       = 20
@@ -2589,6 +2595,7 @@ $output = [ordered]@{
             eventSummaryOnly   = [bool]$EventSummaryOnly
             includeGpoData     = [bool]$IncludeGpoData
             includeSpeculationControl = [bool]$IncludeSpeculationControl
+            assessmentProfile = $AssessmentProfile
         }
     }
     systemInfo        = $systemInfo
@@ -2615,6 +2622,15 @@ $output = [ordered]@{
     winrmConfig       = $winrmConfig
     eventLogMetadata  = $eventLogMetadata
     eventData         = $eventData
+}
+
+if ($AssessmentProfile -eq 'Windows365CloudPc') {
+    $output['assessmentContext'] = [ordered]@{
+        schemaVersion = '1.0'
+        profileId = 'windows365-cloud-pc'
+        profileVersion = '2026-09-18'
+        selectionSource = 'Operator'
+    }
 }
 
 # ═══════════════════════════════════════════════════════════════════════
