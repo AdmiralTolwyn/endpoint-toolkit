@@ -109,14 +109,23 @@ is added. Import the companion file using `-EndpointEvidencePaths`; select manag
 device IDs and confirm scope/freshness in the existing Assay evidence workflow.
 The cloud collector does not remotely execute the endpoint companion.
 
-Assay N-01 (rules 1.4.0-preview) distinguishes all five [CFA modes](https://learn.microsoft.com/en-us/defender-endpoint/controlled-folder-access-overview)
+Assay N-01 (rules 1.4.1-preview) distinguishes all five [CFA modes](https://learn.microsoft.com/en-us/defender-endpoint/controlled-folder-access-overview)
 and reports active-AV/real-time prerequisites separately. The [PowerShell reference](https://learn.microsoft.com/en-us/defender-endpoint/controlled-folder-access-configure#enable-and-configure-cfa-in-powershell)
 documents the exact field and integer/named values. [Defender compatibility](https://learn.microsoft.com/en-us/defender-endpoint/microsoft-defender-antivirus-compatibility)
 explains why passive/EDR-block status is not active CFA protection.
 
-This is unscored Observed/NotAssessed evidence, never an automatic Pass or Warning.
+By default this is unscored Observed/NotAssessed evidence. Assay's Reference tab
+now offers **CFA mode target**, default Observe only. The optional exact
+`ConfigurationReview.ControlledFolderAccessTarget` accepts Disabled, Enabled,
+AuditMode, BlockDiskModificationOnly or AuditDiskModificationOnly. A matching
+non-disabled target requires observed active AV/real-time prerequisites for Pass;
+known mismatch or unmet prerequisites yields Warning. Matching Disabled does not
+require active CFA, but still requires known evidence. Unknown evidence stays
+unassessed; no fleet/protection verdict is implied. Clearing the target restores
+observation-only behavior. Targets apply uniformly to the selected samples.
+
 Audit and Disabled are not universal policy violations; disk-only modes do not
-protect files in folders. No customer rollout target, folder/app lists, effective
+protect files in folders. No folder/app lists, effective
 assignment or actual block event is evaluated. Missing/unknown fields and stale,
 ambiguous or incomplete selected-device evidence stay unassessed. Old samples
 without this field do not acquire an inferred default. Provider projection does
@@ -168,8 +177,9 @@ fields after checking local device/tenant identity. No automatic elevation or
 remediation. Attach samples using `-EndpointEvidencePaths '.\endpoint.json'` in
 the discovery command. The tenant collector never remotely runs the companion.
 
-Assay exposes 99 supplementary unscored findings: 63 bounded comparison entries
-and 36 evidence entries. All have handlers, but several cover only part of their
+Assay exposes 99 supplementary unscored findings: by default 63 bounded comparison
+entries and 36 evidence entries (64/35 with an explicit CFA target). All have
+handlers, but several cover only part of their
 feature; evidence collection is not complete automatic assessment. The original
 50-control scoring catalog remains unchanged. Set reference/scenario scope in
 the native evidence dialog. `ASSAY_INTUNE_EXPANSION_FIXTURE` optionally writes a

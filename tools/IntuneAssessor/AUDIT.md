@@ -7,6 +7,10 @@ September 18 CFA follow-up (collector 0.5.2): the endpoint companion adds only
 mode contract](https://learn.microsoft.com/en-us/defender-endpoint/controlled-folder-access-configure).
 Assay N-01 retains five-mode semantics and separate active-AV/real-time prerequisite
 observations; no target-based score, folder/app scope or block outcome is inferred.
+Assay rules 1.4.1-preview now allow an explicit customer mode target in the Reference
+tab. This adds an unscored, prerequisite-aware comparison; Observe only remains
+the default. The existing collector preserves supplied requirements without new
+commands, routes or permissions. Target-preservation tests cover all five choices.
 No new command, API or scope. Production callback/import tests mock all providers
 and HTTP, including tenant rejection and privacy. Live serialization remains open.
 

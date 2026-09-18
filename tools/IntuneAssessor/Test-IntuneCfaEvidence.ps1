@@ -67,6 +67,13 @@ try {
     }
     if ($Document.CollectionStatus.EndpointEvidence.State -cne 'Complete' -or $Document.Inventory.EndpointEvidence[0].modules.DefenderPreferences.Rows[0].EnableControlledFolderAccess -ne 3) { throw 'Production import dropped CFA evidence' }
     if (($Document | ConvertTo-Json -Depth 30) -match 'PRIVATE_PATH|DO_NOT_EXPORT') { throw 'Unreviewed fields retained' }
+    foreach ($Target in @('Disabled','Enabled','AuditMode','BlockDiskModificationOnly','AuditDiskModificationOnly')) {
+        $Targeted = Invoke-IntuneDiscoveryCore -SelectedTenant $Tenant -EndpointPaths @($Temporary) -Request $Request -Requirements @{
+            ScopeConfirmed = $true; ScopeDescription = 'Synthetic explicit target'; Assessor = 'Test'; MaxCollectionAgeHours = 24
+            ConfigurationReview = @{ DeviceIds = @('device'); ControlledFolderAccessTarget = $Target }
+        }
+        if ($Targeted.AssessmentRequirements.ConfigurationReview.ControlledFolderAccessTarget -cne $Target -or $Targeted.Inventory.EndpointEvidence[0].modules.DefenderPreferences.Rows[0].EnableControlledFolderAccess -ne 3) { throw 'Customer target or observed evidence changed during import' }
+    }
     $Sample.TenantId = '44444444-4444-4444-8444-444444444444'
     [IO.File]::WriteAllText($Temporary, ($Sample | ConvertTo-Json -Depth 15), [Text.UTF8Encoding]::new($false))
     $Rejected = $false
