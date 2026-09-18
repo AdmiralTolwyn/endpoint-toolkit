@@ -2,6 +2,16 @@
 
 Date: 2026-09-17. Status: **partial audit, not production certification**.
 
+Assay rules 1.6.0-preview add N-04-AGE using the existing reported signature time.
+The optional customer MaxSignatureAgeHours is preserved by existing collector
+0.5.5 requirement handling, with 0/2/87600 tested through the production import
+on PowerShell 5.1/7. No new provider, field, route, scope or update operation.
+Native age-at-assessment comparisons require qualified/ordered timestamps and
+fresh, complete selected evidence; no target means observation only. The input
+cap/status mapping is Assay behavior, not Microsoft freshness guidance. No claim
+of latest-release currency, update delivery or protection. See
+[age comparison limits](README.md#reported-signature-update-age-assay-160-preview).
+
 September 18 timestamp repair (collector 0.5.5 / Assay rules 1.5.2-preview):
 AntivirusSignatureLastUpdated no longer gains an assumed timezone from an
 Unspecified DateTime. The required IntuneEndpointTimestamps companion normalizes

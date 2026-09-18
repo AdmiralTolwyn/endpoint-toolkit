@@ -123,9 +123,36 @@ or unreviewed types stay unavailable; no default is inferred. Adjacent Defender
 fields survive. Rules 1.5.2-preview apply corresponding guards to direct native
 imports. Historical lost timezone information requires recollection, not guessing.
 Valid syntax is not clock accuracy, signature freshness or update-health proof.
-No new fields, commands, permissions, findings or scores. Freshness comparison
-remains unimplemented. Test-IntuneSignatureTimestamp uses injected values only;
+That integrity repair added no fields, commands, permissions, findings or scores.
+The separate signature-age comparison below now uses this evidence.
+Test-IntuneSignatureTimestamp uses injected values only;
 ASSAY_INTUNE_SIGNATURE_TIME_FIXTURE optionally writes native-test cases.
+
+### Reported Signature-Update Age (Assay 1.6.0-preview)
+
+Assay N-04-AGE uses the already collected `AntivirusSignatureLastUpdated` from
+[Get-MpComputerStatus](https://learn.microsoft.com/en-us/powershell/module/defender/get-mpcomputerstatus?view=windowsserver2025-ps).
+Age is measured at the assessment-as-of time. It defaults to Observed / Evidence;
+the optional Reference input **Signature-update age limit (hours)** supplies
+`AssessmentRequirements.ConfigurationReview.MaxSignatureAgeHours`. Accepted values
+are integers 0-87600; absent/null means no target. These are customer/Assay inputs,
+not a Microsoft freshness SLA. At or below the inclusive limit is Pass, above it
+Warning, using full timestamp precision. Clearing the input restores observation.
+
+The selected Windows device must uniquely match one fresh, complete endpoint
+sample and one Complete DefenderStatus row. All four signature/sample/completion/
+assessment times require supported explicit instants and valid ordering. Missing,
+unknown-offset, future, stale or incomplete evidence cannot establish a clean
+Pass. `MaxCollectionAgeHours` remains an independent sample-age gate. Preferences
+or active antivirus are not prerequisites for a timestamp-age comparison.
+This is not proof of latest security intelligence, current device state, update
+delivery, active protection or platform/engine currency. Clocks/identity are not
+authenticated; old timestamp provenance cannot be recovered.
+
+Collector production remains 0.5.5: its existing requirement pass-through retains
+the limit without a new field, command, permission or update action. Offline
+production-import tests in PowerShell 5.1/7 preserve 0, 2 and 87600; native and
+application tests cover boundaries, target changes, persistence and reports.
 
 ### Defender Update Cadence (0.5.4)
 
@@ -246,8 +273,9 @@ fields after checking local device/tenant identity. No automatic elevation or
 remediation. Attach samples using `-EndpointEvidencePaths '.\endpoint.json'` in
 the discovery command. The tenant collector never remotely runs the companion.
 
-Assay exposes 101 supplementary unscored findings: by default 63 bounded comparison
-entries and 38 evidence entries (64/37 with an explicit CFA target). All have
+Assay exposes 102 supplementary unscored findings: by default 63 bounded comparison
+entries and 39 evidence entries (64/38 with either an explicit CFA target or a
+signature-age limit; 65/37 with both). All have
 handlers, but several cover only part of their
 feature; evidence collection is not complete automatic assessment. The original
 50-control scoring catalog remains unchanged. Set reference/scenario scope in

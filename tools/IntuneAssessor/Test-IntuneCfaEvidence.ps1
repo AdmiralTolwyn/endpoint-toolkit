@@ -98,6 +98,13 @@ try {
         }
         if ($Targeted.AssessmentRequirements.ConfigurationReview.ControlledFolderAccessTarget -cne $Target -or $Targeted.Inventory.EndpointEvidence[0].modules.DefenderPreferences.Rows[0].EnableControlledFolderAccess -ne 3) { throw 'Customer target or observed evidence changed during import' }
     }
+    foreach ($Limit in @(0,2,87600)) {
+        $Limited = Invoke-IntuneDiscoveryCore -SelectedTenant $Tenant -EndpointPaths @($Temporary) -Request $Request -Requirements @{
+            ScopeConfirmed = $true; ScopeDescription = 'Synthetic signature-age limit'; Assessor = 'Test'; MaxCollectionAgeHours = 24
+            ConfigurationReview = @{ DeviceIds = @('device'); MaxSignatureAgeHours = $Limit }
+        }
+        if ($Limited.AssessmentRequirements.ConfigurationReview.MaxSignatureAgeHours -ne $Limit -or $Limited.Inventory.EndpointEvidence[0].modules.DefenderStatus.Rows[0].AntivirusSignatureLastUpdated -cne '2026-09-18T08:00:00.0000000Z') { throw 'Signature-age requirement or evidence changed during import' }
+    }
     $Sample.TenantId = '44444444-4444-4444-8444-444444444444'
     [IO.File]::WriteAllText($Temporary, ($Sample | ConvertTo-Json -Depth 15), [Text.UTF8Encoding]::new($false))
     $Rejected = $false
