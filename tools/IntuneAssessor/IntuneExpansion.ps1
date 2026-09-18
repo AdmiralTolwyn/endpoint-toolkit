@@ -81,6 +81,9 @@ function ConvertTo-IntuneSettingFacts {
     $DefinitionId = [string](Get-IntuneValue $Instance 'settingDefinitionId')
     $Definition = @($Definitions | Where-Object { (Get-IntuneValue $_ 'id') -ceq $DefinitionId })
     $Fact = [ordered]@{ id = ($SettingId + ':' + $DefinitionId); parentId = $PolicyId; definitionId = $DefinitionId; resolution = 'UnsupportedDefinition' }
+    $Choice = Get-IntuneValue $Instance 'choiceSettingValue'
+    $Simple = Get-IntuneValue $Instance 'simpleSettingValue'
+    $MixedValueKinds = $null -ne $Choice -and $null -ne $Simple
     if ($Definition.Count -eq 1) {
         $Path = (([string](Get-IntuneValue $Definition[0] 'baseUri')).TrimEnd('/') + '/' + ([string](Get-IntuneValue $Definition[0] 'offsetUri')).TrimStart('/')) -creplace '^\./(Device/)?Vendor/MSFT/', ''
         $EpmPath = Get-IntuneEpmPath $Definition[0]
@@ -88,16 +91,15 @@ function ConvertTo-IntuneSettingFacts {
         if ($EpmPath -or (Test-IntuneSecurityPath $Path) -or (Test-IntuneExtendedPath $Path)) {
             $Fact['cspUri'] = $Path
             $Fact['definitionVersion'] = [string](Get-IntuneValue $Definition[0] 'version')
-            $Choice = Get-IntuneValue $Instance 'choiceSettingValue'
-            $Simple = Get-IntuneValue $Instance 'simpleSettingValue'
             $Fact['resolution'] = 'UnresolvedValue'
-            $Selected = $Simple
+            if ($MixedValueKinds) { return $Fact }
+            $Selected = $null
             if ($null -ne $Choice) {
                 $Options = @(foreach ($Option in (Get-IntuneValue $Definition[0] 'options' @())) {
                     if ((Get-IntuneValue $Option 'itemId') -ceq (Get-IntuneValue $Choice 'value')) { $Option }
                 })
                 if ($Options.Count -eq 1) { $Selected = Get-IntuneValue $Options[0] 'optionValue' }
-            }
+            } else { $Selected = $Simple }
             $Template = Get-IntuneValue $Selected 'settingValueTemplateReference'
             $ChoiceTemplate = Get-IntuneValue $Choice 'settingValueTemplateReference'
             $Scalar = Get-IntuneValue $Selected 'value'
@@ -119,6 +121,7 @@ function ConvertTo-IntuneSettingFacts {
         }
     }
     if ($DefinitionId) { $Fact }
+    if ($MixedValueKinds) { return }
     $Ordinal = 0
     foreach ($ValueName in @('choiceSettingValue', 'groupSettingCollectionValue', 'choiceSettingCollectionValue')) {
         foreach ($SettingValue in (Get-IntuneValue $Instance $ValueName @())) {

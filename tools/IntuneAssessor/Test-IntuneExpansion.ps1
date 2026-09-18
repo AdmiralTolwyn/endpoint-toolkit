@@ -33,6 +33,31 @@ foreach ($Uri in @('https://graph.microsoft.com/v1.0/directory/deviceLocalCreden
 $Definition = @{ id = 'opaque'; baseUri = './Device/Vendor/MSFT/Policy/Config/Defender'; offsetUri = 'AllowCloudProtection'; version = '1'; options = @(@{ itemId = 'opaque_disabled_1'; optionValue = @{ value = 0 } }, @{ itemId = 'opaque_enabled_0'; optionValue = @{ value = 1 } }) }
 $Facts = @(ConvertTo-IntuneSettingFacts @{ settingDefinitionId = 'opaque'; choiceSettingValue = @{ value = 'opaque_disabled_1' } } @($Definition) 'policy' 'setting')
 Assert-Expansion ($Facts[0].value -eq 0 -and $Facts[0].resolution -eq 'Resolved') 'Choice suffix guessed instead of definition join'
+foreach ($ChoiceValue in @('missing-option', 'opaque_enabled_0')) {
+    $AmbiguousFacts = @(ConvertTo-IntuneSettingFacts @{ settingDefinitionId = 'opaque'; choiceSettingValue = @{ value = $ChoiceValue }; simpleSettingValue = @{ value = 1 } } @($Definition) 'policy' 'ambiguous')
+    Assert-Expansion ($AmbiguousFacts[0].resolution -eq 'UnresolvedValue' -and -not $AmbiguousFacts[0].Contains('value')) 'Mixed choice/simple payload fabricated a resolved value'
+}
+$ChildDefinition = @{ id = 'child'; baseUri = './Device/Vendor/MSFT/Policy/Config/Defender'; offsetUri = 'AllowBehaviorMonitoring' }
+$ChildInstance = @{ settingDefinitionId = 'child'; simpleSettingValue = @{ value = 1 } }
+foreach ($ParentKind in @('known', 'unknown', 'duplicate-definition', 'admx')) {
+    foreach ($DecodeJson in @($false, $true)) {
+        $ParentDefinition = $Definition.Clone()
+        if ($ParentKind -eq 'unknown') { $ParentDefinition.offsetUri = 'Unreviewed' }
+        if ($ParentKind -eq 'admx') { $ParentDefinition.baseUri = './Device/Vendor/MSFT'; $ParentDefinition.offsetUri = 'Policy/Config/InternetExplorer/DisableInternetExplorerLaunchViaCOM' }
+        $Definitions = @($ParentDefinition, $ChildDefinition)
+        if ($ParentKind -eq 'duplicate-definition') { $Definitions += $ParentDefinition.Clone() }
+        $Instance = @{ settingDefinitionId = 'opaque'; choiceSettingValue = @{ value = 'opaque_enabled_0'; children = @($ChildInstance) }; simpleSettingValue = @{ value = '<enabled/>' } }
+        if ($DecodeJson) {
+            $Instance = $Instance | ConvertTo-Json -Depth 15 | ConvertFrom-Json
+            $Definitions = @($Definitions | ConvertTo-Json -Depth 15 | ConvertFrom-Json)
+        }
+        $MixedFacts = @(ConvertTo-IntuneSettingFacts $Instance $Definitions 'policy' 'mixed')
+        Assert-Expansion ($MixedFacts.Count -eq 1 -and -not $MixedFacts[0].Contains('value') -and -not $MixedFacts[0].Contains('admx')) "Mixed $ParentKind parent produced value or descendant evidence"
+        Assert-Expansion ($MixedFacts[0].resolution -in @('UnresolvedValue', 'UnsupportedDefinition')) 'Mixed payload lost its unresolved marker'
+    }
+}
+$GroupFacts = @(ConvertTo-IntuneSettingFacts @{ settingDefinitionId = 'group'; groupSettingCollectionValue = @(@{ children = @($ChildInstance) }) } @($ChildDefinition) 'policy' 'group')
+Assert-Expansion ($GroupFacts.Count -eq 2 -and $GroupFacts[1].value -eq 1 -and $GroupFacts[1].resolution -eq 'Resolved') 'Valid nested-group child lost during ambiguity handling'
 $Facts = @(ConvertTo-IntuneSettingFacts @{ settingDefinitionId = 'password'; simpleSettingValue = @{ value = 'SECRET' } } @(@{ id = 'password'; baseUri = './Device/Vendor/MSFT'; offsetUri = 'Unreviewed/Password' }) 'policy' 'setting')
 Assert-Expansion (-not (($Facts | ConvertTo-Json -Depth 20).Contains('SECRET'))) 'Unknown setting secret retained'
 $Facts = @(ConvertTo-IntuneSettingFacts @{ settingDefinitionId = 'opaque'; choiceSettingValue = @{ value = 'opaque_enabled_0'; settingValueTemplateReference = @{ useTemplateDefault = $true } } } @($Definition) 'policy' 'setting')

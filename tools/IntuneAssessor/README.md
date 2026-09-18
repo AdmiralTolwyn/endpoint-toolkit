@@ -1,6 +1,6 @@
 # Intune Discovery for Assay
 
-Version 0.5.7. Experimental pending a live tenant pilot. Offline-tested with
+Version 0.5.8. Experimental pending a live tenant pilot. Offline-tested with
 Windows PowerShell 5.1 and PowerShell 7.
 
 The [contract audit](AUDIT.md) currently verifies 49 enabled Graph GET contracts
@@ -10,6 +10,29 @@ remain separate gates; do not label the full collector audit complete.
 Exports read-only observations for Assay's Intune pack. Assay owns control
 definitions and scores: 50 source-linked controls, two bounded automatic checks,
 and 48 evidence-assisted manual checks. The collector does not mutate a tenant.
+
+## Mixed Setting Decoder Repair (0.5.8)
+
+The setting decoder now rejects a node containing both non-null
+`choiceSettingValue` and `simpleSettingValue`. Previously, a failed choice lookup
+could fall back to the simple value; a valid choice could also silently ignore
+the contradictory simple value. Unknown mixed parents could emit resolved children.
+The repaired decoder retains unresolved metadata and stops descending through the
+mixed node. No scalar, ADMX value or raw payload is exported for that node.
+Other independent settings and supported nested groups continue to decode.
+
+Microsoft documents separate [choice](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationchoicesettinginstance?view=graph-rest-beta)
+and [simple](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationsimplesettinginstance?view=graph-rest-beta)
+instance shapes. This is a bounded rejection of their unsupported coexistence,
+not a full type/collection/enum audit. No live Graph payload is claimed to have
+triggered the bug. Tests use injected dictionary and JSON-decoded objects.
+
+Recollect affected policy evidence: an older export that already labels a scalar
+Resolved cannot reconstruct the original discarded ambiguity. Assay rules remain
+1.8.0-preview, with no count/score changes or automatic snapshot migration. New
+unresolved facts cannot establish RTP-01/BM-01 references. The offline production
+test can write `ASSAY_INTUNE_MIXED_SETTING_FIXTURE` for native/app regressions,
+including persistence and reports. No new route, permission or provider.
 
 ## Run
 

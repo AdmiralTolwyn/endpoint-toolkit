@@ -158,6 +158,7 @@ try {
         }
         if ($Limited.AssessmentRequirements.ConfigurationReview.MaxSignatureAgeHours -ne $Limit -or $Limited.Inventory.EndpointEvidence[0].modules.DefenderStatus.Rows[0].AntivirusSignatureLastUpdated -cne '2026-09-18T08:00:00.0000000Z') { throw 'Signature-age requirement or evidence changed during import' }
     }
+    $script:MixedCorrelation = $false
     $CorrelationRequest = {
         param($Uri)
         $Path = ([uri]$Uri).AbsolutePath
@@ -169,6 +170,10 @@ try {
                 $Choice = if ($Path -eq '/beta/deviceManagement/configurationPolicies/policy-on/settings') { 'opaque_enabled_0' } else { 'opaque_disabled_1' }
                 $BehaviorChoice = if ($Choice -ceq 'opaque_enabled_0') { 'opaque_disabled_1' } else { 'opaque_enabled_0' }
                 $Rows = @(@{ id = '0'; settingInstance = @{ settingDefinitionId = 'rtp'; choiceSettingValue = @{ value = $Choice } } }, @{ id = '1'; settingInstance = @{ settingDefinitionId = 'behavior'; choiceSettingValue = @{ value = $BehaviorChoice } } })
+                if ($script:MixedCorrelation) {
+                    $Rows[0].settingInstance.choiceSettingValue.value = 'missing-option'
+                    foreach ($Row in $Rows) { $Row.settingInstance.simpleSettingValue = @{ value = 1 } }
+                }
             }
             '/settings/0/settingDefinitions$' { $Rows = @(@{ id = 'rtp'; baseUri = './Device/Vendor/MSFT/Policy/Config/Defender'; offsetUri = 'AllowRealtimeMonitoring'; version = '1'; options = @(@{ itemId = 'opaque_enabled_0'; optionValue = @{ value = 1 } }, @{ itemId = 'opaque_disabled_1'; optionValue = @{ value = 0 } }) }) }
             '/settings/1/settingDefinitions$' { $Rows = @(@{ id = 'behavior'; baseUri = './Device/Vendor/MSFT/Policy/Config/Defender'; offsetUri = 'AllowBehaviorMonitoring'; version = '1'; options = @(@{ itemId = 'opaque_enabled_0'; optionValue = @{ value = 1 } }, @{ itemId = 'opaque_disabled_1'; optionValue = @{ value = 0 } }) }) }
@@ -191,6 +196,20 @@ try {
     $CorrelationJson = $Correlation | ConvertTo-Json -Depth 30
     if ($CorrelationJson -match 'PRIVATE_PATH|DO_NOT_EXPORT') { throw 'Correlation export leaked unreviewed fields' }
     if ($env:ASSAY_INTUNE_REALTIME_FIXTURE) { [IO.File]::WriteAllText($env:ASSAY_INTUNE_REALTIME_FIXTURE, $CorrelationJson, [Text.UTF8Encoding]::new($false)) }
+    $script:MixedCorrelation = $true
+    try {
+        $AmbiguousDocument = Invoke-IntuneDiscoveryCore -SelectedTenant $Tenant -Configuration $true -EndpointPaths @($Temporary) -Request $CorrelationRequest -Requirements @{
+            ScopeConfirmed = $true; ScopeDescription = 'Synthetic ambiguous policy values'; Assessor = 'Test'; MaxCollectionAgeHours = 24
+            ConfigurationReview = @{ DeviceIds = @('device'); PolicyIds = @('policy-on'); ReferenceProfile = 'windows-25h2'; DefenderPrimary = $true }
+        }
+    } finally { $script:MixedCorrelation = $false }
+    if ($AmbiguousDocument.Inventory.SecuritySettings.Count -ne 4) { throw 'Ambiguous settings were silently dropped' }
+    foreach ($Fact in $AmbiguousDocument.Inventory.SecuritySettings) {
+        if ($Fact.resolution -cne 'UnresolvedValue' -or $Fact.Contains('value') -or $Fact.Contains('admx') -or $Fact.cspUri -cnotin @('Policy/Config/Defender/AllowRealtimeMonitoring', 'Policy/Config/Defender/AllowBehaviorMonitoring')) { throw 'Ambiguous production setting fabricated a decoded reference' }
+    }
+    $MixedJson = $AmbiguousDocument | ConvertTo-Json -Depth 30
+    if ($MixedJson -match 'PRIVATE_PATH|DO_NOT_EXPORT|missing-option|simpleSettingValue') { throw 'Ambiguous raw payload leaked into export' }
+    if ($env:ASSAY_INTUNE_MIXED_SETTING_FIXTURE) { [IO.File]::WriteAllText($env:ASSAY_INTUNE_MIXED_SETTING_FIXTURE, $MixedJson, [Text.UTF8Encoding]::new($false)) }
     $Sample.TenantId = '44444444-4444-4444-8444-444444444444'
     [IO.File]::WriteAllText($Temporary, ($Sample | ConvertTo-Json -Depth 15), [Text.UTF8Encoding]::new($false))
     $Rejected = $false

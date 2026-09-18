@@ -2,6 +2,27 @@
 
 Date: 2026-09-17. Status: **partial audit, not production certification**.
 
+Collector 0.5.8 repairs two synthetic mixed-choice/simple reproductions:
+unresolved choices could borrow a simple value, and unsupported mixed parents
+could still emit resolved descendants. Both non-null value members now leave the
+node unresolved and block child traversal. Known unique supported definitions
+retain CSP metadata/UnresolvedValue, unsupported or duplicate definitions retain
+UnsupportedDefinition, and neither emits scalar/ADMX payloads. Valid nested-group
+children and independent settings remain supported.
+
+Source contracts: [choice instance](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationchoicesettinginstance?view=graph-rest-beta)
+and [simple instance](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationsimplesettinginstance?view=graph-rest-beta),
+both revision `4b837f772f711c890ec02678db6b05845a40b419`. This does not certify
+all OData discriminators, collection-value kinds, nested shapes or enums. Tests
+cover dictionary/JSON forms, known/unknown/duplicate/ADMX parents and valid nesting.
+Actual mocked discovery output stays unresolved through native/app import,
+reassessment, save/load and reports. No live-tenant occurrence is asserted.
+
+No new read field, route, scope, provider, finding or score; native rules remain
+1.8.0-preview. Recollect affected older evidence because normalized Resolved
+scalars no longer carry the ambiguous source shape. See
+[repair limits](README.md#mixed-setting-decoder-repair-058).
+
 Assay rules 1.8.0-preview add behavior-monitoring correlation (BM-01) with no
 production collector change. Existing AllowBehaviorMonitoring values are decoded
 independently of AllowRealtimeMonitoring; preference/runtime fields are already
