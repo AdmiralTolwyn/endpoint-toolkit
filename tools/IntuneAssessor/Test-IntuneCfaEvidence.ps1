@@ -15,7 +15,7 @@ $ReadProviders = [scriptblock]::Create($Text.Substring(1, $Text.Length - 2))
 function Get-MpPreference {
     [CmdletBinding()]param()
     if ($script:PreferenceFails) { throw 'Synthetic preference failure' }
-    [pscustomobject]@{ EnableControlledFolderAccess = $script:CfaMode; SignatureFallbackOrder = $script:SourceOrder; SharedSignaturesPath = 'PRIVATE_PATH'; SignatureDefinitionUpdateFileSharesSources = 'PRIVATE_PATH'; ControlledFolderAccessProtectedFolders = @('PRIVATE_PATH'); ControlledFolderAccessAllowedApplications = @('PRIVATE_PATH'); Unreviewed = 'DO_NOT_EXPORT' }
+    [pscustomobject]@{ EnableControlledFolderAccess = $script:CfaMode; SignatureFallbackOrder = $script:SourceOrder; SignatureScheduleDay = $script:ScheduleDay; SignatureUpdateInterval = $script:UpdateInterval; SignatureScheduleTime = 'DO_NOT_EXPORT'; SharedSignaturesPath = 'PRIVATE_PATH'; SignatureDefinitionUpdateFileSharesSources = 'PRIVATE_PATH'; ControlledFolderAccessProtectedFolders = @('PRIVATE_PATH'); ControlledFolderAccessAllowedApplications = @('PRIVATE_PATH'); Unreviewed = 'DO_NOT_EXPORT' }
 }
 function Get-MpComputerStatus {
     [CmdletBinding()]param()
@@ -30,6 +30,8 @@ $Device = '33333333-3333-4333-8333-333333333333'
 $script:PreferenceFails = $false
 $script:StatusFails = $false
 $script:SourceOrder = 'InternalDefinitionUpdateServer|MicrosoftUpdateServer|MMPC'
+$script:ScheduleDay = 8
+$script:UpdateInterval = 0
 $Temporary = Join-Path ([IO.Path]::GetTempPath()) ('intune-cfa-' + [guid]::NewGuid().ToString() + '.json')
 try {
     foreach ($Mode in @(0,1,2,3,4,'Disabled','Enabled','AuditMode','BlockDiskModificationOnly','AuditDiskModificationOnly',$null,'unreviewed')) {
@@ -51,6 +53,16 @@ try {
         if (($Sample | ConvertTo-Json -Depth 15) -match 'PRIVATE_PATH|DO_NOT_EXPORT') { throw 'Unreviewed update paths escaped projection' }
     }
     $script:SourceOrder = 'InternalDefinitionUpdateServer|MicrosoftUpdateServer|MMPC'
+    foreach ($Cadence in @(@(8,0),@(0,0),@(8,24),@('Monday',4),@('Never',0),@($null,$null),@('unknown',25))) {
+        $script:ScheduleDay = $Cadence[0]
+        $script:UpdateInterval = $Cadence[1]
+        $Sample = New-IntuneEndpointEvidence -SelectedTenant $Tenant -DeviceId $Device -Read $ReadProviders
+        $Safe = ConvertTo-IntuneEndpointModules (($Sample | ConvertTo-Json -Depth 15 | ConvertFrom-Json).Modules)
+        if ($Safe.DefenderPreferences.Rows[0]['SignatureScheduleDay'] -cne $Cadence[0] -or $Safe.DefenderPreferences.Rows[0]['SignatureUpdateInterval'] -cne $Cadence[1]) { throw 'Cadence values were changed or defaulted during projection' }
+        if (($Sample | ConvertTo-Json -Depth 15) -match 'PRIVATE_PATH|DO_NOT_EXPORT') { throw 'Unreviewed schedule time or paths exported' }
+    }
+    $script:ScheduleDay = 8
+    $script:UpdateInterval = 0
     foreach ($FailedProvider in @('DefenderPreferences','DefenderStatus')) {
         $script:PreferenceFails = $FailedProvider -eq 'DefenderPreferences'
         $script:StatusFails = $FailedProvider -eq 'DefenderStatus'
@@ -76,6 +88,7 @@ try {
     }
     if ($Document.CollectionStatus.EndpointEvidence.State -cne 'Complete' -or $Document.Inventory.EndpointEvidence[0].modules.DefenderPreferences.Rows[0].EnableControlledFolderAccess -ne 3) { throw 'Production import dropped CFA evidence' }
     if ($Document.Inventory.EndpointEvidence[0].modules.DefenderPreferences.Rows[0].SignatureFallbackOrder -cne $script:SourceOrder) { throw 'Production import dropped or reordered update sources' }
+    if ($Document.Inventory.EndpointEvidence[0].modules.DefenderPreferences.Rows[0].SignatureScheduleDay -ne 8 -or $Document.Inventory.EndpointEvidence[0].modules.DefenderPreferences.Rows[0].SignatureUpdateInterval -ne 0) { throw 'Production import lost cadence values' }
     if (($Document | ConvertTo-Json -Depth 30) -match 'PRIVATE_PATH|DO_NOT_EXPORT') { throw 'Unreviewed fields retained' }
     foreach ($Target in @('Disabled','Enabled','AuditMode','BlockDiskModificationOnly','AuditDiskModificationOnly')) {
         $Targeted = Invoke-IntuneDiscoveryCore -SelectedTenant $Tenant -EndpointPaths @($Temporary) -Request $Request -Requirements @{
@@ -97,4 +110,4 @@ try {
     Remove-Item Function:\Get-MpPreference, Function:\Get-MpComputerStatus, Function:\Get-NetFirewallProfile, Function:\Get-BitLockerVolume, Function:\Get-CimInstance
     if (Test-Path -LiteralPath $Temporary) { Remove-Item -LiteralPath $Temporary }
 }
-Write-Output 'PASS: production CFA/source-order projection, value preservation, failure states, tenant-bound companion import and privacy; all providers and Graph calls mocked.'
+Write-Output 'PASS: production CFA/source-order/cadence projection, value preservation, failure states, tenant-bound companion import and privacy; all providers and Graph calls mocked.'

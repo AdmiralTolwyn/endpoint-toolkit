@@ -1,6 +1,6 @@
 # Intune Discovery for Assay
 
-Version 0.5.3. Experimental pending a live tenant pilot. Offline-tested with
+Version 0.5.4. Experimental pending a live tenant pilot. Offline-tested with
 Windows PowerShell 5.1 and PowerShell 7.
 
 The [contract audit](AUDIT.md) currently verifies 49 enabled Graph GET contracts
@@ -100,6 +100,25 @@ responses and counts with portal evidence for the same visible scope before
 production-validation claims.
 
 ## Configuration Expansion
+
+### Defender Update Cadence (0.5.4)
+
+The existing endpoint preference read adds `SignatureScheduleDay` and
+`SignatureUpdateInterval`. Assay N-04 (rules 1.5.1-preview) requires both fields
+and records day 0-8 (or documented names Everyday/Sunday through Saturday/Never)
+and integer interval 0-24 hours. Missing or invalid values stay NotAssessed.
+Per Microsoft's [scheduling guide](https://learn.microsoft.com/en-us/defender-endpoint/manage-protection-update-schedule-microsoft-defender-antivirus),
+day 8 plus interval 0 means no Defender-owned schedule. Interval 0 alone does not
+mean all updates are disabled: a day can still be specified. Both day and interval
+present is reported without guessing precedence. All valid combinations yield
+Observed, never a health or compliance verdict.
+
+Scheduled local clock time, randomization, runtime mode, actual execution and
+signature freshness are not evaluated. Other update mechanisms and passive-mode
+limitations need separate review. No new provider, Graph route, scope, scheduled
+task or update action is introduced. Existing production pipeline tests cover
+zero/missing/named values and exclude SignatureScheduleTime; native and report
+tests use the generated synthetic endpoint fixture. No live endpoint query.
 
 ### Defender Update Source Evidence (0.5.3)
 
@@ -201,8 +220,8 @@ fields after checking local device/tenant identity. No automatic elevation or
 remediation. Attach samples using `-EndpointEvidencePaths '.\endpoint.json'` in
 the discovery command. The tenant collector never remotely runs the companion.
 
-Assay exposes 100 supplementary unscored findings: by default 63 bounded comparison
-entries and 37 evidence entries (64/36 with an explicit CFA target). All have
+Assay exposes 101 supplementary unscored findings: by default 63 bounded comparison
+entries and 38 evidence entries (64/37 with an explicit CFA target). All have
 handlers, but several cover only part of their
 feature; evidence collection is not complete automatic assessment. The original
 50-control scoring catalog remains unchanged. Set reference/scenario scope in

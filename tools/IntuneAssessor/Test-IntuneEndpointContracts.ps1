@@ -48,4 +48,4 @@ foreach ($Clause in $Switches[0].Clauses) {
 if ($CheckDocumentation) {
     [IO.File]::WriteAllText((Join-Path $EvidenceDirectory 'intune-endpoint-contract-audit.json'), (@{ CheckedAtUtc = [datetime]::UtcNow.ToString('o'); Evidence = @($Evidence.ToArray()); Limit = 'Source-presence and command/projection drift checks only; not live provider availability or enum validation.' } | ConvertTo-Json -Depth 10), [Text.UTF8Encoding]::new($false))
 }
-Write-Output 'PASS: five documented provider commands, 34 projected fields, identity read and importer drift checks; no endpoint queries executed.'
+Write-Output 'PASS: five documented provider commands, 36 projected fields, identity read and importer drift checks; no endpoint queries executed.'

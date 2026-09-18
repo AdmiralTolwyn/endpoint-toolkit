@@ -2,6 +2,15 @@
 
 Date: 2026-09-17. Status: **partial audit, not production certification**.
 
+September 18 cadence follow-up (collector 0.5.4 / Assay rules 1.5.1-preview):
+SignatureScheduleDay and SignatureUpdateInterval join the existing preference
+projection. The [specific scheduling guide](https://learn.microsoft.com/en-us/defender-endpoint/manage-protection-update-schedule-microsoft-defender-antivirus)
+defines joint 8/0 semantics; N-04 reports configuration only. Missing values never
+inherit defaults, and interval zero alone is not update failure. Clock time,
+effective precedence, runtime behavior and signature freshness remain unverified.
+No new command, route, scope, scheduled task or update action. Synthetic provider
+and native workflow tests do not establish live provider serialization.
+
 September 18 source-order follow-up (collector 0.5.3 / Assay rules 1.5.0-preview):
 one additional Get-MpPreference field, SignatureFallbackOrder. The reviewed
 [Microsoft update-source guidance](https://learn.microsoft.com/en-us/defender-endpoint/manage-protection-updates-microsoft-defender-antivirus)
@@ -134,7 +143,7 @@ sensitive data was retrieved.
 
 ## Endpoint Command Ledger (2026-09-18)
 
-`EndpointContracts.json` records each of the five provider commands, all 34
+`EndpointContracts.json` records each of the five provider commands, all 36
 projected properties and their Microsoft Learn references. Run
 `Test-IntuneEndpointContracts.ps1 -EvidenceDirectory <existing-directory>
 -CheckDocumentation` to compare the companion's parsed command/projection AST
