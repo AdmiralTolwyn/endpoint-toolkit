@@ -1,0 +1,44 @@
+[
+  {
+    "module":"DefenderStatus",
+    "command":"Get-MpComputerStatus -ErrorAction Stop",
+    "fields":["AMRunningMode","AMProductVersion","AMEngineVersion","AntivirusEnabled","RealTimeProtectionEnabled","BehaviorMonitorEnabled","AntivirusSignatureLastUpdated","IsTamperProtected","ControlledConfigurationState","TamperProtectionSource"],
+    "sources":[
+      {"url":"https://learn.microsoft.com/en-us/powershell/module/defender/get-mpcomputerstatus?view=windowsserver2025-ps","fields":["AMRunningMode","AMProductVersion","AMEngineVersion","AntivirusEnabled","RealTimeProtectionEnabled","BehaviorMonitorEnabled","AntivirusSignatureLastUpdated"]},
+      {"url":"https://learn.microsoft.com/en-us/defender-endpoint/secure-controlled-configuration","fields":["IsTamperProtected","ControlledConfigurationState","TamperProtectionSource"]}
+    ]
+  },
+  {
+    "module":"DefenderPreferences",
+    "command":"Get-MpPreference -ErrorAction Stop",
+    "fields":["AttackSurfaceReductionRules_Ids","AttackSurfaceReductionRules_Actions","EnableNetworkProtection","PUAProtection","DisableRealtimeMonitoring","DisableBehaviorMonitoring","DisableScriptScanning","MAPSReporting"],
+    "sources":[
+      {"url":"https://learn.microsoft.com/en-us/powershell/module/defender/get-mppreference?view=windowsserver2025-ps","fields":[]},
+      {"url":"https://learn.microsoft.com/en-us/previous-versions/windows/desktop/defender/msft-mppreference","fields":["DisableRealtimeMonitoring","DisableBehaviorMonitoring","DisableScriptScanning","MAPSReporting"]},
+      {"url":"https://learn.microsoft.com/en-us/defender-endpoint/attack-surface-reduction-rules-configure","fields":["AttackSurfaceReductionRules_Ids","AttackSurfaceReductionRules_Actions"]},
+      {"url":"https://learn.microsoft.com/en-us/defender-endpoint/enable-network-protection","fields":["EnableNetworkProtection"]},
+      {"url":"https://learn.microsoft.com/en-us/defender-endpoint/detect-block-potentially-unwanted-apps-microsoft-defender-antivirus","fields":["PUAProtection"]}
+    ]
+  },
+  {
+    "module":"FirewallProfiles",
+    "command":"Get-NetFirewallProfile -PolicyStore ActiveStore -ErrorAction Stop",
+    "fields":["Name","Enabled","DefaultInboundAction","DefaultOutboundAction","LogAllowed","LogBlocked"],
+    "sources":[
+      {"url":"https://learn.microsoft.com/en-us/powershell/module/netsecurity/get-netfirewallprofile?view=windowsserver2025-ps","fields":[]},
+      {"url":"https://learn.microsoft.com/en-us/powershell/module/netsecurity/set-netfirewallprofile?view=windowsserver2025-ps","fields":["Name","Enabled","DefaultInboundAction","DefaultOutboundAction","LogAllowed","LogBlocked"]}
+    ]
+  },
+  {
+    "module":"BitLockerVolumes",
+    "command":"Get-BitLockerVolume -ErrorAction Stop",
+    "fields":["MountPoint","VolumeType","VolumeStatus","ProtectionStatus","EncryptionPercentage"],
+    "sources":[{"url":"https://learn.microsoft.com/en-us/powershell/module/bitlocker/get-bitlockervolume?view=windowsserver2025-ps","fields":["MountPoint","VolumeType","VolumeStatus","ProtectionStatus","EncryptionPercentage"]}]
+  },
+  {
+    "module":"DeviceGuard",
+    "command":"Get-CimInstance -ClassName Win32_DeviceGuard -Namespace root\\Microsoft\\Windows\\DeviceGuard -ErrorAction Stop",
+    "fields":["VirtualizationBasedSecurityStatus","SecurityServicesConfigured","SecurityServicesRunning"],
+    "sources":[{"url":"https://learn.microsoft.com/en-us/windows/security/hardware-security/enable-virtualization-based-protection-of-code-integrity","fields":["VirtualizationBasedSecurityStatus","SecurityServicesConfigured","SecurityServicesRunning"]}]
+  }
+]

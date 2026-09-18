@@ -94,7 +94,7 @@ injected responses only. No Defender authentication or live collection was run.
 ### Open Gates
 
 - Nested object ownership, value types, enums and all policy/CSP bindings.
-- Full endpoint-provider property/enum review.
+- Full endpoint-provider enum/serialization review on representative devices.
 - EPM exact setting IDs currently grounded in Microsoft365DSC sample fixtures,
   not a Microsoft Learn guarantee; do not describe them as a documented CSP.
 - Recommendation semantics, applicability, deprecations and reference versions.
@@ -108,3 +108,27 @@ provider responses can contain unexported properties in process memory. Unknown
 settings are discarded; raw modern setting bodies are read to decode the
 reviewed subset. Never log raw bodies or treat projection as proof that no
 sensitive data was retrieved.
+
+## Endpoint Command Ledger (2026-09-18)
+
+`EndpointContracts.json` records each of the five provider commands, all 32
+projected properties and their Microsoft Learn references. Run
+`Test-IntuneEndpointContracts.ps1 -EvidenceDirectory <existing-directory>
+-CheckDocumentation` to compare the companion's parsed command/projection AST
+with the register and download/hash source evidence. Without the switch, this
+is an offline drift test. It never invokes endpoint commands. Source text naming
+a field is not runtime type/enum validation or evidence that every OS supports it.
+
+| Read | Verified scope and limits |
+| --- | --- |
+| `dsregcmd.exe /status` | [DeviceId and TenantId](https://learn.microsoft.com/en-us/entra/identity/devices/troubleshoot-device-dsregcmd) identify joined/hybrid-joined devices, not all registered devices. Status can perform network diagnostics. No join/leave command is used; no claim that this is strictly offline. MDM URLs alone do not prove enrollment. |
+| `Get-MpComputerStatus` | Seven version/status fields are shown in the command reference. The controlled-configuration product doc explicitly adds `IsTamperProtected`, `ControlledConfigurationState`, `TamperProtectionSource`; preview/minimum version restrictions apply. Null is not Off. |
+| `Get-MpPreference` | ASR IDs/actions are corresponding arrays, not interchangeable enum families. Current product docs explicitly show ASR, network protection and PUA reads. The provider class documents the three Disable booleans and MAPSReporting. A preference alone is not proof of blocking or effective enforcement. |
+| `Get-NetFirewallProfile -PolicyStore ActiveStore` | The read reference explicitly distinguishes ActiveStore from the default PersistentStore. The paired Set reference documents the profile options/enums; it is a reference only and is never called. The three GpoBoolean fields can be NotConfigured and must not be coerced to ordinary booleans. No rule or Hyper-V firewall inspection is claimed. |
+| `Get-BitLockerVolume` | All five retained metadata properties appear in the command's full-output example. No KeyProtector fields are exported; the provider's full object can still exist in memory before projection. EncryptionPercentage=100 alone does not prove ProtectionStatus=On or recovery escrow. |
+| `Get-CimInstance ... Win32_DeviceGuard` | Exact class/namespace and all three selected fields are documented. VBS status 1 is enabled but not running; status 2 is running. SecurityServicesConfigured and SecurityServicesRunning are arrays and are not equivalent. The docs describe an elevated session; this companion never self-elevates, and access failure remains an Error. |
+
+The endpoint modules retain raw selected observations, not generalized verdicts.
+Missing fields or provider errors must not become clean findings. JSON exports
+are locally authored evidence, not signed attestations; matching a tenant/device
+identifier does not prove the file's authenticity.
