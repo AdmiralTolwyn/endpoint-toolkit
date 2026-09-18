@@ -33,7 +33,7 @@
     .\Invoke-W365Discovery.ps1 -OutputPath "C:\temp\w365_discovery.json"
 .NOTES
     Author : Anton Romanyuk
-    Version: 0.3.0
+    Version: 0.3.1
     Date   : 2026-09-18
 
     Required Graph scopes (core tier — requested unconditionally):
@@ -90,7 +90,7 @@ $env:PSModulePath = ($env:PSModulePath -split ';' |
 $ScriptRoot = $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($ScriptRoot)) { $ScriptRoot = $PWD.Path }
 
-$ScriptVersion = '0.3.0'
+$ScriptVersion = '0.3.1'
 # Windows 365 GA surface (cloudPCs, provisioningPolicies, userSettings) migrated to /v1.0.
 $GraphBaseV1   = 'https://graph.microsoft.com/v1.0/deviceManagement/virtualEndpoint'
 # Beta retained for endpoints not yet GA / verified beta-only: onPremisesConnections, deviceImages,
@@ -1285,22 +1285,24 @@ try {
 # ═══════════════════════════════════════════════════════════════════════════
 Write-Status "Intune (Cloud PC managed devices & policy)" -Level 'SECTION'
 
-# SEC-002-MDE: Cloud PC managed-device health (compliance / Defender posture).
+# SEC-002-MDE: Intune compliance context is not Defender onboarding/health evidence.
 try {
     $cpcMde = @(Invoke-GraphPaged -Uri "$IntuneBase/managedDevices?`$filter=contains(model,'Cloud PC')")
     $mdeTotal = $cpcMde.Count
-    $mdeNonCompliant = @($cpcMde | Where-Object { "$($_.complianceState)" -notin @('compliant','') }).Count
-    Write-Status "Cloud PC managed devices: $mdeTotal ($mdeNonCompliant non-compliant)" -Level 'SUCCESS'
+    $mdeNonCompliant = @($cpcMde | Where-Object { $_.complianceState -ceq 'noncompliant' }).Count
+    $mdeCompliant = @($cpcMde | Where-Object { $_.complianceState -ceq 'compliant' }).Count
+    $mdeUnknown = $mdeTotal - $mdeNonCompliant - $mdeCompliant
+    Write-Status "Model-filtered device context: $mdeTotal; Defender posture not assessed" -Level 'INFO'
     [void]$AllChecks.Add((New-CheckResult `
         -Id 'W365-SEC-002-MDE' -Category 'Security & Compliance' `
-        -Name 'Cloud PC managed-device health' `
-        -Description 'Cloud PCs enrolled in Intune report compliance and (via Defender) protection state. Non-compliant Cloud PCs may be blocked by Conditional Access and indicate missing baseline/AV controls.' `
-        -Status $(if ($mdeTotal -eq 0) { 'Warning' } elseif ($mdeNonCompliant -gt 0) { 'Warning' } else { 'Pass' }) `
+        -Name 'Defender posture not assessed' `
+        -Description 'Intune compliance is contextual metadata, not proof of Defender onboarding, sensor health or Cloud PC identity coverage.' `
+        -Status 'Error' `
         -Severity 'High' `
-        -Details "$mdeTotal Cloud PC managed device(s) found; $mdeNonCompliant non-compliant." `
-        -Recommendation 'Investigate non-compliant Cloud PCs (Defender onboarding, compliance policy failures) and ensure Defender for Endpoint is deployed to Cloud PCs.' `
-        -Reference 'https://learn.microsoft.com/en-us/mem/intune/protect/device-compliance-get-started' `
-        -Evidence @{ CloudPcDevices = $mdeTotal; NonCompliant = $mdeNonCompliant }))
+        -Details "$mdeTotal model-filtered candidate device(s): $mdeCompliant compliant, $mdeNonCompliant noncompliant, $mdeUnknown other or missing states. Defender assessment requires matched device identities and separate onboarding/health evidence; no security verdict inferred." `
+        -Recommendation 'Correlate Cloud PC managedDeviceId with device evidence and independently verify Defender onboarding and health. Review compliance separately.' `
+        -Reference 'https://learn.microsoft.com/en-us/windows-365/enterprise/security-guidelines' `
+        -Evidence @{ CandidateDevices = $mdeTotal; Compliant = $mdeCompliant; NonCompliant = $mdeNonCompliant; OtherOrMissing = $mdeUnknown; AssessmentState = 'InsufficientEvidence' }))
 } catch {
     Write-Status "Cloud PC managed devices unavailable: $($_.Exception.Message)" -Level 'WARN'
     [void]$AllChecks.Add((New-CheckResult `
@@ -1314,21 +1316,20 @@ try {
         -Evidence @{ RequiredScope = 'DeviceManagementManagedDevices.Read.All'; Error = $_.Exception.Message }))
 }
 
-# SEC-004-COMP: device compliance policies exist and are assigned.
+# SEC-004-COMP: tenant policy metadata does not establish Cloud PC coverage.
 try {
-    $compPols = @(Invoke-GraphPaged -Uri "$IntuneBase/deviceCompliancePolicies?`$expand=assignments")
-    $compAssigned = @($compPols | Where-Object { @($_.assignments).Count -gt 0 }).Count
-    Write-Status "Compliance policies: $($compPols.Count) ($compAssigned assigned)" -Level 'SUCCESS'
+    $compPols = @(Invoke-GraphPaged -Uri "$IntuneBase/deviceCompliancePolicies?`$select=id")
+    Write-Status "Compliance policy metadata: $($compPols.Count); Cloud PC coverage not assessed" -Level 'INFO'
     [void]$AllChecks.Add((New-CheckResult `
         -Id 'W365-SEC-004-COMP' -Category 'Security & Compliance' `
-        -Name 'Device compliance policies present & assigned' `
-        -Description 'Intune device compliance policies gate Cloud PC access via Conditional Access. Without an assigned compliance policy, compliance-based CA cannot protect Cloud PCs.' `
-        -Status $(if ($compPols.Count -eq 0) { 'Fail' } elseif ($compAssigned -eq 0) { 'Warning' } else { 'Pass' }) `
+        -Name 'Cloud PC compliance coverage not assessed' `
+        -Description 'Tenant policy inventory alone does not establish Cloud PC targeting, exclusions, policy settings, device results or Conditional Access enforcement.' `
+        -Status 'Error' `
         -Severity 'High' `
-        -Details "$($compPols.Count) compliance policy/policies; $compAssigned assigned." `
-        -Recommendation 'Author and assign at least one compliance policy covering Cloud PCs, then require compliant device in Conditional Access.' `
-        -Reference 'https://learn.microsoft.com/en-us/mem/intune/protect/device-compliance-get-started' `
-        -Evidence @{ Policies = $compPols.Count; Assigned = $compAssigned }))
+        -Details "$($compPols.Count) visible tenant compliance policy/policies. Cloud PC applicability, effective assignment and evaluated device state were not collected; no verdict inferred from policy presence or absence." `
+        -Recommendation 'Review the policies applicable to the selected Cloud PCs, including exclusions and device results, then verify the relevant Conditional Access requirements.' `
+        -Reference 'https://learn.microsoft.com/en-us/windows-365/enterprise/security-guidelines' `
+        -Evidence @{ Policies = $compPols.Count; AssessmentState = 'InsufficientEvidence' }))
 } catch {
     Write-Status "Compliance policies unavailable: $($_.Exception.Message)" -Level 'WARN'
     [void]$AllChecks.Add((New-CheckResult `
@@ -1342,21 +1343,20 @@ try {
         -Evidence @{ RequiredScope = 'DeviceManagementConfiguration.Read.All'; Error = $_.Exception.Message }))
 }
 
-# SEC-003-BASE: security baseline / configuration profiles referencing Windows 365 / Cloud PC.
+# SEC-003-BASE: configuration metadata does not establish baseline identity or application.
 try {
-    $cfgPols = @(Invoke-GraphPaged -Uri "$IntuneBase/configurationPolicies?`$expand=assignments")
-    $w365Cfg = @($cfgPols | Where-Object { "$($_.name) $($_.description)" -match '(?i)cloud pc|windows 365|w365' })
-    Write-Status "Config profiles: $($cfgPols.Count) ($($w365Cfg.Count) reference Windows 365)" -Level 'SUCCESS'
+    $cfgPols = @(Invoke-GraphPaged -Uri "$IntuneBase/configurationPolicies?`$select=id")
+    Write-Status "Configuration policy metadata: $($cfgPols.Count); baseline not assessed" -Level 'INFO'
     [void]$AllChecks.Add((New-CheckResult `
         -Id 'W365-SEC-003-BASE' -Category 'Security & Compliance' `
-        -Name 'Security baseline / config profiles for Windows 365' `
-        -Description 'A Cloud PC security baseline (current baseline is the Windows 365 24H1 baseline) or dedicated configuration profiles harden Cloud PCs beyond defaults.' `
-        -Status $(if ($cfgPols.Count -eq 0) { 'Warning' } elseif ($w365Cfg.Count -gt 0) { 'Pass' } else { 'Warning' }) `
+        -Name 'Windows 365 baseline not assessed' `
+        -Description 'Configuration profile names and counts cannot prove a Windows 365 baseline identity, version, configured settings or effective application.' `
+        -Status 'Error' `
         -Severity 'Medium' `
-        -Details "$($cfgPols.Count) configuration policy/policies; $($w365Cfg.Count) explicitly reference Windows 365 / Cloud PC by name or description." `
-        -Recommendation 'Apply the Windows 365 Security Baseline (24H1) and/or Cloud PC-scoped configuration profiles, and confirm they are assigned to Cloud PC groups.' `
-        -Reference 'https://learn.microsoft.com/en-us/windows-365/enterprise/security-baseline' `
-        -Evidence @{ ConfigPolicies = $cfgPols.Count; Windows365Referencing = $w365Cfg.Count }))
+        -Details "$($cfgPols.Count) visible configuration policy/policies. Exact template identity/version, settings, assignments and device application have not been verified; no baseline verdict inferred." `
+        -Recommendation 'Review the selected baseline version and settings, pilot changes, and verify Cloud PC assignments and application results separately.' `
+        -Reference 'https://learn.microsoft.com/en-us/windows-365/enterprise/deploy-security-baselines' `
+        -Evidence @{ ConfigPolicies = $cfgPols.Count; AssessmentState = 'InsufficientEvidence' }))
 } catch {
     Write-Status "Config profiles unavailable: $($_.Exception.Message)" -Level 'WARN'
     [void]$AllChecks.Add((New-CheckResult `
@@ -1366,7 +1366,7 @@ try {
         -Description 'Intune configuration profiles could not be enumerated.' `
         -Details "GET configurationPolicies failed: $($_.Exception.Message)" `
         -Recommendation 'Confirm the signed-in account holds DeviceManagementConfiguration.Read.All and re-run.' `
-        -Reference 'https://learn.microsoft.com/en-us/windows-365/enterprise/security-baseline' `
+        -Reference 'https://learn.microsoft.com/en-us/windows-365/enterprise/deploy-security-baselines' `
         -Evidence @{ RequiredScope = 'DeviceManagementConfiguration.Read.All'; Error = $_.Exception.Message }))
 }
 

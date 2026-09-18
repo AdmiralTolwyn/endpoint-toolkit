@@ -1,10 +1,19 @@
 # Windows 365 Assessor
 
-## Collector 0.3.0: Assay UX Sync Comparison
+## Collector 0.3.1: Security Evidence and UX Sync
 
-The collector now optionally emits `W365-PROV-011` for **Assay** (42 Auto / 90
-Manual). The legacy WPF catalog and the 41/91 counts below are unchanged; the
+The collector optionally emits `W365-PROV-011` for **Assay** (39 Auto / 93
+Manual after reclassifying three unsupported security evaluators). The legacy
+WPF catalog and the 41/91 counts below are unchanged; the
 legacy importer does not consume this new automatic result.
+
+In 0.3.1, SEC-002/003/004 retain contextual metadata but emit Error (NotAssessed)
+instead of security verdicts. Intune compliance is not Defender onboarding,
+profile names are not baseline identity, and tenant policy counts do not establish
+Cloud PC coverage. Compliance unknowns are counted separately. Policy reads select
+only IDs and no longer expand assignments. Assay also withholds old automated
+verdicts on import, while preserving explicit manual decisions. The legacy WPF
+importer does not gain that protection for old exports.
 
 ```powershell
 .\Invoke-W365Discovery.ps1 -TenantId '<tenant-id>' `
@@ -27,14 +36,16 @@ The comparison proves neither effective assignment nor successful profile
 persistence or capacity. UX Sync is not backup/DR; modifying existing assignments
 can deprovision Cloud PCs and delete user storage. This collector never does that.
 
+Run `Test-W365SecurityEvidence.ps1` in PowerShell 5.1/7 for offline production-block
+regressions; optional `ASSAY_W365_SECURITY_FIXTURE` writes the synthetic export.
 Run `Test-W365UserExperienceSync.ps1` in PowerShell 5.1/7 for offline tests of the
 reader and actual opt-in branch. Optional `ASSAY_W365_UXSYNC_FIXTURE` writes a
 synthetic production export for Assay ingest tests. No live Graph calls are made.
 Beta/runtime permissions and SDK behavior still require an authorized pilot.
 
-**Review warning:** existing SEC-002/003/004 and IAM-003/004/010/011 conclusions
-use incomplete posture/targeting heuristics. Do not treat a profile-name match,
-tenant policy count, or presence of an MFA grant as proof of Cloud PC protection.
+**Review warning:** IAM-003/004/010/011 still use incomplete targeting heuristics.
+Presence of an MFA grant does not prove Cloud PC protection. SEC-002/003/004 are
+now guarded observations, not implemented end-to-end security assessments.
 See the current [audit addendum](AUDIT.md#september-2026-review-addendum).
 
 **Assess Windows 365 (Cloud PC) Enterprise & Flex tenants against Microsoft CAF, Well-Architected Framework, Landing Zone Accelerator, and Security best practices.**
@@ -449,7 +460,7 @@ W365Assessor/
 
 | Component | Version |
 |---|---|
-| `Invoke-W365Discovery.ps1` | 0.3.0 |
+| `Invoke-W365Discovery.ps1` | 0.3.1 |
 | `checks.json` | 1.1 (schema), 132 checks |
 | `W365Assessor.ps1` | 0.2.0 |
 

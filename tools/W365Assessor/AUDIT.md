@@ -5,9 +5,9 @@
 The July findings below are historical, not evidence that the current collector
 has completed a trust audit. Source/code review on 18 September found open risks:
 
-- SEC-003 passes on a Windows 365-like profile name, without template/settings or effective assignment evidence.
-- SEC-002 conflates Intune compliance with Defender health and can treat missing compliance state as clean.
-- SEC-004 passes on any assigned tenant compliance policy, not demonstrated Cloud PC coverage.
+- SEC-003 previously passed on a Windows 365-like profile name. Collector 0.3.1 now retains counts only with Error/NotAssessed; template/settings and effective-assignment evidence remain unimplemented.
+- SEC-002 previously conflated compliance with Defender health and treated missing state as clean. Collector 0.3.1 reports separate compliant/noncompliant/unknown context with no Defender verdict.
+- SEC-004 previously passed on any assigned tenant policy. Collector 0.3.1 retains metadata only, without assignment expansion or a verdict from policy presence/absence.
 - Conditional Access checks omit app exclusions, user scope and MFA AND/OR semantics; presence of session controls is not proof of enforcement.
 - Tenant-wide analytics/update counts do not establish Cloud PC posture.
 - User-settings v1.0 does not document the projected DR/notification fields; gracePeriodInHours is read-only, not a configurable universal 1-168-hour target.
@@ -16,7 +16,7 @@ has completed a trust audit. Source/code review on 18 September found open risks
 Collector 0.3.0 adds one separate opt-in Assay comparison: UX Sync on beta
 sharedByEntraGroup Windows 365 policies against an explicit Enabled/Disabled
 customer target. Review/missing/unknown remains unassessed. No new scope, writes,
-storage access or live validation. Source contracts and usage are in [README.md](README.md#collector-030-assay-ux-sync-comparison).
+storage access or live validation. Source contracts and usage are in [README.md](README.md#collector-031-security-evidence-and-ux-sync).
 The legacy WPF catalog/importer remains unchanged. PowerShell 5.1/7 offline tests
 cover the production branch, typed enums, applicability, projection and pagination.
 
