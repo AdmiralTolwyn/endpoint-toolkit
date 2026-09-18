@@ -160,6 +160,7 @@ try {
     }
     $script:MixedCorrelation = $false
     $script:IdentityCorrelation = $false
+    $script:TemplateCorrelation = $false
     $CorrelationRequest = {
         param($Uri)
         $Path = ([uri]$Uri).AbsolutePath
@@ -179,12 +180,20 @@ try {
                     $Rows[0].settingInstance.settingDefinitionId = 1
                     $Rows[1].settingInstance.choiceSettingValue.value = '1'
                 }
+                if ($script:TemplateCorrelation) {
+                    $Rows[0].settingInstance.choiceSettingValue.settingValueTemplateReference = @{ useTemplateDefault = $true }
+                    $Rows[0].settingInstance.choiceSettingValue.children = @($Rows[1].settingInstance)
+                    $Rows = @($Rows[0])
+                }
             }
             '/settings/0/settingDefinitions$' { $Rows = @(@{ id = 'rtp'; baseUri = './Device/Vendor/MSFT/Policy/Config/Defender'; offsetUri = 'AllowRealtimeMonitoring'; version = '1'; options = @(@{ itemId = 'opaque_enabled_0'; optionValue = @{ value = 1 } }, @{ itemId = 'opaque_disabled_1'; optionValue = @{ value = 0 } }) }) }
             '/settings/1/settingDefinitions$' { $Rows = @(@{ id = 'behavior'; baseUri = './Device/Vendor/MSFT/Policy/Config/Defender'; offsetUri = 'AllowBehaviorMonitoring'; version = '1'; options = @(@{ itemId = 'opaque_enabled_0'; optionValue = @{ value = 1 } }, @{ itemId = 'opaque_disabled_1'; optionValue = @{ value = 0 } }) }) }
         }
         if ($script:IdentityCorrelation -and $Path.EndsWith('/settings/0/settingDefinitions')) { $Rows[0].id = '1' }
         if ($script:IdentityCorrelation -and $Path.EndsWith('/settings/1/settingDefinitions')) { $Rows[0].options = @(@{ itemId = 1; optionValue = @{ value = 1 } }) }
+        if ($script:TemplateCorrelation -and $Path.EndsWith('/settings/0/settingDefinitions')) {
+            $Rows += @{ id = 'behavior'; baseUri = './Device/Vendor/MSFT/Policy/Config/Defender'; offsetUri = 'AllowBehaviorMonitoring'; version = '1'; options = @(@{ itemId = 'opaque_enabled_0'; optionValue = @{ value = 1 } }, @{ itemId = 'opaque_disabled_1'; optionValue = @{ value = 0 } }) }
+        }
         @{ StatusCode = 200; Body = (@{ value = $Rows } | ConvertTo-Json -Depth 20 | ConvertFrom-Json) }
     }
     $Correlation = Invoke-IntuneDiscoveryCore -SelectedTenant $Tenant -Configuration $true -EndpointPaths @($Temporary) -Request $CorrelationRequest -Requirements @{
@@ -236,6 +245,20 @@ try {
     $IdentityJson = $IdentityDocument | ConvertTo-Json -Depth 30
     if ($IdentityJson -match 'PRIVATE_PATH|DO_NOT_EXPORT|choiceSettingValue|optionValue') { throw 'Invalid identity export retained raw payload' }
     if ($env:ASSAY_INTUNE_IDENTITY_FIXTURE) { [IO.File]::WriteAllText($env:ASSAY_INTUNE_IDENTITY_FIXTURE, $IdentityJson, [Text.UTF8Encoding]::new($false)) }
+    $script:TemplateCorrelation = $true
+    try {
+        $TemplateDocument = Invoke-IntuneDiscoveryCore -SelectedTenant $Tenant -Configuration $true -EndpointPaths @($Temporary) -Request $CorrelationRequest -Requirements @{
+            ScopeConfirmed = $true; ScopeDescription = 'Synthetic unresolved parent template'; Assessor = 'Test'; MaxCollectionAgeHours = 24
+            ConfigurationReview = @{ DeviceIds = @('device'); PolicyIds = @('policy-on'); ReferenceProfile = 'windows-25h2'; DefenderPrimary = $true }
+        }
+    } finally { $script:TemplateCorrelation = $false }
+    if ($TemplateDocument.Inventory.SecuritySettings.Count -ne 4) { throw 'Defaulted parent/child metadata silently dropped' }
+    foreach ($Fact in $TemplateDocument.Inventory.SecuritySettings) {
+        if ($Fact.resolution -cne 'UnresolvedTemplateDefault' -or $Fact.Contains('value') -or $Fact.Contains('admx') -or $Fact.cspUri -cnotin @('Policy/Config/Defender/AllowRealtimeMonitoring', 'Policy/Config/Defender/AllowBehaviorMonitoring')) { throw 'Defaulted parent context produced explicit evidence' }
+    }
+    $TemplateJson = $TemplateDocument | ConvertTo-Json -Depth 30
+    if ($TemplateJson -match 'PRIVATE_PATH|DO_NOT_EXPORT|choiceSettingValue|useTemplateDefault') { throw 'Raw template payload exported' }
+    if ($env:ASSAY_INTUNE_TEMPLATE_FIXTURE) { [IO.File]::WriteAllText($env:ASSAY_INTUNE_TEMPLATE_FIXTURE, $TemplateJson, [Text.UTF8Encoding]::new($false)) }
     $Sample.TenantId = '44444444-4444-4444-8444-444444444444'
     [IO.File]::WriteAllText($Temporary, ($Sample | ConvertTo-Json -Depth 15), [Text.UTF8Encoding]::new($false))
     $Rejected = $false

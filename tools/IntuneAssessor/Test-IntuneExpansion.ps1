@@ -116,7 +116,7 @@ foreach ($ParentKind in @('known', 'unknown', 'duplicate-definition', 'admx')) {
         $Instance = @{ settingDefinitionId = 'opaque'; choiceSettingValue = @{ value = 'opaque_enabled_0'; children = @($ChildInstance) }; simpleSettingValue = @{ value = '<enabled/>' } }
         if ($DecodeJson) {
             $Instance = $Instance | ConvertTo-Json -Depth 15 | ConvertFrom-Json
-            $Definitions = @($Definitions | ConvertTo-Json -Depth 15 | ConvertFrom-Json)
+            $Definitions = $Definitions | ConvertTo-Json -Depth 15 | ConvertFrom-Json
         }
         $MixedFacts = @(ConvertTo-IntuneSettingFacts $Instance $Definitions 'policy' 'mixed')
         Assert-Expansion ($MixedFacts.Count -eq 1 -and -not $MixedFacts[0].Contains('value') -and -not $MixedFacts[0].Contains('admx')) "Mixed $ParentKind parent produced value or descendant evidence"
@@ -129,6 +129,73 @@ $Facts = @(ConvertTo-IntuneSettingFacts @{ settingDefinitionId = 'password'; sim
 Assert-Expansion (-not (($Facts | ConvertTo-Json -Depth 20).Contains('SECRET'))) 'Unknown setting secret retained'
 $Facts = @(ConvertTo-IntuneSettingFacts @{ settingDefinitionId = 'opaque'; choiceSettingValue = @{ value = 'opaque_enabled_0'; settingValueTemplateReference = @{ useTemplateDefault = $true } } } @($Definition) 'policy' 'setting')
 Assert-Expansion ($Facts[0].resolution -eq 'UnresolvedTemplateDefault') 'Template default guessed'
+$DefaultedParent = @{ settingDefinitionId = 'opaque'; choiceSettingValue = @{ value = 'opaque_enabled_0'; settingValueTemplateReference = @{ useTemplateDefault = $true }; children = @($ChildInstance) } }
+$DefaultedFacts = @(ConvertTo-IntuneSettingFacts $DefaultedParent @($Definition, $ChildDefinition) 'policy' 'defaulted-parent')
+Assert-Expansion ($DefaultedFacts.Count -eq 2 -and $DefaultedFacts[1].resolution -ceq 'UnresolvedTemplateDefault' -and -not $DefaultedFacts[1].Contains('value')) 'Unresolved template parent produced resolved child evidence'
+foreach ($TemplateCase in @(
+    @{ Reference = $null; Explicit = $true },
+    @{ Reference = @{ useTemplateDefault = $false }; Explicit = $true },
+    @{ Reference = @{ useTemplateDefault = $true }; Explicit = $false },
+    @{ Reference = @{}; Explicit = $false },
+    @{ Reference = @{ useTemplateDefault = $null }; Explicit = $false },
+    @{ Reference = @{ useTemplateDefault = 0 }; Explicit = $false },
+    @{ Reference = @{ useTemplateDefault = 'false' }; Explicit = $false },
+    @{ Reference = @{ useTemplateDefault = '' }; Explicit = $false },
+    @{ Reference = @{ useTemplateDefault = @($false) }; Explicit = $false },
+    @{ Reference = 'PRIVATE_TEMPLATE'; Explicit = $false },
+    @{ Reference = @(@{ useTemplateDefault = $false }); Explicit = $false },
+    @{ Reference = $false; Explicit = $false }
+)) {
+    foreach ($Kind in @('simple', 'choice', 'option', 'option-unknown-path', 'group', 'choice-collection')) {
+        foreach ($DecodeJson in @($false, $true)) {
+            $TemplateDefinition = $Definition.Clone()
+            $ExplicitChild = @{ settingDefinitionId = 'child'; simpleSettingValue = @{ value = 1; settingValueTemplateReference = @{ useTemplateDefault = $false } } }
+            $TemplateInstance = @{ settingDefinitionId = 'opaque' }
+            switch ($Kind) {
+                'simple' { $TemplateInstance.simpleSettingValue = @{ value = 1; settingValueTemplateReference = $TemplateCase.Reference } }
+                'choice' { $TemplateInstance.choiceSettingValue = @{ value = 'opaque_enabled_0'; settingValueTemplateReference = $TemplateCase.Reference; children = @($ExplicitChild) } }
+                { $_ -in @('option', 'option-unknown-path') } {
+                    $TemplateInstance.choiceSettingValue = @{ value = 'opaque_enabled_0'; children = @($ExplicitChild) }
+                    $TemplateDefinition.options = @(@{ itemId = 'opaque_enabled_0'; optionValue = @{ value = 1; settingValueTemplateReference = $TemplateCase.Reference } })
+                    if ($Kind -eq 'option-unknown-path') { $TemplateDefinition.offsetUri = 'Unreviewed' }
+                }
+                { $_ -in @('group', 'choice-collection') } {
+                    $TemplateInstance.settingDefinitionId = 'group'
+                    $Member = if ($Kind -eq 'group') { 'groupSettingCollectionValue' } else { 'choiceSettingCollectionValue' }
+                    $TemplateInstance[$Member] = @(
+                        @{ value = 'option'; settingValueTemplateReference = $TemplateCase.Reference; children = @($ExplicitChild) },
+                        @{ value = 'sibling'; settingValueTemplateReference = @{ useTemplateDefault = $false }; children = @($ExplicitChild) }
+                    )
+                }
+            }
+            $TemplateDefinitions = @($TemplateDefinition, $ChildDefinition)
+            if ($DecodeJson) {
+                $TemplateInstance = $TemplateInstance | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+                $TemplateDefinitions = $TemplateDefinitions | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+            }
+            $TemplateFacts = @(ConvertTo-IntuneSettingFacts $TemplateInstance $TemplateDefinitions 'policy' 'template')
+            $ExpectedResolution = if ($TemplateCase.Explicit) { 'Resolved' } else { 'UnresolvedTemplateDefault' }
+            $TargetIndex = if ($Kind -eq 'simple') { 0 } else { 1 }
+            Assert-Expansion ($TemplateFacts[$TargetIndex].resolution -ceq $ExpectedResolution) "Template context lost or guessed for $Kind; JSON=$DecodeJson; reference=$($TemplateCase.Reference | ConvertTo-Json -Depth 5 -Compress); actual=$($TemplateFacts[$TargetIndex].resolution)"
+            Assert-Expansion ($TemplateFacts[$TargetIndex].Contains('value') -eq $TemplateCase.Explicit) "Template value boundary changed for $Kind"
+            Assert-Expansion (-not (($TemplateFacts | ConvertTo-Json -Depth 15) -match 'PRIVATE_TEMPLATE')) 'Raw malformed template reference exported'
+            if ($Kind -in @('group', 'choice-collection')) {
+                Assert-Expansion ($TemplateFacts.Count -eq 3 -and $TemplateFacts[2].resolution -ceq 'Resolved' -and $TemplateFacts[2].value -eq 1) 'Default context leaked into an explicit sibling'
+            }
+        }
+    }
+}
+$Grandchild = @{ settingDefinitionId = 'child'; simpleSettingValue = @{ value = 1; settingValueTemplateReference = @{ useTemplateDefault = $false } } }
+$Middle = @{ settingDefinitionId = 'opaque'; choiceSettingValue = @{ value = 'opaque_enabled_0'; settingValueTemplateReference = @{ useTemplateDefault = $false }; children = @($Grandchild) } }
+$TransitiveFacts = @(ConvertTo-IntuneSettingFacts @{ settingDefinitionId = 'group'; groupSettingCollectionValue = @(@{ settingValueTemplateReference = @{ useTemplateDefault = $true }; children = @($Middle) }) } @($Definition, $ChildDefinition) 'policy' 'transitive')
+Assert-Expansion ($TransitiveFacts.Count -eq 3 -and $TransitiveFacts[1].resolution -ceq 'UnresolvedTemplateDefault' -and $TransitiveFacts[2].resolution -ceq 'UnresolvedTemplateDefault' -and -not $TransitiveFacts[2].Contains('value')) 'Explicit child flag cleared inherited template uncertainty'
+$AdmxChildDefinition = @{ id = 'admx-child'; baseUri = './Device/Vendor/MSFT'; offsetUri = 'Policy/Config/InternetExplorer/DisableInternetExplorerLaunchViaCOM' }
+foreach ($Payload in @('<enabled/>', 'PRIVATE_UNREVIEWED_XML')) {
+    $AdmxChild = @{ settingDefinitionId = 'admx-child'; simpleSettingValue = @{ value = $Payload } }
+    $AdmxDefaultFacts = @(ConvertTo-IntuneSettingFacts @{ settingDefinitionId = 'group'; groupSettingCollectionValue = @(@{ settingValueTemplateReference = @{ useTemplateDefault = $true }; children = @($AdmxChild) }) } @($AdmxChildDefinition) 'policy' 'admx-default')
+    Assert-Expansion ($AdmxDefaultFacts.Count -eq 2 -and $AdmxDefaultFacts[1].resolution -ceq 'UnresolvedTemplateDefault' -and -not $AdmxDefaultFacts[1].Contains('admx') -and -not $AdmxDefaultFacts[1].Contains('value')) 'Inherited template context decoded ADMX data'
+    Assert-Expansion (-not (($AdmxDefaultFacts | ConvertTo-Json -Depth 10) -match 'PRIVATE_UNREVIEWED_XML')) 'Raw unresolved template payload escaped'
+}
 $Request = {
     param($Uri)
     $Path = ([uri]$Uri).AbsolutePath

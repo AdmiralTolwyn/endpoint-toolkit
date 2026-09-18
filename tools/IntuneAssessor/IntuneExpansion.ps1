@@ -75,8 +75,17 @@ function Test-IntuneSecurityPath {
     return $Path -cmatch '^((Policy/Config/Defender/(AllowBehaviorMonitoring|AllowCloudProtection|AllowRealtimeMonitoring|AllowScriptScanning|AllowIOAVProtection|AllowOnAccessProtection|PUAProtection|EnableNetworkProtection|CloudBlockLevel|CloudExtendedTimeout|SubmitSamplesConsent|AttackSurfaceReductionRules|AttackSurfaceReductionOnlyExclusions))|(LAPS/Policies/(BackupDirectory|AdministratorAccountName|PasswordAgeDays|PasswordLength|PasswordComplexity|PassphraseLength|PostAuthenticationResetDelay|PostAuthenticationActions|AutomaticAccountManagementEnabled))|(Policy/Config/(DeviceGuard/(EnableVirtualizationBasedSecurity|LsaCfgFlags|RequirePlatformSecurityFeatures)|LocalPoliciesSecurityOptions/(MicrosoftNetworkClient_DigitallySignCommunicationsAlways|MicrosoftNetworkServer_DigitallySignCommunicationsAlways|UserAccountControl_RunAllAdministratorsInAdminApprovalMode)|SmartScreen/(EnableSmartScreenInShell|PreventOverrideForFilesInShell)|LanmanWorkstation/EnableInsecureGuestLogons|MSSecurityGuide/(ConfigureSMBV1ClientDriver|ConfigureSMBV1Server)|InternetExplorer/DisableInternetExplorerLaunchViaCOM|LocalSecurityAuthority/ConfigureLsaProtectedProcess|VirtualizationBasedTechnology/HypervisorEnforcedCodeIntegrity|WindowsPowerShell/TurnOnPowerShellScriptBlockLogging))|(BitLocker/(RequireDeviceEncryption|AllowWarningForOtherDiskEncryption|AllowStandardUserEncryption|SystemDrivesRequireStartupAuthentication|ConfigureRecoveryPasswordRotation))|(Firewall/MdmStore/(DomainProfile|PrivateProfile|PublicProfile)/(EnableFirewall|DefaultInboundAction|DefaultOutboundAction|EnableLogDroppedPackets|EnableLogSuccessConnections|AllowLocalPolicyMerge|AllowLocalIpsecPolicyMerge)))$'
 }
 
+function Test-IntuneTemplateUnresolved {
+    param($SettingValue)
+    $Reference = Get-IntuneValue $SettingValue 'settingValueTemplateReference'
+    if ($null -eq $Reference) { return $false }
+    if ($Reference -isnot [Collections.IDictionary] -and $Reference -isnot [pscustomobject]) { return $true }
+    $UseDefault = Get-IntuneValue $Reference 'useTemplateDefault'
+    return $UseDefault -isnot [bool] -or $UseDefault
+}
+
 function ConvertTo-IntuneSettingFacts {
-    param($Instance, $Definitions, [string]$PolicyId, [string]$SettingId, [int]$Depth = 0)
+    param($Instance, $Definitions, [string]$PolicyId, [string]$SettingId, [int]$Depth = 0, [bool]$InheritedTemplateUnresolved = $false)
     if ($Depth -gt 12) { throw 'Setting depth limit' }
     $DefinitionId = Get-IntuneValue $Instance 'settingDefinitionId'
     if ($DefinitionId -isnot [string] -or [string]::IsNullOrWhiteSpace($DefinitionId)) {
@@ -92,7 +101,17 @@ function ConvertTo-IntuneSettingFacts {
     $MixedValueKinds = $null -ne $Choice -and $null -ne $Simple
     $ChoiceId = Get-IntuneValue $Choice 'value'
     $InvalidChoiceId = $null -ne $Choice -and ($ChoiceId -isnot [string] -or [string]::IsNullOrWhiteSpace($ChoiceId))
+    $TemplateUnresolved = $InheritedTemplateUnresolved -or (Test-IntuneTemplateUnresolved $Choice) -or (Test-IntuneTemplateUnresolved $Simple)
     if ($Definition.Count -eq 1) {
+        $Selected = $null
+        if ($null -ne $Choice -and -not $InvalidChoiceId) {
+            $Options = @(foreach ($Option in (Get-IntuneValue $Definition[0] 'options' @())) {
+                $OptionId = Get-IntuneValue $Option 'itemId'
+                if ($OptionId -is [string] -and [string]::Equals($OptionId, $ChoiceId, [StringComparison]::Ordinal)) { $Option }
+            })
+            if ($Options.Count -eq 1) { $Selected = Get-IntuneValue $Options[0] 'optionValue' }
+        } elseif ($null -eq $Choice) { $Selected = $Simple }
+        $TemplateUnresolved = $TemplateUnresolved -or (Test-IntuneTemplateUnresolved $Selected)
         $Path = (([string](Get-IntuneValue $Definition[0] 'baseUri')).TrimEnd('/') + '/' + ([string](Get-IntuneValue $Definition[0] 'offsetUri')).TrimStart('/')) -creplace '^\./(Device/)?Vendor/MSFT/', ''
         $EpmPath = Get-IntuneEpmPath $Definition[0]
         if ($EpmPath) { $Path = $EpmPath }
@@ -101,23 +120,14 @@ function ConvertTo-IntuneSettingFacts {
             $Fact['definitionVersion'] = [string](Get-IntuneValue $Definition[0] 'version')
             $Fact['resolution'] = 'UnresolvedValue'
             if ($MixedValueKinds -or $InvalidChoiceId) { return $Fact }
-            $Selected = $null
-            if ($null -ne $Choice) {
-                $Options = @(foreach ($Option in (Get-IntuneValue $Definition[0] 'options' @())) {
-                    $OptionId = Get-IntuneValue $Option 'itemId'
-                    if ($OptionId -is [string] -and [string]::Equals($OptionId, $ChoiceId, [StringComparison]::Ordinal)) { $Option }
-                })
-                if ($Options.Count -eq 1) { $Selected = Get-IntuneValue $Options[0] 'optionValue' }
-            } else { $Selected = $Simple }
-            $Template = Get-IntuneValue $Selected 'settingValueTemplateReference'
-            $ChoiceTemplate = Get-IntuneValue $Choice 'settingValueTemplateReference'
-            $Scalar = Get-IntuneValue $Selected 'value'
+            $Scalar = $null
+            if (-not $TemplateUnresolved) { $Scalar = Get-IntuneValue $Selected 'value' }
             $UnreviewedAdmx = $Path -cin @('Policy/Config/MSSecurityGuide/ConfigureSMBV1ClientDriver', 'Policy/Config/MSSecurityGuide/ConfigureSMBV1Server', 'Policy/Config/WindowsPowerShell/TurnOnPowerShellScriptBlockLogging')
             if ($Scalar -is [string] -and (Test-IntuneStructuredPath $Path)) {
                 try { $Fact['admx'] = ConvertTo-IntuneAdmxMetadata $Scalar -CspPath $Path; $Fact['resolution'] = 'ResolvedAdmx' }
                 catch { $Fact['resolution'] = 'UnresolvedAdmx' }
             }
-            if ((Get-IntuneValue $Template 'useTemplateDefault' $false) -or (Get-IntuneValue $ChoiceTemplate 'useTemplateDefault' $false)) {
+            if ($TemplateUnresolved) {
                 $Fact['resolution'] = 'UnresolvedTemplateDefault'
             } elseif ($UnreviewedAdmx) {
                 $Fact['resolution'] = 'UnresolvedAdmx'
@@ -126,7 +136,6 @@ function ConvertTo-IntuneSettingFacts {
                 $Fact['value'] = $Scalar
                 $Fact['resolution'] = 'Resolved'
             }
-            if ((Get-IntuneValue $Template 'useTemplateDefault' $false) -or (Get-IntuneValue $ChoiceTemplate 'useTemplateDefault' $false)) { $Fact.Remove('admx') }
         }
     }
     if ($DefinitionId) { $Fact }
@@ -134,9 +143,10 @@ function ConvertTo-IntuneSettingFacts {
     $Ordinal = 0
     foreach ($ValueName in @('choiceSettingValue', 'groupSettingCollectionValue', 'choiceSettingCollectionValue')) {
         foreach ($SettingValue in (Get-IntuneValue $Instance $ValueName @())) {
+            $ChildUnresolved = $TemplateUnresolved -or (Test-IntuneTemplateUnresolved $SettingValue)
             foreach ($Child in (Get-IntuneValue $SettingValue 'children' @())) {
                 $Ordinal++
-                ConvertTo-IntuneSettingFacts $Child $Definitions $PolicyId ($SettingId + '.' + $Ordinal) ($Depth + 1)
+                ConvertTo-IntuneSettingFacts $Child $Definitions $PolicyId ($SettingId + '.' + $Ordinal) ($Depth + 1) $ChildUnresolved
             }
         }
     }

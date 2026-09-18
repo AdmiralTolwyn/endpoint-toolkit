@@ -2,6 +2,29 @@
 
 Date: 2026-09-17. Status: **partial audit, not production certification**.
 
+September 19, collector 0.5.10: repaired a reproduced defaulted-parent -> Resolved
+child path in ConvertTo-IntuneSettingFacts. Unresolved template context now flows
+through descendants, including selected options on unsupported CSP paths and
+group/choice-collection values. A false child flag cannot clear ancestor context;
+explicit siblings remain independent. Child metadata is retained, values/ADMX
+are withheld. Absent/null references still permit explicit values. Present
+references require a Boolean useTemplateDefault; true, missing/null/untyped flags
+or malformed reference objects remain unresolved, not truthiness-decoded.
+
+[Template reference](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationsettingvaluetemplatereference?view=graph-rest-beta)
+and [group value](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationgroupsettingvalue?view=graph-rest-beta)
+contracts reviewed at revision `4b837f772f711c890ec02678db6b05845a40b419`. They
+document the Boolean and structure, not the collector's conservative withholding
+rule or actual child runtime behavior. Matrix tests cover 144 cases across value
+kinds/representations, plus transitive/ADMX controls and actual mocked exports.
+Native/app tests retain unknowns through save/load/reports; native normalization
+uses UnresolvedValue for the collector's UnresolvedTemplateDefault marker.
+
+No new source field, provider, scope, route, finding, score or native rule. Full
+template/dependency/OData semantics remain open; no live occurrence is asserted.
+Recollect affected older flattened policy evidence rather than guessing lost
+context. See [template-context limits](README.md#template-context-0510).
+
 September 19, collector 0.5.9: repaired type coercion in the settings decoder's
 definition/option joins. Instance settingDefinitionId and choice value must be
 nonblank strings; definition id and option itemId must be strings matched by

@@ -1,6 +1,6 @@
 # Intune Discovery for Assay
 
-Version 0.5.9. Experimental pending a live tenant pilot. Offline-tested with
+Version 0.5.10. Experimental pending a live tenant pilot. Offline-tested with
 Windows PowerShell 5.1 and PowerShell 7.
 
 The [contract audit](AUDIT.md) currently verifies 49 enabled Graph GET contracts
@@ -10,6 +10,36 @@ remain separate gates; do not label the full collector audit complete.
 Exports read-only observations for Assay's Intune pack. Assay owns control
 definitions and scores: 50 source-linked controls, two bounded automatic checks,
 and 48 evidence-assisted manual checks. The collector does not mutate a tenant.
+
+## Template Context (0.5.10)
+
+The decoder now carries unresolved value-template context into descendant
+settings. Previously, a parent marked UnresolvedTemplateDefault could emit a
+Resolved child. Direct values, selected option values, group/choice-collection
+values and transitive children now retain that uncertainty without exporting
+scalar or ADMX values. Known child identities/CSP paths remain as metadata;
+independent explicit siblings are not contaminated.
+
+Absent/null `settingValueTemplateReference` permits explicit decoding as before.
+A present reference must be an object with Boolean `useTemplateDefault`: false
+permits explicit decoding, true remains unresolved. Missing/null/non-Boolean flags
+or malformed reference objects remain unresolved, never coerced by truthiness.
+An explicit child false flag does not clear inherited uncertainty.
+
+Microsoft documents the [template reference Boolean](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationsettingvaluetemplatereference?view=graph-rest-beta)
+and [group child/reference structure](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationgroupsettingvalue?view=graph-rest-beta).
+The collector's propagation is a conservative evidence rule while context is
+unresolved, not proof that Windows disables or ignores children. No template
+lookup, effective dependency evaluation or new network operation is added.
+
+Both PowerShell runtimes test typed flags, value kinds, unsupported parent paths,
+transitive/sibling isolation and ADMX withholding. Test-IntuneCfaEvidence can write
+`ASSAY_INTUNE_TEMPLATE_FIXTURE` through the actual mocked discovery pipeline.
+Native/app tests keep the parent and child unknown through reassessment, save/load
+and HTML/PDF. Native rules 1.8.0-preview, findings, scores and scopes are unchanged.
+Recollect affected older exports: flattened Resolved child evidence may no longer
+carry the context needed to recognize this defect. Full schema/template/dependency
+validation remains open; no live-tenant defect occurrence is asserted.
 
 ## Typed Setting Identities (0.5.9)
 
