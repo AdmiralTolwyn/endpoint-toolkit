@@ -24,6 +24,20 @@ Assert-Epm ($Rules[0].fileName -eq 'setup*.exe' -and $Rules[0].elevationType -ce
 Assert-Epm ($null -eq $Rules[1].filePath -and $null -eq $Rules[1].elevationType) 'Missing/default values inherited from another rule'
 Assert-Epm (-not ($Rules | ConvertTo-Json -Depth 20).Contains('SECRET')) 'Unreviewed EPM rule content leaked'
 foreach ($DecodeJson in @($false, $true)) {
+    $OptionDefinitions = @($Definitions | ForEach-Object { $_.Clone() })
+    $OptionDefinitions[4].options = @(
+        @{ itemId = 'opaque-option'; optionValue = @{ value = 'Automatic' } },
+        @{ itemId = @('opaque-option'); optionValue = @{ value = 'Deny' } }
+    )
+    $OptionInstance = $Instance
+    if ($DecodeJson) {
+        $OptionDefinitions = $OptionDefinitions | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+        $OptionInstance = $OptionInstance | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+    }
+    $OptionRows = @(ConvertTo-IntuneEpmRules $OptionInstance $OptionDefinitions 'policy' 'malformed-options')
+    Assert-Epm ($null -eq $OptionRows[0].elevationType -and $OptionRows[0].name -ceq 'Rule one') "Malformed duplicate option restored a unique EPM choice: JSON=$DecodeJson"
+}
+foreach ($DecodeJson in @($false, $true)) {
     $MalformedChoice = @{ settingDefinitionId = 'unreviewed-parent'; choiceSettingValue = @(@{ value = 'known'; children = @($First.children[1]) }) }
     $ValueShapeInstance = @{ settingDefinitionId = $RootId; groupSettingCollectionValue = @(@{ children = @($First.children[0], $First.children[1], $MalformedChoice) }) }
     if ($DecodeJson) { $ValueShapeInstance = $ValueShapeInstance | ConvertTo-Json -Depth 20 | ConvertFrom-Json }
@@ -732,3 +746,25 @@ foreach ($NestedDuplicate in @($false, $true)) {
     $FixturePath = if ($NestedDuplicate) { $env:ASSAY_INTUNE_EPM_COLLECTION_FIXTURE } else { $env:ASSAY_INTUNE_EPM_COLLECTION_CONTROL_FIXTURE }
     if ($FixturePath) { [IO.File]::WriteAllText($FixturePath, $NestedJson, [Text.UTF8Encoding]::new($false)) }
 }
+$script:EpmFixtureDefinitions = @($Definitions | ForEach-Object { $_.Clone() })
+$script:EpmFixtureDefinitions[4].options += @{ itemId = @('opaque-option'); optionValue = @{ value = 'SECRET_OPTION' } }
+$script:EpmFixtureDefinitions += @{ id = 'option-parent'; options = @(
+    @{ itemId = 'known'; optionValue = @{ value = 1 } },
+    @{ itemId = @('known'); optionValue = @{ value = 'SECRET_OPTION' } }
+) }
+$script:EpmFixtureInstance = @{ settingDefinitionId = $RootId; groupSettingCollectionValue = @(
+    $script:EpmDuplicateValid.groupSettingCollectionValue[0],
+    @{ children = @(
+        $First.children[0],
+        @{ settingDefinitionId = ($RootId + '_ruletype'); simpleSettingValue = @{ value = 'Automatic' } },
+        @{ settingDefinitionId = 'option-parent'; choiceSettingCollectionValue = @(@{ value = 'known'; children = $script:EpmDuplicateValid.groupSettingCollectionValue[0].children[1..2] }) }
+    ) }
+) }
+$OptionDocument = Invoke-IntuneDiscoveryCore -SelectedTenant '22222222-2222-4222-8222-222222222222' -Configuration $true -Request $EpmRequest -Requirements $EpmRequirements
+$OptionRows = $OptionDocument.Inventory.EpmRules
+Assert-Epm ($OptionRows.Count -eq 2 -and $OptionDocument.CollectionStatus.EpmRules.State -ceq 'Complete' -and $OptionDocument.CollectionStatus.EpmRules.CompletedParentIds -contains 'policy') 'Malformed option candidates lost EPM provenance'
+Assert-Epm ($null -eq $OptionRows[0].elevationType -and $OptionRows[0].fileName -ceq 'safe.exe' -and $OptionRows[0].name -ceq 'Rule one') 'Malformed leaf option resolved or hid sibling fields'
+Assert-Epm ($OptionRows[1].elevationType -ceq 'Automatic' -and $null -eq $OptionRows[1].fileName -and $null -eq $OptionRows[1].filePath -and $OptionRows[1].name -ceq 'Rule one') 'Malformed ancestor options exposed descendant values'
+$OptionJson = $OptionDocument | ConvertTo-Json -Depth 30
+Assert-Epm (-not ($OptionJson -match 'SECRET|optionValue|ChoiceUnresolved|TemplateUnresolved')) 'Raw malformed option payload exported'
+if ($env:ASSAY_INTUNE_EPM_OPTION_FIXTURE) { [IO.File]::WriteAllText($env:ASSAY_INTUNE_EPM_OPTION_FIXTURE, $OptionJson, [Text.UTF8Encoding]::new($false)) }

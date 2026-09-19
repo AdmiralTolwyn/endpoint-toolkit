@@ -87,7 +87,14 @@ function Test-IntuneTemplateUnresolved {
 function Get-IntuneSelectedOptionValue {
     param($Definitions, $ChoiceId)
     if (@($Definitions).Count -ne 1 -or $ChoiceId -isnot [string] -or [string]::IsNullOrWhiteSpace($ChoiceId)) { return $null }
-    $Options = @(foreach ($Option in (Get-IntuneValue $Definitions[0] 'options' @())) {
+    $AvailableOptions = Get-IntuneValue $Definitions[0] 'options'
+    if ($AvailableOptions -isnot [array]) { return $null }
+    foreach ($Option in $AvailableOptions) {
+        if ($Option -isnot [Collections.IDictionary] -and $Option -isnot [pscustomobject]) { return $null }
+        $OptionId = Get-IntuneValue $Option 'itemId'
+        if ($OptionId -isnot [string] -or [string]::IsNullOrWhiteSpace($OptionId)) { return $null }
+    }
+    $Options = @(foreach ($Option in $AvailableOptions) {
         $OptionId = Get-IntuneValue $Option 'itemId'
         if ($OptionId -is [string] -and [string]::Equals($OptionId, $ChoiceId, [StringComparison]::Ordinal)) { $Option }
     })

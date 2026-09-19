@@ -163,6 +163,7 @@ try {
     $script:TemplateCorrelation = $false
     $script:ChoiceCorrelation = $false
     $script:PathCorrelation = $false
+    $script:OptionCorrelation = $false
     $CorrelationRequest = {
         param($Uri)
         $Path = ([uri]$Uri).AbsolutePath
@@ -197,17 +198,29 @@ try {
                     }
                     $Rows = @($Rows[0])
                 }
+                if ($script:OptionCorrelation) {
+                    $Rows[0].settingInstance.choiceSettingValue.children = @($Rows[1].settingInstance)
+                    if ($Path -eq '/beta/deviceManagement/configurationPolicies/policy-off/settings') {
+                        $Rows[0].settingInstance.choiceSettingCollectionValue = @($Rows[0].settingInstance.choiceSettingValue)
+                        $Rows[0].settingInstance.Remove('choiceSettingValue')
+                    }
+                    $Rows = @($Rows[0])
+                }
             }
             '/settings/0/settingDefinitions$' { $Rows = @(@{ id = 'rtp'; baseUri = './Device/Vendor/MSFT/Policy/Config/Defender'; offsetUri = 'AllowRealtimeMonitoring'; version = '1'; options = @(@{ itemId = 'opaque_enabled_0'; optionValue = @{ value = 1 } }, @{ itemId = 'opaque_disabled_1'; optionValue = @{ value = 0 } }) }) }
             '/settings/1/settingDefinitions$' { $Rows = @(@{ id = 'behavior'; baseUri = './Device/Vendor/MSFT/Policy/Config/Defender'; offsetUri = 'AllowBehaviorMonitoring'; version = '1'; options = @(@{ itemId = 'opaque_enabled_0'; optionValue = @{ value = 1 } }, @{ itemId = 'opaque_disabled_1'; optionValue = @{ value = 0 } }) }) }
         }
         if ($script:IdentityCorrelation -and $Path.EndsWith('/settings/0/settingDefinitions')) { $Rows[0].id = '1' }
         if ($script:IdentityCorrelation -and $Path.EndsWith('/settings/1/settingDefinitions')) { $Rows[0].options = @(@{ itemId = 1; optionValue = @{ value = 1 } }) }
-        if (($script:TemplateCorrelation -or $script:ChoiceCorrelation) -and $Path.EndsWith('/settings/0/settingDefinitions')) {
+        if (($script:TemplateCorrelation -or $script:ChoiceCorrelation -or $script:OptionCorrelation) -and $Path.EndsWith('/settings/0/settingDefinitions')) {
             $Rows += @{ id = 'behavior'; baseUri = './Device/Vendor/MSFT/Policy/Config/Defender'; offsetUri = 'AllowBehaviorMonitoring'; version = '1'; options = @(@{ itemId = 'opaque_enabled_0'; optionValue = @{ value = 1 } }, @{ itemId = 'opaque_disabled_1'; optionValue = @{ value = 0 } }) }
         }
         if ($script:ChoiceCorrelation -and $Path -eq '/beta/deviceManagement/configurationPolicies/policy-off/settings/0/settingDefinitions') {
             $Rows[0].options += @{ itemId = 'opaque_disabled_1'; optionValue = @{ value = 1 } }
+        }
+        if ($script:OptionCorrelation -and $Path.EndsWith('/settings/0/settingDefinitions')) {
+            $SelectedId = if ($Path -eq '/beta/deviceManagement/configurationPolicies/policy-on/settings/0/settingDefinitions') { 'opaque_enabled_0' } else { 'opaque_disabled_1' }
+            $Rows[0].options += @{ itemId = @($SelectedId); optionValue = @{ value = 'PRIVATE_OPTION' } }
         }
         if ($script:PathCorrelation -and $Path.EndsWith('/settings/0/settingDefinitions')) { $Rows[0].baseUri = @($Rows[0].baseUri) }
         if ($script:PathCorrelation -and $Path.EndsWith('/settings/1/settingDefinitions')) { $Rows[0].offsetUri = @($Rows[0].offsetUri) }
@@ -229,6 +242,20 @@ try {
     $CorrelationJson = $Correlation | ConvertTo-Json -Depth 30
     if ($CorrelationJson -match 'PRIVATE_PATH|DO_NOT_EXPORT') { throw 'Correlation export leaked unreviewed fields' }
     if ($env:ASSAY_INTUNE_REALTIME_FIXTURE) { [IO.File]::WriteAllText($env:ASSAY_INTUNE_REALTIME_FIXTURE, $CorrelationJson, [Text.UTF8Encoding]::new($false)) }
+    $script:OptionCorrelation = $true
+    try {
+        $OptionDocument = Invoke-IntuneDiscoveryCore -SelectedTenant $Tenant -Configuration $true -EndpointPaths @($Temporary) -Request $CorrelationRequest -Requirements @{
+            ScopeConfirmed = $true; ScopeDescription = 'Synthetic malformed option list'; Assessor = 'Test'; MaxCollectionAgeHours = 24
+            ConfigurationReview = @{ DeviceIds = @('device'); PolicyIds = @('policy-on'); ReferenceProfile = 'windows-25h2'; DefenderPrimary = $true }
+        }
+    } finally { $script:OptionCorrelation = $false }
+    if ($OptionDocument.CollectionStatus.SecuritySettings.State -cne 'Complete' -or $OptionDocument.CollectionStatus.SecuritySettings.CompletedParentIds.Count -ne 2 -or $OptionDocument.Inventory.SecuritySettings.Count -ne 4) { throw 'Malformed option list lost parent/child provenance' }
+    foreach ($Fact in $OptionDocument.Inventory.SecuritySettings) {
+        if ($Fact.resolution -cne 'UnresolvedValue' -or $Fact.Contains('value') -or $Fact.Contains('admx')) { throw 'Malformed option candidates fabricated policy or descendant values' }
+    }
+    $OptionJson = $OptionDocument | ConvertTo-Json -Depth 30
+    if ($OptionJson -match 'PRIVATE_PATH|DO_NOT_EXPORT|PRIVATE_OPTION|optionValue') { throw 'Malformed option input leaked into export' }
+    if ($env:ASSAY_INTUNE_OPTION_FIXTURE) { [IO.File]::WriteAllText($env:ASSAY_INTUNE_OPTION_FIXTURE, $OptionJson, [Text.UTF8Encoding]::new($false)) }
     $script:MixedCorrelation = $true
     try {
         $AmbiguousDocument = Invoke-IntuneDiscoveryCore -SelectedTenant $Tenant -Configuration $true -EndpointPaths @($Temporary) -Request $CorrelationRequest -Requirements @{

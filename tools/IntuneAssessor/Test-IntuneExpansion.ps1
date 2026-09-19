@@ -33,6 +33,90 @@ foreach ($Uri in @('https://graph.microsoft.com/v1.0/directory/deviceLocalCreden
 $Definition = @{ id = 'opaque'; baseUri = './Device/Vendor/MSFT/Policy/Config/Defender'; offsetUri = 'AllowCloudProtection'; version = '1'; options = @(@{ itemId = 'opaque_disabled_1'; optionValue = @{ value = 0 } }, @{ itemId = 'opaque_enabled_0'; optionValue = @{ value = 1 } }) }
 $Facts = @(ConvertTo-IntuneSettingFacts @{ settingDefinitionId = 'opaque'; choiceSettingValue = @{ value = 'opaque_disabled_1' } } @($Definition) 'policy' 'setting')
 Assert-Expansion ($Facts[0].value -eq 0 -and $Facts[0].resolution -eq 'Resolved') 'Choice suffix guessed instead of definition join'
+$OptionCases = foreach ($Shape in @('valid', 'unselected-payload', 'duplicate-selected', 'array-id', 'numeric-id', 'boolean-id', 'null-id', 'blank-id', 'whitespace-id', 'missing-id', 'object-id', 'scalar-item', 'null-item', 'array-item', 'object-container', 'empty-container', 'missing-container', 'null-container')) {
+    foreach ($CandidateFirst in @($false, $true)) {
+        foreach ($Kind in @('choiceSettingValue', 'choiceSettingCollectionValue')) { @{ Shape = $Shape; First = $CandidateFirst; Kind = $Kind } }
+    }
+}
+foreach ($OptionCase in $OptionCases) {
+    foreach ($DecodeJson in @($false, $true)) {
+        $SelectedOption = @{ itemId = 'known'; optionValue = @{ value = 0 } }
+        $CandidateOption = @{ itemId = 'other'; optionValue = @{ value = 1 } }
+        switch ($OptionCase.Shape) {
+            'unselected-payload' { $CandidateOption.optionValue = 'PRIVATE_VALUE' }
+            'duplicate-selected' { $CandidateOption.itemId = 'known' }
+            'array-id' { $CandidateOption.itemId = @('known') }
+            'numeric-id' { $CandidateOption.itemId = 1 }
+            'boolean-id' { $CandidateOption.itemId = $false }
+            'null-id' { $CandidateOption.itemId = $null }
+            'blank-id' { $CandidateOption.itemId = '' }
+            'whitespace-id' { $CandidateOption.itemId = " `t" }
+            'missing-id' { $CandidateOption.Remove('itemId') }
+            'object-id' { $CandidateOption.itemId = @{ value = 'known' } }
+            'scalar-item' { $CandidateOption = 'PRIVATE_VALUE' }
+            'null-item' { $CandidateOption = $null }
+            'array-item' { $CandidateOption = @($CandidateOption) }
+        }
+        $OptionDefinition = @{ id = 'parent'; baseUri = './Device/Vendor/MSFT/Policy/Config/Defender'; offsetUri = 'AllowRealtimeMonitoring'; options = @($SelectedOption, $CandidateOption) }
+        if ($OptionCase.First) { $OptionDefinition.options = @($CandidateOption, $SelectedOption) }
+        switch ($OptionCase.Shape) {
+            'object-container' { $OptionDefinition.options = $SelectedOption }
+            'empty-container' { $OptionDefinition.options = @() }
+            'missing-container' { $OptionDefinition.Remove('options') }
+            'null-container' { $OptionDefinition.options = $null }
+        }
+        $OptionDefinitions = @($OptionDefinition, @{ id = 'child'; baseUri = './Device/Vendor/MSFT/Policy/Config/Defender'; offsetUri = 'AllowBehaviorMonitoring' })
+        $OptionValue = @{ value = 'known'; children = @(@{ settingDefinitionId = 'child'; simpleSettingValue = @{ value = 1 } }) }
+        $OptionInstance = @{ settingDefinitionId = 'parent'; $OptionCase.Kind = $OptionValue }
+        if ($OptionCase.Kind -eq 'choiceSettingCollectionValue') { $OptionInstance[$OptionCase.Kind] = @($OptionValue) }
+        if ($DecodeJson) {
+            $OptionDefinitions = $OptionDefinitions | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+            $OptionInstance = $OptionInstance | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+        }
+        $OptionFacts = @(ConvertTo-IntuneSettingFacts $OptionInstance $OptionDefinitions 'policy' 'option-matrix')
+        $ValidOptions = $OptionCase.Shape -in @('valid', 'unselected-payload')
+        Assert-Expansion ($OptionFacts.Count -eq 2) 'Option uncertainty discarded known parent/child metadata'
+        Assert-Expansion ($OptionFacts[1].resolution -ceq $(if ($ValidOptions) { 'Resolved' } else { 'UnresolvedValue' })) "Option context lost: $($OptionCase.Shape); $($OptionCase.Kind); First=$($OptionCase.First); JSON=$DecodeJson"
+        if ($ValidOptions) {
+            Assert-Expansion ($OptionFacts[1].value -eq 1) 'Valid option child value changed'
+            if ($OptionCase.Kind -eq 'choiceSettingValue') { Assert-Expansion ($OptionFacts[0].resolution -ceq 'Resolved' -and $OptionFacts[0].value -eq 0) 'Valid selected zero option changed' }
+        } else {
+            foreach ($Fact in $OptionFacts) { Assert-Expansion ($Fact.resolution -ceq 'UnresolvedValue' -and -not $Fact.Contains('value')) 'Malformed option list manufactured scalar evidence' }
+        }
+        Assert-Expansion (-not (($OptionFacts | ConvertTo-Json -Depth 10) -match 'PRIVATE_VALUE')) 'Unselected or malformed option payload leaked'
+    }
+}
+foreach ($AdmxPlacement in @('selected', 'descendant')) {
+    foreach ($MalformedOption in @($false, $true)) {
+        foreach ($DecodeJson in @($false, $true)) {
+            $AdmxPath = 'Policy/Config/InternetExplorer/DisableInternetExplorerLaunchViaCOM'
+            $OptionDefinition = @{ id = 'admx-parent'; baseUri = './Device/Vendor/MSFT'; offsetUri = $AdmxPath; options = @(@{ itemId = 'known'; optionValue = @{ value = '<enabled/>' } }) }
+            if ($AdmxPlacement -eq 'descendant') {
+                $OptionDefinition.offsetUri = 'Policy/Config/Defender/AllowRealtimeMonitoring'
+                $OptionDefinition.options[0].optionValue.value = 0
+            }
+            if ($MalformedOption) { $OptionDefinition.options += @{ itemId = @('known'); optionValue = @{ value = 'PRIVATE_OPTION' } } }
+            $OptionDefinitions = @($OptionDefinition, @{ id = 'admx-child'; baseUri = './Device/Vendor/MSFT'; offsetUri = $AdmxPath })
+            $OptionInstance = @{ settingDefinitionId = 'admx-parent'; choiceSettingValue = @{ value = 'known'; children = @(@{ settingDefinitionId = 'admx-child'; simpleSettingValue = @{ value = '<enabled/>' } }) } }
+            if ($DecodeJson) {
+                $OptionDefinitions = $OptionDefinitions | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+                $OptionInstance = $OptionInstance | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+            }
+            $OptionFacts = @(ConvertTo-IntuneSettingFacts $OptionInstance $OptionDefinitions 'policy' 'admx-options')
+            Assert-Expansion ($OptionFacts.Count -eq 2) 'Option integrity lost ADMX metadata'
+            if ($MalformedOption) {
+                foreach ($Fact in $OptionFacts) {
+                    Assert-Expansion ($Fact.resolution -ceq 'UnresolvedValue' -and -not $Fact.Contains('value') -and -not $Fact.Contains('admx')) 'Malformed option list exposed selected or descendant ADMX evidence'
+                }
+            } else {
+                Assert-Expansion ($OptionFacts[1].resolution -ceq 'ResolvedAdmx' -and $OptionFacts[1].Contains('admx')) 'Valid descendant ADMX control failed'
+                if ($AdmxPlacement -eq 'selected') { Assert-Expansion ($OptionFacts[0].resolution -ceq 'ResolvedAdmx' -and $OptionFacts[0].Contains('admx')) 'Valid selected ADMX control failed' }
+                else { Assert-Expansion ($OptionFacts[0].resolution -ceq 'Resolved' -and $OptionFacts[0].value -eq 0) 'Valid ADMX parent control lost zero value' }
+            }
+            Assert-Expansion (-not (($OptionFacts | ConvertTo-Json -Depth 10) -match 'PRIVATE_OPTION|<enabled')) 'Raw ADMX or option payload exported'
+        }
+    }
+}
 foreach ($PathCase in @(
     @{ Base = @('./Device/Vendor/MSFT/Policy/Config/Defender'); Offset = 'AllowRealtimeMonitoring' },
     @{ Base = './Device/Vendor/MSFT/Policy/Config/Defender'; Offset = @('AllowRealtimeMonitoring') },

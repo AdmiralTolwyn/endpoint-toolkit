@@ -1,6 +1,6 @@
 # Intune Discovery for Assay
 
-Version 0.5.20. Experimental pending a live tenant pilot. Offline-tested with
+Version 0.5.21. Experimental pending a live tenant pilot. Offline-tested with
 Windows PowerShell 5.1 and PowerShell 7.
 
 The [contract audit](AUDIT.md) currently verifies 49 enabled Graph GET contracts
@@ -10,6 +10,38 @@ remain separate gates; do not label the full collector audit complete.
 Exports read-only observations for Assay's Intune pack. Assay owns control
 definitions and scores: 50 source-linked controls, two bounded automatic checks,
 and 48 evidence-assisted manual checks. The collector does not mutate a tenant.
+
+## Option Candidate Integrity (0.5.21)
+
+The shared general-configuration/EPM option resolver now validates candidate
+identities before filtering. A valid option plus a malformed duplicate previously
+could appear unique. Options must be an array of objects with nonblank string
+itemIds; malformed containers, items or IDs leave the choice unresolved rather
+than disappearing. Exact ordinal matching and selected payload validation remain
+unchanged. Unselected payloads are not decoded. Descendant uncertainty and
+independent evidence are preserved by the existing callers.
+
+Microsoft documents [the options collection](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationchoicesettingdefinition?view=graph-rest-beta)
+and [option identity/value types](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationoptiondefinition?view=graph-rest-beta).
+Nonblank identity and whole-choice withholding are conservative Assay boundaries,
+not full schema, dependency, applicability or effective-enforcement validation.
+152 shared dictionary/JSON cases and two EPM reproductions cover malformed
+candidate lists, both orders, singular/collection choices, valid zero controls
+and selected/descendant ADMX withholding.
+`ASSAY_INTUNE_OPTION_FIXTURE` and `ASSAY_INTUNE_EPM_OPTION_FIXTURE` exercise actual
+mocked discovery, native reassessment and app save/load/HTML/PDF. A Complete read
+can still contain unresolved values. No raw option payloads, new fields, routes,
+permissions, providers, findings or scores; rules remain 1.8.0-preview.
+Recollect affected older flattened exports; discarded candidates cannot be recovered.
+Live validation and the broader trust audit remain open; no automatic migration.
+
+Full offline verification for this increment: all 13 Intune Test-* suites passed
+on Windows PowerShell 5.1 and PowerShell 7, including cached Graph/CSP/endpoint
+documentation checks. Assay passed 311 Rust tests with available collector inputs,
+122 Flutter tests with native/review opt-ins, and 432 Intune visual matrix cases.
+Dart LCOV measured 5,176/7,620 lines (67.93%) across 48 instrumented files, not
+100% coverage. Packaged platform integration and live tenant/provider validation
+were not run; no running application was rebuilt or replaced.
 
 ## EPM Singular Values (0.5.20)
 

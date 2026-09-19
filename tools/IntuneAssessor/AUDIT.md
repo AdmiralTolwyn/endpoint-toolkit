@@ -2,6 +2,37 @@
 
 Date: 2026-09-17. Status: **partial audit, not production certification**.
 
+September 19, collector 0.5.21: reproduced shared option matching discarding a
+malformed duplicate itemId and resolving the remaining candidate. Resolver now
+requires an options array with object entries and nonblank string itemIds BEFORE
+filtering. Malformed lists leave general/EPM choices and affected descendants
+unresolved, preserving independent evidence and valid exact zero values.
+Selected optionValue still requires an object; unselected payloads are not decoded.
+
+Fresh [choice definition](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationchoicesettingdefinition?view=graph-rest-beta)
+revision `e8eace7fa9bfa9e7afacfe9f5dec1ba42ffd493f` establishes options collection;
+[option definition](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationoptiondefinition?view=graph-rest-beta)
+revision `4b837f772f711c890ec02678db6b05845a40b419` establishes String itemId and
+complex optionValue. Nonblank and whole-choice withholding are Assay boundaries,
+not full member/schema/dependency/applicability validation or Windows enforcement.
+
+152 shared matrix/ADMX cases plus two EPM reproductions and actual mocked discovery
+exports cover both decoders. Native sanitization/injected-value rejection and app
+persistence/reports retain unknowns alongside positive controls. No new source
+field, route, scope, provider or score; no live occurrence asserted. Recollect
+affected older flattened exports; no migration. See
+[option candidate integrity](README.md#option-candidate-integrity-0521).
+
+Completion gates expanded for the coverage request: all 13 Intune collector
+suites on PowerShell 5.1/7, cached Graph/CSP/endpoint contract verification,
+311 Assay Rust tests with available input fixtures, 122 Flutter tests with native
+opt-ins and 432 Intune visual matrix cases passed. Full Dart analysis passed.
+The initial coverage run hit the cumulative 30-second Tunnel/EPM test timeout;
+splitting its 14 fixtures into independently named tests fixed the harness without
+increasing timeouts or removing assertions. Dart line coverage is 67.93% across
+48 instrumented files, not full source coverage. Platform app integration and
+live tenant/provider checks remain unexecuted.
+
 September 19, collector 0.5.20: reproduced a singular choice array hiding its
 descendants while independent fields resolved. Non-null choice/simple values now
 require object containers before template/option/child decoding; arrays/scalars
