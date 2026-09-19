@@ -1,24 +1,48 @@
 function Get-IntuneEpmRuleChildren {
     param($Children, [int]$Depth = 0, $Definitions = @(), [bool]$InheritedTemplateUnresolved = $false, [bool]$InheritedChoiceUnresolved = $false)
     if ($Depth -gt 12) { throw 'EPM rule depth limit' }
+    if ($null -ne $Children -and $Children -isnot [array]) { throw 'Invalid EPM child collection' }
     foreach ($Child in $Children) {
         $ChildId = Get-IntuneValue $Child 'settingDefinitionId'
         if ($ChildId -isnot [string] -or [string]::IsNullOrWhiteSpace($ChildId)) { throw 'Invalid EPM child setting definition identity' }
         $Choice = Get-IntuneValue $Child 'choiceSettingValue'
         $Simple = Get-IntuneValue $Child 'simpleSettingValue'
+        $ValueKindCount = 0
+        foreach ($ValueName in @('choiceSettingValue', 'simpleSettingValue', 'groupSettingCollectionValue', 'choiceSettingCollectionValue', 'simpleSettingCollectionValue')) {
+            if ($null -ne (Get-IntuneValue $Child $ValueName)) { $ValueKindCount++ }
+        }
         $TemplateUnresolved = $InheritedTemplateUnresolved -or (Test-IntuneTemplateUnresolved $Choice) -or (Test-IntuneTemplateUnresolved $Simple)
-        $ChoiceUnresolved = $InheritedChoiceUnresolved -or ($null -ne $Choice -and $null -ne $Simple)
-        if ($null -ne $Choice) {
+        $ChoiceUnresolved = $InheritedChoiceUnresolved -or $ValueKindCount -gt 1
+        $ChildDefinitions = @()
+        if ($null -ne $Choice -or $null -ne (Get-IntuneValue $Child 'choiceSettingCollectionValue')) {
             $ChildDefinitions = @(foreach ($Candidate in $Definitions) {
                 $CandidateId = Get-IntuneValue $Candidate 'id'
                 if ($ChildId -is [string] -and $CandidateId -is [string] -and [string]::Equals($ChildId, $CandidateId, [StringComparison]::Ordinal)) { $Candidate }
             })
+        }
+        if ($null -ne $Choice) {
             $Selected = Get-IntuneSelectedOptionValue $ChildDefinitions (Get-IntuneValue $Choice 'value')
             $ChoiceUnresolved = $ChoiceUnresolved -or $null -eq $Selected
             $TemplateUnresolved = $TemplateUnresolved -or (Test-IntuneTemplateUnresolved $Selected)
         }
         @{ Instance = $Child; TemplateUnresolved = $TemplateUnresolved; ChoiceUnresolved = $ChoiceUnresolved }
         Get-IntuneEpmRuleChildren (Get-IntuneValue $Choice 'children' @()) ($Depth + 1) $Definitions $TemplateUnresolved $ChoiceUnresolved
+        foreach ($ValueName in @('groupSettingCollectionValue', 'choiceSettingCollectionValue')) {
+            $CollectionValues = Get-IntuneValue $Child $ValueName
+            if ($null -eq $CollectionValues) { continue }
+            if ($CollectionValues -isnot [array]) { throw 'Invalid EPM nested setting collection' }
+            foreach ($CollectionValue in $CollectionValues) {
+                if ($CollectionValue -isnot [Collections.IDictionary] -and $CollectionValue -isnot [pscustomobject]) { throw 'Invalid EPM nested setting value' }
+                $ChildTemplateUnresolved = $TemplateUnresolved -or (Test-IntuneTemplateUnresolved $CollectionValue)
+                $ChildChoiceUnresolved = $ChoiceUnresolved
+                if ($ValueName -eq 'choiceSettingCollectionValue') {
+                    $CollectionOption = Get-IntuneSelectedOptionValue $ChildDefinitions (Get-IntuneValue $CollectionValue 'value')
+                    $ChildChoiceUnresolved = $ChildChoiceUnresolved -or $null -eq $CollectionOption
+                    $ChildTemplateUnresolved = $ChildTemplateUnresolved -or (Test-IntuneTemplateUnresolved $CollectionOption)
+                }
+                Get-IntuneEpmRuleChildren (Get-IntuneValue $CollectionValue 'children' @()) ($Depth + 1) $Definitions $ChildTemplateUnresolved $ChildChoiceUnresolved
+            }
+        }
     }
 }
 

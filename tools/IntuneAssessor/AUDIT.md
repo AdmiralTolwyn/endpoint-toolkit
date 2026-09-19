@@ -2,6 +2,27 @@
 
 Date: 2026-09-17. Status: **partial audit, not production certification**.
 
+September 19, collector 0.5.18: reproduced nested group/choice collections hiding
+duplicate EPM fields. Walker now traverses both forms with per-item template and
+option uncertainty, keeping unresolved nodes in duplicate checks and independent
+items isolated. Mixed known value kinds stay unresolved; invalid non-array child/
+collection containers or non-object collection items reject via partial coverage.
+
+Fresh [group-value](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationgroupsettingvalue?view=graph-rest-beta),
+[choice-collection](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationchoicesettingcollectioninstance?view=graph-rest-beta)
+and [choice-value](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationchoicesettingvalue?view=graph-rest-beta)
+contracts (revision `4b837f772f711c890ec02678db6b05845a40b419`) establish structure,
+not product runtime inheritance. EPM constants remain sample-backed; full schema,
+base/parent relationships, simple-collection decoding, applicability and live
+behavior remain open.
+
+82 new cases plus mocked discovery positive/duplicate exports verify nested-only
+values and duplicate nulls. Native/app reassessment, persistence and HTML/PDF keep
+Pass/Observed controls versus NotAssessed duplicates, both with complete collection
+coverage. No new source field, provider, permission, route, finding or score.
+Recollect affected older flattened exports; no live occurrence or migration claimed.
+See [nested collection limits](README.md#epm-nested-collections-0518).
+
 September 19, collector 0.5.17: review reproduced empty/whitespace string IDs
 bypassing the 0.5.16 pre-filter guards. Root, supplied definition and traversed
 child IDs now require nonblank strings; valid IDs are not normalized. Invalid

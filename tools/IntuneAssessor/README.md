@@ -1,6 +1,6 @@
 # Intune Discovery for Assay
 
-Version 0.5.17. Experimental pending a live tenant pilot. Offline-tested with
+Version 0.5.18. Experimental pending a live tenant pilot. Offline-tested with
 Windows PowerShell 5.1 and PowerShell 7.
 
 The [contract audit](AUDIT.md) currently verifies 49 enabled Graph GET contracts
@@ -10,6 +10,34 @@ remain separate gates; do not label the full collector audit complete.
 Exports read-only observations for Assay's Intune pack. Assay owns control
 definitions and scores: 50 source-linked controls, two bounded automatic checks,
 and 48 evidence-assisted manual checks. The collector does not mutate a tenant.
+
+## EPM Nested Collections (0.5.18)
+
+The rule walker now traverses nested group and choice collections, fixing a
+reproduced case where hidden descendants escaped duplicate-field detection.
+Group items retain template uncertainty; choice items each use strict option
+resolution and carry independent template/choice uncertainty. Inherited unknowns
+cannot be cleared by descendants, and unresolved duplicates remain counted.
+Mixed non-null value kinds stay unresolved. Child containers must be arrays when
+non-null; nested collection containers require arrays of objects. Invalid shapes
+cause partial collection coverage, not clean evidence.
+
+Microsoft documents [group children](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationgroupsettingvalue?view=graph-rest-beta),
+[choice collections](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationchoicesettingcollectioninstance?view=graph-rest-beta)
+and [choice values/children](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationchoicesettingvalue?view=graph-rest-beta).
+This is bounded evidence traversal, not effective Windows dependency evaluation.
+EPM bindings remain sample-backed; full schema, base/parent relationships,
+simple-collection decoding, applicability and live validation remain open.
+
+82 new dictionary/JSON cases cover positive nested values, duplicates, uncertainty,
+mixed/malformed shapes and item isolation. `ASSAY_INTUNE_EPM_COLLECTION_FIXTURE`
+exports ambiguous fields as null, with EPM-03/EPM-04 NotAssessed;
+`ASSAY_INTUNE_EPM_COLLECTION_CONTROL_FIXTURE` resolves nested-only fields with
+Pass/Observed. Native/app save/load and HTML/PDF preserve both outcomes. Complete
+collection coverage does not certify unambiguous values. No new source fields,
+providers, permissions, routes, findings or scores; rules remain 1.8.0-preview.
+Recollect affected older exports; discarded descendants cannot be reconstructed.
+No live defect occurrence or automatic migration is asserted.
 
 ## EPM Nonblank Identities (0.5.17)
 

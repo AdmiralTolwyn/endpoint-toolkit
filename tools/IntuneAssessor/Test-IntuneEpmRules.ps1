@@ -23,6 +23,117 @@ Assert-Epm ($Rules.Count -eq 2 -and $Rules[0].id -ne $Rules[1].id) 'Rule group i
 Assert-Epm ($Rules[0].fileName -eq 'setup*.exe' -and $Rules[0].elevationType -ceq 'Automatic') 'Exact definition/choice binding failed'
 Assert-Epm ($null -eq $Rules[1].filePath -and $null -eq $Rules[1].elevationType) 'Missing/default values inherited from another rule'
 Assert-Epm (-not ($Rules | ConvertTo-Json -Depth 20).Contains('SECRET')) 'Unreviewed EPM rule content leaked'
+foreach ($NestedKind in @('groupSettingCollectionValue', 'choiceSettingCollectionValue')) {
+    foreach ($DecodeJson in @($false, $true)) {
+        $NestedValue = @{ children = @($First.children[1]); value = 'known' }
+        $NestedNode = @{ settingDefinitionId = 'nested-container'; $NestedKind = @($NestedValue) }
+        $NestedDefinitions = $Definitions + @(@{ id = 'nested-container'; options = @(@{ itemId = 'known'; optionValue = @{ value = 1 } }) })
+        $NestedInstance = @{ settingDefinitionId = $RootId; groupSettingCollectionValue = @(@{ children = @($First.children[0], $First.children[1], $NestedNode) }) }
+        if ($DecodeJson) {
+            $NestedDefinitions = $NestedDefinitions | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+            $NestedInstance = $NestedInstance | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+        }
+        $NestedRows = @(ConvertTo-IntuneEpmRules $NestedInstance $NestedDefinitions 'policy' 'nested-duplicate')
+        Assert-Epm ($NestedRows.Count -eq 1 -and $null -eq $NestedRows[0].fileName -and $NestedRows[0].name -ceq 'Rule one') "Nested collection concealed an EPM duplicate field: $NestedKind; JSON=$DecodeJson"
+    }
+}
+$CollectionCases = foreach ($Kind in @('groupSettingCollectionValue', 'choiceSettingCollectionValue')) {
+    foreach ($Case in @('valid', 'duplicate', 'default', 'default-duplicate', 'malformed-template', 'mixed-simple', 'mixed-choice', 'mixed-simple-collection', 'ancestor-template', 'ancestor-choice', 'container-object', 'container-string', 'item-array', 'item-string', 'item-null', 'children-object')) {
+        @{ Kind = $Kind; Case = $Case }
+    }
+}
+foreach ($CollectionCase in $CollectionCases) {
+    foreach ($DecodeJson in @($false, $true)) {
+        $Kind = $CollectionCase.Kind
+        $Case = $CollectionCase.Case
+        $CollectionValue = @{ children = @($First.children[1]); value = 'known' }
+        $CollectionNode = @{ settingDefinitionId = 'collection'; $Kind = @($CollectionValue) }
+        $CollectionDefinitions = $Definitions + @(@{ id = 'collection'; options = @(@{ itemId = 'known'; optionValue = @{ value = 1 } }) })
+        switch ($Case) {
+            'default' { $CollectionValue.settingValueTemplateReference = @{ useTemplateDefault = $true } }
+            'default-duplicate' { $CollectionValue.settingValueTemplateReference = @{ useTemplateDefault = $true } }
+            'malformed-template' { $CollectionValue.settingValueTemplateReference = @{ useTemplateDefault = 0 } }
+            'mixed-simple' { $CollectionNode.simpleSettingValue = @{ value = 'SECRET' } }
+            'mixed-choice' { $CollectionNode.choiceSettingValue = @{ value = 'known' } }
+            'mixed-simple-collection' { $CollectionNode.simpleSettingCollectionValue = @(@{ value = 'SECRET' }) }
+            'container-object' { $CollectionNode[$Kind] = $CollectionValue }
+            'container-string' { $CollectionNode[$Kind] = 'SECRET' }
+            'item-array' { $CollectionNode[$Kind] = ,@($CollectionValue) }
+            'item-string' { $CollectionNode[$Kind] = @('SECRET') }
+            'item-null' { $CollectionNode[$Kind] = @($null) }
+            'children-object' { $CollectionValue.children = $First.children[1] }
+        }
+        $OuterNode = $CollectionNode
+        if ($Case -in @('ancestor-template', 'ancestor-choice')) {
+            $OuterNode = @{ settingDefinitionId = 'outer'; choiceSettingValue = @{ value = 'known'; children = @($CollectionNode) } }
+            if ($Case -eq 'ancestor-template') {
+                $OuterNode.choiceSettingValue.settingValueTemplateReference = @{ useTemplateDefault = $true }
+                $CollectionDefinitions += @{ id = 'outer'; options = @(@{ itemId = 'known'; optionValue = @{ value = 1 } }) }
+            }
+        }
+        $CollectionChildren = @($First.children[0], $OuterNode)
+        if ($Case -in @('duplicate', 'default-duplicate')) { $CollectionChildren += $First.children[1] }
+        $CollectionInstance = @{ settingDefinitionId = $RootId; groupSettingCollectionValue = @(
+            @{ children = $CollectionChildren },
+            @{ children = @($First.children[1]) }
+        ) }
+        if ($DecodeJson) {
+            $CollectionInstance = $CollectionInstance | ConvertTo-Json -Depth 25 | ConvertFrom-Json
+            $CollectionDefinitions = $CollectionDefinitions | ConvertTo-Json -Depth 25 | ConvertFrom-Json
+        }
+        $CollectionRejected = $false
+        $CollectionRows = @()
+        try { $CollectionRows = @(ConvertTo-IntuneEpmRules $CollectionInstance $CollectionDefinitions 'policy' 'collection-matrix') }
+        catch { $CollectionRejected = $true }
+        $Malformed = $Case -in @('container-object', 'container-string', 'item-array', 'item-string', 'item-null', 'children-object')
+        Assert-Epm ($CollectionRejected -eq $Malformed) "Nested EPM shape rejection changed: $Kind; $Case; JSON=$DecodeJson"
+        if (-not $Malformed) {
+            Assert-Epm ($CollectionRows.Count -eq 2 -and $CollectionRows[0].name -ceq 'Rule one' -and $CollectionRows[1].fileName -ceq 'setup*.exe') 'Nested EPM context leaked into independent evidence'
+            Assert-Epm (($null -ne $CollectionRows[0].fileName) -eq ($Case -eq 'valid')) "Nested EPM context was lost: $Kind; $Case; JSON=$DecodeJson"
+            if ($Case -eq 'valid') { Assert-Epm ($CollectionRows[0].fileName -ceq 'setup*.exe') 'Explicit nested EPM value changed' }
+        }
+        Assert-Epm (-not (($CollectionRows | ConvertTo-Json -Depth 10) -match 'SECRET|ChoiceUnresolved|TemplateUnresolved')) 'Nested EPM raw values or internal context exported'
+    }
+}
+foreach ($ChoiceCase in @('valid', 'missing-option', 'duplicate-option', 'default-option', 'missing-definition', 'duplicate-definition')) {
+    foreach ($DecodeJson in @($false, $true)) {
+        $CollectionDefinition = @{ id = 'choice-collection'; options = @(
+            @{ itemId = 'first'; optionValue = @{ value = 1 } },
+            @{ itemId = 'second'; optionValue = @{ value = 2 } }
+        ) }
+        $CollectionNode = @{ settingDefinitionId = 'choice-collection'; choiceSettingCollectionValue = @(
+            @{ value = 'first'; children = @($First.children[1]) },
+            @{ value = 'second'; children = @($First.children[2]) }
+        ) }
+        switch ($ChoiceCase) {
+            'missing-option' { $CollectionNode.choiceSettingCollectionValue[0].value = 'missing' }
+            'duplicate-option' { $CollectionDefinition.options += @{ itemId = 'first'; optionValue = @{ value = 3 } } }
+            'default-option' { $CollectionDefinition.options[0].optionValue.settingValueTemplateReference = @{ useTemplateDefault = $true } }
+        }
+        $CollectionDefinitions = @($Definitions)
+        if ($ChoiceCase -ne 'missing-definition') { $CollectionDefinitions += $CollectionDefinition }
+        if ($ChoiceCase -eq 'duplicate-definition') { $CollectionDefinitions += $CollectionDefinition.Clone() }
+        $CollectionInstance = @{ settingDefinitionId = $RootId; groupSettingCollectionValue = @(@{ children = @($First.children[0], $CollectionNode) }) }
+        if ($DecodeJson) {
+            $CollectionDefinitions = $CollectionDefinitions | ConvertTo-Json -Depth 25 | ConvertFrom-Json
+            $CollectionInstance = $CollectionInstance | ConvertTo-Json -Depth 25 | ConvertFrom-Json
+        }
+        $CollectionRows = @(ConvertTo-IntuneEpmRules $CollectionInstance $CollectionDefinitions 'policy' 'choice-items')
+        Assert-Epm (($null -ne $CollectionRows[0].fileName) -eq ($ChoiceCase -eq 'valid')) "Choice collection option was not resolved independently: $ChoiceCase"
+        Assert-Epm (($null -ne $CollectionRows[0].filePath) -eq ($ChoiceCase -notin @('missing-definition', 'duplicate-definition'))) 'First option uncertainty leaked into a valid collection item'
+        Assert-Epm ($CollectionRows[0].name -ceq 'Rule one') 'Choice collection hid an independent field'
+    }
+}
+foreach ($DecodeJson in @($false, $true)) {
+    $GroupItems = @{ settingDefinitionId = 'group-items'; groupSettingCollectionValue = @(
+        @{ settingValueTemplateReference = @{ useTemplateDefault = $true }; children = @($First.children[1]) },
+        @{ children = @($First.children[2]) }
+    ) }
+    $GroupInstance = @{ settingDefinitionId = $RootId; groupSettingCollectionValue = @(@{ children = @($First.children[0], $GroupItems) }) }
+    if ($DecodeJson) { $GroupInstance = $GroupInstance | ConvertTo-Json -Depth 20 | ConvertFrom-Json }
+    $GroupRows = @(ConvertTo-IntuneEpmRules $GroupInstance $Definitions 'policy' 'group-items')
+    Assert-Epm ($null -eq $GroupRows[0].fileName -and $GroupRows[0].filePath -ceq '\\server\share' -and $GroupRows[0].name -ceq 'Rule one') 'Group-item template uncertainty leaked into an explicit sibling item'
+}
 $EmptyIdentityCases = foreach ($Placement in @('root', 'definition', 'child')) {
     foreach ($EmptyId in @('', ' ', "`t", "`r`n")) {
         @{ Placement = $Placement; Id = $EmptyId }
@@ -489,4 +600,30 @@ foreach ($DuplicateCase in @('valid', 'child', 'root-definition', 'field-definit
         if ($DuplicateCase -eq 'child' -and $env:ASSAY_INTUNE_EPM_DUPLICATE_FIXTURE) { [IO.File]::WriteAllText($env:ASSAY_INTUNE_EPM_DUPLICATE_FIXTURE, $DuplicateJson, [Text.UTF8Encoding]::new($false)) }
         if ($DuplicateCase -eq 'whitespace-root' -and $env:ASSAY_INTUNE_EPM_EMPTY_ID_FIXTURE) { [IO.File]::WriteAllText($env:ASSAY_INTUNE_EPM_EMPTY_ID_FIXTURE, $DuplicateJson, [Text.UTF8Encoding]::new($false)) }
     }
+}
+$script:EpmFixtureDefinitions = $Definitions + @(@{ id = 'nested-container'; options = @(@{ itemId = 'known'; optionValue = @{ value = 1 } }) })
+foreach ($NestedDuplicate in @($false, $true)) {
+    $NestedGroups = @(foreach ($Kind in @('groupSettingCollectionValue', 'choiceSettingCollectionValue')) {
+        $NestedFields = @(
+            @{ settingDefinitionId = ($RootId + '_filename'); simpleSettingValue = @{ value = $(if ($NestedDuplicate) { 'SECRET_NESTED*.exe' } else { 'safe.exe' }) } },
+            @{ settingDefinitionId = ($RootId + '_filepath'); simpleSettingValue = @{ value = $(if ($NestedDuplicate) { 'C:\SECRET_NESTED' } else { 'C:\Program Files\Review' }) } }
+        )
+        $NestedValue = @{ children = $NestedFields }
+        if ($Kind -eq 'choiceSettingCollectionValue') { $NestedValue.value = 'known' }
+        $NestedChildren = @($First.children[0], $First.children[3], @{ settingDefinitionId = 'nested-container'; $Kind = @($NestedValue) })
+        if ($NestedDuplicate) { $NestedChildren += $script:EpmDuplicateValid.groupSettingCollectionValue[0].children[1..2] }
+        @{ children = $NestedChildren }
+    })
+    $script:EpmFixtureInstance = @{ settingDefinitionId = $RootId; groupSettingCollectionValue = $NestedGroups }
+    $NestedDocument = Invoke-IntuneDiscoveryCore -SelectedTenant '22222222-2222-4222-8222-222222222222' -Configuration $true -Request $EpmRequest -Requirements $EpmRequirements
+    Assert-Epm ($NestedDocument.Inventory.EpmRules.Count -eq 2 -and $NestedDocument.CollectionStatus.EpmRules.State -ceq 'Complete' -and $NestedDocument.CollectionStatus.EpmRules.CompletedParentIds -contains 'policy') 'Nested EPM evidence lost rule-group or parent coverage'
+    foreach ($Rule in $NestedDocument.Inventory.EpmRules) {
+        Assert-Epm ($Rule.name -ceq 'Rule one' -and $Rule.elevationType -ceq 'Automatic') 'Nested duplicate hid independently resolved fields'
+        if ($NestedDuplicate) { Assert-Epm ($null -eq $Rule.fileName -and $null -eq $Rule.filePath) 'Nested duplicate manufactured a unique rule field' }
+        else { Assert-Epm ($Rule.fileName -ceq 'safe.exe' -and $Rule.filePath -ceq 'C:\Program Files\Review') 'Resolved nested-only fields were lost' }
+    }
+    $NestedJson = $NestedDocument | ConvertTo-Json -Depth 30
+    Assert-Epm (-not ($NestedJson -match 'SECRET|TemplateUnresolved|ChoiceUnresolved')) 'Nested EPM raw values or traversal context exported'
+    $FixturePath = if ($NestedDuplicate) { $env:ASSAY_INTUNE_EPM_COLLECTION_FIXTURE } else { $env:ASSAY_INTUNE_EPM_COLLECTION_CONTROL_FIXTURE }
+    if ($FixturePath) { [IO.File]::WriteAllText($FixturePath, $NestedJson, [Text.UTF8Encoding]::new($false)) }
 }
