@@ -7,6 +7,10 @@ function Get-IntuneEpmRuleChildren {
         if ($ChildId -isnot [string] -or [string]::IsNullOrWhiteSpace($ChildId)) { throw 'Invalid EPM child setting definition identity' }
         $Choice = Get-IntuneValue $Child 'choiceSettingValue'
         $Simple = Get-IntuneValue $Child 'simpleSettingValue'
+        foreach ($ValueName in @('choiceSettingValue', 'simpleSettingValue')) {
+            $SingularValue = Get-IntuneValue $Child $ValueName
+            if ($null -ne $SingularValue -and $SingularValue -isnot [Collections.IDictionary] -and $SingularValue -isnot [pscustomobject]) { throw 'Invalid EPM singular setting value' }
+        }
         $ValueKindCount = 0
         foreach ($ValueName in @('choiceSettingValue', 'simpleSettingValue', 'groupSettingCollectionValue', 'choiceSettingCollectionValue', 'simpleSettingCollectionValue')) {
             if ($null -ne (Get-IntuneValue $Child $ValueName)) { $ValueKindCount++ }

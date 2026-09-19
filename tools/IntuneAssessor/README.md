@@ -1,6 +1,6 @@
 # Intune Discovery for Assay
 
-Version 0.5.19. Experimental pending a live tenant pilot. Offline-tested with
+Version 0.5.20. Experimental pending a live tenant pilot. Offline-tested with
 Windows PowerShell 5.1 and PowerShell 7.
 
 The [contract audit](AUDIT.md) currently verifies 49 enabled Graph GET contracts
@@ -10,6 +10,26 @@ remain separate gates; do not label the full collector audit complete.
 Exports read-only observations for Assay's Intune pack. Assay owns control
 definitions and scores: 50 source-linked controls, two bounded automatic checks,
 and 48 evidence-assisted manual checks. The collector does not mutate a tenant.
+
+## EPM Singular Values (0.5.20)
+
+Non-null singular choice/simple values must now be object containers. Reproduced
+array-shaped choice values could hide descendants while other fields resolved;
+arrays/scalars now reject the affected setting and leave partial coverage without
+a completed-parent marker. Independent settings remain evidence but cannot restore
+a clean Pass. Missing/null values retain unknown handling; empty objects are not
+treated as resolved values or proof of complete schema validity.
+
+Microsoft's [choice-instance](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationchoicesettinginstance?view=graph-rest-beta)
+and [simple-instance](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationsimplesettinginstance?view=graph-rest-beta)
+contracts define singular complex values. This minimum container check does not
+certify all members, OData types, dependencies, applicability or live behavior.
+42 dictionary/JSON cases plus production-path controls verify supported objects,
+unknowns and rejection. `ASSAY_INTUNE_EPM_VALUE_SHAPE_FIXTURE` remains NotAssessed
+through native/app reassessment, save/load and reports with a valid sibling retained;
+its complete control gives Pass/Observed. No new source fields, routes, permissions,
+providers, findings or scores. Recollect affected older flattened exports; discarded
+shapes cannot be recovered. No live occurrence or automatic migration claimed.
 
 ## EPM Root Value Kinds (0.5.19)
 

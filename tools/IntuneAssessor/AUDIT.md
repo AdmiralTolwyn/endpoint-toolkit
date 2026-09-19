@@ -2,6 +2,24 @@
 
 Date: 2026-09-17. Status: **partial audit, not production certification**.
 
+September 19, collector 0.5.20: reproduced a singular choice array hiding its
+descendants while independent fields resolved. Non-null choice/simple values now
+require object containers before template/option/child decoding; arrays/scalars
+reject through existing partial-coverage handling. Null/absent/empty objects do
+not manufacture values. Independent settings remain partial evidence, not a clean Pass.
+
+Fresh [choice-instance](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationchoicesettinginstance?view=graph-rest-beta)
+and [simple-instance](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationsimplesettinginstance?view=graph-rest-beta)
+contracts, revision `4b837f772f711c890ec02678db6b05845a40b419`, specify singular
+complex values. This is not full member/OData/dependency/applicability validation;
+EPM constants remain sample-backed and live behavior remains unverified.
+42 direct cases and mocked production controls verify supported objects, unknowns,
+rejection and privacy. Native/app save/load/report tests keep EPM-03/04 NotAssessed
+despite retained valid evidence, alongside complete-control Pass/Observed.
+No new fields, providers, routes, permissions or scores; recollect affected older
+flattened exports. No live occurrence or migration claimed. See
+[singular value limits](README.md#epm-singular-values-0520).
+
 September 19, collector 0.5.19: reproduced EPM root decoding group fields while
 ignoring another non-null value kind. Recognized roots now reject alternate
 choice/simple values and collections before group decoding; absent/null remain

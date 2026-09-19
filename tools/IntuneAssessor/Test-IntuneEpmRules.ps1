@@ -23,6 +23,61 @@ Assert-Epm ($Rules.Count -eq 2 -and $Rules[0].id -ne $Rules[1].id) 'Rule group i
 Assert-Epm ($Rules[0].fileName -eq 'setup*.exe' -and $Rules[0].elevationType -ceq 'Automatic') 'Exact definition/choice binding failed'
 Assert-Epm ($null -eq $Rules[1].filePath -and $null -eq $Rules[1].elevationType) 'Missing/default values inherited from another rule'
 Assert-Epm (-not ($Rules | ConvertTo-Json -Depth 20).Contains('SECRET')) 'Unreviewed EPM rule content leaked'
+foreach ($DecodeJson in @($false, $true)) {
+    $MalformedChoice = @{ settingDefinitionId = 'unreviewed-parent'; choiceSettingValue = @(@{ value = 'known'; children = @($First.children[1]) }) }
+    $ValueShapeInstance = @{ settingDefinitionId = $RootId; groupSettingCollectionValue = @(@{ children = @($First.children[0], $First.children[1], $MalformedChoice) }) }
+    if ($DecodeJson) { $ValueShapeInstance = $ValueShapeInstance | ConvertTo-Json -Depth 20 | ConvertFrom-Json }
+    $ValueShapeRejected = $false
+    try { $null = @(ConvertTo-IntuneEpmRules $ValueShapeInstance $Definitions 'policy' 'value-shape') }
+    catch { $ValueShapeRejected = $true }
+    Assert-Epm $ValueShapeRejected "Malformed singular choice concealed EPM descendants: JSON=$DecodeJson"
+}
+$SingularCases = foreach ($Kind in @('choiceSettingValue', 'simpleSettingValue')) {
+    foreach ($Shape in @('object', 'empty-object', 'absent', 'null', 'array', 'empty-array', 'nested-array', 'string', 'number', 'boolean')) {
+        @{ Kind = $Kind; Shape = $Shape }
+    }
+}
+foreach ($SingularCase in $SingularCases) {
+    foreach ($DecodeJson in @($false, $true)) {
+        $Kind = $SingularCase.Kind
+        $Shape = $SingularCase.Shape
+        $SingularDefinitions = @($Definitions | ForEach-Object { $_.Clone() })
+        $SingularDefinitions[2].options = @(@{ itemId = 'known'; optionValue = @{ value = 'setup*.exe' } })
+        $ValidValue = @{ value = $(if ($Kind -eq 'choiceSettingValue') { 'known' } else { 'setup*.exe' }) }
+        $ValueNode = @{ settingDefinitionId = ($RootId + '_filename') }
+        switch ($Shape) {
+            'object' { $ValueNode[$Kind] = $ValidValue }
+            'empty-object' { $ValueNode[$Kind] = @{} }
+            'null' { $ValueNode[$Kind] = $null }
+            'array' { $ValueNode[$Kind] = @($ValidValue) }
+            'empty-array' { $ValueNode[$Kind] = @() }
+            'nested-array' { $ValueNode[$Kind] = ,@($ValidValue) }
+            'string' { $ValueNode[$Kind] = 'SECRET_VALUE_SHAPE' }
+            'number' { $ValueNode[$Kind] = 0 }
+            'boolean' { $ValueNode[$Kind] = $false }
+        }
+        $ValueInstance = @{ settingDefinitionId = $RootId; groupSettingCollectionValue = @(
+            @{ children = @($First.children[0], $ValueNode) },
+            @{ children = @($First.children[1]) }
+        ) }
+        if ($DecodeJson) {
+            $ValueInstance = $ValueInstance | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+            $SingularDefinitions = $SingularDefinitions | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+        }
+        $ValueRejected = $false
+        $ValueRows = @()
+        try { $ValueRows = @(ConvertTo-IntuneEpmRules $ValueInstance $SingularDefinitions 'policy' 'singular-matrix') }
+        catch { $ValueRejected = $true }
+        $ShouldReject = $Shape -notin @('object', 'empty-object', 'absent', 'null')
+        Assert-Epm ($ValueRejected -eq $ShouldReject) "Singular EPM value shape handling changed: $Kind; $Shape; JSON=$DecodeJson"
+        if (-not $ShouldReject) {
+            Assert-Epm ($ValueRows.Count -eq 2 -and $ValueRows[0].name -ceq 'Rule one' -and $ValueRows[1].fileName -ceq 'setup*.exe') 'Valid singular-value siblings lost evidence'
+            if ($Shape -eq 'object') { Assert-Epm ($ValueRows[0].fileName -ceq 'setup*.exe') 'Valid singular value did not decode' }
+            else { Assert-Epm ($null -eq $ValueRows[0].fileName) 'Empty or absent singular value manufactured field evidence' }
+        }
+        Assert-Epm (-not (($ValueRows | ConvertTo-Json -Depth 10) -match 'SECRET')) 'Malformed singular payload leaked'
+    }
+}
 $RootValueCases = foreach ($Kind in @('choiceSettingValue', 'simpleSettingValue', 'choiceSettingCollectionValue', 'simpleSettingCollectionValue')) {
     foreach ($Shape in @('absent', 'null', 'empty-object', 'object', 'empty-array', 'array', 'false', 'zero', 'blank', 'text')) {
         @{ Kind = $Kind; Shape = $Shape }
@@ -597,11 +652,19 @@ $DuplicateRequest = {
     }
     @{ StatusCode = 200; Body = (@{ value = @($Rows) } | ConvertTo-Json -Depth 30 | ConvertFrom-Json) }
 }
-foreach ($DuplicateCase in @('valid', 'child', 'root-definition', 'field-definition', 'empty-root', 'whitespace-root', 'empty-child', 'whitespace-child', 'mixed-root-choice', 'mixed-root-simple', 'mixed-root-choice-collection', 'mixed-root-simple-collection')) {
+foreach ($DuplicateCase in @('valid', 'child', 'root-definition', 'field-definition', 'empty-root', 'whitespace-root', 'empty-child', 'whitespace-child', 'mixed-root-choice', 'mixed-root-simple', 'mixed-root-choice-collection', 'mixed-root-simple-collection', 'singular-choice-array', 'singular-choice-string', 'singular-simple-array', 'singular-simple-string')) {
     foreach ($MalformedFirst in @($false, $true)) {
         $script:EpmDuplicateInstance = @{ settingDefinitionId = $RootId; groupSettingCollectionValue = @(@{ children = @($script:EpmDuplicateValid.groupSettingCollectionValue[0].children) }) }
         $script:EpmDuplicateDefinitions = @($Definitions)
-        if ($DuplicateCase.StartsWith('mixed-root-')) {
+        if ($DuplicateCase.StartsWith('singular-')) {
+            $ValueKind = if ($DuplicateCase.StartsWith('singular-choice-')) { 'choiceSettingValue' } else { 'simpleSettingValue' }
+            $MalformedNode = @{ settingDefinitionId = 'unreviewed-parent' }
+            if ($DuplicateCase.EndsWith('-array')) {
+                $MalformedNode[$ValueKind] = @(@{ value = 'SECRET_VALUE_SHAPE'; children = @($script:EpmDuplicateValid.groupSettingCollectionValue[0].children[1]) })
+            } else { $MalformedNode[$ValueKind] = 'SECRET_VALUE_SHAPE' }
+            if ($MalformedFirst) { $script:EpmDuplicateInstance.groupSettingCollectionValue[0].children = @($MalformedNode) + $script:EpmDuplicateInstance.groupSettingCollectionValue[0].children }
+            else { $script:EpmDuplicateInstance.groupSettingCollectionValue[0].children += $MalformedNode }
+        } elseif ($DuplicateCase.StartsWith('mixed-root-')) {
             $ExtraKind = switch ($DuplicateCase) {
                 'mixed-root-choice' { 'choiceSettingValue' }
                 'mixed-root-simple' { 'simpleSettingValue' }
@@ -640,6 +703,7 @@ foreach ($DuplicateCase in @('valid', 'child', 'root-definition', 'field-definit
         if ($DuplicateCase -eq 'child' -and $env:ASSAY_INTUNE_EPM_DUPLICATE_FIXTURE) { [IO.File]::WriteAllText($env:ASSAY_INTUNE_EPM_DUPLICATE_FIXTURE, $DuplicateJson, [Text.UTF8Encoding]::new($false)) }
         if ($DuplicateCase -eq 'whitespace-root' -and $env:ASSAY_INTUNE_EPM_EMPTY_ID_FIXTURE) { [IO.File]::WriteAllText($env:ASSAY_INTUNE_EPM_EMPTY_ID_FIXTURE, $DuplicateJson, [Text.UTF8Encoding]::new($false)) }
         if ($DuplicateCase -eq 'mixed-root-choice' -and $env:ASSAY_INTUNE_EPM_ROOT_MIX_FIXTURE) { [IO.File]::WriteAllText($env:ASSAY_INTUNE_EPM_ROOT_MIX_FIXTURE, $DuplicateJson, [Text.UTF8Encoding]::new($false)) }
+        if ($DuplicateCase -eq 'singular-choice-array' -and $env:ASSAY_INTUNE_EPM_VALUE_SHAPE_FIXTURE) { [IO.File]::WriteAllText($env:ASSAY_INTUNE_EPM_VALUE_SHAPE_FIXTURE, $DuplicateJson, [Text.UTF8Encoding]::new($false)) }
     }
 }
 $script:EpmFixtureDefinitions = $Definitions + @(@{ id = 'nested-container'; options = @(@{ itemId = 'known'; optionValue = @{ value = 1 } }) })
