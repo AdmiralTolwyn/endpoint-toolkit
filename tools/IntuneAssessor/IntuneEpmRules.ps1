@@ -52,6 +52,9 @@ function ConvertTo-IntuneEpmRules {
     $InstanceId = Get-IntuneValue $Instance 'settingDefinitionId'
     if ($InstanceId -isnot [string] -or [string]::IsNullOrWhiteSpace($InstanceId)) { throw 'Invalid EPM setting definition identity' }
     if (-not [string]::Equals($InstanceId, $RootId, [StringComparison]::Ordinal)) { return }
+    foreach ($ValueName in @('choiceSettingValue', 'simpleSettingValue', 'choiceSettingCollectionValue', 'simpleSettingCollectionValue')) {
+        if ($null -ne (Get-IntuneValue $Instance $ValueName)) { throw 'Mixed EPM rule root value kinds' }
+    }
     foreach ($Candidate in $Definitions) {
         $CandidateId = Get-IntuneValue $Candidate 'id'
         if ($CandidateId -isnot [string] -or [string]::IsNullOrWhiteSpace($CandidateId)) { throw 'Invalid EPM definition identity' }

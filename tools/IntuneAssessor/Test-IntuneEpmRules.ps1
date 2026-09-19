@@ -23,6 +23,37 @@ Assert-Epm ($Rules.Count -eq 2 -and $Rules[0].id -ne $Rules[1].id) 'Rule group i
 Assert-Epm ($Rules[0].fileName -eq 'setup*.exe' -and $Rules[0].elevationType -ceq 'Automatic') 'Exact definition/choice binding failed'
 Assert-Epm ($null -eq $Rules[1].filePath -and $null -eq $Rules[1].elevationType) 'Missing/default values inherited from another rule'
 Assert-Epm (-not ($Rules | ConvertTo-Json -Depth 20).Contains('SECRET')) 'Unreviewed EPM rule content leaked'
+$RootValueCases = foreach ($Kind in @('choiceSettingValue', 'simpleSettingValue', 'choiceSettingCollectionValue', 'simpleSettingCollectionValue')) {
+    foreach ($Shape in @('absent', 'null', 'empty-object', 'object', 'empty-array', 'array', 'false', 'zero', 'blank', 'text')) {
+        @{ Kind = $Kind; Shape = $Shape }
+    }
+}
+foreach ($RootValueCase in $RootValueCases) {
+    $ExtraKind = $RootValueCase.Kind
+    foreach ($DecodeJson in @($false, $true)) {
+        $MixedRoot = @{ settingDefinitionId = $RootId; groupSettingCollectionValue = @($First, $Second) }
+        switch ($RootValueCase.Shape) {
+            'null' { $MixedRoot[$ExtraKind] = $null }
+            'empty-object' { $MixedRoot[$ExtraKind] = @{} }
+            'object' { $MixedRoot[$ExtraKind] = @{ value = 'SECRET_ROOT_VALUE' } }
+            'empty-array' { $MixedRoot[$ExtraKind] = @() }
+            'array' { $MixedRoot[$ExtraKind] = @(@{ value = 'SECRET_ROOT_VALUE' }) }
+            'false' { $MixedRoot[$ExtraKind] = $false }
+            'zero' { $MixedRoot[$ExtraKind] = 0 }
+            'blank' { $MixedRoot[$ExtraKind] = '' }
+            'text' { $MixedRoot[$ExtraKind] = 'SECRET_ROOT_VALUE' }
+        }
+        if ($DecodeJson) { $MixedRoot = $MixedRoot | ConvertTo-Json -Depth 20 | ConvertFrom-Json }
+        $MixedRootRejected = $false
+        $MixedRootRows = @()
+        try { $MixedRootRows = @(ConvertTo-IntuneEpmRules $MixedRoot $Definitions 'policy' 'mixed-root-value') }
+        catch { $MixedRootRejected = $true }
+        $ShouldReject = $RootValueCase.Shape -notin @('absent', 'null')
+        Assert-Epm ($MixedRootRejected -eq $ShouldReject) "Mixed EPM root handling changed: $ExtraKind; $($RootValueCase.Shape); JSON=$DecodeJson"
+        if (-not $ShouldReject) { Assert-Epm ($MixedRootRows.Count -eq 2 -and $MixedRootRows[0].fileName -ceq 'setup*.exe' -and $MixedRootRows[0].elevationType -ceq 'Automatic') 'Absent/null alternate root kind lost valid group evidence' }
+        Assert-Epm (-not (($MixedRootRows | ConvertTo-Json -Depth 10) -match 'SECRET')) 'Mixed root payload leaked'
+    }
+}
 foreach ($NestedKind in @('groupSettingCollectionValue', 'choiceSettingCollectionValue')) {
     foreach ($DecodeJson in @($false, $true)) {
         $NestedValue = @{ children = @($First.children[1]); value = 'known' }
@@ -566,11 +597,20 @@ $DuplicateRequest = {
     }
     @{ StatusCode = 200; Body = (@{ value = @($Rows) } | ConvertTo-Json -Depth 30 | ConvertFrom-Json) }
 }
-foreach ($DuplicateCase in @('valid', 'child', 'root-definition', 'field-definition', 'empty-root', 'whitespace-root', 'empty-child', 'whitespace-child')) {
+foreach ($DuplicateCase in @('valid', 'child', 'root-definition', 'field-definition', 'empty-root', 'whitespace-root', 'empty-child', 'whitespace-child', 'mixed-root-choice', 'mixed-root-simple', 'mixed-root-choice-collection', 'mixed-root-simple-collection')) {
     foreach ($MalformedFirst in @($false, $true)) {
         $script:EpmDuplicateInstance = @{ settingDefinitionId = $RootId; groupSettingCollectionValue = @(@{ children = @($script:EpmDuplicateValid.groupSettingCollectionValue[0].children) }) }
         $script:EpmDuplicateDefinitions = @($Definitions)
-        if ($DuplicateCase -in @('empty-root', 'whitespace-root')) {
+        if ($DuplicateCase.StartsWith('mixed-root-')) {
+            $ExtraKind = switch ($DuplicateCase) {
+                'mixed-root-choice' { 'choiceSettingValue' }
+                'mixed-root-simple' { 'simpleSettingValue' }
+                'mixed-root-choice-collection' { 'choiceSettingCollectionValue' }
+                'mixed-root-simple-collection' { 'simpleSettingCollectionValue' }
+            }
+            $script:EpmDuplicateInstance[$ExtraKind] = @{ value = 'SECRET_ROOT_VALUE' }
+            if ($ExtraKind.EndsWith('CollectionValue')) { $script:EpmDuplicateInstance[$ExtraKind] = @($script:EpmDuplicateInstance[$ExtraKind]) }
+        } elseif ($DuplicateCase -in @('empty-root', 'whitespace-root')) {
             $script:EpmDuplicateInstance.settingDefinitionId = if ($DuplicateCase -eq 'empty-root') { '' } else { " `t" }
         } elseif ($DuplicateCase -in @('child', 'empty-child', 'whitespace-child')) {
             $MalformedChild = @{ settingDefinitionId = @(($RootId + '_filename')); simpleSettingValue = @{ value = 'SECRET_DUPLICATE*.exe' } }
@@ -599,6 +639,7 @@ foreach ($DuplicateCase in @('valid', 'child', 'root-definition', 'field-definit
         if ($DuplicateCase -eq 'valid' -and $env:ASSAY_INTUNE_EPM_DUPLICATE_CONTROL_FIXTURE) { [IO.File]::WriteAllText($env:ASSAY_INTUNE_EPM_DUPLICATE_CONTROL_FIXTURE, $DuplicateJson, [Text.UTF8Encoding]::new($false)) }
         if ($DuplicateCase -eq 'child' -and $env:ASSAY_INTUNE_EPM_DUPLICATE_FIXTURE) { [IO.File]::WriteAllText($env:ASSAY_INTUNE_EPM_DUPLICATE_FIXTURE, $DuplicateJson, [Text.UTF8Encoding]::new($false)) }
         if ($DuplicateCase -eq 'whitespace-root' -and $env:ASSAY_INTUNE_EPM_EMPTY_ID_FIXTURE) { [IO.File]::WriteAllText($env:ASSAY_INTUNE_EPM_EMPTY_ID_FIXTURE, $DuplicateJson, [Text.UTF8Encoding]::new($false)) }
+        if ($DuplicateCase -eq 'mixed-root-choice' -and $env:ASSAY_INTUNE_EPM_ROOT_MIX_FIXTURE) { [IO.File]::WriteAllText($env:ASSAY_INTUNE_EPM_ROOT_MIX_FIXTURE, $DuplicateJson, [Text.UTF8Encoding]::new($false)) }
     }
 }
 $script:EpmFixtureDefinitions = $Definitions + @(@{ id = 'nested-container'; options = @(@{ itemId = 'known'; optionValue = @{ value = 1 } }) })

@@ -1,6 +1,6 @@
 # Intune Discovery for Assay
 
-Version 0.5.18. Experimental pending a live tenant pilot. Offline-tested with
+Version 0.5.19. Experimental pending a live tenant pilot. Offline-tested with
 Windows PowerShell 5.1 and PowerShell 7.
 
 The [contract audit](AUDIT.md) currently verifies 49 enabled Graph GET contracts
@@ -10,6 +10,28 @@ remain separate gates; do not label the full collector audit complete.
 Exports read-only observations for Assay's Intune pack. Assay owns control
 definitions and scores: 50 source-linked controls, two bounded automatic checks,
 and 48 evidence-assisted manual checks. The collector does not mutate a tenant.
+
+## EPM Root Value Kinds (0.5.19)
+
+Recognized EPM rule roots now reject any non-null alternate choice/simple value
+or choice/simple collection alongside the expected group collection. This closes
+a reproduced gap where the root ignored a second kind while decoding valid group
+fields. False, zero and empty strings/objects/arrays are still present values;
+absent/null alternatives remain supported. Rejection uses Partial coverage with
+no completed-parent marker; independent settings cannot restore a clean Pass.
+
+Microsoft documents the [group collection instance](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationgroupsettingcollectioninstance?view=graph-rest-beta)
+shape. This guard is Assay's conservative input boundary, not proof of product
+validation or effective enforcement. Full schemas, dependencies, applicability
+and live behavior remain under audit; EPM constants remain sample-backed.
+
+80 dictionary/JSON cases cover the four alternate kinds and ten value/presence
+forms, plus mocked discovery controls beside valid sibling settings.
+`ASSAY_INTUNE_EPM_ROOT_MIX_FIXTURE` retains one valid rule but stays NotAssessed
+through native/app reassessment, save/load and reports; its complete control
+remains Pass/Observed. No new fields, routes, permissions, providers, findings or
+scores. Recollect affected older flattened exports; discarded root ambiguity
+cannot be reconstructed. No live occurrence or automatic migration is claimed.
 
 ## EPM Nested Collections (0.5.18)
 

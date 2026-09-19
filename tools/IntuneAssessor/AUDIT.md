@@ -2,6 +2,25 @@
 
 Date: 2026-09-17. Status: **partial audit, not production certification**.
 
+September 19, collector 0.5.19: reproduced EPM root decoding group fields while
+ignoring another non-null value kind. Recognized roots now reject alternate
+choice/simple values and collections before group decoding; absent/null remain
+accepted, while false/zero/empty containers remain present. Existing partial
+coverage handling retains independent evidence but prevents a clean Pass.
+
+Fresh [group-setting collection instance](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationgroupsettingcollectioninstance?view=graph-rest-beta)
+revision `4b837f772f711c890ec02678db6b05845a40b419` defines the collection shape.
+The guard is Assay's supported-input boundary, not a Graph or Windows validation
+claim. Full OData/value schemas, dependencies, applicability and live behavior
+remain open; EPM field constants remain sample-backed.
+
+80 direct dictionary/JSON cases and four mocked production alternate-kind controls
+verify rejection with valid siblings retained. Native/app tests keep EPM-03/04
+NotAssessed through persistence and reports, with complete-control Pass/Observed.
+No new fields, providers, routes, permissions or scores. Recollect affected older
+exports; no live occurrence or automatic migration claimed. See
+[root value kinds](README.md#epm-root-value-kinds-0519).
+
 September 19, collector 0.5.18: reproduced nested group/choice collections hiding
 duplicate EPM fields. Walker now traverses both forms with per-item template and
 option uncertainty, keeping unresolved nodes in duplicate checks and independent
