@@ -1,6 +1,6 @@
 # Windows Configuration
 
-Registry and policy tweaks that adjust Windows behavior outside the scope of servicing, security, or feature-specific folders.
+Registry, policy, and power-plan settings that adjust Windows behavior outside the scope of servicing, security, or feature-specific folders.
 
 ## Scripts
 
@@ -8,6 +8,7 @@ Registry and policy tweaks that adjust Windows behavior outside the scope of ser
 |--------|---------|
 | [Set-StartupAppsDelay.ps1](Set-StartupAppsDelay.ps1) | Reverts the Windows 11 "wait-for-idle" startup-app delay (`WaitForIdleState=0`) so Outlook / Teams / Word / Excel launch promptly after sign-in on busy devices. |
 | [Set-ModernStandbyPowerPlan.ps1](Set-ModernStandbyPowerPlan.ps1) | Creates and activates a corporate power plan on Modern Standby (S0 Low Power Idle) devices. Configures power button, lid close, screen timeout, and sleep timers. |
+| [ProcessorBoost/Configure-ProcessorBoost.ps1](ProcessorBoost/README.md) | Queries processor boost by default; enables, disables, or selects mode 0-6 for both AC and battery power on the active plan. Changes require elevation. |
 
 ---
 
