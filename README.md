@@ -19,6 +19,7 @@ devops/
 
 intune/
 ├── bitlocker/        # BitLocker detection & remediation scripts for Intune
+├── client-health/    # Single ConfigMgr baseline discovery for major Intune client issues
 ├── mdm-enrollment/   # Repair expired Intune MDM device cert (omadmclient high-CPU)
 ├── mdm-sync-service/ # Local MDM diagnostics, disabled-service repair, one-time sync and IME logs
 └── onedrive-photos/  # Detect and remove shortcuts targeting OneDrive.App.exe
@@ -65,6 +66,7 @@ windows/
 | [avd/pipelines/](avd/pipelines/) | Azure DevOps YAML pipelines for AVD activation, host-pool updates, image bakes |
 | [avd/bicep/](avd/bicep/) | Bicep templates for AVD session-host deployment (Entra ID + AD-joined variants) |
 | [intune/bitlocker/](intune/bitlocker/) | Intune Proactive Remediation pair — ensure BitLocker recovery key escrow to Entra ID; MBAM client uninstall |
+| [intune/client-health/](intune/client-health/README.md) | `Discover-IntuneClientMajorIssues.ps1` — self-contained ConfigMgr Compliance Baseline discovery for major service, enrollment, certificate and task faults. One String-equals-`Passed` rule; stopped services and routine log errors do not cause noncompliance. Includes WPN/IME checks and detailed local evidence; no sync or repair |
 | [intune/mdm-enrollment/](intune/mdm-enrollment/) | `Repair-IntuneMdmCert.ps1` — audit (read-only) or repair hosts whose expired Intune MDM device cert wedges `omadmclient.exe` at high CPU. Repair tears down the enrollment + re-enrolls via device credential. Built for cloned AVD fleets that expire together |
 | [intune/mdm-sync-service/](intune/mdm-sync-service/README.md) | Three standalone scripts: disabled `dmwappushservice` detection, startup repair plus one enrollment-specific PushLaunch request, and local MDM diagnostics with opt-in sync. Bounded task observation, JSON/object output and per-script IME logs. PowerShell 5.1/7; no Graph authentication or automatic re-enrollment |
 | [intune/onedrive-photos/](intune/onedrive-photos/) | Detection/remediation pair to remove Start Menu and Desktop shortcuts targeting `OneDrive.App.exe`. Shortcut-only cleanup; leaves the OneDrive client installed. Supports remediation preview with `-WhatIf` |
