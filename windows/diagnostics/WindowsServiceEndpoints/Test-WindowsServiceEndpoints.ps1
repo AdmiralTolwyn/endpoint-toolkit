@@ -734,7 +734,7 @@ foreach ($endpoint in $endpoints) {
     $headers = @($http.Headers)
     if ($tls) { $headers += $tls.ProxyHeaders }
     foreach ($header in (Get-ProxyHeaderSignal -Headers $headers | Select-Object -Unique)) { $signals.Add("Header $header") }
-    if ($tls -and $tls.Root -and $tls.Root -notmatch $trustedRootPattern) { $signals.Add("TLS inspection: chain root $($tls.Root)") }
+    if ($tls -and $tls.Root -and $tls.Root -notmatch $trustedRootPattern) { $signals.Add("TLS inspection: chain root '$(Get-CommonName -Subject $tls.Root)'") }
     $privateAddresses = @($dns.Addresses | Where-Object { Test-PrivateAddress $_ })
     if ($privateAddresses.Count -gt 0) { $signals.Add("DNS resolves to private address $($privateAddresses -join ' ')") }
 
@@ -900,6 +900,18 @@ elseif ($userProxied -ne ($config.WinHttp -ne 'Direct')) {
     Write-KeyValue 'Service path' 'Differs from WinHTTP - rerun with -Proxy <WinHTTP proxy> or as SYSTEM' -Color Yellow
 }
 else { Write-KeyValue 'Service path' ('Same as WinHTTP ({0})' -f $config.WinHttp) -Color DarkGray }
+
+# All-direct results are ambiguous with a PAC: deliberate bypass, or PAC not loaded. A neutral URL tells them apart.
+if (-not $Proxy -and ($config.Pac -ne 'None' -or $config.AutoDetect)) {
+    $directCount = @($results | Where-Object { $_.Proxy -eq 'Direct' }).Count
+    $generalProxy = Get-EffectiveProxy -Uri ([Uri]'http://www.example.com/')
+    if ($generalProxy) {
+        Write-KeyValue 'PAC / WPAD' ('Loaded - general traffic via {0}; {1} of {2} Microsoft endpoints direct' -f $generalProxy.Authority, $directCount, $results.Count) -Color DarkGray
+    }
+    else {
+        Write-KeyValue 'PAC / WPAD' 'DIRECT even for www.example.com - PAC not loaded, unreachable, or returns DIRECT for everything' -Color Yellow
+    }
+}
 
 Write-KeyValue 'Zscaler' $zscalerText -Color $zscalerColor
 Write-KeyValue 'Duration' ('{0:N0} s' -f ((Get-Date) - $started).TotalSeconds) -Color DarkGray

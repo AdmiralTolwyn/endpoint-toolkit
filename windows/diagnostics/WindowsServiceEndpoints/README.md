@@ -50,7 +50,8 @@ Transport failures (connection reset, EOF, timeout) are retried once when the ho
 | Signal | How it is detected |
 |---|---|
 | Explicit proxy | WinINET manual proxy, PAC URL, WPAD auto-detect (resolved per URL), or `-Proxy` |
-| TLS inspection | Chain root is not Microsoft / DigiCert / Baltimore — checked through the proxy path, so an inspecting proxy's re-signed certificate is caught |
+| PAC / WPAD evaluation | When a PAC URL or auto-detect is configured, the proxy for neutral `www.example.com` is resolved (no request sent). A proxy there with Microsoft endpoints direct = deliberate bypass; DIRECT there too = PAC not loaded, unreachable, or direct for everything |
+| TLS inspection | Chain root is not Microsoft / DigiCert / Baltimore — checked through the proxy path, so an inspecting proxy's re-signed certificate is caught. Also catches transparent firewall decryption (e.g. NGFW forward-trust CA) with no proxy configured |
 | Proxy headers | `Via`, `Proxy-Agent`, `X-Squid-*`, `X-Zscaler-*`, vendor names in `Server` / `X-*` headers; CDN `Via` values (varnish, Akamai, …) are ignored |
 | Proxy authentication | `407` on the request or on `CONNECT` |
 | Refused tunnel | `CONNECT` answered with anything other than `200` → `ProxyBlocked` |
