@@ -4,6 +4,10 @@ $Tokens = $null
 $ParseErrors = $null
 $Ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'Invoke-BaselineCollection.ps1'), [ref]$Tokens, [ref]$ParseErrors)
 if ($ParseErrors.Count) { throw 'Collector parse errors' }
+foreach ($Function in $Ast.EndBlock.Statements | Where-Object { $_ -is [Management.Automation.Language.FunctionDefinitionAst] -and $_.Name -match 'Collector' }) {
+    . ([scriptblock]::Create($Function.Extent.Text))
+}
+$Script:PrivacyContext = New-CollectorPrivacyContext -Mode Identified -ConfirmIdentified $true
 $BindParameters = [scriptblock]::Create($Ast.ParamBlock.Extent.Text + "`n`$AssessmentProfile")
 $OutputAssignment = @($Ast.EndBlock.Statements | Where-Object { $_ -is [Management.Automation.Language.AssignmentStatementAst] -and $_.Left.Extent.Text -ceq '$output' })
 $ProfileDeclaration = @($Ast.EndBlock.Statements | Where-Object { $_ -is [Management.Automation.Language.IfStatementAst] -and $_.Extent.Text.StartsWith("if (`$AssessmentProfile -ne 'Generic')") })

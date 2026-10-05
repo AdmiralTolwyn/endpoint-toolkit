@@ -6,6 +6,10 @@ $Tokens = $null
 $ParseErrors = $null
 $script:CollectorAst = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'Invoke-BaselineCollection.ps1'), [ref]$Tokens, [ref]$ParseErrors)
 if ($ParseErrors.Count) { throw 'Collector parse errors' }
+foreach ($Function in $script:CollectorAst.EndBlock.Statements | Where-Object { $_ -is [Management.Automation.Language.FunctionDefinitionAst] -and $_.Name -match 'Collector|^ConvertTo-Baseline|^Test-Baseline|^Get-BaselineEventData$' }) {
+    . ([scriptblock]::Create($Function.Extent.Text))
+}
+$script:PrivacyContext = New-CollectorPrivacyContext -Mode Identified -ConfirmIdentified $true
 
 function Get-CollectorArea([string]$Variable) {
     $Assignments = @($script:CollectorAst.FindAll({ param($Node) $Node -is [Management.Automation.Language.AssignmentStatementAst] -and $Node.Left.Extent.Text -ceq $Variable }, $true))

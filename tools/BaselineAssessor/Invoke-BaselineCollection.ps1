@@ -9,7 +9,27 @@
     configuration, firewall state, BitLocker, Credential Guard, services, drivers, event logs,
     and more. Outputs a single JSON file with no external module dependencies.
 .PARAMETER OutputPath
-    Path for the output JSON file. Default: .\<hostname>_baseline_<timestamp>.json
+    Path for a new output JSON file. Default: %LOCALAPPDATA%\AssayCollections\baseline\baseline_<collectionId>.json.
+    Existing files are never overwritten.
+.PARAMETER PrivacyMode
+    Pseudonymous (default) replaces person-bearing identifiers with keyed pseudonyms and masks profile paths.
+    Identified retains them and requires -ConfirmIdentifiedExport.
+.PARAMETER ConfirmIdentifiedExport
+    Required with -PrivacyMode Identified.
+.PARAMETER PseudonymKeyPath
+    Base64 32-byte key file. Reuse the same key across machines and reruns for stable pseudonyms.
+    Default: <OutputPath>.pseudonym-key. Never share it with the export.
+.PARAMETER IdentityMapPath
+    Optional new file mapping pseudonyms to original values. Keep it with the key, not the export.
+.PARAMETER Assessor
+    Optional operator-supplied assessor label stored in the export metadata.
+.PARAMETER IncludeSecurityEvents
+    Opt-in: add selected event diagnostics. Identity fields (accounts, IPs, workstation names) are added only
+    in Identified mode. Command lines, object names and raw event messages are never exported.
+.PARAMETER BusinessHours
+    Device-local business hours used to derive off-hours administrator logons. Default: 06:00-22:00.
+.PARAMETER WorkDays
+    Device-local work days, as a range (Mon-Fri, Sun-Thu) or list (Mon,Wed,Fri). Default: Mon-Fri.
 .PARAMETER LookbackDays
     Event log query lookback window in days. Default: 30
 .PARAMETER MaxEventsPerQuery
@@ -19,7 +39,7 @@
 .PARAMETER SkipEventCollection
     Skip event log collection entirely for faster runs (~30s total).
 .PARAMETER EventSummaryOnly
-    Collect event counts and top-N stats only, not individual events.
+    Collect event counts only, not individual events. Assay event rules then report Not Assessed.
 .PARAMETER IncludeGpoData
     Opt-in: run gpresult / RSOP collection (Area 3, appliedGPOs/deniedGPOs). This is
     the most expensive+fragile step (~120s) and nothing in the assessor consumes the
@@ -37,8 +57,8 @@
     This does not skip collection, change policy, or update the legacy WPF evaluator.
 .NOTES
     Author : Anton Romanyuk
-    Version: 1.3.1
-    Date   : 2026-09-18
+    Version: 1.4.0
+    Date   : 2026-10-05
     Requires: PowerShell 5.1, Local Admin, No external modules
     Runs headless on arbitrary Windows targets (client, member server, DC, Server Core).
 .EXAMPLE
@@ -62,11 +82,21 @@ param(
     [switch]$IncludeSpeculationControl,
     [ValidateSet('Generic','Windows365CloudPc','Windows11_25H2','WindowsServer2025Member','WindowsServer2025DC')]
     [string]$AssessmentProfile = 'Generic',
+    [ValidateSet('Pseudonymous','Identified')]
+    [string]$PrivacyMode = 'Pseudonymous',
+    [switch]$ConfirmIdentifiedExport,
+    [string]$PseudonymKeyPath,
+    [string]$IdentityMapPath,
+    [string]$Assessor,
+    [switch]$IncludeSecurityEvents,
+    [ValidatePattern('^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$')]
+    [string]$BusinessHours = '06:00-22:00',
+    [string]$WorkDays = 'Mon-Fri',
     [switch]$Quiet
 )
 
 $ErrorActionPreference = 'Continue'
-$Script:CollectorVersion = '1.3.1'
+$Script:CollectorVersion = '1.4.0'
 $Script:StartTime        = [DateTime]::Now
 # Area 3 (GPO/gpresult) only runs when -IncludeGpoData; Area 22 (events) only when not -SkipEventCollection.
 $Script:TotalAreas       = 20
@@ -74,6 +104,228 @@ if (-not $SkipEventCollection) { $Script:TotalAreas++ }
 if ($IncludeGpoData)          { $Script:TotalAreas++ }
 $Script:AreaResults      = @{}
 $Script:Errors           = [System.Collections.ArrayList]::new()
+
+# region CollectorPrivacy
+# Canonical source: tools/Shared/CollectorPrivacy.ps1. Collector copies must remain identical.
+
+function Resolve-CollectorOutputPath {
+    param([string]$Collector, [string]$OutputPath, [string]$CollectionId)
+    if ([string]::IsNullOrWhiteSpace($OutputPath)) {
+        if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) { throw 'LOCALAPPDATA is unavailable; supply -OutputPath.' }
+        $Name = $Collector.ToLowerInvariant()
+        $OutputPath = Join-Path $env:LOCALAPPDATA ('AssayCollections\{0}\{0}_{1}.json' -f $Name, $CollectionId)
+    }
+    $FullPath = [IO.Path]::GetFullPath($OutputPath)
+    if (Test-Path -LiteralPath $FullPath) { throw 'Output already exists; choose a new output path.' }
+    return $FullPath
+}
+
+function Test-CollectorSyncedPath {
+    param([string]$Path)
+    $FullPath = [IO.Path]::GetFullPath($Path)
+    foreach ($Root in @($env:OneDrive, $env:OneDriveCommercial, $env:OneDriveConsumer)) {
+        if ([string]::IsNullOrWhiteSpace($Root)) { continue }
+        $Prefix = [IO.Path]::GetFullPath($Root).TrimEnd('\') + '\'
+        if ($FullPath.StartsWith($Prefix, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+    }
+    return $false
+}
+
+function Write-CollectorProtectedFile {
+    param([string]$Path, [byte[]]$Bytes)
+    if ($PSVersionTable.PSEdition -eq 'Core') { Add-Type -AssemblyName System.IO.FileSystem.AccessControl -ErrorAction SilentlyContinue }
+    $FullPath = [IO.Path]::GetFullPath($Path)
+    $Directory = [IO.Path]::GetDirectoryName($FullPath)
+    if (-not [IO.Directory]::Exists($Directory)) { [void][IO.Directory]::CreateDirectory($Directory) }
+    $Security = New-Object Security.AccessControl.FileSecurity
+    $Security.SetAccessRuleProtection($true, $false)
+    $Principals = @(
+        [Security.Principal.WindowsIdentity]::GetCurrent().User,
+        (New-Object Security.Principal.SecurityIdentifier 'S-1-5-18'),
+        (New-Object Security.Principal.SecurityIdentifier 'S-1-5-32-544')
+    ) | Sort-Object -Property Value -Unique
+    foreach ($Principal in $Principals) {
+        $Security.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule $Principal, ([Security.AccessControl.FileSystemRights]::FullControl), ([Security.AccessControl.AccessControlType]::Allow)))
+    }
+    $AclExtensions = 'System.IO.FileSystemAclExtensions' -as [type]
+    if ($AclExtensions) {
+        $Stream = $AclExtensions::Create((New-Object IO.FileInfo $FullPath), [IO.FileMode]::CreateNew, [Security.AccessControl.FileSystemRights]::FullControl, [IO.FileShare]::None, 4096, [IO.FileOptions]::None, $Security)
+    } else {
+        $Stream = New-Object IO.FileStream $FullPath, ([IO.FileMode]::CreateNew), ([Security.AccessControl.FileSystemRights]::FullControl), ([IO.FileShare]::None), 4096, ([IO.FileOptions]::None), $Security
+    }
+    try { $Stream.Write($Bytes, 0, $Bytes.Length) } finally { $Stream.Dispose() }
+    return $FullPath
+}
+
+function New-CollectorPrivacyContext {
+    param(
+        [ValidateSet('Pseudonymous', 'Identified')][string]$Mode = 'Pseudonymous',
+        [bool]$ConfirmIdentified,
+        [string]$KeyPath,
+        [string]$OutputPath
+    )
+    if ($Mode -eq 'Identified' -and -not $ConfirmIdentified) { throw 'Identified mode requires -ConfirmIdentifiedExport.' }
+    $Key = $null
+    $KeyId = $null
+    $ResolvedKeyPath = $null
+    if ($Mode -eq 'Pseudonymous') {
+        $ResolvedKeyPath = if ($KeyPath) { [IO.Path]::GetFullPath($KeyPath) } else { [IO.Path]::ChangeExtension([IO.Path]::GetFullPath($OutputPath), '.pseudonym-key') }
+        if (Test-Path -LiteralPath $ResolvedKeyPath) {
+            try { $Key = [Convert]::FromBase64String(([IO.File]::ReadAllText($ResolvedKeyPath)).Trim()) } catch { throw 'Pseudonym key file is not valid Base64.' }
+            if ($Key.Length -ne 32) { throw 'Pseudonym key must contain exactly 32 bytes.' }
+        } else {
+            $Key = New-Object byte[] 32
+            $Random = [Security.Cryptography.RandomNumberGenerator]::Create()
+            try { $Random.GetBytes($Key) } finally { $Random.Dispose() }
+            [void](Write-CollectorProtectedFile -Path $ResolvedKeyPath -Bytes ([Text.Encoding]::ASCII.GetBytes([Convert]::ToBase64String($Key))))
+        }
+        $Hash = [Security.Cryptography.SHA256]::Create()
+        try { $KeyId = -join ($Hash.ComputeHash($Key)[0..7] | ForEach-Object { $_.ToString('x2') }) } finally { $Hash.Dispose() }
+    }
+    return [pscustomobject]@{
+        Mode = $Mode
+        Key = $Key
+        KeyId = $KeyId
+        KeyPath = $ResolvedKeyPath
+        Identities = New-Object 'Collections.Generic.Dictionary[string,string]'
+    }
+}
+
+function ConvertTo-CollectorIdentity {
+    param($Context, [string]$Prefix, $Value)
+    if ($null -eq $Value) { return $null }
+    $Text = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $Text }
+    if ($Context.Mode -eq 'Identified') { return $Text }
+    $Normalized = $Text.Trim().ToLowerInvariant()
+    $Hmac = New-Object Security.Cryptography.HMACSHA256 (, $Context.Key)
+    try { $Digest = $Hmac.ComputeHash([Text.Encoding]::UTF8.GetBytes($Normalized)) } finally { $Hmac.Dispose() }
+    $Pseudonym = $Prefix + '_' + (-join ($Digest[0..7] | ForEach-Object { $_.ToString('x2') }))
+    if (-not $Context.Identities.ContainsKey($Pseudonym)) { $Context.Identities[$Pseudonym] = $Text.Trim() }
+    return $Pseudonym
+}
+
+function ConvertTo-CollectorMaskedPath {
+    param($Context, $Path)
+    if ($null -eq $Path -or $Path -isnot [string] -or $Context.Mode -eq 'Identified') { return $Path }
+    $Masked = $Path -replace '(?i)((?:^|[\\/])(?:users|documents and settings)[\\/])(?!(?:public|default|default user|all users)(?:[\\/]|$))(?![^\\/]*[*?])[^\\/]+', '${1}{profile}'
+    return [regex]::Replace($Masked, '^(\\\\|//)([^\\/]+)([\\/])([^\\/]+)', {
+        param($Match)
+        $UncHost = if ($Match.Groups[2].Value -match '[*?]') { $Match.Groups[2].Value } else { '{host}' }
+        $Share = if ($Match.Groups[4].Value -match '[*?]') { $Match.Groups[4].Value } else { '{share}' }
+        $Match.Groups[1].Value + $UncHost + $Match.Groups[3].Value + $Share
+    })
+}
+
+function ConvertTo-CollectorNetworkValue {
+    param($Context, $Value)
+    if ($null -eq $Value -or $Value -isnot [string] -or $Context.Mode -eq 'Identified') { return $Value }
+    $Parts = $Value.Trim().Split('/')
+    $Address = $null
+    if ($Parts.Count -gt 2 -or -not [Net.IPAddress]::TryParse($Parts[0], [ref]$Address)) { return $Value }
+    $Length = if ($Parts.Count -eq 2) { $Parts[1] } elseif ($Address.AddressFamily -eq [Net.Sockets.AddressFamily]::InterNetwork) { '32' } else { '128' }
+    $Bytes = $Address.GetAddressBytes()
+    $Internal = if ($Address.AddressFamily -eq [Net.Sockets.AddressFamily]::InterNetwork) {
+        $Bytes[0] -eq 10 -or $Bytes[0] -eq 127 -or ($Bytes[0] -eq 172 -and $Bytes[1] -ge 16 -and $Bytes[1] -le 31) -or
+        ($Bytes[0] -eq 192 -and $Bytes[1] -eq 168) -or ($Bytes[0] -eq 169 -and $Bytes[1] -eq 254) -or
+        ($Bytes[0] -eq 100 -and $Bytes[1] -ge 64 -and $Bytes[1] -le 127) -or ($Value.Trim() -eq '0.0.0.0/0')
+    } else {
+        $Address.IsIPv6LinkLocal -or $Address.Equals([Net.IPAddress]::IPv6Loopback) -or (($Bytes[0] -band 0xFE) -eq 0xFC) -or ($Value.Trim() -eq '::/0')
+    }
+    if ($Internal) { return $Value }
+    return 'Public/' + $Length
+}
+
+function Get-CollectorErrorText {
+    param($Context, $ErrorInput)
+    $Exception = if ($ErrorInput -is [Management.Automation.ErrorRecord]) { $ErrorInput.Exception } elseif ($ErrorInput -is [Exception]) { $ErrorInput } else { $null }
+    if ($Context.Mode -eq 'Identified') { if ($Exception) { return $Exception.Message } return [string]$ErrorInput }
+    if (-not $Exception) {
+        $Text = [string]$ErrorInput
+        if ($Text -cmatch '^[A-Za-z0-9_.:-]{1,64}$') { return $Text }
+        return 'CollectionError'
+    }
+    $Parts = @($Exception.GetType().Name)
+    $Status = $null
+    if ($Exception.PSObject.Properties['Response'] -and $Exception.Response -and $Exception.Response.PSObject.Properties['StatusCode']) { $Status = [int]$Exception.Response.StatusCode }
+    elseif ($Exception.Message -match '(?i)(?:status code\D{0,40}|\bHTTP\s*:?\s*)(\d{3})\b') { $Status = [int]$Matches[1] }
+    if ($Status) { $Parts += "HTTP $Status" }
+    if ($Exception.Message -match '"code"\s*:\s*"([A-Za-z0-9_.]{1,64})"') { $Parts += 'code ' + $Matches[1] }
+    elseif ($Exception.Message -match '(?i)\b(Authorization_RequestDenied|AuthorizationFailed|Forbidden|Unauthorized|ResourceNotFound|NotFound|BadRequest|TooManyRequests|InvalidAuthenticationToken|AccessDenied)\b') { $Parts += 'code ' + $Matches[1] }
+    return ($Parts -join '; ')
+}
+
+function New-CollectorPrivacyManifest {
+    param($Context, [string[]]$OptIns = @())
+    $Pseudonymous = $Context.Mode -eq 'Pseudonymous'
+    return [ordered]@{
+        SchemaVersion = '1.0'
+        Mode = $Context.Mode
+        PseudonymKeyId = $Context.KeyId
+        Classification = 'Confidential'
+        OptIns = @($OptIns | Where-Object { $_ } | Sort-Object -Unique)
+        RemovedFieldClasses = $(if ($Pseudonymous) { @('Secret', 'Content', 'FreeText') } else { @('Secret', 'Content') })
+        PseudonymizedFieldClasses = $(if ($Pseudonymous) { @('Person') } else { @() })
+        ClassifiedFieldClasses = $(if ($Pseudonymous) { @('Network') } else { @() })
+    }
+}
+
+function Write-CollectorExport {
+    param($Context, [string]$Path, [string]$Json, [string]$IdentityMapPath)
+    $Written = Write-CollectorProtectedFile -Path $Path -Bytes ((New-Object Text.UTF8Encoding $false).GetBytes($Json))
+    if ($IdentityMapPath -and $Context.Mode -eq 'Pseudonymous') {
+        $Map = [ordered]@{ SchemaVersion = '1.0'; PseudonymKeyId = $Context.KeyId; Identities = $Context.Identities }
+        [void](Write-CollectorProtectedFile -Path $IdentityMapPath -Bytes ((New-Object Text.UTF8Encoding $false).GetBytes(($Map | ConvertTo-Json -Depth 4))))
+    }
+    return $Written
+}
+# endregion CollectorPrivacy
+
+function ConvertTo-BaselineWorkDays {
+    param([string]$Text)
+    $Names = @('Sun','Mon','Tue','Wed','Thu','Fri','Sat')
+    $Days = New-Object 'Collections.Generic.HashSet[int]'
+    foreach ($Part in ($Text -split ',')) {
+        $Item = $Part.Trim()
+        if ($Item -match '^([A-Za-z]{3})-([A-Za-z]{3})$') {
+            $Start = [array]::IndexOf($Names, (Get-Culture).TextInfo.ToTitleCase($Matches[1].ToLowerInvariant()))
+            $End = [array]::IndexOf($Names, (Get-Culture).TextInfo.ToTitleCase($Matches[2].ToLowerInvariant()))
+            if ($Start -lt 0 -or $End -lt 0) { throw "Invalid -WorkDays value '$Text'." }
+            $Day = $Start
+            while ($true) { [void]$Days.Add($Day); if ($Day -eq $End) { break }; $Day = ($Day + 1) % 7 }
+        } elseif ($Item -match '^[A-Za-z]{3}$') {
+            $Index = [array]::IndexOf($Names, (Get-Culture).TextInfo.ToTitleCase($Item.ToLowerInvariant()))
+            if ($Index -lt 0) { throw "Invalid -WorkDays value '$Text'." }
+            [void]$Days.Add($Index)
+        } else { throw "Invalid -WorkDays value '$Text'." }
+    }
+    if ($Days.Count -eq 0) { throw "Invalid -WorkDays value '$Text'." }
+    return @($Days | Sort-Object)
+}
+
+function Test-BaselineOffHours {
+    param([datetime]$LocalTime, [int[]]$Days, [int]$StartMinute, [int]$EndMinute)
+    if ([int]$LocalTime.DayOfWeek -notin $Days) { return $true }
+    $Minute = $LocalTime.Hour * 60 + $LocalTime.Minute
+    if ($StartMinute -le $EndMinute) { return -not ($Minute -ge $StartMinute -and $Minute -lt $EndMinute) }
+    return -not ($Minute -ge $StartMinute -or $Minute -lt $EndMinute)
+}
+
+function ConvertTo-BaselineSidMask {
+    param($Text)
+    if ($null -eq $Text -or $Text -isnot [string]) { return $Text }
+    return [regex]::Replace($Text, 'S-1-5-21(?:-\d+){3,4}', { param($Match) ConvertTo-CollectorIdentity $Script:PrivacyContext 'sid' $Match.Value })
+}
+
+$Script:CollectionId = [guid]::NewGuid().ToString()
+$Script:WorkDayNumbers = ConvertTo-BaselineWorkDays $WorkDays
+$Script:BusinessStartMinute = [int]$BusinessHours.Substring(0, 2) * 60 + [int]$BusinessHours.Substring(3, 2)
+$Script:BusinessEndMinute = [int]$BusinessHours.Substring(6, 2) * 60 + [int]$BusinessHours.Substring(9, 2)
+if ($Script:BusinessStartMinute -eq $Script:BusinessEndMinute) { throw 'Invalid -BusinessHours value: start and end must differ.' }
+$OutputPath = Resolve-CollectorOutputPath -Collector 'Baseline' -OutputPath $OutputPath -CollectionId $Script:CollectionId
+if ($IdentityMapPath -and (Test-Path -LiteralPath $IdentityMapPath)) { throw 'Identity map already exists; choose a new path.' }
+$Script:PrivacyContext = New-CollectorPrivacyContext -Mode $PrivacyMode -ConfirmIdentified $ConfirmIdentifiedExport.IsPresent -KeyPath $PseudonymKeyPath -OutputPath $OutputPath
+$hostname = ConvertTo-CollectorIdentity $Script:PrivacyContext 'dev' $env:COMPUTERNAME
 
 <#
 Embedded Microsoft SpeculationControl 1.0.19 (function body unchanged).
@@ -1185,6 +1437,7 @@ function Invoke-CollectionArea {
         $msg = $_.Exception.Message
         Write-CollectorProgress -Step $Step -Total $Script:TotalAreas -Name $Name -Status 'error' `
             -ElapsedSec $sw.Elapsed.TotalSeconds -Detail $msg
+        $msg = Get-CollectorErrorText $Script:PrivacyContext $_
         [void]$Script:Errors.Add([ordered]@{ area = $Name; error = $msg; sections = @($Sections) })
         # Return a structured failure marker (not $null) so the section is distinguishable
         # from a genuinely empty result by downstream consumers.
@@ -1239,7 +1492,6 @@ function Read-RegistryValues {
 # BANNER
 # ═══════════════════════════════════════════════════════════════════════
 
-$hostname = $env:COMPUTERNAME
 $osInfo   = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
 $osBuild  = if ($osInfo) { $osInfo.BuildNumber } else { 'Unknown' }
 $osVer    = if ($osInfo) { $osInfo.Version } else { 'Unknown' }
@@ -1263,7 +1515,7 @@ if (-not $Quiet) {
 
     Write-BoxTop
     Write-BoxLine ' '
-    Write-BoxLine "  Host:      $hostname" 'White'
+    Write-BoxLine "  Host:      $env:COMPUTERNAME" 'White'
     Write-BoxLine "  OS:        $osEdition" 'White'
     Write-BoxLine "  Build:     $osBuild (v$osVer) $dv" 'White'
     Write-BoxLine "  Started:   $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" 'Gray'
@@ -1280,15 +1532,15 @@ if (-not $Quiet) {
 $systemInfo = Invoke-CollectionArea -Step 1 -Name 'System Information' -Sections @('systemInfo') -Script {
     $cimWarnings = [System.Collections.ArrayList]::new()
     $os = try { Get-CimInstance Win32_OperatingSystem -ErrorAction Stop } catch {
-        [void]$cimWarnings.Add("Win32_OperatingSystem: $($_.Exception.Message)")
+        [void]$cimWarnings.Add("Win32_OperatingSystem: $(Get-CollectorErrorText $Script:PrivacyContext $_)")
         $null
     }
     $cs = try { Get-CimInstance Win32_ComputerSystem -ErrorAction Stop } catch {
-        [void]$cimWarnings.Add("Win32_ComputerSystem: $($_.Exception.Message)")
+        [void]$cimWarnings.Add("Win32_ComputerSystem: $(Get-CollectorErrorText $Script:PrivacyContext $_)")
         $null
     }
     $cpu = try { Get-CimInstance Win32_Processor -ErrorAction Stop | Select-Object -First 1 } catch {
-        [void]$cimWarnings.Add("Win32_Processor: $($_.Exception.Message)")
+        [void]$cimWarnings.Add("Win32_Processor: $(Get-CollectorErrorText $Script:PrivacyContext $_)")
         $null
     }
 
@@ -1358,7 +1610,7 @@ $systemInfo = Invoke-CollectionArea -Step 1 -Name 'System Information' -Sections
     if (-not $versionName) { $versionName = 'Unknown' }
 
     $result = @{
-        ComputerName     = $env:COMPUTERNAME
+        ComputerName     = $hostname
         OSCaption        = $osCaption
         osVersion        = $osVersion
         osBuild          = $buildNum
@@ -1371,7 +1623,7 @@ $systemInfo = Invoke-CollectionArea -Step 1 -Name 'System Information' -Sections
         productType      = $productType
         isServer         = $isServer
         isDomainController = $isDomainController
-        hostname         = $env:COMPUTERNAME
+        hostname         = $hostname
         domain           = if ($cs) { $cs.Domain } else { $null }
         ramGB            = if ($cs -and $cs.TotalPhysicalMemory) { [math]::Round($cs.TotalPhysicalMemory / 1GB, 1) } else { $null }
         cpuName          = if ($cpu) { $cpu.Name } else { $env:PROCESSOR_IDENTIFIER }
@@ -1583,9 +1835,9 @@ $mdmEnrollment = Invoke-CollectionArea -Step 4 -Name 'MDM Enrollment' -Sections 
     if (Test-Path $regPath) {
         $subs = Get-ChildItem $regPath -ErrorAction SilentlyContinue
         foreach ($sub in $subs) {
-            $upn = (Get-ItemProperty $sub.PSPath -Name 'UPN' -ErrorAction SilentlyContinue).UPN
+            $hasUpn = @($sub.GetValueNames()) -contains 'UPN'
             $prov = (Get-ItemProperty $sub.PSPath -Name 'ProviderID' -ErrorAction SilentlyContinue).ProviderID
-            if ($upn -or $prov) {
+            if ($hasUpn -or $prov) {
                 $enrolled = $true
                 $provider = if ($prov) { $prov } else { 'Unknown' }
                 break
@@ -1634,7 +1886,7 @@ $mdmEnrollment = Invoke-CollectionArea -Step 4 -Name 'MDM Enrollment' -Sections 
                 $clean = @{}
                 foreach ($vn in $vals.Keys) {
                     if ($vn -match '_ProviderSet$|_WinningProvider$|^_') { continue }
-                    $clean[$vn] = $vals[$vn]
+                    $clean[$vn] = ConvertTo-CollectorMaskedPath $Script:PrivacyContext $vals[$vn]
                 }
                 if ($clean.Count -gt 0) { $policyValues[$areaName] = $clean }
             }
@@ -1918,13 +2170,13 @@ $registryBaselines = Invoke-CollectionArea -Step 7 -Name 'Registry Baselines' -S
             # Read all values from the key
             $allVals = Read-RegistryValues -Path $entry.Path
             foreach ($k in $allVals.Keys) {
-                $result["$($entry.Path)\$k"] = $allVals[$k]
+                $result["$($entry.Path)\$k"] = ConvertTo-CollectorMaskedPath $Script:PrivacyContext $allVals[$k]
                 $readCount++
             }
         } else {
             foreach ($valName in $entry.Values) {
                 $val = Read-RegistryValue -Path $entry.Path -Name $valName
-                $result["$($entry.Path)\$valName"] = $val
+                $result["$($entry.Path)\$valName"] = ConvertTo-CollectorMaskedPath $Script:PrivacyContext $val
                 $readCount++
             }
         }
@@ -1975,7 +2227,7 @@ $defenderConfig = Invoke-CollectionArea -Step 8 -Name 'Defender Configuration' -
         $result['DisableScanningMappedNetworkDrivesForFullScan'] = $pref.DisableScanningMappedNetworkDrivesForFullScan
         # ExclusionPath: always emit as an array (empty when none configured) so DEF-042 assesses.
         # Guard against $null, which @() would otherwise wrap into a 1-element [$null] array.
-        $result['ExclusionPath']                   = if ($null -ne $pref.ExclusionPath) { @($pref.ExclusionPath) } else { @() }
+        $result['ExclusionPath']                   = if ($null -ne $pref.ExclusionPath) { @($pref.ExclusionPath | ForEach-Object { ConvertTo-CollectorMaskedPath $Script:PrivacyContext $_ }) } else { @() }
     }
     if ($status) {
         $result['AMServiceEnabled']                = $status.AMServiceEnabled
@@ -2025,14 +2277,14 @@ $firewallProfiles = Invoke-CollectionArea -Step 9 -Name 'Firewall Profiles' -Sec
                 AllowLocalFirewallRules = $p.AllowLocalFirewallRules.ToString()
                 LogAllowed           = (& $ToBoolean $p.LogAllowed)
                 LogBlocked           = (& $ToBoolean $p.LogBlocked)
-                LogFileName          = $p.LogFileName
+                LogFileName          = ConvertTo-CollectorMaskedPath $Script:PrivacyContext $p.LogFileName
                 LogMaxSizeKilobytes  = $p.LogMaxSizeKilobytes
                 LogMaxSizeKB         = $p.LogMaxSizeKilobytes  # Alias used by checks.json
                 NotifyOnListen       = (& $ToBoolean $p.NotifyOnListen)
             }
         }
     } catch {
-        $result = @{ _collectionFailed = $true; _error = $_.Exception.Message }
+        $result = @{ _collectionFailed = $true; _error = (Get-CollectorErrorText $Script:PrivacyContext $_) }
     }
     $result
 }
@@ -2091,7 +2343,7 @@ $bitlocker = Invoke-CollectionArea -Step 11 -Name 'BitLocker Status' -Sections @
         $result['hasRecoveryKey']      = if ($osDrive) { [bool]($osDrive.KeyProtector.KeyProtectorType -contains 'RecoveryPassword') } else { $false }
         $result['allVolumesEncrypted'] = ($volumes | Where-Object { $_.VolumeStatus.ToString() -ne 'FullyEncrypted' -and $_.VolumeType -ne 'Unknown' }).Count -eq 0
     } catch {
-        $result['error'] = $_.Exception.Message
+        $result['error'] = Get-CollectorErrorText $Script:PrivacyContext $_
     }
     $result
 }
@@ -2153,14 +2405,33 @@ $windowsUpdate = Invoke-CollectionArea -Step 13 -Name 'Windows Update History' -
 # ═══════════════════════════════════════════════════════════════════════
 
 $drivers = Invoke-CollectionArea -Step 14 -Name 'Driver Inventory' -Sections @('drivers') -Script {
+    $DriverEvidence = {
+        param($Item, [string]$NameField, [string]$ClassField)
+        $Row = @{ Manufacturer = $Item.Manufacturer }
+        if ($Script:PrivacyContext.Mode -eq 'Identified') {
+            $Row[$NameField] = $Item.$NameField
+        } else {
+            $HardwareIds = @($Item.HardWareID) + @($Item.HardwareID) | Where-Object { $_ } | Select-Object -First 1
+            $HardwareId = if ($HardwareIds) { [string]$HardwareIds -replace '^([^\\]+\\[^&\\]+(?:&[^&\\]+)?).*$', '$1' } else { $null }
+            $Row['DeviceClass'] = $Item.$ClassField
+            $Row['HardwareId'] = $HardwareId
+            $Row['Name'] = (@($Item.$ClassField, $HardwareId) | Where-Object { $_ }) -join ' '
+        }
+        $Row
+    }
     $allDrivers = Get-CimInstance Win32_PnPSignedDriver -ErrorAction SilentlyContinue |
         Where-Object { $_.DriverProviderName -and $_.DeviceName }
     $unsigned = @($allDrivers | Where-Object { $_.IsSigned -eq $false } | ForEach-Object {
-        @{ DeviceName = $_.DeviceName; DriverVersion = $_.DriverVersion; Manufacturer = $_.Manufacturer }
+        $Row = & $DriverEvidence $_ 'DeviceName' 'DeviceClass'
+        $Row['DriverVersion'] = $_.DriverVersion
+        $Row
     })
     $problematic = @(Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue |
         Where-Object { $_.ConfigManagerErrorCode -ne 0 -and $_.Name } | ForEach-Object {
-        @{ Name = $_.Name; ErrorCode = $_.ConfigManagerErrorCode; Status = $_.Status }
+        $Row = & $DriverEvidence $_ 'Name' 'PNPClass'
+        $Row['ErrorCode'] = $_.ConfigManagerErrorCode
+        $Row['Status'] = $_.Status
+        $Row
     })
     @{
         totalDrivers = if ($allDrivers) { $allDrivers.Count } else { 0 }
@@ -2227,7 +2498,7 @@ $scheduledTasks = Invoke-CollectionArea -Step 16 -Name 'Scheduled Tasks' -Sectio
         $_.TaskPath -notmatch '\\Microsoft\\'  # Exclude built-in MS tasks
     })
     $result['highPrivilegeTasks'] = @($systemTasks | ForEach-Object {
-        @{ Name = $_.TaskName; Path = $_.TaskPath; State = $_.State.ToString(); RunAs = $_.Principal.UserId }
+        @{ Name = (ConvertTo-BaselineSidMask $_.TaskName); Path = (ConvertTo-BaselineSidMask $_.TaskPath); State = $_.State.ToString(); RunAs = $_.Principal.UserId }
     })
 
     # Failed/errored tasks (last result != 0 and != 0x41301 running)
@@ -2238,7 +2509,7 @@ $scheduledTasks = Invoke-CollectionArea -Step 16 -Name 'Scheduled Tasks' -Sectio
     $result['failedTasks'] = @($failedTasks | ForEach-Object {
         $lr = $_.LastTaskResult
         $hex = if ($null -ne $lr -and $lr -is [int]) { '0x{0:X}' -f $lr } elseif ($null -ne $lr) { "0x$lr" } else { 'unknown' }
-        @{ Name = $_.TaskName; Path = $_.TaskPath; LastResult = $hex; State = $_.State.ToString() }
+        @{ Name = (ConvertTo-BaselineSidMask $_.TaskName); Path = (ConvertTo-BaselineSidMask $_.TaskPath); LastResult = $hex; State = $_.State.ToString() }
     })
 
     # Known indicator tasks (Xbox, telemetry, etc.)
@@ -2351,7 +2622,7 @@ $powershellConfig = Invoke-CollectionArea -Step 19 -Name 'PowerShell Configurati
         ScriptBlockLogging          = Read-RegistryValue -Path 'HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging' -Name 'EnableScriptBlockLogging'
         ScriptBlockInvocationLogging = Read-RegistryValue -Path 'HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging' -Name 'EnableScriptBlockInvocationLogging'
         Transcription               = Read-RegistryValue -Path 'HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell\Transcription' -Name 'EnableTranscripting'
-        TranscriptionPath           = Read-RegistryValue -Path 'HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell\Transcription' -Name 'OutputDirectory'
+        TranscriptionPath           = ConvertTo-CollectorMaskedPath $Script:PrivacyContext (Read-RegistryValue -Path 'HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell\Transcription' -Name 'OutputDirectory')
         ModuleLogging               = Read-RegistryValue -Path 'HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ModuleLogging' -Name 'EnableModuleLogging'
         ConstrainedLanguageMode     = $ExecutionContext.SessionState.LanguageMode.ToString()
         ExecutionPolicy             = try { (Get-ExecutionPolicy -Scope LocalMachine).ToString() } catch { 'Unknown' }
@@ -2410,7 +2681,7 @@ $eventLogMetadata = Invoke-CollectionArea -Step 21 -Name 'Event Log Metadata' -S
             $errMsg = if ($_.Exception -is [System.Diagnostics.Eventing.Reader.EventLogNotFoundException]) {
                 'Log not found'
             } else {
-                $_.Exception.Message
+                Get-CollectorErrorText $Script:PrivacyContext $_
             }
             $result[$log] = @{ IsEnabled = $false; Error = $errMsg }
         }
@@ -2423,36 +2694,117 @@ $eventLogMetadata = Invoke-CollectionArea -Step 21 -Name 'Event Log Metadata' -S
 # AREA 22: SECURITY EVENT COLLECTION
 # ═══════════════════════════════════════════════════════════════════════
 
+function Test-BaselineNoEvents {
+    param($ErrorRecord)
+    return $ErrorRecord.Exception -is [System.Diagnostics.Eventing.Reader.EventLogNotFoundException] -or
+        $ErrorRecord.Exception.HResult -eq -2146233088 -or
+        $ErrorRecord.Exception.Message -match 'No events were found|Es wurden keine Ereignisse|Aucun .v.nement|No se encontraron eventos'
+}
+
+function Get-BaselineEventData {
+    param($Record)
+    $Named = @{}
+    $Values = [System.Collections.ArrayList]::new()
+    try {
+        foreach ($Node in @(([xml]$Record.ToXml()).Event.EventData.Data)) {
+            if ($null -eq $Node) { continue }
+            $Text = if ($Node -is [string]) { $Node } else { $Node.'#text' }
+            [void]$Values.Add($Text)
+            if ($Node -isnot [string] -and $Node.Name) { $Named[$Node.Name] = $Text }
+        }
+    } catch { }
+    return @{ Named = $Named; Values = @($Values) }
+}
+
+function ConvertTo-BaselineEventRecord {
+    param($Record, $Query, [System.Collections.Generic.HashSet[string]]$ElevatedLogons)
+    $Entry = [ordered]@{ id = $Record.Id; time = $Record.TimeCreated.ToUniversalTime().ToString('yyyy-MM-ddTHH:00:00Z') }
+    if ($Query.Key -eq 'systemErrors') { return $Entry }
+    $Data = Get-BaselineEventData $Record
+    $Named = $Data.Named
+    switch ($Record.Id) {
+        { $_ -in 4624, 4625 } {
+            $LogonType = 0
+            if ([int]::TryParse([string]$Named['LogonType'], [ref]$LogonType)) { $Entry['logonType'] = $LogonType }
+        }
+        4624 {
+            $Entry['offHours'] = Test-BaselineOffHours $Record.TimeCreated $Script:WorkDayNumbers $Script:BusinessStartMinute $Script:BusinessEndMinute
+            $Human = $Entry['logonType'] -in 2, 3, 7, 10, 11 -and [string]$Named['TargetUserSid'] -notmatch '^S-1-5-(18|19|20|90-.*|96-.*)$' -and -not ([string]$Named['TargetUserName']).EndsWith('$')
+            $LogonId = ([string]$Named['TargetLogonId']).ToLowerInvariant()
+            $Entry['elevated'] = [bool]($Human -and $LogonId -and $ElevatedLogons.Contains($LogonId))
+        }
+        4740 {
+            if ($Named['TargetUserName']) {
+                $Entry['accountKey'] = ConvertTo-CollectorIdentity $Script:PrivacyContext 'usr' ('{0}\{1}' -f $Named['TargetDomainName'], $Named['TargetUserName'])
+            }
+        }
+        4688 {
+            $Process = [string]$Named['NewProcessName']
+            $Leaf = ($Process -split '[\\/]')[-1].ToLowerInvariant()
+            if ($Leaf -in $Script:LolbinNames) { $Entry['lolbin'] = $Leaf }
+        }
+        1000 {
+            $Application = [string]@($Data.Values)[0]
+            if ($Application) { $Entry['faultingApp'] = ($Application -split '[\\/]')[-1] }
+        }
+    }
+    if ($IncludeSecurityEvents) {
+        $Fields = @($Query.Detail)
+        if ($Script:PrivacyContext.Mode -eq 'Identified') { $Fields += @($Query.Identity) }
+        $Props = [ordered]@{}
+        foreach ($Field in $Fields) { if ($Named.ContainsKey($Field)) { $Props[$Field] = $Named[$Field] } }
+        if ($Props.Count -gt 0) { $Entry['props'] = $Props }
+    }
+    return $Entry
+}
+
+$Script:LolbinNames = @('certutil.exe','mshta.exe','wscript.exe','cscript.exe','regsvr32.exe','msbuild.exe','installutil.exe','cmstp.exe','bitsadmin.exe')
+
 if (-not $SkipEventCollection) {
     $eventData = Invoke-CollectionArea -Step 22 -Name 'Security Event Collection' -Sections @('eventData') -Script {
         $cutoff  = (Get-Date).AddDays(-$LookbackDays)
         $result  = @{ _queryMeta = @{
             lookbackDays          = $LookbackDays
-            queryTimestamp        = (Get-Date).ToString('o')
+            queryTimestamp        = (Get-Date).ToUniversalTime().ToString('o')
             totalEventsCollected  = 0
             queryDurationSec      = 0
             maxEventsPerQuery     = $MaxEventsPerQuery
             truncatedQueries      = @()
+            recordSchema          = 'minimal-1.0'
+            detailedFields        = [bool]$IncludeSecurityEvents
+            businessHours         = $BusinessHours
+            workDays              = $WorkDays
+            elevatedCorrelation   = 'NotEvaluated'
         }}
         $totalEvents = 0
         $querySw     = [System.Diagnostics.Stopwatch]::StartNew()
 
-        # Event query definitions
+        # Detail fields need -IncludeSecurityEvents; Identity fields additionally need Identified mode.
         $queries = @(
-            @{ Name = 'Logon Events (4624/4625)';             Key = 'logonEvents';        Log = 'Security';    Ids = @(4624,4625);                              Props = @('TargetUserName','TargetDomainName','LogonType','IpAddress','WorkstationName','FailureReason','SubStatus') }
-            @{ Name = 'Account Lockout (4740)';               Key = 'accountLockout';     Log = 'Security';    Ids = @(4740);                                   Props = @('TargetUserName','TargetDomainName','CallerComputerName') }
-            @{ Name = 'Account Management (4720-4735)';       Key = 'accountManagement';  Log = 'Security';    Ids = @(4720,4722,4723,4724,4725,4726,4727,4728,4729,4730,4731,4732,4733,4734,4735); Props = @('TargetUserName','SubjectUserName','GroupName','MemberName') }
-            @{ Name = 'Privilege Use (4672/4673)';            Key = 'privilegeUse';       Log = 'Security';    Ids = @(4672,4673);                              Props = @('SubjectUserName','SubjectDomainName','PrivilegeList') }
-            @{ Name = 'Process Creation (4688)';              Key = 'processCreation';    Log = 'Security';    Ids = @(4688);                                   Props = @('NewProcessName','ParentProcessName','SubjectUserName','CommandLine') }
-            @{ Name = 'Policy Change (4719/4739)';            Key = 'policyChange';       Log = 'Security';    Ids = @(4719,4739);                              Props = @('SubjectUserName','CategoryId','SubcategoryGuid') }
-            @{ Name = 'System Integrity (4612/4615/4616)';    Key = 'systemIntegrity';    Log = 'Security';    Ids = @(4612,4615,4616);                         Props = @('SubjectUserName') }
-            @{ Name = 'Audit Policy Change (4902/4906/4907)'; Key = 'auditPolicyChange';  Log = 'Security';    Ids = @(4902,4904,4905,4906,4907);               Props = @('SubjectUserName','SubcategoryGuid','AuditPolicyChanges') }
-            @{ Name = 'Kerberos (4768/4769/4771)';           Key = 'kerberosAuth';       Log = 'Security';    Ids = @(4768,4769,4771);                         Props = @('TargetUserName','ServiceName','IpAddress','TicketOptions','Status') }
-            @{ Name = 'Object Access (4663/4656)';           Key = 'objectAccess';       Log = 'Security';    Ids = @(4663,4656,4658);                         Props = @('SubjectUserName','ObjectName','ObjectType','AccessMask','ProcessName') }
-            @{ Name = 'Application Crashes (1000/1001)';     Key = 'applicationCrashes'; Log = 'Application'; Ids = @(1000,1001);                              Props = @() }
-            @{ Name = 'System Errors (41/6008/6013)';        Key = 'systemErrors';       Log = 'System';      Ids = @(41,6008,6013);                           Props = @() }
-            @{ Name = 'WHEA/Hardware (17/18/19/20)';         Key = 'hardwareErrors';     Log = 'System';      Ids = @(17,18,19,20);                            Props = @() }
+            @{ Name = 'Logon Events (4624/4625)';             Key = 'logonEvents';        Log = 'Security';    Ids = @(4624,4625);                              Detail = @('FailureReason','SubStatus');                    Identity = @('TargetUserName','TargetDomainName','IpAddress','WorkstationName') }
+            @{ Name = 'Account Lockout (4740)';               Key = 'accountLockout';     Log = 'Security';    Ids = @(4740);                                   Detail = @();                                               Identity = @('TargetUserName','TargetDomainName','CallerComputerName') }
+            @{ Name = 'Account Management (4720-4735)';       Key = 'accountManagement';  Log = 'Security';    Ids = @(4720,4722,4723,4724,4725,4726,4727,4728,4729,4730,4731,4732,4733,4734,4735); Detail = @(); Identity = @('TargetUserName','SubjectUserName','GroupName','MemberName') }
+            @{ Name = 'Process Creation (4688)';              Key = 'processCreation';    Log = 'Security';    Ids = @(4688);                                   Detail = @();                                               Identity = @('SubjectUserName') }
+            @{ Name = 'Audit Policy Change (4902/4906/4907)'; Key = 'auditPolicyChange';  Log = 'Security';    Ids = @(4902,4904,4905,4906,4907);               Detail = @('SubcategoryGuid','AuditPolicyChanges');         Identity = @('SubjectUserName') }
+            @{ Name = 'Kerberos (4768/4769/4771)';           Key = 'kerberosAuth';       Log = 'Security';    Ids = @(4768,4769,4771);                         Detail = @('ServiceName','TicketOptions','Status');         Identity = @('TargetUserName','IpAddress') }
+            @{ Name = 'Application Crashes (1000/1001)';     Key = 'applicationCrashes'; Log = 'Application'; Ids = @(1000,1001);                              Detail = @();                                               Identity = @() }
+            @{ Name = 'System Errors (41/6008/6013)';        Key = 'systemErrors';       Log = 'System';      Ids = @(41,6008,6013);                           Detail = @();                                               Identity = @() }
         )
+
+        # 4672 logon IDs are read only to derive 'elevated'; they are not exported.
+        $elevatedLogons = New-Object 'System.Collections.Generic.HashSet[string]'
+        if (-not $EventSummaryOnly) {
+            try {
+                $privilegeEvents = @(Get-WinEvent -FilterHashtable @{ LogName = 'Security'; Id = 4672; StartTime = $cutoff } -MaxEvents $MaxEventsPerQuery -ErrorAction Stop)
+                foreach ($evt in $privilegeEvents) {
+                    $logonId = [string](Get-BaselineEventData $evt).Named['SubjectLogonId']
+                    if ($logonId) { [void]$elevatedLogons.Add($logonId.ToLowerInvariant()) }
+                }
+                $result['_queryMeta']['elevatedCorrelation'] = if ($privilegeEvents.Count -ge $MaxEventsPerQuery) { 'Truncated' } else { 'Complete' }
+            } catch {
+                $result['_queryMeta']['elevatedCorrelation'] = if (Test-BaselineNoEvents $_) { 'Complete' } else { 'Unavailable' }
+            }
+        }
 
         foreach ($q in $queries) {
             $qSw = [System.Diagnostics.Stopwatch]::StartNew()
@@ -2469,60 +2821,25 @@ if (-not $SkipEventCollection) {
                 if ($isTruncated) { $result['_queryMeta']['truncatedQueries'] += $q.Key }
 
                 if ($EventSummaryOnly) {
-                    # Summary mode: counts + top users only
                     $summary = @{
                         count      = $count
-                        firstEvent = if ($count -gt 0) { $events[-1].TimeCreated.ToString('o') } else { $null }
-                        lastEvent  = if ($count -gt 0) { $events[0].TimeCreated.ToString('o') } else { $null }
+                        firstEvent = if ($count -gt 0) { $events[-1].TimeCreated.ToUniversalTime().ToString('yyyy-MM-ddTHH:00:00Z') } else { $null }
+                        lastEvent  = if ($count -gt 0) { $events[0].TimeCreated.ToUniversalTime().ToString('yyyy-MM-ddTHH:00:00Z') } else { $null }
                     }
                     if ($isTruncated) { $summary['truncated'] = $true }
-                    # Top users for security events
-                    if ($q.Log -eq 'Security' -and $count -gt 0 -and $q.Props -contains 'TargetUserName') {
-                        $topUsers = $events | ForEach-Object {
-                            try { $_.Properties[5].Value } catch { '' }
-                        } | Where-Object { $_ } | Group-Object | Sort-Object Count -Descending |
-                            Select-Object -First 5 | ForEach-Object { @{ user = $_.Name; count = $_.Count } }
-                        $summary['topUsers'] = @($topUsers)
-                    }
                     $result[$q.Key] = $summary
                 } else {
-                    # Full mode: extract normalized events
                     $extracted = [System.Collections.ArrayList]::new()
-                    foreach ($evt in $events) {
-                        $entry = @{
-                            id   = $evt.Id
-                            time = $evt.TimeCreated.ToString('o')
-                        }
-                        if ($q.Props.Count -gt 0) {
-                            # R-2: parse the event XML ONCE per event (was re-parsed per property).
-                            $dataNodes = $null
-                            try { $dataNodes = ([xml]$evt.ToXml()).Event.EventData.Data } catch { $dataNodes = $null }
-                            $props = @{}
-                            if ($dataNodes) {
-                                foreach ($propName in $q.Props) {
-                                    $node = $dataNodes | Where-Object { $_.Name -eq $propName }
-                                    if ($node) { $props[$propName] = $node.'#text' }
-                                }
-                            }
-                            if ($props.Count -gt 0) { $entry['props'] = $props }
-                        } else {
-                            $entry['message'] = $evt.Message -replace '\r?\n',' ' | ForEach-Object { $_.Substring(0, [math]::Min($_.Length, 200)) }
-                        }
-                        [void]$extracted.Add($entry)
-                    }
+                    foreach ($evt in $events) { [void]$extracted.Add((ConvertTo-BaselineEventRecord $evt $q $elevatedLogons)) }
                     $result[$q.Key] = @($extracted)
                 }
                 $totalEvents += $count
             } catch [Exception] {
-                # Match "no events found" errors across all locales (EN/DE/FR/ES/etc.)
-                $isNoEvents = $_.Exception -is [System.Diagnostics.Eventing.Reader.EventLogNotFoundException] -or
-                              $_.Exception.HResult -eq -2146233088 -or    # 0x80131500 - No events matching criteria
-                              $_.Exception.Message -match 'No events were found|Es wurden keine Ereignisse|Aucun .v.nement|No se encontraron eventos'
-                if ($isNoEvents) {
+                if (Test-BaselineNoEvents $_) {
                     $count = 0
                     $result[$q.Key] = if ($EventSummaryOnly) { @{ count = 0 } } else { @() }
                 } else {
-                    $result[$q.Key] = @{ error = $_.Exception.Message }
+                    $result[$q.Key] = @{ error = (Get-CollectorErrorText $Script:PrivacyContext $_) }
                     $count = 0
                 }
             }
@@ -2536,8 +2853,6 @@ if (-not $SkipEventCollection) {
         $result['_queryMeta']['totalEventsCollected'] = $totalEvents
         $result['_queryMeta']['queryDurationSec']     = [math]::Round($querySw.Elapsed.TotalSeconds, 1)
         $result['_detail'] = "$totalEvents total events across $($queries.Count) queries"
-
-        # Print final event summary line (done is handled by Invoke-CollectionArea)
         $result
     }
 } else {
@@ -2582,10 +2897,13 @@ if ($eventData -is [hashtable]) { Remove-DetailKeys $eventData }
 if ($appliedGPOs -is [hashtable]) { Remove-DetailKeys $appliedGPOs }
 
 $output = [ordered]@{
+    Privacy = New-CollectorPrivacyManifest $Script:PrivacyContext @($(if ($IncludeSecurityEvents) { 'IncludeSecurityEvents' }), $(if ($IncludeGpoData) { 'IncludeGpoData' }), $(if ($IncludeSpeculationControl) { 'IncludeSpeculationControl' }))
     _metadata = [ordered]@{
         collectorVersion   = $Script:CollectorVersion
+        collectionId       = $Script:CollectionId
         timestamp          = $Script:StartTime.ToString('o')
         hostname           = $hostname
+        assessor           = $(if ($Assessor) { $Assessor } else { $null })
         collectionDurationMs = $durationMs
         areasCompleted     = $Script:TotalAreas - $Script:Errors.Count
         areasTotal         = $Script:TotalAreas
@@ -2595,9 +2913,13 @@ $output = [ordered]@{
             maxEventsPerQuery  = $MaxEventsPerQuery
             skipEventCollection = [bool]$SkipEventCollection
             eventSummaryOnly   = [bool]$EventSummaryOnly
+            includeSecurityEvents = [bool]$IncludeSecurityEvents
             includeGpoData     = [bool]$IncludeGpoData
             includeSpeculationControl = [bool]$IncludeSpeculationControl
             assessmentProfile = $AssessmentProfile
+            privacyMode        = $PrivacyMode
+            businessHours      = $BusinessHours
+            workDays           = $WorkDays
         }
     }
     systemInfo        = $systemInfo
@@ -2644,14 +2966,12 @@ if ($AssessmentProfile -ne 'Generic') {
 # WRITE OUTPUT
 # ═══════════════════════════════════════════════════════════════════════
 
-if (-not $OutputPath) {
-    $ts = Get-Date -Format 'yyyyMMdd_HHmmss'
-    $OutputPath = Join-Path $PWD.Path "${hostname}_baseline_${ts}.json"
-}
-
 $jsonStr  = $output | ConvertTo-Json -Depth 10
 $sizeMB   = [math]::Round($jsonStr.Length / 1MB, 1)
-[System.IO.File]::WriteAllText($OutputPath, $jsonStr, [System.Text.Encoding]::UTF8)
+$OutputPath = Write-CollectorExport $Script:PrivacyContext $OutputPath $jsonStr $IdentityMapPath
+if ((Test-CollectorSyncedPath $OutputPath) -and -not $Quiet) {
+    Write-Warning 'The output is in a OneDrive-synchronized folder. Treat it as Confidential.'
+}
 
 # ═══════════════════════════════════════════════════════════════════════
 # SUMMARY BANNER
