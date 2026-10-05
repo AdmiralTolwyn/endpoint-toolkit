@@ -57,6 +57,7 @@ function New-IntuneEndpointEvidence {
 
 if ($LibraryOnly) { return }
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'CollectorPrivacy.ps1')
 if (-not $OutputPath -or (Test-Path -LiteralPath $OutputPath)) { throw 'Provide a new output path.' }
 $ExpectedTenant = [guid]::Empty
 if (-not [guid]::TryParse($TenantId, [ref]$ExpectedTenant) -or $ExpectedTenant -eq [guid]::Empty) { throw 'Provide an explicit tenant GUID.' }
@@ -75,8 +76,11 @@ $Evidence = New-IntuneEndpointEvidence -SelectedTenant $TenantId -DeviceId $Devi
         'DeviceGuard' { Get-CimInstance -ClassName Win32_DeviceGuard -Namespace root\Microsoft\Windows\DeviceGuard -ErrorAction Stop | Select-Object VirtualizationBasedSecurityStatus, SecurityServicesConfigured, SecurityServicesRunning }
     }
 }
+$Manifest = New-CollectorPrivacyManifest ([pscustomobject]@{ Mode = 'Pseudonymous'; KeyId = $null })
+$Manifest.PseudonymizedFieldClasses = @()
+$Manifest.ClassifiedFieldClasses = @()
+$Evidence['Privacy'] = $Manifest
 $Json = $Evidence | ConvertTo-Json -Depth 15
 $Bytes = [Text.UTF8Encoding]::new($false).GetBytes($Json)
-$Stream = [IO.File]::Open([IO.Path]::GetFullPath($OutputPath), [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
-try { $Stream.Write($Bytes, 0, $Bytes.Length) } finally { $Stream.Dispose() }
+[void](Write-CollectorProtectedFile -Path $OutputPath -Bytes $Bytes)
 Write-Output "Exported read-only endpoint evidence to $OutputPath. Module errors remain explicit; no elevation or remediation was attempted."

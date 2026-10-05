@@ -209,12 +209,16 @@ function ConvertTo-CollectorMaskedPath {
     param($Context, $Path)
     if ($null -eq $Path -or $Path -isnot [string] -or $Context.Mode -eq 'Identified') { return $Path }
     $Masked = $Path -replace '(?i)((?:^|[\\/])(?:users|documents and settings)[\\/])(?!(?:public|default|default user|all users)(?:[\\/]|$))(?![^\\/]*[*?])[^\\/]+', '${1}{profile}'
-    return [regex]::Replace($Masked, '^(\\\\|//)([^\\/]+)([\\/])([^\\/]+)', {
+    $Prefix = [regex]::Match($Masked, '^(?:[\\/]{2}[?.][\\/](?:(?i:UNC)[\\/])?|[\\/]{2})')
+    if (-not $Prefix.Success -or ($Prefix.Length -gt 2 -and $Prefix.Value -notmatch '(?i)UNC[\\/]$')) { return $Masked }
+    $Rest = [regex]::Replace($Masked.Substring($Prefix.Length), '^([^\\/]+)(?:([\\/])([^\\/]*))?', {
         param($Match)
-        $UncHost = if ($Match.Groups[2].Value -match '[*?]') { $Match.Groups[2].Value } else { '{host}' }
-        $Share = if ($Match.Groups[4].Value -match '[*?]') { $Match.Groups[4].Value } else { '{share}' }
-        $Match.Groups[1].Value + $UncHost + $Match.Groups[3].Value + $Share
+        $UncHost = if ($Match.Groups[1].Value -match '[*?]') { $Match.Groups[1].Value } else { '{host}' }
+        if (-not $Match.Groups[2].Success) { return $UncHost }
+        $Share = if ($Match.Groups[3].Value -eq '' -or $Match.Groups[3].Value -match '[*?]') { $Match.Groups[3].Value } else { '{share}' }
+        $UncHost + $Match.Groups[2].Value + $Share
     })
+    return $Prefix.Value + $Rest
 }
 
 function ConvertTo-CollectorNetworkValue {

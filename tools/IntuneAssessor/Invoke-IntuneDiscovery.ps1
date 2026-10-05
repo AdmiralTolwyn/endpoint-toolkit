@@ -2,7 +2,7 @@
 [CmdletBinding()]
 param(
     [string]$TenantId,
-    [string]$OutputPath = (Join-Path $PWD ('intune-discovery-{0}.json' -f (Get-Date -Format 'yyyyMMdd-HHmmss'))),
+    [string]$OutputPath,
     [switch]$IncludeRbac,
     [switch]$IncludeAudit,
     [switch]$IncludeConfiguration,
@@ -28,12 +28,17 @@ param(
     [ValidateRange(1, 87600)][int]$MaxCollectionAgeHours,
     [ValidateRange(1, 87600)][int]$MaxPolicyReportAgeHours,
     [ValidateRange(1, 87600)][int]$MaxDeviceSyncAgeDays,
+    [ValidateSet('Pseudonymous', 'Identified')][string]$PrivacyMode = 'Pseudonymous',
+    [switch]$ConfirmIdentifiedExport,
+    [string]$PseudonymKeyPath,
+    [string]$IdentityMapPath,
     [switch]$LibraryOnly
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'IntuneExpansion.ps1')
+. (Join-Path $PSScriptRoot 'CollectorPrivacy.ps1')
 $script:IntuneGraphContracts = @(foreach ($Contract in (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'GraphContracts.json') -Raw | ConvertFrom-Json)) { $Contract })
 
 function Get-IntuneValue {
@@ -176,6 +181,63 @@ function ConvertTo-IntuneSafeRow {
     return $Safe
 }
 
+function ConvertTo-IntuneMemberSummary {
+    param($Value, [int]$Depth = 0)
+    if ($Depth -gt 12 -or $null -eq $Value) { return }
+    if ($Value -is [System.Collections.IDictionary]) {
+        foreach ($Key in @($Value.Keys)) {
+            $Item = $Value[$Key]
+            if ($Key -cin @('includeUsers', 'excludeUsers', 'includeGroups', 'excludeGroups', 'includeRoles', 'excludeRoles', 'users', 'groups') -and $Item -is [array]) {
+                $Kept = @($Item | Where-Object { $_ -is [string] -and $_ -cin @('All', 'None', 'GuestsOrExternalUsers') })
+                $Value[$Key] = $Kept
+                $Value[$Key + 'Count'] = @($Item).Count - $Kept.Count
+            } else {
+                ConvertTo-IntuneMemberSummary $Item ($Depth + 1)
+            }
+        }
+    } elseif ($Value -is [array]) {
+        foreach ($Item in $Value) { ConvertTo-IntuneMemberSummary $Item ($Depth + 1) }
+    }
+}
+
+function ConvertTo-IntunePathList {
+    param($Context, $Value)
+    if ($Value -isnot [string]) { return $Value }
+    return -join @(foreach ($Part in [regex]::Split($Value, '([|;\r\n]+)')) {
+        if ($Part -match '^[|;\r\n]+$') { $Part } else { ConvertTo-CollectorMaskedPath $Context $Part }
+    })
+}
+
+function ConvertTo-IntunePrivacyInventory {
+    param($Inventory, $Context)
+    if ($null -eq $Context -or $Context.Mode -eq 'Identified') { return }
+    foreach ($Pair in @(@('ManagedDevices', 'deviceName'), @('ComplianceStates', 'deviceDisplayName'))) {
+        foreach ($Row in (Get-IntuneValue $Inventory $Pair[0] @())) {
+            if ($Row -is [System.Collections.IDictionary] -and $Row.Contains($Pair[1])) { $Row[$Pair[1]] = ConvertTo-CollectorIdentity $Context 'dev' $Row[$Pair[1]] }
+        }
+    }
+    foreach ($Row in (Get-IntuneValue $Inventory 'ConditionalAccessPolicies' @())) { ConvertTo-IntuneMemberSummary (Get-IntuneValue $Row 'conditions') }
+    foreach ($Row in (Get-IntuneValue $Inventory 'DeviceRegistrationPolicy' @())) { ConvertTo-IntuneMemberSummary $Row }
+    foreach ($Row in (Get-IntuneValue $Inventory 'SecuritySettings' @())) {
+        if ($Row -isnot [System.Collections.IDictionary] -or -not $Row.Contains('value')) { continue }
+        switch -CaseSensitive ([string](Get-IntuneValue $Row 'cspUri')) {
+            'LAPS/Policies/AdministratorAccountName' {
+                $Name = ([string]$Row['value']).Trim()
+                $Row['value'] = if ($Name.Length -eq 0) { 'NotConfigured' } elseif ($Name -ieq 'Administrator') { 'BuiltIn' } else { 'Custom' }
+            }
+            { $_ -cin @('Policy/Config/Defender/ExcludedPaths', 'Policy/Config/Defender/ExcludedProcesses', 'Policy/Config/Defender/AttackSurfaceReductionOnlyExclusions') } {
+                $Row['value'] = ConvertTo-IntunePathList $Context $Row['value']
+            }
+        }
+    }
+    foreach ($Row in (Get-IntuneValue $Inventory 'EpmRules' @())) {
+        if ($Row -isnot [System.Collections.IDictionary]) { continue }
+        foreach ($Field in @('filePath', 'fileName')) {
+            if ($Row.Contains($Field)) { $Row[$Field] = ConvertTo-CollectorMaskedPath $Context $Row[$Field] }
+        }
+    }
+}
+
 function Get-IntuneHttpPage {
     param([string]$Uri)
     if (-not (Test-IntuneUri $Uri -AllowExpansion)) { return @{ StatusCode = 0; ErrorCode = 'BlockedEndpoint'; Body = $null } }
@@ -276,7 +338,8 @@ function Invoke-IntuneDiscoveryCore {
     [string]$DefenderPath, [string[]]$AppControlPaths = @(),
         [scriptblock]$Request = { param($Address) Get-IntuneHttpPage $Address },
         [scriptblock]$Delay = { param($Seconds) [System.Threading.Tasks.Task]::Delay([timespan]::FromSeconds($Seconds)).GetAwaiter().GetResult() },
-        [hashtable]$Requirements = @{})
+        [hashtable]$Requirements = @{},
+        $PrivacyContext = $null)
     $Started = [datetime]::UtcNow
     $Deadline = $Started.AddMinutes(30)
     $Inventory = [ordered]@{}
@@ -369,6 +432,7 @@ function Invoke-IntuneDiscoveryCore {
         $States[$Module] = @{ State = 'NotRequested'; ApiVersion = ''; Endpoint = ''; PagesRead = 0; RowsRead = 0; ScopeComplete = $false; ErrorCode = $null; Details = 'No selected, verified collector adapter. Manual review required.'; CompletedParentIds = @() }
     }
     $Observed = [datetime]::UtcNow.ToString('o')
+    ConvertTo-IntunePrivacyInventory $Inventory $PrivacyContext
     $Observations = [System.Collections.Generic.List[object]]::new()
     foreach ($Module in @('ManagedDevices', 'ComplianceStates')) {
         foreach ($Row in $Inventory[$Module]) {
@@ -386,7 +450,7 @@ function Invoke-IntuneDiscoveryCore {
     if ($Requirements.Count) { $Requirements['AssessmentAsOfUtc'] = $Completed; $Requirements['ConfirmedAtUtc'] = $Completed }
     return [ordered]@{
         SchemaVersion = '1.0'; PackId = 'intune'; CollectionId = [guid]::NewGuid().ToString()
-        Collector = @{ Name = 'Invoke-IntuneDiscovery'; Version = '0.5.21' }; Tenant = @{ Id = $SelectedTenant; Cloud = 'Global' }
+        Collector = @{ Name = 'Invoke-IntuneDiscovery'; Version = '0.6.0' }; Tenant = @{ Id = $SelectedTenant; Cloud = 'Global' }
         StartedAtUtc = $Started.ToString('o'); CompletedAtUtc = $Completed
         Scope = @{ RequestedModules = @($States.Keys | Where-Object { $States[$_].State -ne 'NotRequested' }); RequestedPlatforms = @('All'); Visibility = 'Unknown'; ScopeEvidenceRefs = @() }
         CollectionStatus = $States; Inventory = $Inventory; Observations = @($Observations.ToArray()); AssessmentRequirements = $Requirements
@@ -396,7 +460,10 @@ function Invoke-IntuneDiscoveryCore {
 if ($LibraryOnly) { return }
 $ParsedTenant = [guid]::Empty
 if (-not [guid]::TryParse($TenantId, [ref]$ParsedTenant) -or $ParsedTenant -eq [guid]::Empty) { throw 'Supply an explicit nonempty -TenantId GUID.' }
-if (Test-Path -LiteralPath $OutputPath) { throw 'Output already exists; choose a new output path.' }
+$CollectionId = [guid]::NewGuid().ToString()
+$OutputPath = Resolve-CollectorOutputPath -Collector 'Intune' -OutputPath $OutputPath -CollectionId $CollectionId
+if ($IdentityMapPath -and (Test-Path -LiteralPath $IdentityMapPath)) { throw 'Identity map already exists; choose a new path.' }
+$PrivacyContext = New-CollectorPrivacyContext -Mode $PrivacyMode -ConfirmIdentified $ConfirmIdentifiedExport.IsPresent -KeyPath $PseudonymKeyPath -OutputPath $OutputPath
 $Scopes = @('DeviceManagementManagedDevices.Read.All', 'DeviceManagementConfiguration.Read.All')
 if ($IncludeRbac) { $Scopes += 'DeviceManagementRBAC.Read.All' }
 if ($IncludeAudit) { $Scopes += 'DeviceManagementApps.Read.All' }
@@ -444,7 +511,7 @@ try {
     $script:IntuneHttpClient.Timeout = [timespan]::FromSeconds(120)
     $script:IntuneHttpClient.MaxResponseContentBufferSize = 16MB
     $script:IntuneHttpClient.DefaultRequestHeaders.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::new('Bearer', $PlainToken)
-    $script:IntuneHttpClient.DefaultRequestHeaders.UserAgent.ParseAdd('IntuneAssessor/0.5.21')
+    $script:IntuneHttpClient.DefaultRequestHeaders.UserAgent.ParseAdd('IntuneAssessor/0.6.0')
     $PlainToken = $null
     $Requirements = @{}
     if ($Assessor -and $ScopeDescription) {
@@ -453,14 +520,19 @@ try {
             if ($PSBoundParameters.ContainsKey($Name)) { $Requirements[$Name] = $PSBoundParameters[$Name] }
         }
     }
-    $Export = Invoke-IntuneDiscoveryCore -SelectedTenant $TenantId -Rbac $IncludeRbac.IsPresent -Audit $IncludeAudit.IsPresent -AuditSince $AuditSinceUtc -Requirements $Requirements -Configuration $IncludeConfiguration.IsPresent -Entra $IncludeEntra.IsPresent -Recovery $IncludeRecoveryMetadata.IsPresent -Enrollment $IncludeEnrollment.IsPresent -Apple $IncludeApple.IsPresent -Mam $IncludeMam.IsPresent -MamLaunch $IncludeMamLaunch.IsPresent -RemoteHelp $IncludeRemoteHelp.IsPresent -Connectors $IncludeConnectors.IsPresent -AppConfiguration $IncludeAppConfiguration.IsPresent -PlatformCompliance $IncludePlatformCompliance.IsPresent -Tunnel $IncludeTunnel.IsPresent -EndpointPaths $EndpointEvidencePaths -DefenderPath $DefenderEvidencePath -AppControlPaths $AppControlPolicyPaths
+    $Export = Invoke-IntuneDiscoveryCore -SelectedTenant $TenantId -Rbac $IncludeRbac.IsPresent -Audit $IncludeAudit.IsPresent -AuditSince $AuditSinceUtc -Requirements $Requirements -Configuration $IncludeConfiguration.IsPresent -Entra $IncludeEntra.IsPresent -Recovery $IncludeRecoveryMetadata.IsPresent -Enrollment $IncludeEnrollment.IsPresent -Apple $IncludeApple.IsPresent -Mam $IncludeMam.IsPresent -MamLaunch $IncludeMamLaunch.IsPresent -RemoteHelp $IncludeRemoteHelp.IsPresent -Connectors $IncludeConnectors.IsPresent -AppConfiguration $IncludeAppConfiguration.IsPresent -PlatformCompliance $IncludePlatformCompliance.IsPresent -Tunnel $IncludeTunnel.IsPresent -EndpointPaths $EndpointEvidencePaths -DefenderPath $DefenderEvidencePath -AppControlPaths $AppControlPolicyPaths -PrivacyContext $PrivacyContext
+    $Export['CollectionId'] = $CollectionId
+    $OptIns = @(foreach ($Name in @('IncludeRbac', 'IncludeAudit', 'IncludeConfiguration', 'IncludeEntra', 'IncludeRecoveryMetadata', 'IncludeEnrollment', 'IncludeApple', 'IncludeMam', 'IncludeMamLaunch', 'IncludeRemoteHelp', 'IncludeConnectors', 'IncludeAppConfiguration', 'IncludePlatformCompliance', 'IncludeTunnel')) {
+        if ($PSBoundParameters.ContainsKey($Name) -and $PSBoundParameters[$Name].IsPresent) { $Name }
+    })
+    $Export['Privacy'] = New-CollectorPrivacyManifest $PrivacyContext $OptIns
     $Json = $Export | ConvertTo-Json -Depth 30
     $Bytes = [System.Text.UTF8Encoding]::new($false).GetBytes($Json)
     if ($Bytes.Length -gt 64MB) { throw 'Export exceeds the Assay 64 MB import limit. No output was written.' }
-    $ResolvedOutput = [System.IO.Path]::GetFullPath($OutputPath)
-    $Stream = [System.IO.File]::Open($ResolvedOutput, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
-    try { $Stream.Write($Bytes, 0, $Bytes.Length) } finally { $Stream.Dispose() }
+    $ResolvedOutput = Write-CollectorExport $PrivacyContext $OutputPath $Json $IdentityMapPath
     Write-Output ('Exported Intune observations to ' + $ResolvedOutput)
+    if ($PrivacyContext.KeyPath) { Write-Output ('Pseudonym key: ' + $PrivacyContext.KeyPath) }
+    if (Test-CollectorSyncedPath $ResolvedOutput) { Write-Warning 'The output is in a OneDrive-synchronized folder. Treat it as Confidential.' }
     foreach ($Module in $Export.CollectionStatus.Keys) { Write-Output ('{0}: {1}, {2} rows' -f $Module, $Export.CollectionStatus[$Module].State, $Export.CollectionStatus[$Module].RowsRead) }
 } finally {
     $PlainToken = $null

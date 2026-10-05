@@ -46,6 +46,11 @@ saved_logs/
 reports/
 build_history.json
 
+# Collector exports and privacy keys (Confidential)
+intune-discovery-*.json
+*.pseudonym-key
+*.identity-map.json
+
 # Local scratch / draft notes
 github-issue-*.md
 

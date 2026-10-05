@@ -72,6 +72,7 @@ function Read-IntuneDefenderMachines {
 
 if ($LibraryOnly) { return }
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'CollectorPrivacy.ps1')
 if (-not $AccessToken -or -not $OutputPath -or (Test-Path -LiteralPath $OutputPath)) { throw 'Supply a SecureString Defender token and a new output path.' }
 $SelectedTenant = [guid]::Empty
 if (-not [guid]::TryParse($TenantId, [ref]$SelectedTenant) -or $SelectedTenant -eq [guid]::Empty) { throw 'Provide an explicit tenant GUID.' }
@@ -110,11 +111,13 @@ try {
             return @{ StatusCode = [int]$Response.StatusCode; Body = $Body; RetryAfter = $RetryAfter }
         } finally { $Response.Dispose() }
     }
-    $Document = @{ SchemaVersion = '1.0'; TenantId = $TenantId; StartedAtUtc = $Started; CollectedAtUtc = [datetime]::UtcNow.ToString('o'); Result = $Result }
+    $Manifest = New-CollectorPrivacyManifest ([pscustomobject]@{ Mode = 'Pseudonymous'; KeyId = $null })
+    $Manifest.PseudonymizedFieldClasses = @()
+    $Manifest.ClassifiedFieldClasses = @()
+    $Document = @{ SchemaVersion = '1.0'; TenantId = $TenantId; StartedAtUtc = $Started; CollectedAtUtc = [datetime]::UtcNow.ToString('o'); Result = $Result; Privacy = $Manifest }
     $Bytes = [Text.UTF8Encoding]::new($false).GetBytes(($Document | ConvertTo-Json -Depth 10))
     if ($Bytes.Length -gt 64MB) { throw 'Defender export exceeds 64 MB.' }
-    $Stream = [IO.File]::Open([IO.Path]::GetFullPath($OutputPath), [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
-    try { $Stream.Write($Bytes, 0, $Bytes.Length) } finally { $Stream.Dispose() }
+    [void](Write-CollectorProtectedFile -Path $OutputPath -Bytes $Bytes)
     Write-Output ('Defender evidence exported: ' + $Result.State + '. Device-group visibility and retention limit coverage.')
 } finally {
     $PlainToken = $null

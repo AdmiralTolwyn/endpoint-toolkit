@@ -81,6 +81,11 @@ try {
         '\\*\share\x' = '\\*\{share}\x'
         'D:\Builds\*.exe' = 'D:\Builds\*.exe'
         'C:\Documents and Settings\Bob\x' = 'C:\Documents and Settings\{profile}\x'
+        '\\?\C:\Users\Alice\tool.exe' = '\\?\C:\Users\{profile}\tool.exe'
+        '\\.\PhysicalDrive0' = '\\.\PhysicalDrive0'
+        '\\?\UNC\fileserver\finance\app.exe' = '\\?\UNC\{host}\{share}\app.exe'
+        '\\fileserver' = '\\{host}'
+        '//fileserver/share/x' = '//{host}/{share}/x'
         '' = ''
     }
     foreach ($Entry in $Paths.GetEnumerator()) {
