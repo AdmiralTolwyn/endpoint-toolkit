@@ -19,7 +19,9 @@ $ResultFunction = $CollectorAst.Find({
     $Node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $Node.Name -eq 'New-CheckResult'
 }, $false)
 . ([scriptblock]::Create($ResultFunction.Extent.Text))
-foreach ($FunctionName in @('Get-AvdArmList', 'Get-AvdReservationScopeMatch', 'Get-AvdStorageZrsAvailability', 'Get-AvdStorageReplicationAssessment')) {
+. (Join-Path $PSScriptRoot 'CollectorPrivacy.ps1')
+$script:PrivacyContext = [pscustomobject]@{ Mode = 'Pseudonymous'; Key = [byte[]](1..32); KeyId = 'test'; KeyPath = $null; Identities = [Collections.Generic.Dictionary[string,string]]::new() }
+foreach ($FunctionName in @('Get-AvdArmList', 'Get-AvdReservationScopeMatch', 'Get-AvdStorageZrsAvailability', 'Get-AvdStorageReplicationAssessment', 'ConvertTo-AvdTagKeys', 'Add-AvdTagValues')) {
     $HelperFunction = $CollectorAst.Find({
         param($Node)
         $Node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $Node.Name -eq $FunctionName

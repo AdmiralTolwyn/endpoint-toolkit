@@ -11,8 +11,22 @@
     If omitted, prompts for enabled subscriptions; Enter selects the current subscription.
     Include shared hub and storage subscriptions even when they contain no host pools.
 .PARAMETER OutputPath
-    Path to save the discovery JSON file. Defaults to
-    AvdAssessor\assessments\discovery_<timestamp>.json
+    Path for a new discovery JSON file. Existing files are never overwritten. Default:
+    %LOCALAPPDATA%\AssayCollections\avd\avd_<collectionId>.json.
+.PARAMETER PrivacyMode
+    Pseudonymous (default) exports tag keys only, omits Defender device names and RBAC principal
+    names, and classifies public network prefixes. Identified retains them and requires
+    -ConfirmIdentifiedExport.
+.PARAMETER ConfirmIdentifiedExport
+    Required with -PrivacyMode Identified.
+.PARAMETER PseudonymKeyPath
+    Existing or new 32-byte pseudonym key file. Default: a new key next to the output file.
+.PARAMETER IdentityMapPath
+    Optional new file mapping pseudonyms to original values. Keep it separate from the export.
+.PARAMETER Assessor
+    Optional operator-supplied label exported as-is. The signed-in account is not exported.
+.PARAMETER IncludeTagValues
+    With -PrivacyMode Identified, also export Azure tag values. Tag keys are always exported.
 .PARAMETER SkipLogin
     Skip interactive login and use existing Az context.
 .PARAMETER IncludeMdeDeviceChecks
@@ -34,8 +48,8 @@
     .\Invoke-AvdDiscovery.ps1 -IncludeMdeDeviceChecks
 .NOTES
     Author : Anton Romanyuk
-    Version: 0.6.9
-    Date   : 2026-09-10
+    Version: 0.7.0
+    Date   : 2026-10-05
 #>
 
 [CmdletBinding()]
@@ -53,7 +67,20 @@ param(
     [switch]$IncludeGuestChecks,
 
     [Parameter(Mandatory = $false)]
-    [switch]$IncludeMdeDeviceChecks
+    [switch]$IncludeMdeDeviceChecks,
+
+    [ValidateSet('Pseudonymous','Identified')]
+    [string]$PrivacyMode = 'Pseudonymous',
+
+    [switch]$ConfirmIdentifiedExport,
+
+    [string]$PseudonymKeyPath,
+
+    [string]$IdentityMapPath,
+
+    [string]$Assessor,
+
+    [switch]$IncludeTagValues
 )
 
 $ErrorActionPreference = 'Stop'
@@ -66,7 +93,14 @@ $env:PSModulePath = ($env:PSModulePath -split ';' |
 $ScriptRoot = $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($ScriptRoot)) { $ScriptRoot = $PWD.Path }
 
-$ScriptVersion = '0.6.9'
+$ScriptVersion = '0.7.0'
+
+. (Join-Path $ScriptRoot 'CollectorPrivacy.ps1')
+$Script:CollectionId = [guid]::NewGuid().ToString()
+$OutputPath = Resolve-CollectorOutputPath -Collector 'Avd' -OutputPath $OutputPath -CollectionId $Script:CollectionId
+if ($IdentityMapPath -and (Test-Path -LiteralPath $IdentityMapPath)) { throw 'Identity map already exists; choose a new path.' }
+$Script:PrivacyContext = New-CollectorPrivacyContext -Mode $PrivacyMode -ConfirmIdentified $ConfirmIdentifiedExport.IsPresent -KeyPath $PseudonymKeyPath -OutputPath $OutputPath
+$Script:ExportTagValues = $PrivacyMode -eq 'Identified' -and $IncludeTagValues.IsPresent
 
 # ═══════════════════════════════════════════════════════════════════════════
 # HELPERS
@@ -114,6 +148,46 @@ function Write-Status {
         Write-Host "[$ts] " -NoNewline -ForegroundColor DarkGray
         Write-Host $Message -ForegroundColor $(if ($Level -eq 'INFO') { 'White' } else { $Color })
     }
+}
+
+$Script:AvdRdpAllowlist = @('drivestoredirect','redirectclipboard','redirectprinters','usbdevicestoredirect','redirectcomports','camerastoredirect','audiocapturemode','enablerdsaadauth','targetisaadjoined')
+
+function ConvertTo-AvdTagKeys {
+    param($Tags)
+    if ($null -eq $Tags) { return }
+    $Keys = if ($Tags -is [Collections.IDictionary]) { @($Tags.Keys) } else { @($Tags.PSObject.Properties | ForEach-Object { $_.Name }) }
+    $Keys | ForEach-Object { [string]$_ } | Where-Object { $_ } | Sort-Object -Unique
+}
+
+function Add-AvdTagValues {
+    param($Target, $Tags)
+    if ($Script:ExportTagValues -and $null -ne $Tags) { $Target | Add-Member -NotePropertyName Tags -NotePropertyValue $Tags -Force }
+    return $Target
+}
+
+function ConvertTo-AvdRdpProperties {
+    param([string]$CustomRdpProperty)
+    $Properties = [ordered]@{}
+    $Unknown = 0
+    foreach ($Token in @($CustomRdpProperty -split ';' | Where-Object { $_.Trim() })) {
+        $Parts = $Token.Trim() -split ':', 3
+        $Name = $Parts[0].Trim().ToLowerInvariant()
+        $Value = if ($Parts.Count -ge 3) { $Parts[2] } elseif ($Parts.Count -eq 2) { $Parts[1] } else { $null }
+        if ($Parts.Count -ge 2 -and $Script:AvdRdpAllowlist -contains $Name) { $Properties[$Name] = $Value } else { $Unknown++ }
+    }
+    return [pscustomobject]@{ Properties = $Properties; UnknownPropertyCount = $Unknown }
+}
+
+function Get-AvdRoleAssignmentSummary {
+    param($Assignments)
+    if ($Script:PrivacyContext.Mode -eq 'Identified') {
+        return @($Assignments | ForEach-Object { "$($_.RoleDefinitionName) ($($_.DisplayName))" })
+    }
+    return @($Assignments | Group-Object RoleDefinitionName, ObjectType | Sort-Object Name | ForEach-Object {
+        $First = $_.Group[0]
+        $Type = if ($First.ObjectType) { $First.ObjectType } else { 'Unknown' }
+        "$($First.RoleDefinitionName) ($Type x$($_.Count))"
+    })
 }
 
 <#
@@ -249,7 +323,7 @@ function Get-AvdStorageZrsAvailability {
         try {
             $Listing.Items = @(Get-AvdArmList -Path "/subscriptions/$SubscriptionId/providers/Microsoft.Storage/skus?api-version=2025-06-01")
             if ($Listing.Items.Count -eq 0) { throw 'Storage SKU list is empty; availability cannot be established.' }
-        } catch { $Listing.Error = $_.Exception.Message }
+        } catch { $Listing.Error = Get-CollectorErrorText $Script:PrivacyContext $_ }
         $Cache[$SubscriptionId] = $Listing
     }
     $Listing = $Cache[$SubscriptionId]
@@ -407,7 +481,7 @@ function Get-AvdAmaEvidence {
         }
     } catch {
         $Evidence.CollectionStatus = 'Error'
-        $Evidence.Details = "Could not establish AMA extension state: $($_.Exception.Message)"
+        $Evidence.Details = "Could not establish AMA extension state: $(Get-CollectorErrorText $Script:PrivacyContext $_)"
     }
     $Evidence.Details += ' This checks extension installation/provisioning only; DCR association, agent runtime health, and telemetry delivery require separate evidence.'
     $Cache[$CacheKey] = $Evidence
@@ -467,7 +541,7 @@ function Get-AvdMdeEvidence {
             $Evidence.DeploymentExtensionPresent = $false
             $Evidence.Details = 'Complete VM extension inventory contains no Microsoft MDE.Windows deployment extension. MDE may be onboarded via Intune, GPO, script, or another supported path.'
         }
-    } catch { $Evidence.Details = "Could not read MDE deployment extension inventory: $($_.Exception.Message)" }
+    } catch { $Evidence.Details = "Could not read MDE deployment extension inventory: $(Get-CollectorErrorText $Script:PrivacyContext $_)" }
     $Evidence.Details += ' Extension deployment does not establish EDR onboarding or sensor health. Defender Antivirus/MMA presence and Defender for Servers licensing do not prove MDE onboarding either.'
     $Cache[$CacheKey] = $Evidence
     return $Evidence
@@ -491,18 +565,17 @@ function Invoke-AvdMdeHuntingQuery {
             throw 'Defender hunting returned an error, incomplete response, or result-limit overflow.'
         }
         $Rows = @($Response.results | ForEach-Object {
-            [PSCustomObject]@{
-                DeviceId = $_.DeviceId
-                DeviceName = $_.DeviceName
-                AzureResourceId = $_.AzureResourceId
-                AzureVmId = $_.AzureVmId
-                Timestamp = $_.Timestamp
-                SnapshotIngestedAt = $_.SnapshotIngestedAt
-                OnboardingStatus = $_.OnboardingStatus
-                SensorHealthState = $_.SensorHealthState
-                ClientVersion = $_.ClientVersion
-                MergedToDeviceId = $_.MergedToDeviceId
-            }
+            $Row = [ordered]@{ DeviceId = $_.DeviceId }
+            if ($Script:PrivacyContext.Mode -eq 'Identified') { $Row.DeviceName = $_.DeviceName }
+            $Row.AzureResourceId = $_.AzureResourceId
+            $Row.AzureVmId = $_.AzureVmId
+            $Row.Timestamp = $_.Timestamp
+            $Row.SnapshotIngestedAt = $_.SnapshotIngestedAt
+            $Row.OnboardingStatus = $_.OnboardingStatus
+            $Row.SensorHealthState = $_.SensorHealthState
+            $Row.ClientVersion = $_.ClientVersion
+            $Row.MergedToDeviceId = $_.MergedToDeviceId
+            [PSCustomObject]$Row
         })
         return [PSCustomObject]@{ Ok = $true; Rows = $Rows; Error = $null }
     } catch {
@@ -688,7 +761,7 @@ function Get-AvdAmaConfiguration {
                         [PSCustomObject]@{ Streams = @($_.streams); Destinations = @($_.destinations); OutputStream = $_.outputStream; HasTransform = [bool]$_.transformKql }
                     })
                     $RuleFacts.CollectionStatus = 'Complete'
-                } catch { $RuleFacts.Error = $_.Exception.Message }
+                } catch { $RuleFacts.Error = Get-CollectorErrorText $Script:PrivacyContext $_ }
                 $RuleCache[$RuleId] = $RuleFacts
             }
             $RuleFacts = $RuleCache[$RuleId]
@@ -702,7 +775,7 @@ function Get-AvdAmaConfiguration {
         $Configuration.LogAnalyticsWorkspaceIds = @($Configuration.LogAnalyticsWorkspaceIds | Sort-Object -Unique)
     } catch {
         $Configuration.CollectionStatus = 'Error'
-        $Configuration.Errors += $_.Exception.Message
+        $Configuration.Errors += (Get-CollectorErrorText $Script:PrivacyContext $_)
     }
     return $Configuration
 }
@@ -996,7 +1069,7 @@ function Invoke-AvdLaQuery {
         }
         return @{ Ok = $true; Error = $null; Rows = @($Res.Results) }
     } catch {
-        return @{ Ok = $false; Error = $_.Exception.Message; Rows = @() }
+        return @{ Ok = $false; Error = (Get-CollectorErrorText $Script:PrivacyContext $_); Rows = @() }
     }
 }
 
@@ -1202,7 +1275,9 @@ $Discovery = [PSCustomObject]@{
     SchemaVersion  = '1.0'
     ToolVersion    = $ScriptVersion
     Timestamp      = (Get-Date -Format 'o')
-    AssessorId     = $Context.Account.Id
+    CollectionId   = $Script:CollectionId
+    Assessor       = $Assessor
+    Privacy        = $null
     Subscriptions  = @()
     Inventory      = [PSCustomObject]@{
         HostPools      = @()
@@ -1262,7 +1337,7 @@ foreach ($SubId in $SubscriptionId) {
         Write-Status "$($Sub.Subscription.Name)" -Level 'SUCCESS'
     } catch {
         Write-Status "Failed to set subscription context: $($_.Exception.Message)" -Level 'ERROR'
-        $Discovery.Errors += "Failed to access subscription $SubId : $($_.Exception.Message)"
+        $Discovery.Errors += "Failed to access subscription $SubId : $(Get-CollectorErrorText $Script:PrivacyContext $_)"
         continue
     }
 
@@ -1274,6 +1349,7 @@ foreach ($SubId in $SubscriptionId) {
         Write-Status "  Found $($HostPools.Count) host pool(s)" -Level 'SUCCESS'
 
         foreach ($HP in $HostPools) {
+            $RdpSummary = ConvertTo-AvdRdpProperties $HP.CustomRdpProperty
             $HPObj = [PSCustomObject]@{
                 SubscriptionId       = $SubId
                 ResourceGroup        = ($HP.Id -split '/')[4]
@@ -1289,10 +1365,11 @@ foreach ($SubId in $SubscriptionId) {
                 StartVMOnConnect     = $HP.StartVMOnConnect
                 ValidationEnvironment = $HP.ValidationEnvironment
                 Location             = $HP.Location
-                Tags                 = $HP.Tag
-                CustomRdpProperty    = $HP.CustomRdpProperty
+                TagKeys              = @(ConvertTo-AvdTagKeys $HP.Tag)
+                RdpProperties        = $RdpSummary.Properties
+                RdpUnknownPropertyCount = $RdpSummary.UnknownPropertyCount
             }
-            $Discovery.Inventory.HostPools += $HPObj
+            $Discovery.Inventory.HostPools += (Add-AvdTagValues $HPObj $HP.Tag)
 
             # ─── CHECK: Start VM on Connect ───
             [void]$AllChecks.Add((New-CheckResult -Id "GOV-001-$($HP.Name)" `
@@ -1338,15 +1415,9 @@ foreach ($SubId in $SubscriptionId) {
                 -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/configure-validation-environment'))
 
             # ─── CHECK: Comprehensive RDP Property Security Audit ───
-            $RdpProps = $HP.CustomRdpProperty
-            $ParsedRdp = @{}
-            if ($RdpProps) {
-                foreach ($RdpToken in ($RdpProps -split ';' | Where-Object { $_.Trim() })) {
-                    $RdpParts = $RdpToken.Trim() -split ':', 3
-                    if ($RdpParts.Count -ge 3) { $ParsedRdp[$RdpParts[0].ToLower()] = $RdpParts[2] }
-                    elseif ($RdpParts.Count -eq 2) { $ParsedRdp[$RdpParts[0].ToLower()] = $RdpParts[1] }
-                }
-            }
+            # Only allowlisted properties are parsed and exported; other properties are counted.
+            $ParsedRdp = $RdpSummary.Properties
+            $RdpAllowlistedText = (@($ParsedRdp.Keys | ForEach-Object { "${_}:$($ParsedRdp[$_])" }) -join ';')
 
             # Drive redirection (default when unset: Empty = no drives redirected)
             $DriveVal = $ParsedRdp['drivestoredirect']
@@ -1446,10 +1517,10 @@ foreach ($SubId in $SubscriptionId) {
                 -Description 'Overall RDP property security posture' `
                 -Status $(if ($RdpSecurityIssues.Count -eq 0) { 'Pass' } elseif ($RdpSecurityIssues.Count -le 2) { 'Warning' } else { 'Fail' }) `
                 -Severity 'High' `
-                -Details "Issues: $(if ($RdpSecurityIssues.Count -eq 0) { 'None - all redirections restricted' } else { $RdpSecurityIssues -join ', ' }). AllProps: $RdpProps" `
+                -Details "Issues: $(if ($RdpSecurityIssues.Count -eq 0) { 'None - all redirections restricted' } else { $RdpSecurityIssues -join ', ' }). Evaluated properties: $(if ($RdpAllowlistedText) { $RdpAllowlistedText } else { '(none set)' }). Other properties: $($RdpSummary.UnknownPropertyCount)" `
                 -Recommendation 'Review and restrict all device redirections per security requirements.' `
                 -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/rdp-properties' `
-                -Evidence @{ HostPool = $HP.Name; ParsedProperties = $ParsedRdp; Issues = $RdpSecurityIssues }))
+                -Evidence @{ HostPool = $HP.Name; ParsedProperties = $ParsedRdp; OtherPropertyCount = $RdpSummary.UnknownPropertyCount; Issues = $RdpSecurityIssues }))
 
             # ─── CHECK: SSO via Entra ID (from RDP properties) ───
             $HasSSO = $ParsedRdp['enablerdsaadauth'] -eq '1'
@@ -1508,7 +1579,7 @@ foreach ($SubId in $SubscriptionId) {
                     -Category 'Security' -Name 'Host Pool Private Link' `
                     -Description 'Private Link is optional; applicability requires confirmation of private-access requirements' `
                     -Status 'Error' -Severity 'Medium' `
-                    -Details "Could not assess host pool Private Link: $($_.Exception.Message)" `
+                    -Details "Could not assess host pool Private Link: $(Get-CollectorErrorText $Script:PrivacyContext $_)" `
                     -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/private-link-overview' `
                     -Evidence @{ HostPool = $HP.Name; Applicability = 'Unknown'; CollectionStatus = 'Error' }))
             }
@@ -1532,7 +1603,7 @@ foreach ($SubId in $SubscriptionId) {
                     -Category 'Networking' -Name 'Private Link / Private Endpoints' `
                     -Description 'Private Link is an optional architecture pattern for private-only AVD control-plane access' `
                     -Status 'Error' -Severity 'Medium' `
-                    -Details "Could not assess Private Link: $($_.Exception.Message)" `
+                    -Details "Could not assess Private Link: $(Get-CollectorErrorText $Script:PrivacyContext $_)" `
                         -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/private-link-overview' `
                         -Evidence @{ HostPool = $HP.Name; Applicability = 'Unknown'; CollectionStatus = 'Error' }))
             }
@@ -1570,7 +1641,7 @@ foreach ($SubId in $SubscriptionId) {
                     -Category 'Session Hosts' -Name 'Session Host Update Feature' `
                     -Description 'Session Host Update (GA June 2026) automates image rollout' `
                     -Status 'Error' -Severity 'Medium' `
-                    -Details "Could not query session host configuration: $($_.Exception.Message)" `
+                    -Details "Could not query session host configuration: $(Get-CollectorErrorText $Script:PrivacyContext $_)" `
                     -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/session-host-update'))
             }
 
@@ -1593,7 +1664,7 @@ foreach ($SubId in $SubscriptionId) {
         }
     } catch {
         Write-Status "  Error discovering host pools: $($_.Exception.Message)" -Level 'ERROR'
-        $Discovery.Errors += "Host pool discovery failed: $($_.Exception.Message)"
+        $Discovery.Errors += "Host pool discovery failed: $(Get-CollectorErrorText $Script:PrivacyContext $_)"
         continue
     }
 
@@ -1727,7 +1798,7 @@ foreach ($SubId in $SubscriptionId) {
                     MDEInstalled        = $MdeEvidence.Onboarded
                     MDEDiscovery        = $MdeEvidence
                     Extensions          = $ExtList
-                    Tags                = if ($VMModel) { $VMModel.Tags } else { $null }
+                    TagKeys             = if ($VMModel) { @(ConvertTo-AvdTagKeys $VMModel.Tags) } else { @() }
                     # NIC facts cached here (E-7) so the networking pass need not re-fetch VM + NIC.
                     NicSubnetId         = $null
                     NicHasPublicIP      = $null
@@ -1748,7 +1819,7 @@ foreach ($SubId in $SubscriptionId) {
                     }
                 }
 
-                $Discovery.Inventory.SessionHosts += $SHObj
+                $Discovery.Inventory.SessionHosts += (Add-AvdTagValues $SHObj $(if ($VMModel) { $VMModel.Tags }))
 
                 # ─── CHECK: Trusted Launch ───
                 if ($VMModel -and $VMModel.SecurityProfile) {
@@ -2204,7 +2275,7 @@ foreach ($SubId in $SubscriptionId) {
         }
     } catch {
         Write-Status "  Error discovering session hosts: $($_.Exception.Message)" -Level 'ERROR'
-        $Discovery.Errors += "Session host discovery failed: $($_.Exception.Message)"
+        $Discovery.Errors += "Session host discovery failed: $(Get-CollectorErrorText $Script:PrivacyContext $_)"
     }
 
     # ─── APPLICATION GROUPS ───────────────────────────────────────────────
@@ -2230,8 +2301,9 @@ foreach ($SubId in $SubscriptionId) {
                 ApplicationGroupType = $AG.ApplicationGroupType
                 HostPoolArmPath      = $AG.HostPoolArmPath
                 Location             = $AG.Location
-                Tags                 = $AG.Tag
+                TagKeys              = @(ConvertTo-AvdTagKeys $AG.Tag)
             }
+            [void](Add-AvdTagValues $Discovery.Inventory.AppGroups[-1] $AG.Tag)
 
             # ─── CHECK: App group configuration (B-1 - real evaluation) ───
             $AGStatus = 'Pass'
@@ -2249,7 +2321,7 @@ foreach ($SubId in $SubscriptionId) {
                     }
                 } catch {
                     $AGStatus = 'Error'
-                    $AGRec = "Could not enumerate applications: $($_.Exception.Message)"
+                    $AGRec = "Could not enumerate applications: $(Get-CollectorErrorText $Script:PrivacyContext $_)"
                 }
             }
             if ($IsMixed -and $AGStatus -eq 'Pass') {
@@ -2267,7 +2339,7 @@ foreach ($SubId in $SubscriptionId) {
         }
     } catch {
         Write-Status "  Error: $($_.Exception.Message)" -Level 'ERROR'
-        $Discovery.Errors += "App group discovery failed: $($_.Exception.Message)"
+        $Discovery.Errors += "App group discovery failed: $(Get-CollectorErrorText $Script:PrivacyContext $_)"
     }
 
     # ─── WORKSPACES ───────────────────────────────────────────────────────
@@ -2284,12 +2356,13 @@ foreach ($SubId in $SubscriptionId) {
                 Id                   = $WS.Id
                 ApplicationGroupReferences = $WS.ApplicationGroupReference
                 Location             = $WS.Location
-                Tags                 = $WS.Tag
+                TagKeys              = @(ConvertTo-AvdTagKeys $WS.Tag)
             }
+            [void](Add-AvdTagValues $Discovery.Inventory.Workspaces[-1] $WS.Tag)
         }
     } catch {
         Write-Status "  Error: $($_.Exception.Message)" -Level 'ERROR'
-        $Discovery.Errors += "Workspace discovery failed: $($_.Exception.Message)"
+        $Discovery.Errors += "Workspace discovery failed: $(Get-CollectorErrorText $Script:PrivacyContext $_)"
     }
 
     # ─── SCALING PLANS ────────────────────────────────────────────────────
@@ -2307,10 +2380,11 @@ foreach ($SubId in $SubscriptionId) {
                 HostPoolReferences = $SP.HostPoolReference
                 Schedules          = $SP.Schedule
                 Location           = $SP.Location
-                Tags               = $SP.Tag
+                TagKeys            = @(ConvertTo-AvdTagKeys $SP.Tag)
                 TimeZone           = $SP.TimeZone
                 HostPoolType       = $SP.HostPoolType
             }
+            [void](Add-AvdTagValues $Discovery.Inventory.ScalingPlans[-1] $SP.Tag)
         }
 
         # ─── CHECK: Scaling plan coverage + Load Balancing Algorithm (B-1) ───
@@ -2412,13 +2486,13 @@ foreach ($SubId in $SubscriptionId) {
                     -Category 'Monitoring' -Name 'Scaling Plan Diagnostics' `
                     -Description 'Scaling plans should have diagnostic settings enabled' `
                     -Status 'Error' -Severity 'Low' `
-                    -Details "Could not read scaling plan diagnostic settings: $($_.Exception.Message)" `
+                    -Details "Could not read scaling plan diagnostic settings: $(Get-CollectorErrorText $Script:PrivacyContext $_)" `
                     -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/autoscale-diagnostics'))
             }
         }
     } catch {
         Write-Status "  Error: $($_.Exception.Message)" -Level 'ERROR'
-        $Discovery.Errors += "Scaling plan discovery failed: $($_.Exception.Message)"
+        $Discovery.Errors += "Scaling plan discovery failed: $(Get-CollectorErrorText $Script:PrivacyContext $_)"
     }
     # NOTE: BCDR-MULTIREGION is emitted once after all subscriptions (audit A-1) so host-pool regions
     # are aggregated across the whole estate rather than per subscription.
@@ -2491,17 +2565,17 @@ foreach ($SubId in $SubscriptionId) {
                             AllowGateway   = $_.AllowGatewayTransit
                         }
                     })
-                    DnsServers    = $VNet.DhcpOptions.DnsServers
+                    DnsServers    = @($VNet.DhcpOptions.DnsServers | ForEach-Object { (ConvertTo-CollectorNetworkValue $Script:PrivacyContext $_) -replace '^Public/\d+$', 'Public' })
                     HasPeering    = $VNet.VirtualNetworkPeerings.Count -gt 0
                     Location      = $VNet.Location
-                    Tags          = $VNet.Tag
+                    TagKeys       = @(ConvertTo-AvdTagKeys $VNet.Tag)
                 }
-                $Discovery.Inventory.VNets += $VNetObj
+                $Discovery.Inventory.VNets += (Add-AvdTagValues $VNetObj $VNet.Tag)
 
                 # CHECK: Custom DNS - cloud-native Entra-joined estates can safely use default Azure DNS (C-7)
                 $HasCustomDns = $VNet.DhcpOptions -and $VNet.DhcpOptions.DnsServers -and $VNet.DhcpOptions.DnsServers.Count -gt 0
                 if ($HasCustomDns) {
-                    $DnsStatus = 'Pass'; $DnsDetail = "DNS: $($VNet.DhcpOptions.DnsServers -join ', ')"
+                    $DnsStatus = 'Pass'; $DnsDetail = "DNS: $($VNetObj.DnsServers -join ', ')"
                 } elseif ($AllEntraJoined) {
                     $DnsStatus = 'Pass'; $DnsDetail = 'DNS: Azure Default (acceptable - all session hosts are Entra-joined, no AD DS/Hybrid resolution required)'
                 } else {
@@ -2635,7 +2709,7 @@ foreach ($SubId in $SubscriptionId) {
                 }
             } catch {
                 Write-Status "    VNet discovery or checks failed for $VNetName`: $($_.Exception.Message)" -Level 'WARN'
-                $Discovery.Errors += "VNet discovery or checks failed for $VNetId : $($_.Exception.Message)"
+                $Discovery.Errors += "VNet discovery or checks failed for $VNetId : $(Get-CollectorErrorText $Script:PrivacyContext $_)"
                 # Fallback: capture basic VNet info via ARM so checks still have something
                 try {
                     $FallbackVNet = Get-AzResource -ResourceId $VNetId -ExpandProperties -ErrorAction Stop
@@ -2664,7 +2738,7 @@ foreach ($SubId in $SubscriptionId) {
                                 AllowGateway   = $_.properties.allowGatewayTransit
                             }
                         })
-                        DnsServers    = @($FbProps.dhcpOptions.dnsServers)
+                        DnsServers    = @($FbProps.dhcpOptions.dnsServers | ForEach-Object { (ConvertTo-CollectorNetworkValue $Script:PrivacyContext $_) -replace '^Public/\d+$', 'Public' })
                         HasPeering    = @($FbProps.virtualNetworkPeerings).Count -gt 0
                         Location      = $FallbackVNet.Location
                     }
@@ -2705,8 +2779,8 @@ foreach ($SubId in $SubscriptionId) {
                                     SourcePortRange        = $_.SourcePortRange
                                     DestinationPortRange   = $_.DestinationPortRange
                                     DestinationPortRanges  = $_.DestinationPortRanges
-                                    SourceAddressPrefix    = $_.SourceAddressPrefix
-                                    DestinationAddressPrefix = $_.DestinationAddressPrefix
+                                    SourceAddressPrefix    = ConvertTo-CollectorNetworkValue $Script:PrivacyContext $_.SourceAddressPrefix
+                                    DestinationAddressPrefix = ConvertTo-CollectorNetworkValue $Script:PrivacyContext $_.DestinationAddressPrefix
                                 }
                             })
                         }
@@ -2784,7 +2858,7 @@ foreach ($SubId in $SubscriptionId) {
                             -Category 'Networking' -Name 'RDP Port 3389 Not Internet-Exposed' `
                             -Description 'Port 3389 should not be open to the internet on AVD subnets' `
                             -Status 'Error' -Severity 'Critical' `
-                            -Details "Could not read NSG rules: $($_.Exception.Message)" `
+                            -Details "Could not read NSG rules: $(Get-CollectorErrorText $Script:PrivacyContext $_)" `
                             -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/security-guide'))
                     }
                 }
@@ -2792,7 +2866,7 @@ foreach ($SubId in $SubscriptionId) {
         }
     } catch {
         Write-Status "  Error discovering network: $($_.Exception.Message)" -Level 'ERROR'
-        $Discovery.Errors += "Network discovery failed: $($_.Exception.Message)"
+        $Discovery.Errors += "Network discovery failed: $(Get-CollectorErrorText $Script:PrivacyContext $_)"
     }
 
         # Populate top-level Subnets and UDRs arrays from VNet data
@@ -2858,7 +2932,7 @@ foreach ($SubId in $SubscriptionId) {
                     -Category 'Monitoring' -Name 'Diagnostic Settings Enabled' `
                     -Description 'Host pools should have diagnostics enabled for monitoring and troubleshooting' `
                     -Status 'Error' -Severity 'High' `
-                    -Details "Could not read diagnostic settings: $($_.Exception.Message)" `
+                    -Details "Could not read diagnostic settings: $(Get-CollectorErrorText $Script:PrivacyContext $_)" `
                     -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/diagnostics-log-analytics'))
             }
         }
@@ -2867,7 +2941,7 @@ foreach ($SubId in $SubscriptionId) {
         Write-Status "  Host pools with diagnostics: $DiagPassCount/$DiagHPCount" -Level $(if ($DiagPassCount -eq $DiagHPCount -and $DiagHPCount -gt 0) { 'SUCCESS' } elseif ($DiagHPCount -eq 0) { 'WARN' } else { 'WARN' })
     } catch {
         Write-Status "  Error: $($_.Exception.Message)" -Level 'ERROR'
-        $Discovery.Errors += "Diagnostics check failed: $($_.Exception.Message)"
+        $Discovery.Errors += "Diagnostics check failed: $(Get-CollectorErrorText $Script:PrivacyContext $_)"
     }
 
     # ─── RBAC ─────────────────────────────────────────────────────────────
@@ -2890,7 +2964,7 @@ foreach ($SubId in $SubscriptionId) {
                 })
                 if ($BroadAtScope.Count -gt 0) {
                     $RbacStatus = 'Warning'
-                    $RbacDetail = "Broad roles assigned directly at AVD scope: $(@($BroadAtScope | ForEach-Object { "$($_.RoleDefinitionName) ($($_.DisplayName))" } | Select-Object -First 5) -join ', '). AVDRoles: $AvdRoleCount"
+                    $RbacDetail = "Broad roles assigned directly at AVD scope: $(@(Get-AvdRoleAssignmentSummary $BroadAtScope | Select-Object -First 5) -join ', '). AVDRoles: $AvdRoleCount"
                 } elseif ($AvdRoleCount -gt 0) {
                     $RbacStatus = 'Pass'
                     $RbacDetail = "TotalAssignments: $($Assignments.Count), Desktop Virtualization roles: $AvdRoleCount, no broad roles at AVD scope"
@@ -2933,7 +3007,7 @@ foreach ($SubId in $SubscriptionId) {
                     -Category 'Security & IAM' -Name 'AVD RBAC Roles Used' `
                     -Description 'Use built-in AVD roles for least-privilege access' `
                     -Status 'Error' -Severity 'Medium' `
-                    -Details "Could not enumerate role assignments (authorization?): $($_.Exception.Message)" `
+                    -Details "Could not enumerate role assignments (authorization?): $(Get-CollectorErrorText $Script:PrivacyContext $_)" `
                     -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/rbac'))
             }
         }
@@ -2963,7 +3037,7 @@ foreach ($SubId in $SubscriptionId) {
                     -Category 'Monitoring' -Name 'Workspace Diagnostics' `
                     -Description 'AVD workspaces should have diagnostic settings enabled' `
                     -Status 'Error' -Severity 'Medium' `
-                    -Details "Could not read diagnostic settings: $($_.Exception.Message)" `
+                    -Details "Could not read diagnostic settings: $(Get-CollectorErrorText $Script:PrivacyContext $_)" `
                     -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/diagnostics-log-analytics'))
             }
         }
@@ -2983,7 +3057,7 @@ foreach ($SubId in $SubscriptionId) {
                     -Category 'Monitoring' -Name 'App Group Diagnostics' `
                     -Description 'App groups should have diagnostic settings enabled' `
                     -Status 'Error' -Severity 'Medium' `
-                    -Details "Could not read diagnostic settings: $($_.Exception.Message)" `
+                    -Details "Could not read diagnostic settings: $(Get-CollectorErrorText $Script:PrivacyContext $_)" `
                     -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/diagnostics-log-analytics'))
             }
         }
@@ -3013,7 +3087,7 @@ foreach ($SubId in $SubscriptionId) {
             -Category 'Monitoring' -Name 'Defender for Cloud Enabled' `
             -Description 'Microsoft Defender for Cloud should be enabled for VMs' `
             -Status 'Error' -Severity 'High' `
-            -Details "Could not read Defender for Cloud pricing (Az.Security missing or access denied): $($_.Exception.Message)" `
+            -Details "Could not read Defender for Cloud pricing (Az.Security missing or access denied): $(Get-CollectorErrorText $Script:PrivacyContext $_)" `
             -Reference 'https://learn.microsoft.com/en-us/azure/defender-for-cloud/enable-enhanced-security'))
     }
 
@@ -3034,7 +3108,7 @@ foreach ($SharedSubscription in $Discovery.Subscriptions) {
     try {
         Set-AzContext -SubscriptionId $SubId -ErrorAction Stop -WarningAction SilentlyContinue | Out-Null
     } catch {
-        $Discovery.Errors += "Shared resource context failed for $SubId : $($_.Exception.Message)"
+        $Discovery.Errors += "Shared resource context failed for $SubId : $(Get-CollectorErrorText $Script:PrivacyContext $_)"
         Write-Status $Discovery.Errors[-1] -Level 'WARN'
         continue
     }
@@ -3059,7 +3133,7 @@ foreach ($SharedSubscription in $Discovery.Subscriptions) {
         Write-Status "  Azure Firewalls: $($AzFirewalls.Count)" -Level 'INFO'
     } catch {
         $Coverage.Firewalls = 'Error'
-        $Discovery.Errors += "Firewall discovery failed for $SubId : $($_.Exception.Message)"
+        $Discovery.Errors += "Firewall discovery failed for $SubId : $(Get-CollectorErrorText $Script:PrivacyContext $_)"
         Write-Status $Discovery.Errors[-1] -Level 'WARN'
     }
 
@@ -3085,14 +3159,14 @@ foreach ($SharedSubscription in $Discovery.Subscriptions) {
                 }
             } catch {
                 $Coverage.VPNGateways = 'Error'
-                $Discovery.Errors += "Gateway discovery failed for $SubId/$($GwRes.Name): $($_.Exception.Message)"
+                $Discovery.Errors += "Gateway discovery failed for $SubId/$($GwRes.Name): $(Get-CollectorErrorText $Script:PrivacyContext $_)"
                 Write-Status $Discovery.Errors[-1] -Level 'WARN'
             }
         }
         Write-Status "  VPN/ER Gateways: $($GwResources.Count) resource(s) listed" -Level 'INFO'
     } catch {
         $Coverage.VPNGateways = 'Error'
-        $Discovery.Errors += "Gateway discovery failed for $SubId : $($_.Exception.Message)"
+        $Discovery.Errors += "Gateway discovery failed for $SubId : $(Get-CollectorErrorText $Script:PrivacyContext $_)"
         Write-Status $Discovery.Errors[-1] -Level 'WARN'
     }
 
@@ -3117,14 +3191,14 @@ foreach ($SharedSubscription in $Discovery.Subscriptions) {
                 }
             } catch {
                 $Coverage.ExpressRouteCircuits = 'Error'
-                $Discovery.Errors += "Circuit discovery failed for $($Circuit.ResourceId): $($_.Exception.Message)"
+                $Discovery.Errors += "Circuit discovery failed for $($Circuit.ResourceId): $(Get-CollectorErrorText $Script:PrivacyContext $_)"
                 Write-Status $Discovery.Errors[-1] -Level 'WARN'
             }
         }
         Write-Status "  ExpressRoute circuits: $($Circuits.Count) resource(s) listed" -Level 'INFO'
     } catch {
         $Coverage.ExpressRouteCircuits = 'Error'
-        $Discovery.Errors += "Circuit discovery failed for $SubId : $($_.Exception.Message)"
+        $Discovery.Errors += "Circuit discovery failed for $SubId : $(Get-CollectorErrorText $Script:PrivacyContext $_)"
         Write-Status $Discovery.Errors[-1] -Level 'WARN'
     }
 
@@ -3146,7 +3220,7 @@ foreach ($SharedSubscription in $Discovery.Subscriptions) {
         Write-Status "  Capacity reservation groups: $($CapacityGroups.Count)" -Level 'INFO'
     } catch {
         $Coverage.CapacityReservations = 'Error'
-        $Discovery.Errors += "Capacity reservation discovery failed for $SubId : $($_.Exception.Message)"
+        $Discovery.Errors += "Capacity reservation discovery failed for $SubId : $(Get-CollectorErrorText $Script:PrivacyContext $_)"
         Write-Status $Discovery.Errors[-1] -Level 'WARN'
     }
 
@@ -3198,9 +3272,9 @@ foreach ($SharedSubscription in $Discovery.Subscriptions) {
                 Replication       = $SA.Sku.Name  # LRS, ZRS, GRS, etc.
                 ZrsAvailability   = $null
                 LargeFileShares   = $SA.LargeFileSharesState
-                Tags              = $SA.Tags
+                TagKeys           = @(ConvertTo-AvdTagKeys $SA.Tags)
             }
-            $Discovery.Inventory.StorageAccounts += $SAObj
+            $Discovery.Inventory.StorageAccounts += (Add-AvdTagValues $SAObj $SA.Tags)
 
             if ($IsFSLogix) {
                 # Classification evidence is included so users can spot misclassification (A-7).
@@ -3355,7 +3429,7 @@ foreach ($SharedSubscription in $Discovery.Subscriptions) {
                         -Category 'FSLogix & Profiles' -Name 'Soft Delete Enabled' `
                         -Description 'File share soft delete protects against accidental deletion' `
                         -Status 'Error' -Severity 'Medium' `
-                        -Details "Could not read file service properties: $($_.Exception.Message)" `
+                        -Details "Could not read file service properties: $(Get-CollectorErrorText $Script:PrivacyContext $_)" `
                         -Reference 'https://learn.microsoft.com/en-us/azure/storage/files/storage-files-enable-soft-delete'))
                 }
             }
@@ -3366,7 +3440,7 @@ foreach ($SharedSubscription in $Discovery.Subscriptions) {
     } catch {
         Write-Status "  Error: $($_.Exception.Message)" -Level 'ERROR'
         $Coverage.StorageAccounts = 'Error'
-        $Discovery.Errors += "Storage discovery failed for $SubId : $($_.Exception.Message)"
+        $Discovery.Errors += "Storage discovery failed for $SubId : $(Get-CollectorErrorText $Script:PrivacyContext $_)"
     }
 }
 
@@ -3429,7 +3503,7 @@ foreach ($SubEntry in $Discovery.Subscriptions) {
         Set-AzContext -SubscriptionId $SubId -ErrorAction Stop -WarningAction SilentlyContinue | Out-Null
     } catch {
         Write-Status "  Could not switch context to $SubId : $($_.Exception.Message)" -Level 'ERROR'
-        $Discovery.Errors += "Sweep failed for subscription $SubId : $($_.Exception.Message)"
+        $Discovery.Errors += "Sweep failed for subscription $SubId : $(Get-CollectorErrorText $Script:PrivacyContext $_)"
         continue
     }
 
@@ -3468,7 +3542,7 @@ try {
         -Evidence @{ Count = $OrphanedDisks.Count }))
 } catch {
     Write-Status "  Disk check error: $($_.Exception.Message)" -Level 'ERROR'
-    $Discovery.Errors += "Orphaned disk check failed: $($_.Exception.Message)"
+    $Discovery.Errors += "Orphaned disk check failed: $(Get-CollectorErrorText $Script:PrivacyContext $_)"
 }
 
 # ─── ORPHANED NICs (GOV-012) ───────────────────────────────────────────
@@ -3495,7 +3569,7 @@ try {
         -Evidence @{ Count = $OrphanedNICs.Count }))
 } catch {
     Write-Status "  NIC check error: $($_.Exception.Message)" -Level 'ERROR'
-    $Discovery.Errors += "Orphaned NIC check failed: $($_.Exception.Message)"
+    $Discovery.Errors += "Orphaned NIC check failed: $(Get-CollectorErrorText $Script:PrivacyContext $_)"
 }
 
 # ─── KEY VAULTS (SEC-024) ──────────────────────────────────────────────
@@ -3548,7 +3622,7 @@ try {
     }
 } catch {
     Write-Status "  Key Vault error: $($_.Exception.Message)" -Level 'ERROR'
-    $Discovery.Errors += "Key Vault discovery failed: $($_.Exception.Message)"
+    $Discovery.Errors += "Key Vault discovery failed: $(Get-CollectorErrorText $Script:PrivacyContext $_)"
 }
 
 # ─── NETWORK WATCHER (NET-019) ─────────────────────────────────────────
@@ -3577,7 +3651,7 @@ try {
         -Evidence @{ MissingRegions = $MissingRegions }))
 } catch {
     Write-Status "  Network Watcher error: $($_.Exception.Message)" -Level 'ERROR'
-    $Discovery.Errors += "Network Watcher discovery failed: $($_.Exception.Message)"
+    $Discovery.Errors += "Network Watcher discovery failed: $(Get-CollectorErrorText $Script:PrivacyContext $_)"
 }
 
 # ─── PRIVATE DNS ZONES (NET-018) ──────────────────────────────────────
@@ -3615,7 +3689,7 @@ try {
         -Evidence @{ ZoneExists = [bool]$FileZone; LinkedToAvdVNet = $LinkedToAvdVNet }))
 } catch {
     Write-Status "  Private DNS error: $($_.Exception.Message)" -Level 'ERROR'
-    $Discovery.Errors += "Private DNS zone discovery failed: $($_.Exception.Message)"
+    $Discovery.Errors += "Private DNS zone discovery failed: $(Get-CollectorErrorText $Script:PrivacyContext $_)"
 }
 
 # ─── AZURE POLICY ASSIGNMENTS (GOV-013) ───────────────────────────────
@@ -3648,7 +3722,7 @@ try {
         -Evidence @{ Count = $PolicyAssignments.Count }))
 } catch {
     Write-Status "  Policy error: $($_.Exception.Message)" -Level 'ERROR'
-    $Discovery.Errors += "Policy assignment discovery failed: $($_.Exception.Message)"
+    $Discovery.Errors += "Policy assignment discovery failed: $(Get-CollectorErrorText $Script:PrivacyContext $_)"
 }
 
 # ─── ALERT RULES (MON-015) ────────────────────────────────────────────
@@ -3698,7 +3772,7 @@ try {
         -Evidence @{ MetricCount = $AlertRules.Count; LogCount = $LogAlertRules.Count }))
 } catch {
     Write-Status "  Alert rules error: $($_.Exception.Message)" -Level 'ERROR'
-    $Discovery.Errors += "Alert rule discovery failed: $($_.Exception.Message)"
+    $Discovery.Errors += "Alert rule discovery failed: $(Get-CollectorErrorText $Script:PrivacyContext $_)"
 }
 
 # ─── VM QUOTA USAGE (GOV-014) ─────────────────────────────────────────
@@ -3854,7 +3928,7 @@ try {
         -Category 'Security' -Name 'Secure Score Review' `
         -Description 'Microsoft Defender Secure Score for the AVD subscription should be reviewed and improved' `
         -Status 'Error' -Severity 'Medium' `
-        -Details "Could not read Secure Score (Defender for Cloud required): $($_.Exception.Message)" `
+        -Details "Could not read Secure Score (Defender for Cloud required): $(Get-CollectorErrorText $Script:PrivacyContext $_)" `
         -Reference 'https://learn.microsoft.com/en-us/azure/defender-for-cloud/secure-score-security-controls'))
 }
 
@@ -3928,7 +4002,7 @@ try {
         -Category 'Security' -Name 'Azure Security Baseline' `
         -Description 'The AVD subscription should be evaluated against the Microsoft cloud security benchmark' `
         -Status 'Error' -Severity 'High' `
-        -Details "Could not read regulatory compliance standards (Defender for Cloud required): $($_.Exception.Message)" `
+        -Details "Could not read regulatory compliance standards (Defender for Cloud required): $(Get-CollectorErrorText $Script:PrivacyContext $_)" `
         -Reference 'https://learn.microsoft.com/en-us/security/benchmark/azure/baselines/azure-virtual-desktop-security-baseline'))
 }
 
@@ -3987,7 +4061,7 @@ try {
         -Category 'Security' -Name 'TVM Assessments Enabled' `
         -Description 'Threat & Vulnerability Management via Defender for Servers Plan 2 should be enabled for session hosts' `
         -Status 'Error' -Severity 'High' `
-        -Details "Could not read Defender for Servers pricing (Az.Security missing or access denied): $($_.Exception.Message)" `
+        -Details "Could not read Defender for Servers pricing (Az.Security missing or access denied): $(Get-CollectorErrorText $Script:PrivacyContext $_)" `
         -Reference 'https://learn.microsoft.com/en-us/azure/defender-for-cloud/plan-defender-for-servers-select-plan'))
 }
 }  # end per-subscription sweep (A-1)
@@ -4039,13 +4113,13 @@ foreach ($ReservationTenant in @($Discovery.Subscriptions | Group-Object TenantI
                 }
             } catch {
                 $TenantCoverage.Reservations = 'Error'
-                $Discovery.Errors += "Reservation discovery failed for $($Order.id): $($_.Exception.Message)"
+                $Discovery.Errors += "Reservation discovery failed for $($Order.id): $(Get-CollectorErrorText $Script:PrivacyContext $_)"
                 Write-Status $Discovery.Errors[-1] -Level 'WARN'
             }
         }
     } catch {
         $TenantCoverage.Reservations = 'Error'
-        $Discovery.Errors += "Reservation discovery failed for tenant $($ReservationTenant.Name): $($_.Exception.Message)"
+        $Discovery.Errors += "Reservation discovery failed for tenant $($ReservationTenant.Name): $(Get-CollectorErrorText $Script:PrivacyContext $_)"
         Write-Status $Discovery.Errors[-1] -Level 'WARN'
     }
     $TenantReservations = @($Discovery.Inventory.Reservations | Where-Object { $_.TenantId -eq $ReservationTenant.Name })
@@ -4099,7 +4173,7 @@ if (-not $GraphToken) {
     try {
         $CaPolicies = @(Invoke-GraphGet -Uri 'https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies' -Token $GraphToken)
     } catch {
-        $CaError = "$GraphPermMsg ($($_.Exception.Message))"
+        $CaError = "$GraphPermMsg ($(Get-CollectorErrorText $Script:PrivacyContext $_))"
     }
 }
 
@@ -4246,7 +4320,7 @@ if (-not $GraphToken) {
             -Category 'Identity & Access' -Name 'Passwordless Authentication' `
             -Description 'Users should be registered for passwordless methods (Windows Hello for Business, FIDO2, passkeys)' `
             -Status 'Error' -Severity 'Low' `
-            -Details "$GraphPermMsg ($($_.Exception.Message))" `
+            -Details "$GraphPermMsg ($(Get-CollectorErrorText $Script:PrivacyContext $_))" `
             -Reference 'https://learn.microsoft.com/en-us/azure/virtual-desktop/authentication#in-session-passwordless-authentication'))
     }
 }
@@ -4306,7 +4380,7 @@ if (-not $GraphToken) {
                 -Reference 'https://learn.microsoft.com/en-us/mem/intune/protect/security-baselines'))
         }
     } catch {
-        Add-IntuneError 'SH-BASELINE' 'OS Security Baselines' 'Intune security baselines should be assigned to session hosts' "$IntuneScopeMsg ($($_.Exception.Message))" 'https://learn.microsoft.com/en-us/mem/intune/protect/security-baselines' 'High'
+        Add-IntuneError 'SH-BASELINE' 'OS Security Baselines' 'Intune security baselines should be assigned to session hosts' "$IntuneScopeMsg ($(Get-CollectorErrorText $Script:PrivacyContext $_))" 'https://learn.microsoft.com/en-us/mem/intune/protect/security-baselines' 'High'
     }
 
     # --- SH-014: Configuration Drift (deviceCompliancePolicies + assignments) ---
@@ -4337,7 +4411,7 @@ if (-not $GraphToken) {
                 -Reference 'https://learn.microsoft.com/en-us/mem/intune/protect/device-compliance-get-started'))
         }
     } catch {
-        Add-IntuneError 'SH-DRIFT' 'Configuration Drift Detection' 'Intune device compliance policies detect configuration drift' "$IntuneScopeMsg ($($_.Exception.Message))" 'https://learn.microsoft.com/en-us/mem/intune/protect/device-compliance-get-started' 'Medium'
+        Add-IntuneError 'SH-DRIFT' 'Configuration Drift Detection' 'Intune device compliance policies detect configuration drift' "$IntuneScopeMsg ($(Get-CollectorErrorText $Script:PrivacyContext $_))" 'https://learn.microsoft.com/en-us/mem/intune/protect/device-compliance-get-started' 'Medium'
     }
 
     # --- SH-005: Patch Management (softwareUpdateStatusSummary) ---
@@ -4369,7 +4443,7 @@ if (-not $GraphToken) {
                 -Reference 'https://learn.microsoft.com/en-us/mem/intune/protect/windows-update-for-business-configure'))
         }
     } catch {
-        Add-IntuneError 'SH-PATCH' 'Patch Management Strategy' 'Session host update compliance should be tracked in Intune' "$IntuneScopeMsg ($($_.Exception.Message))" 'https://learn.microsoft.com/en-us/mem/intune/protect/windows-update-for-business-configure' 'High'
+        Add-IntuneError 'SH-PATCH' 'Patch Management Strategy' 'Session host update compliance should be tracked in Intune' "$IntuneScopeMsg ($(Get-CollectorErrorText $Script:PrivacyContext $_))" 'https://learn.microsoft.com/en-us/mem/intune/protect/windows-update-for-business-configure' 'High'
     }
 
     # --- Shared fetch: device configurations + settings-catalog policies (for SEC-001/003/004, PROF-007/019) ---
@@ -4377,7 +4451,7 @@ if (-not $GraphToken) {
     $DeviceConfigs = @(); $ConfigPolicies = @(); $GpConfigs = @()
     try {
         $DeviceConfigs = @(Invoke-GraphGet -Uri "$GBeta/deviceManagement/deviceConfigurations" -Token $GraphToken)
-    } catch { $CfgFetchError = "$IntuneScopeMsg ($($_.Exception.Message))" }
+    } catch { $CfgFetchError = "$IntuneScopeMsg ($(Get-CollectorErrorText $Script:PrivacyContext $_))" }
     if (-not $CfgFetchError) {
         try { $ConfigPolicies = @(Invoke-GraphGet -Uri "$GBeta/deviceManagement/configurationPolicies" -Token $GraphToken) } catch { }
         try { $GpConfigs      = @(Invoke-GraphGet -Uri "$GBeta/deviceManagement/groupPolicyConfigurations" -Token $GraphToken) } catch { }
@@ -4522,7 +4596,7 @@ if ($WsIds.Count -eq 0) {
                 -Category 'Monitoring' -Name 'SIEM Integration' `
                 -Description 'Microsoft Sentinel should be connected to the AVD Log Analytics workspace' `
                 -Status 'Error' -Severity 'Medium' `
-                -Details "Could not query Sentinel onboarding for workspace $WsName : $($_.Exception.Message)" `
+                -Details "Could not query Sentinel onboarding for workspace $WsName : $(Get-CollectorErrorText $Script:PrivacyContext $_)" `
                 -Reference 'https://learn.microsoft.com/en-us/azure/sentinel/overview'))
         }
     }
@@ -4540,7 +4614,7 @@ Write-Status "AVD Insights (Log Analytics KQL)" -Level 'SECTION'
 try {
     Update-AvdAmaHeartbeats -SessionHosts $Discovery.Inventory.SessionHosts -Checks $AllChecks
 } catch {
-    $Discovery.Errors += "AMA heartbeat discovery failed: $($_.Exception.Message)"
+    $Discovery.Errors += "AMA heartbeat discovery failed: $(Get-CollectorErrorText $Script:PrivacyContext $_)"
     Write-Status $Discovery.Errors[-1] -Level 'WARN'
 }
 $KqlWsIds = @($LAWorkspaceIds.Keys)
@@ -4847,19 +4921,19 @@ try {
     $TagScores = @()
     # Score VMs (session hosts) from cached VM model tags
     foreach ($SH in $Discovery.Inventory.SessionHosts) {
-        $Tags = if ($SH.Tags) { @($SH.Tags.Keys) } else { @() }
+        $Tags = @($SH.TagKeys)
         $Found = @($RecommendedTags | Where-Object { $T = $_; $Tags | Where-Object { $_ -like "*$T*" } })
         $TagScores += [PSCustomObject]@{ Type = 'VM'; Name = $SH.Name; Score = $Found.Count; Total = $RecommendedTags.Count }
     }
     # Score VNets from cached tags
     foreach ($VNet in $Discovery.Inventory.VNets) {
-        $Tags = if ($VNet.Tags) { @($VNet.Tags.Keys) } else { @() }
+        $Tags = @($VNet.TagKeys)
         $Found = @($RecommendedTags | Where-Object { $T = $_; $Tags | Where-Object { $_ -like "*$T*" } })
         $TagScores += [PSCustomObject]@{ Type = 'VNet'; Name = $VNet.Name; Score = $Found.Count; Total = $RecommendedTags.Count }
     }
     # Score Storage Accounts from cached tags
     foreach ($SA in $Discovery.Inventory.StorageAccounts) {
-        $Tags = if ($SA.Tags) { @($SA.Tags.Keys) } else { @() }
+        $Tags = @($SA.TagKeys)
         $Found = @($RecommendedTags | Where-Object { $T = $_; $Tags | Where-Object { $_ -like "*$T*" } })
         $TagScores += [PSCustomObject]@{ Type = 'Storage'; Name = $SA.Name; Score = $Found.Count; Total = $RecommendedTags.Count }
     }
@@ -4939,6 +5013,7 @@ $res = [ordered]@{
 'FSLOGIXJSON:' + ($res | ConvertTo-Json -Compress)
 '@
     $GuestTmp = Join-Path $env:TEMP "avd_fslogix_guest_$(Get-Date -Format 'yyyyMMddHHmmss').ps1"
+    try {
     Set-Content -Path $GuestTmp -Value $GuestScript -Encoding UTF8 -Force
 
     # Select up to 3 RUNNING hosts per host pool.
@@ -4981,7 +5056,7 @@ $res = [ordered]@{
                     $RunError = 'Run Command returned no FSLogix JSON payload.'
                 }
             } catch {
-                $RunError = $_.Exception.Message
+                $RunError = Get-CollectorErrorText $Script:PrivacyContext $_
             }
 
             if (-not $Parsed) {
@@ -5075,7 +5150,9 @@ $res = [ordered]@{
             Write-Status "    ${HostTag}: FSLogix installed=$($Parsed.Installed), ver=$($Parsed.AgentVersion), volumeType=$($Parsed.VolumeType)" -Level 'SUCCESS'
         }
     }
-    Remove-Item -Path $GuestTmp -Force -ErrorAction SilentlyContinue
+    } finally {
+        Remove-Item -LiteralPath $GuestTmp -Force -ErrorAction SilentlyContinue
+    }
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -5181,14 +5258,9 @@ $Discovery | Add-Member -NotePropertyName 'Maturity' -NotePropertyValue ([PSCust
 $Discovery.CheckResults = $AllChecks.ToArray()
 
 # Save JSON
-if (-not $OutputPath) {
-    $OutputPath = Join-Path $ScriptRoot "assessments\discovery_$(Get-Date -Format 'yyyyMMdd_HHmmss').json"
-}
-$OutputDir = Split-Path $OutputPath -Parent
-if (-not (Test-Path $OutputDir)) {
-    New-Item -Path $OutputDir -ItemType Directory -Force | Out-Null
-}
-$Discovery | ConvertTo-Json -Depth 10 | Set-Content $OutputPath -Encoding UTF8 -Force
+$Discovery.Privacy = New-CollectorPrivacyManifest $Script:PrivacyContext @($(if ($IncludeGuestChecks.IsPresent) { 'IncludeGuestChecks' }), $(if ($IncludeMdeDeviceChecks.IsPresent) { 'IncludeMdeDeviceChecks' }), $(if ($Script:ExportTagValues) { 'IncludeTagValues' }))
+$OutputPath = Write-CollectorExport $Script:PrivacyContext $OutputPath ($Discovery | ConvertTo-Json -Depth 10) $IdentityMapPath
+if (Test-CollectorSyncedPath $OutputPath) { Write-Status 'The output is in a OneDrive-synchronized folder. Treat it as Confidential.' -Level 'WARN' }
 
 # Summary
 $PassCount    = @($AllChecks | Where-Object { $_.Status -eq 'Pass' }).Count
