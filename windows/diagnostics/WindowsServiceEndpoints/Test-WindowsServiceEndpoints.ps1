@@ -78,7 +78,10 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+# SystemDefault (0) lets Windows choose TLS 1.2/1.3; legacy .NET Framework defaults (Ssl3|Tls) need TLS 1.2 added.
+if ([int][Net.ServicePointManager]::SecurityProtocol -ne 0) {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+}
 Add-Type -AssemblyName System.Security
 
 $endpoints = @'
@@ -319,7 +322,10 @@ function Test-Tls {
         callback always accepts, so the certificate is captured even when invalid; trust is reported via
         PolicyErrors. The callback writes to $script:TlsPolicyErrors and $script:TlsRoot because it runs as
         a delegate outside this function's scope. CONNECT is sent without proxy credentials, so a proxy that
-        requires Windows authentication answers 407 here even when Test-Http succeeds.
+        requires Windows authentication answers 407 here even when Test-Http succeeds. The handshake offers
+        the same protocols as Test-Http (ServicePointManager.SecurityProtocol); the parameterless
+        AuthenticateAsClient overload falls back to TLS 1.0 on .NET Framework without
+        SystemDefaultTlsVersions, which Microsoft endpoints reject.
     .PARAMETER HostName
         Host to connect to; also used for SNI and certificate name validation.
     .PARAMETER ProxyUri
@@ -327,11 +333,12 @@ function Test-Tls {
     .PARAMETER TimeoutMs
         Connect, send and receive timeout in milliseconds.
     .OUTPUTS
-        Hashtable: Ok (trusted and name matches), Subject, Issuer, Root (chain root subject), PolicyErrors,
-        Error, ProxyStatus (CONNECT status code) and ProxyHeaders (CONNECT reply headers).
+        Hashtable: Ok (trusted and name matches), Subject, Issuer, Root (chain root subject), Protocol
+        (negotiated TLS version), PolicyErrors, Error, ProxyStatus (CONNECT status code) and ProxyHeaders
+        (CONNECT reply headers).
     #>
     param([string]$HostName, [Uri]$ProxyUri, [int]$TimeoutMs)
-    $result = @{ Ok = $false; Subject = $null; Issuer = $null; Root = $null; PolicyErrors = $null; Error = $null; ProxyStatus = $null; ProxyHeaders = @() }
+    $result = @{ Ok = $false; Subject = $null; Issuer = $null; Root = $null; Protocol = $null; PolicyErrors = $null; Error = $null; ProxyStatus = $null; ProxyHeaders = @() }
     $script:TlsPolicyErrors = $null
     $script:TlsRoot = $null
     $callback = [Net.Security.RemoteCertificateValidationCallback] {
@@ -375,7 +382,8 @@ function Test-Tls {
         }
 
         $ssl = New-Object System.Net.Security.SslStream($stream, $false, $callback)
-        $ssl.AuthenticateAsClient($HostName)
+        $ssl.AuthenticateAsClient($HostName, $null, [Security.Authentication.SslProtocols][int][Net.ServicePointManager]::SecurityProtocol, $false)
+        $result.Protocol = [string]$ssl.SslProtocol
         $result.Subject = $ssl.RemoteCertificate.Subject
         $result.Issuer = $ssl.RemoteCertificate.Issuer
         $result.Root = $script:TlsRoot
@@ -792,9 +800,11 @@ foreach ($endpoint in $endpoints) {
 
     $certIssuer = $null
     $certRoot = $null
+    $tlsVersion = $null
     if ($tls) {
         $certIssuer = $tls.Issuer
         $certRoot = $tls.Root
+        $tlsVersion = $tls.Protocol
     }
 
     Write-Verbose ('{0}: DNS [{1}] | proxy {2} | root [{3}] | headers [{4}]' -f $endpoint.Host, $dns.Detail, $proxyLabel, $certRoot, ($headers -join '; '))
@@ -810,6 +820,7 @@ foreach ($endpoint in $endpoints) {
         Proxy       = $proxyLabel
         CertIssuer  = $certIssuer
         CertRoot    = $certRoot
+        TlsVersion  = $tlsVersion
         ProxySignal = ($signals -join '; ')
         Addresses   = $dns.Detail
         Detail      = $detail
@@ -890,7 +901,17 @@ foreach ($root in $roots) {
     $rootKey = ''
 }
 
+# Without a chain the TLS-inspection check could not run, so 'no evidence' would overstate coverage.
+$httpsRows = @($results | Where-Object { $_.Url -like 'https://*' })
+$unchecked = @($httpsRows | Where-Object { -not $_.CertRoot })
+if ($unchecked.Count -gt 0) {
+    Write-KeyValue 'TLS not checked' ('{0} of {1} HTTPS endpoints - handshake failed, interception not assessed (see Detail)' -f $unchecked.Count, $httpsRows.Count) -Color Yellow
+}
+$versions = @($results | Where-Object { $_.TlsVersion } | Group-Object TlsVersion | Sort-Object Name | ForEach-Object { '{0} x {1}' -f $_.Count, $_.Name })
+if ($versions.Count -gt 0) { Write-KeyValue 'TLS versions' ($versions -join ', ') -Color DarkGray }
+
 if ($intercepted.Count -gt 0) { Write-KeyValue 'Proxy evidence' ('{0} endpoint(s) - see Details' -f $intercepted.Count) -Color Yellow }
+elseif ($unchecked.Count -gt 0) { Write-KeyValue 'Proxy evidence' 'None found, but TLS inspection was not assessed on every endpoint' -Color Yellow }
 else { Write-KeyValue 'Proxy evidence' 'None found on the tested path' -Color Green }
 
 # Compare what was actually resolved: WPAD auto-detect is on by default and usually finds nothing.

@@ -93,9 +93,11 @@ Console rows are tagged **OK**, **WARN** (reachable, but proxy/interception evid
 | `TimeoutSec` | `int` (1–120) | `10` | Timeout per TCP connect and per HTTP request. |
 | `Proxy` | `Uri` | — | Force every probe through this proxy, e.g. the WinHTTP proxy that services use. |
 | `SkipZscalerCheck` | `switch` | Off | Do not contact `ip.zscaler.com`. |
-| `CsvPath` | `string` | — | Export one row per endpoint (URL, result, HTTP status, direct TCP, proxy, certificate issuer/root, proxy signals, DNS addresses, detail). |
+| `CsvPath` | `string` | — | Export one row per endpoint (URL, result, HTTP status, direct TCP, proxy, certificate issuer/root, negotiated TLS version, proxy signals, DNS addresses, detail). |
 
 `-Verbose` logs DNS addresses, proxy, chain root and response headers per endpoint.
+
+The summary lists chain roots and negotiated TLS versions. If any HTTPS handshake failed, a **TLS not checked** line shows how many endpoints could not be assessed for TLS inspection, and *Proxy evidence* no longer reports a clean result.
 
 ## Exit codes
 
@@ -174,5 +176,6 @@ Summary
 ## Requirements
 
 - Windows PowerShell **5.1** or PowerShell 7.
+- TLS: when .NET uses the OS default (PowerShell 7, or 5.1 with `SystemDefaultTlsVersions=1`), Windows negotiates TLS 1.2/1.3. Otherwise the script adds TLS 1.2 to the legacy .NET Framework default; the HTTP and TLS probes always offer the same versions.
 - No elevation required. Run as SYSTEM to test the service path.
 - Read-only: the script makes **no changes** to the system. It writes only a temporary folder for the trust-list signature check (always removed) and the optional CSV.
