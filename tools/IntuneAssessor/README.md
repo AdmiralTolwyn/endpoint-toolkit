@@ -1,6 +1,6 @@
 # Intune Discovery for Assay
 
-Version 0.5.21. Experimental pending a live tenant pilot. Offline-tested with
+Version 0.6.0. Experimental pending a live tenant pilot. Offline-tested with
 Windows PowerShell 5.1 and PowerShell 7.
 
 The [contract audit](AUDIT.md) currently verifies 49 enabled Graph GET contracts
@@ -10,6 +10,28 @@ remain separate gates; do not label the full collector audit complete.
 Exports read-only observations for Assay's Intune pack. Assay owns control
 definitions and scores: 50 source-linked controls, two bounded automatic checks,
 and 48 evidence-assisted manual checks. The collector does not mutate a tenant.
+
+## Privacy Mode (0.6.0)
+
+The default is `-PrivacyMode Pseudonymous`:
+
+- Without `-OutputPath`, output goes to
+  `%LOCALAPPDATA%\AssayCollections\intune\intune_<collectionId>.json`. Files are created with
+  `CreateNew` and an ACL for the current user, SYSTEM and Administrators only. OneDrive-synchronized
+  paths produce a warning.
+- A top-level `Privacy` manifest records the mode, `Confidential` classification, key ID and opt-ins.
+- `deviceName` and `deviceDisplayName` become `dev_` pseudonyms; `Observations[].Data` inherits them.
+  `azureADDeviceId`, Defender `aadDeviceId` and endpoint `DeviceId` stay as join keys.
+- Conditional Access and device-registration user, group and role lists keep only `All`, `None` and
+  `GuestsOrExternalUsers`; other entries become `<list>Count` values.
+- `LAPS/Policies/AdministratorAccountName` becomes `NotConfigured`, `BuiltIn` or `Custom`.
+- Defender exclusion paths and EPM `filePath`/`fileName` mask user-profile, UNC host and share
+  segments. Wildcards, network indicators and `\\?\`/`\\.\` prefixes are preserved.
+
+`-PrivacyMode Identified -ConfirmIdentifiedExport` keeps these values. `-PseudonymKeyPath` reuses a
+key for stable pseudonyms; `-IdentityMapPath` writes a separate pseudonym map. The endpoint and
+Defender companion exports add the manifest and the same restricted ACL; their data shapes are unchanged.
+Library callers of `Invoke-IntuneDiscoveryCore` apply the transform only when they pass `-PrivacyContext`.
 
 ## Option Candidate Integrity (0.5.21)
 

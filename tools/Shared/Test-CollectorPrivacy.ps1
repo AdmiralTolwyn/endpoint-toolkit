@@ -5,7 +5,7 @@ $Canonical = Join-Path $PSScriptRoot 'CollectorPrivacy.ps1'
 function Assert-Privacy([bool]$Condition, [string]$Message) { if (-not $Condition) { throw $Message } }
 
 $Expected = [IO.File]::ReadAllText($Canonical).Replace("`r`n", "`n").TrimEnd("`n")
-foreach ($Copy in @('AvdAssessor', 'W365Assessor', 'IntuneAssessor')) {
+foreach ($Copy in @('AvdAssessor', 'W365Assessor', 'IntuneAssessor', 'BaselineAssessor')) {
     $Text = [IO.File]::ReadAllText((Join-Path $PSScriptRoot "..\$Copy\CollectorPrivacy.ps1")).Replace("`r`n", "`n").TrimEnd("`n")
     Assert-Privacy ($Text -ceq $Expected) "$Copy privacy helper differs from the canonical copy"
 }

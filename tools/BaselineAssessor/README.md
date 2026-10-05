@@ -4,7 +4,31 @@ BaselinePilot is a two-component security baseline assessment tool for Windows 1
 
 > The project folder is `tools/BaselineAssessor/` (matching this repo's tool-directory convention); the product itself is named **BaselinePilot** — the two names are not a typo.
 
-**Versions**: App `0.2.0` · Collector `1.3.1` · Catalog (`checks.json`) `1.1`. See [`AUDIT.md`](AUDIT.md) for the July 2026 audit and fix-pass history behind the current versions.
+**Versions**: App `0.2.0` · Collector `1.4.0` · Catalog (`checks.json`) `1.1`. See [`AUDIT.md`](AUDIT.md) for the July 2026 audit and fix-pass history behind the current versions.
+
+### Privacy Mode (1.4.0)
+
+The default is `-PrivacyMode Pseudonymous`:
+
+- Output is a new file at `%LOCALAPPDATA%\AssayCollections\baseline\baseline_<collectionId>.json`,
+  created with `CreateNew` and an ACL for the current user, SYSTEM and Administrators only. The file
+  name contains no hostname. OneDrive-synchronized paths produce a warning.
+- A top-level `Privacy` manifest records the mode, `Confidential` classification, key ID and opt-ins.
+- Hostnames become `dev_` pseudonyms; user SIDs in task names become `sid_` pseudonyms; user-profile
+  and UNC segments in exclusion, transcription and log paths are masked.
+- Event records contain only `id`, UTC hour, and derived `accountKey`, `logonType`, `offHours`,
+  `elevated`, `lolbin` and `faultingApp`. Command lines, object names and raw messages are never
+  exported. `-IncludeSecurityEvents` adds named detail fields; identity fields need Identified mode.
+- `-BusinessHours` (default `06:00-22:00`) and `-WorkDays` (default `Mon-Fri`) define off-hours in device
+  local time for `AUTH-026`, which reports review evidence rather than an automatic failure.
+- `-EventSummaryOnly` emits counts only; Assay event rules are then `NotAssessed`.
+
+`-PrivacyMode Identified -ConfirmIdentifiedExport` keeps names. Reuse `-PseudonymKeyPath` across
+machines for stable pseudonyms; `-IdentityMapPath` writes a separate pseudonym map.
+
+BaselinePilot writes saved assessments, autosaves, backups and exports with the same restricted ACL,
+states the classification in HTML and CSV exports, and does not render `topUsers` for pseudonymous
+collections.
 
 ### Assay SCT Audit Profiles (1.3.1)
 
@@ -181,14 +205,14 @@ Customer Machine                        Assessor Workstation
 # Quick run (skip event log collection, ~30s)
 .\Invoke-BaselineCollection.ps1 -SkipEventCollection
 
-# Summary-only events (counts + top-N, not individual events)
+# Summary-only events (counts only; Assay event rules become NotAssessed)
 .\Invoke-BaselineCollection.ps1 -EventSummaryOnly
 
 # Silent (for automation)
 .\Invoke-BaselineCollection.ps1 -Quiet -OutputPath C:\Reports\baseline.json
 ```
 
-Output: `<hostname>_baseline_<timestamp>.json`
+Output: `%LOCALAPPDATA%\AssayCollections\baseline\baseline_<collectionId>.json`
 
 ### 2. Assess (on your workstation)
 
@@ -224,17 +248,23 @@ Import the JSON file in the GUI → Dashboard populates with scores, findings, a
 | 19 | PowerShell Configuration | Script block logging, transcription, CLM |
 | 20 | WinRM Configuration | Registry + `winrm get` |
 | 21 | Event Log Metadata | Log sizes, retention, record counts |
-| 22 | Security Event Collection | 13 query groups across Security/System/Application logs |
+| 22 | Security Event Collection | 8 minimal query groups across Security/System/Application logs |
 
 ### Collector Parameters
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `-OutputPath` | `.\<host>_baseline_<ts>.json` | Output file path |
+| `-OutputPath` | `%LOCALAPPDATA%\AssayCollections\baseline\baseline_<collectionId>.json` | New output file path; existing files are never overwritten |
+| `-PrivacyMode` | `Pseudonymous` | `Identified` keeps names and requires `-ConfirmIdentifiedExport` |
+| `-PseudonymKeyPath` | next to the output | Existing or new 32-byte key for stable pseudonyms |
+| `-IdentityMapPath` | none | Optional separate pseudonym-to-name map |
+| `-Assessor` | none | Operator-supplied label exported as-is |
+| `-IncludeSecurityEvents` | `$false` | Add named event detail fields |
+| `-BusinessHours` / `-WorkDays` | `06:00-22:00` / `Mon-Fri` | Off-hours window for `AUTH-026` |
 | `-LookbackDays` | 30 | Event log query lookback window |
 | `-MaxEventsPerQuery` | 2000 | Cap per event query group (raise for deeper forensic pulls; large values can produce multi-MB JSON on busy hosts) |
 | `-SkipEventCollection` | `$false` | Skip Area 22 entirely (~30s total) |
-| `-EventSummaryOnly` | `$false` | Counts + top-N stats only |
+| `-EventSummaryOnly` | `$false` | Counts only |
 | `-IncludeGpoData` | `$false` | Opt-in to Area 3 (`gpresult /scope computer`) — the most expensive/fragile collection step; skipped by default |
 | `-IncludeSpeculationControl` | `$false` | Query the embedded Microsoft 1.0.19 detector; export explicit mitigation state and provenance without external modules or remediation |
 | `-AssessmentProfile` | `Generic` | `Windows365CloudPc`, `Windows11_25H2`, `WindowsServer2025Member` or `WindowsServer2025DC`: bounded operator-selected profiles for updated Assay; no automatic detection |

@@ -1,5 +1,32 @@
 # Windows 365 Assessor
 
+## Collector 0.4.0: Privacy Mode
+
+The default is `-PrivacyMode Pseudonymous`:
+
+- Output is a new file at `%LOCALAPPDATA%\AssayCollections\w365\w365_<collectionId>.json`. It is created
+  with `CreateNew` and an ACL for the current user, SYSTEM and Administrators only. Existing files are
+  never overwritten. OneDrive-synchronized paths produce a warning.
+- A top-level `Privacy` manifest records the mode, `Confidential` classification, key ID and opt-ins.
+- `AssessorId` is no longer exported. `-Assessor` adds an operator-supplied label.
+- Cloud PC users become `UserKey` (`usr_` pseudonym) plus `HasAssignedUser`; Cloud PC names become
+  `dev_` pseudonyms. `W365-CPC-004` uses `HasAssignedUser`.
+- `LastLoginResult` becomes `LastLoginDate` (UTC date). Managed-device and Entra device IDs are omitted.
+- Policy descriptions and group display names are omitted. Assignments become `AssignmentCount` and
+  `AssignmentTargetTypes`.
+- Network connections report `HasDomainJoinAccount` and `HasOrganizationalUnit`; health checks keep only
+  name, status, error type, recommended action and timestamps.
+- Audit events omit actor UPN and event ID and keep the UTC date only.
+- Errors keep exception type, HTTP status and error code only.
+
+`-PrivacyMode Identified -ConfirmIdentifiedExport` keeps UPNs, names, OUs, audit actors and device IDs.
+The domain-join username and raw assignment objects are never exported. `-PseudonymKeyPath` reuses a
+key for stable pseudonyms; `-IdentityMapPath` writes a separate pseudonym map.
+
+The GUI writes saved assessments, autosaves, backups and exports with the same restricted ACL.
+HTML and CSV exports state the classification; the Cloud PC table shows the user pseudonym when no UPN
+was collected.
+
 ## Collector 0.3.7: Security Evidence and UX Sync
 
 The collector optionally emits `W365-PROV-011` for **Assay** (26 Auto / 106

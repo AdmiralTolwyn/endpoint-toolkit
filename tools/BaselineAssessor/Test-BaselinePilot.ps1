@@ -129,6 +129,9 @@ $systemInfoArgument = $systemInfoCommand.CommandElements | Where-Object {
 } | Select-Object -First 1
 $systemInfoText = $systemInfoArgument.ScriptBlock.Extent.Text.Trim()
 $systemInfoBlock = [ScriptBlock]::Create($systemInfoText.Substring(1, $systemInfoText.Length - 2))
+. (Join-Path $Root 'CollectorPrivacy.ps1')
+$Script:PrivacyContext = New-CollectorPrivacyContext -Mode Identified -ConfirmIdentified $true
+$hostname = $env:COMPUTERNAME
 function Get-CimInstance { throw [System.Exception]::new('HRESULT 0x80070534: No mapping between account names and security IDs was done.') }
 function Confirm-SecureBootUEFI { return $true }
 try {

@@ -43,6 +43,40 @@ $Global:OpenAfterExport   = $true
 $Global:VerboseLogging    = $false
 $Global:MaxBackups        = 10
 
+. (Join-Path $Global:Root 'CollectorPrivacy.ps1')
+
+<#
+.SYNOPSIS
+    Writes assessment data to a newly created file with a protected ACL.
+.DESCRIPTION
+    New content is always written with CreateNew. With -Replace, an existing file is swapped
+    out only after the protected replacement is complete.
+#>
+function Write-AssessorProtectedText {
+    param([string]$Path, [string]$Text, [switch]$Replace)
+    $Bytes = (New-Object Text.UTF8Encoding $false).GetBytes($Text)
+    $FullPath = [IO.Path]::GetFullPath($Path)
+    if (-not $Replace -or -not [IO.File]::Exists($FullPath)) { [void](Write-CollectorProtectedFile -Path $FullPath -Bytes $Bytes); return }
+    $Token = [guid]::NewGuid().ToString('N')
+    $Temp = "$FullPath.$Token.tmp"
+    $Old = "$FullPath.$Token.old"
+    [void](Write-CollectorProtectedFile -Path $Temp -Bytes $Bytes)
+    [IO.File]::Move($FullPath, $Old)
+    try { [IO.File]::Move($Temp, $FullPath) } catch { [IO.File]::Move($Old, $FullPath); [IO.File]::Delete($Temp); throw }
+    [IO.File]::Delete($Old)
+}
+
+<#
+.SYNOPSIS
+    Returns the classification line for exports, including the source collector privacy mode.
+#>
+function Get-AssessorDataHandling {
+    $Mode = $null
+    if ($Global:Assessment -and $Global:Assessment.Discovery -and $Global:Assessment.Discovery.Privacy) { $Mode = $Global:Assessment.Discovery.Privacy.Mode }
+    if ($Mode) { return "Confidential - source collection: $Mode" }
+    return 'Confidential - source collection: Legacy, unclassified'
+}
+
 # Ensure storage directories exist
 foreach ($dir in @($Global:AssessmentDir, $Global:ReportDir)) {
     if (-not (Test-Path $dir)) {
@@ -3358,6 +3392,7 @@ tr.filter-hidden{display:none}
 <div class="meta-grid">
   <div class="meta-item">Customer <span>$(& $enc $Global:Assessment.CustomerName)</span></div>
   <div class="meta-item">Assessor <span>$(& $enc $Global:Assessment.AssessorName)</span></div>
+<div class="meta-item">Data handling <span>$(& $enc (Get-AssessorDataHandling))</span></div>
   <div class="meta-item">Date <span>$($Global:Assessment.Date)</span></div>
   <div class="meta-item">Tool <span>AVD Assessor v$Global:AppVersion</span></div>
 </div>
@@ -4463,7 +4498,7 @@ function Export-HtmlReport {
     if ($dlg.ShowDialog() -eq $true) {
         try {
             $Html = Build-HtmlReport
-            [System.IO.File]::WriteAllText($dlg.FileName, $Html, [System.Text.Encoding]::UTF8)
+            Write-AssessorProtectedText -Path $dlg.FileName -Text $Html -Replace
             Write-DebugLog "HTML report exported: $($dlg.FileName)" -Level 'SUCCESS'
             Show-Toast "Report exported: $(Split-Path $dlg.FileName -Leaf)" -Type 'Success'
             Unlock-Achievement 'export_html'
@@ -4497,13 +4532,15 @@ function Export-CsvReport {
                 $s = "$v"
                 if ($s -and $s[0] -in @([char]'=', [char]'+', [char]'-', [char]'@')) { "'" + $s } else { $s }
             }
-            $Global:Assessment.Checks | Select-Object Id, Category,
+            $Csv = @($Global:Assessment.Checks | Select-Object Id, Category,
                 @{ Name = 'Name';        Expression = { & $NoFormula $_.Name } },
                 @{ Name = 'Description'; Expression = { & $NoFormula $_.Description } },
                 Status, Severity, Weight, Excluded, Origin, Source,
                 @{ Name = 'Details';     Expression = { & $NoFormula $_.Details } },
                 @{ Name = 'Notes';       Expression = { & $NoFormula $_.Notes } } |
-                Export-Csv -Path $dlg.FileName -NoTypeInformation -Encoding UTF8
+                ConvertTo-Csv -NoTypeInformation)
+            $Header = '# ' + (Get-AssessorDataHandling)
+            Write-AssessorProtectedText -Path $dlg.FileName -Text (($Header, $Csv) -join "`r`n") -Replace
             Write-DebugLog "CSV exported: $($dlg.FileName)" -Level 'SUCCESS'
             Unlock-Achievement 'export_csv'
             Show-Toast "CSV exported: $(Split-Path $dlg.FileName -Leaf)" -Type 'Success'
@@ -4528,7 +4565,7 @@ function Export-JsonAssessment {
 
     if ($dlg.ShowDialog() -eq $true) {
         try {
-            $Global:Assessment | ConvertTo-Json -Depth 10 | Set-Content $dlg.FileName -Encoding UTF8 -Force
+            Write-AssessorProtectedText -Path $dlg.FileName -Text ($Global:Assessment | ConvertTo-Json -Depth 10) -Replace
             Write-DebugLog "JSON exported: $($dlg.FileName)" -Level 'SUCCESS'
             Show-Toast "JSON exported: $(Split-Path $dlg.FileName -Leaf)" -Type 'Success'
             if ($Global:OpenAfterExport) { Start-Process $dlg.FileName }
@@ -4596,15 +4633,15 @@ function AutoSave-Assessment {
         $JsonStr = $Global:Assessment | ConvertTo-Json -Depth 10
 
         # Write primary autosave
-        [System.IO.File]::WriteAllText($Global:AutoSaveFile, $JsonStr, [System.Text.Encoding]::UTF8)
+        Write-AssessorProtectedText -Path $Global:AutoSaveFile -Text $JsonStr -Replace
 
         # Rolling backup — _backups/ folder, max 10 files
         $BackupDir = Join-Path $Global:Root '_backups'
         if (-not (Test-Path $BackupDir)) {
             New-Item -Path $BackupDir -ItemType Directory -Force | Out-Null
         }
-        $BackupPath = Join-Path $BackupDir "backup_$(Get-Date -Format 'yyyyMMdd_HHmmss').json"
-        [System.IO.File]::WriteAllText($BackupPath, $JsonStr, [System.Text.Encoding]::UTF8)
+        $BackupPath = Join-Path $BackupDir "backup_$(Get-Date -Format 'yyyyMMdd_HHmmss_fff').json"
+        Write-AssessorProtectedText -Path $BackupPath -Text $JsonStr
 
         # Purge old backups beyond limit
         $OldBackups = @(Get-ChildItem $BackupDir -Filter 'backup_*.json' -ErrorAction SilentlyContinue |
@@ -4665,7 +4702,7 @@ function Save-Assessment {
         $Path = $Global:ActiveFilePath
     }
     try {
-        $Global:Assessment | ConvertTo-Json -Depth 10 | Set-Content $Path -Encoding UTF8 -Force
+        Write-AssessorProtectedText -Path $Path -Text ($Global:Assessment | ConvertTo-Json -Depth 10) -Replace
         Clear-Dirty
         Write-DebugLog "Assessment saved: $Path" -Level 'SUCCESS'
         Show-Toast "Saved: $(Split-Path $Path -Leaf)" -Type 'Success'
@@ -5777,7 +5814,7 @@ $Window.Add_Closing({
     if ($Global:IsDirty -and $Global:ActiveFilePath) {
         try {
             Sync-AssessmentFromUI
-            $Global:Assessment | ConvertTo-Json -Depth 10 | Set-Content $Global:ActiveFilePath -Encoding UTF8 -Force
+            Write-AssessorProtectedText -Path $Global:ActiveFilePath -Text ($Global:Assessment | ConvertTo-Json -Depth 10) -Replace
             Write-DebugLog "Auto-saved to active profile: $Global:ActiveFilePath" -Level 'SUCCESS'
         } catch { Write-DebugLog "Close: save to active profile failed: $($_.Exception.Message)" -Level 'ERROR' }
     }

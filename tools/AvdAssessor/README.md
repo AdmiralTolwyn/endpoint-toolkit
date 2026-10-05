@@ -145,6 +145,30 @@ The launcher auto-detects PowerShell 7 and falls back to Windows PowerShell 5.1.
 
 Then import the discovery JSON into the GUI via **Import Discovery / Assessment**.
 
+### Collector 0.7.0: Privacy Mode (2026-10-05)
+
+The default is `-PrivacyMode Pseudonymous`:
+
+- Output is a new file at `%LOCALAPPDATA%\AssayCollections\avd\avd_<collectionId>.json`. It is created
+  with `CreateNew` and an ACL for the current user, SYSTEM and Administrators only. Existing files are
+  never overwritten. OneDrive-synchronized paths produce a warning.
+- A top-level `Privacy` manifest records the mode, `Confidential` classification, key ID and opt-ins.
+- `AssessorId` is no longer exported. `-Assessor` adds an operator-supplied label.
+- Tags are exported as `TagKeys`. With `-PrivacyMode Identified`, `-IncludeTagValues` adds values.
+- `CustomRdpProperty` is replaced by `RdpProperties` (evaluated properties only) and
+  `RdpUnknownPropertyCount`.
+- Defender device names and RBAC principal names are omitted. RBAC details show role, principal type and count.
+- Public NSG prefixes become `Public/<length>`; public DNS servers become `Public`.
+- Errors keep exception type, HTTP status and error code only.
+- The guest-check temporary script is removed even when collection fails.
+
+`-PrivacyMode Identified -ConfirmIdentifiedExport` keeps names and literal network values.
+`-PseudonymKeyPath` reuses a key for stable pseudonyms; `-IdentityMapPath` writes a separate
+pseudonym map. Store both apart from the export.
+
+The GUI writes saved assessments, autosaves, backups and exports with the same restricted ACL.
+HTML and CSV exports state the classification and source collection mode.
+
 ### Collector 0.6.9 (2026-09-10)
 
 MDE deployment and EDR protection are separate evidence layers. The default scan

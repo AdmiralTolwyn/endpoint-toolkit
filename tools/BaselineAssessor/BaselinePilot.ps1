@@ -40,6 +40,36 @@ $Global:OpenAfterExport   = $true
 $Global:VerboseLogging    = $false
 $Global:MaxBackups        = 10
 
+. (Join-Path $Global:Root 'CollectorPrivacy.ps1')
+
+# Writes assessment data to a newly created file with a protected ACL. With -Replace, an
+# existing file is swapped out only after the protected replacement is complete.
+function Write-AssessorProtectedText {
+    param([string]$Path, [string]$Text, [switch]$Replace)
+    $Bytes = (New-Object Text.UTF8Encoding $false).GetBytes($Text)
+    $FullPath = [IO.Path]::GetFullPath($Path)
+    if (-not $Replace -or -not [IO.File]::Exists($FullPath)) { [void](Write-CollectorProtectedFile -Path $FullPath -Bytes $Bytes); return }
+    $Token = [guid]::NewGuid().ToString('N')
+    $Temp = "$FullPath.$Token.tmp"
+    $Old = "$FullPath.$Token.old"
+    [void](Write-CollectorProtectedFile -Path $Temp -Bytes $Bytes)
+    [IO.File]::Move($FullPath, $Old)
+    try { [IO.File]::Move($Temp, $FullPath) } catch { [IO.File]::Move($Old, $FullPath); [IO.File]::Delete($Temp); throw }
+    [IO.File]::Delete($Old)
+}
+
+# Source collector privacy mode of the latest imported collection, or $null for legacy data.
+function Get-BaselinePilotPrivacyMode {
+    if ($Global:Assessment -and $Global:Assessment.CollectionData -and $Global:Assessment.CollectionData.Privacy) { return [string]$Global:Assessment.CollectionData.Privacy.Mode }
+    return $null
+}
+
+function Get-AssessorDataHandling {
+    $Mode = Get-BaselinePilotPrivacyMode
+    if ($Mode) { return "Confidential - source collection: $Mode" }
+    return 'Confidential - source collection: Legacy, unclassified'
+}
+
 foreach ($dir in @($Global:AssessmentDir, $Global:ReportDir)) {
     if (-not (Test-Path $dir)) {
         New-Item -Path $dir -ItemType Directory -Force | Out-Null
@@ -3379,7 +3409,7 @@ function Get-ValueEvaluation {
                     $threshold = [int]$Chk.threshold.count
                     $op = if ($Chk.threshold.operator) { "$($Chk.threshold.operator)".ToLower() } else { 'gt' }
                     $rActual = "$evtCount events"
-                    if ($ActualValue.topUsers) {
+                    if ($ActualValue.topUsers -and (Get-BaselinePilotPrivacyMode) -ne 'Pseudonymous') {
                         $topList = ($ActualValue.topUsers | ForEach-Object { "$($_.user)($($_.count))" }) -join ', '
                         $rDetails = "Top: $topList"
                     }
@@ -3980,14 +4010,14 @@ function AutoSave-Assessment {
         Sync-AssessmentFromUI
         $JsonStr = $Global:Assessment | ConvertTo-Json -Depth 10
 
-        [System.IO.File]::WriteAllText($Global:AutoSaveFile, $JsonStr, [System.Text.Encoding]::UTF8)
+        Write-AssessorProtectedText -Path $Global:AutoSaveFile -Text $JsonStr -Replace
 
         $BackupDir = Join-Path $Global:Root '_backups'
         if (-not (Test-Path $BackupDir)) {
             New-Item -Path $BackupDir -ItemType Directory -Force | Out-Null
         }
-        $BackupPath = Join-Path $BackupDir "backup_$(Get-Date -Format 'yyyyMMdd_HHmmss').json"
-        [System.IO.File]::WriteAllText($BackupPath, $JsonStr, [System.Text.Encoding]::UTF8)
+        $BackupPath = Join-Path $BackupDir "backup_$(Get-Date -Format 'yyyyMMdd_HHmmss_fff').json"
+        Write-AssessorProtectedText -Path $BackupPath -Text $JsonStr
 
         $OldBackups = @(Get-ChildItem $BackupDir -Filter 'backup_*.json' -ErrorAction SilentlyContinue |
             Sort-Object LastWriteTime -Descending | Select-Object -Skip $Global:MaxBackups)
@@ -4030,7 +4060,7 @@ function Save-Assessment {
         $Path = $Global:ActiveFilePath
     }
     try {
-        $Global:Assessment | ConvertTo-Json -Depth 10 | Set-Content $Path -Encoding UTF8 -Force
+        Write-AssessorProtectedText -Path $Path -Text ($Global:Assessment | ConvertTo-Json -Depth 10) -Replace
         Clear-Dirty
         Write-DebugLog "Assessment saved: $Path" -Level 'SUCCESS'
         Show-Toast "Saved: $(Split-Path $Path -Leaf)" -Type 'Success'
@@ -4517,7 +4547,7 @@ function Export-CsvReport {
         try {
             # E-11: neutralize CSV formula injection — prefix leading = + - @ with '
             $csvSafe = { param($s) $t = "$s"; if ($t -match '^[=+\-@]') { "'$t" } else { $t } }
-            $Global:Assessment.Checks | Select-Object Id, Category,
+            $Csv = @($Global:Assessment.Checks | Select-Object Id, Category,
                 @{ N='Name';        E={ & $csvSafe $_.Name } },
                 @{ N='Description'; E={ & $csvSafe $_.Description } },
                 Status, Severity, Weight, Priority, Origin, Effort, Excluded,
@@ -4526,7 +4556,9 @@ function Export-CsvReport {
                 @{ N='Decision';    E={ & $csvSafe $_.Decision } },
                 @{ N='Notes';       E={ & $csvSafe $_.Notes } },
                 @{ N='AffectedMachines'; E={ & $csvSafe (@($_.AffectedMachines) -join '; ') } } |
-                Export-Csv -Path $dlg.FileName -NoTypeInformation -Encoding UTF8
+                ConvertTo-Csv -NoTypeInformation)
+            $Header = '# ' + (Get-AssessorDataHandling)
+            Write-AssessorProtectedText -Path $dlg.FileName -Text (($Header, $Csv) -join "`r`n") -Replace
             Write-DebugLog "CSV exported: $($dlg.FileName)" -Level 'SUCCESS'
             Unlock-Achievement 'export_csv'
             Show-Toast "CSV exported: $(Split-Path $dlg.FileName -Leaf)" -Type 'Success'
@@ -4545,7 +4577,7 @@ function Export-JsonAssessment {
 
     if ($dlg.ShowDialog() -eq $true) {
         try {
-            $Global:Assessment | ConvertTo-Json -Depth 10 | Set-Content $dlg.FileName -Encoding UTF8 -Force
+            Write-AssessorProtectedText -Path $dlg.FileName -Text ($Global:Assessment | ConvertTo-Json -Depth 10) -Replace
             Write-DebugLog "JSON exported: $($dlg.FileName)" -Level 'SUCCESS'
             Show-Toast "JSON exported: $(Split-Path $dlg.FileName -Leaf)" -Type 'Success'
             if ($Global:OpenAfterExport) { Start-Process $dlg.FileName }
@@ -4819,6 +4851,7 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);line-height:
 <div class='meta-grid'>
   <div class='meta-item'>Customer <span>$(& $enc $Global:Assessment.CustomerName)</span></div>
   <div class='meta-item'>Assessor <span>$(& $enc $Global:Assessment.AssessorName)</span></div>
+<div class='meta-item'>Data handling <span>$(& $enc (Get-AssessorDataHandling))</span></div>
   <div class='meta-item'>Date <span>$($Global:Assessment.Date)</span></div>
   <div class='meta-item'>Join Type <span>$(& $enc $Global:Assessment.JoinType)</span></div>
   <div class='meta-item'>Host <span>$SysHost</span></div>
@@ -4866,7 +4899,7 @@ $CatSections
 </body></html>
 "@
 
-        [System.IO.File]::WriteAllText($dlg.FileName, $Html, [System.Text.Encoding]::UTF8)
+        Write-AssessorProtectedText -Path $dlg.FileName -Text $Html -Replace
         Write-DebugLog "HTML report exported: $($dlg.FileName)" -Level 'SUCCESS'
         Unlock-Achievement 'export_html'
         Show-Toast "HTML report exported" -Type 'Success'
