@@ -6,6 +6,8 @@ $Ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRo
 if ($ParseErrors.Count) { throw 'Collector parse failure' }
 $CheckFunction = $Ast.Find({ param($Node) $Node -is [Management.Automation.Language.FunctionDefinitionAst] -and $Node.Name -ceq 'New-CheckResult' }, $true)
 . ([scriptblock]::Create($CheckFunction.Extent.Text))
+. (Join-Path $PSScriptRoot 'CollectorPrivacy.ps1')
+$script:PrivacyContext = [pscustomobject]@{ Mode = 'Pseudonymous'; Key = [byte[]](1..32); KeyId = 'test'; KeyPath = $null; Identities = [Collections.Generic.Dictionary[string,string]]::new() }
 function Write-Status { param($Message, $Level) }
 $script:SecurityRequests = [Collections.Generic.List[string]]::new()
 function Invoke-GraphPaged {

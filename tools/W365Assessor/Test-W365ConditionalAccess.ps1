@@ -6,6 +6,8 @@ $Ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRo
 if ($ParseErrors.Count) { throw 'Collector parse failure' }
 $CheckFunction = $Ast.Find({ param($Node) $Node -is [Management.Automation.Language.FunctionDefinitionAst] -and $Node.Name -ceq 'New-CheckResult' }, $true)
 . ([scriptblock]::Create($CheckFunction.Extent.Text))
+. (Join-Path $PSScriptRoot 'CollectorPrivacy.ps1')
+$script:PrivacyContext = [pscustomobject]@{ Mode = 'Pseudonymous'; Key = [byte[]](1..32); KeyId = 'test'; KeyPath = $null; Identities = [Collections.Generic.Dictionary[string,string]]::new() }
 $Branches = @($Ast.FindAll({ param($Node) $Node -is [Management.Automation.Language.TryStatementAst] -and $Node.Body.Extent.Text.Contains('$caPolicies =') }, $true))
 if ($Branches.Count -ne 1) { throw 'Expected one Conditional Access production block' }
 $Production = [scriptblock]::Create($Branches[0].Extent.Text)

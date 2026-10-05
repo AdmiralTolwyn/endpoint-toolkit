@@ -8,6 +8,10 @@ $Ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRo
 if ($ParseErrors.Count) { throw 'Collector parse failure' }
 $CheckFunction = $Ast.Find({ param($Node) $Node -is [Management.Automation.Language.FunctionDefinitionAst] -and $Node.Name -ceq 'New-CheckResult' }, $true)
 . ([scriptblock]::Create($CheckFunction.Extent.Text))
+$SummaryFunction = $Ast.Find({ param($Node) $Node -is [Management.Automation.Language.FunctionDefinitionAst] -and $Node.Name -ceq 'ConvertTo-W365AssignmentSummary' }, $true)
+. ([scriptblock]::Create($SummaryFunction.Extent.Text))
+. (Join-Path $PSScriptRoot 'CollectorPrivacy.ps1')
+$script:PrivacyContext = [pscustomobject]@{ Mode = 'Pseudonymous'; Key = [byte[]](1..32); KeyId = 'test'; KeyPath = $null; Identities = [Collections.Generic.Dictionary[string,string]]::new() }
 $Blocks = @{}
 foreach ($Id in @('W365-USER-002-','W365-PROV-005-')) {
     $Needle = '-Id "' + $Id

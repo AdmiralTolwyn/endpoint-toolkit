@@ -10,6 +10,8 @@ foreach ($Name in @('New-CheckResult','Invoke-GraphReport')) {
     $Definition = $Ast.Find({ param($Node) $Node -is [Management.Automation.Language.FunctionDefinitionAst] -and $Node.Name -ceq $Name }, $true)
     if ($Definition) { . ([scriptblock]::Create($Definition.Extent.Text)) }
 }
+. (Join-Path $PSScriptRoot 'CollectorPrivacy.ps1')
+$script:PrivacyContext = [pscustomobject]@{ Mode = 'Pseudonymous'; Key = [byte[]](1..32); KeyId = 'test'; KeyPath = $null; Identities = [Collections.Generic.Dictionary[string,string]]::new() }
 function Write-Status { param($Message, $Level) }
 function Invoke-MgGraphRequest {
     param($Method, $Uri, $Body, $ContentType)

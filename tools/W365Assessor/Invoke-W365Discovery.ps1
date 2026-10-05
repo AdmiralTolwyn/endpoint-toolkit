@@ -12,8 +12,21 @@
     All advanced/manual checks are intentionally left for the GUI. This script is a
     data collector + lightweight rule engine.
 .PARAMETER OutputPath
-    Path to save the discovery JSON file. Defaults to
-    .\assessments\discovery_<timestamp>.json relative to the script.
+    Path for a new discovery JSON file. Existing files are never overwritten. Default:
+    %LOCALAPPDATA%\AssayCollections\w365\w365_<collectionId>.json.
+.PARAMETER PrivacyMode
+    Pseudonymous (default) replaces user principal names and Cloud PC names with keyed
+    pseudonyms and removes free text. Identified retains them and requires
+    -ConfirmIdentifiedExport.
+.PARAMETER ConfirmIdentifiedExport
+    Required with -PrivacyMode Identified.
+.PARAMETER PseudonymKeyPath
+    Existing or new 32-byte pseudonym key file. Reuse it for stable pseudonyms across runs.
+    Default: a new key next to the output file.
+.PARAMETER IdentityMapPath
+    Optional new file mapping pseudonyms to original values. Keep it separate from the export.
+.PARAMETER Assessor
+    Optional operator-supplied label exported as-is. The signed-in account is not exported.
 .PARAMETER TenantId
     Optional explicit Entra tenant GUID. If omitted, reuses a validated existing
     session tenant or the tenant selected during a new delegated sign-in.
@@ -37,8 +50,8 @@
     .\Invoke-W365Discovery.ps1 -OutputPath "C:\temp\w365_discovery.json"
 .NOTES
     Author : Anton Romanyuk
-    Version: 0.3.7
-    Date   : 2026-09-18
+    Version: 0.4.0
+    Date   : 2026-10-05
 
     Required Graph scopes (core tier — requested unconditionally):
       CloudPC.Read.All                          Cloud PCs, provisioning/user policies, ANCs, images, reports
@@ -81,7 +94,18 @@ param(
     [switch]$IncludeUserExperienceSync,
 
     [ValidateSet('Review','Enabled','Disabled')]
-    [string]$UserExperienceSyncTarget = 'Review'
+    [string]$UserExperienceSyncTarget = 'Review',
+
+    [ValidateSet('Pseudonymous','Identified')]
+    [string]$PrivacyMode = 'Pseudonymous',
+
+    [switch]$ConfirmIdentifiedExport,
+
+    [string]$PseudonymKeyPath,
+
+    [string]$IdentityMapPath,
+
+    [string]$Assessor
 )
 
 $ErrorActionPreference = 'Stop'
@@ -94,7 +118,13 @@ $env:PSModulePath = ($env:PSModulePath -split ';' |
 $ScriptRoot = $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($ScriptRoot)) { $ScriptRoot = $PWD.Path }
 
-$ScriptVersion = '0.3.7'
+$ScriptVersion = '0.4.0'
+
+. (Join-Path $ScriptRoot 'CollectorPrivacy.ps1')
+$Script:CollectionId = [guid]::NewGuid().ToString()
+$OutputPath = Resolve-CollectorOutputPath -Collector 'W365' -OutputPath $OutputPath -CollectionId $Script:CollectionId
+if ($IdentityMapPath -and (Test-Path -LiteralPath $IdentityMapPath)) { throw 'Identity map already exists; choose a new path.' }
+$Script:PrivacyContext = New-CollectorPrivacyContext -Mode $PrivacyMode -ConfirmIdentified $ConfirmIdentifiedExport.IsPresent -KeyPath $PseudonymKeyPath -OutputPath $OutputPath
 # Windows 365 GA surface (cloudPCs, provisioningPolicies, userSettings) migrated to /v1.0.
 $GraphBaseV1   = 'https://graph.microsoft.com/v1.0/deviceManagement/virtualEndpoint'
 # Beta retained for endpoints not yet GA / verified beta-only: onPremisesConnections, deviceImages,
@@ -145,6 +175,75 @@ function Write-Metric {
     Write-Host "  $Icon  " -NoNewline -ForegroundColor DarkCyan
     Write-Host $Label.PadRight(28) -NoNewline -ForegroundColor Gray
     Write-Host $Value -ForegroundColor White
+}
+
+function ConvertTo-W365AssignmentSummary {
+    param($Assignments)
+    $Types = [ordered]@{}
+    $Count = 0
+    foreach ($Assignment in @($Assignments)) {
+        if ($null -eq $Assignment) { continue }
+        $Count++
+        $Type = [string]$Assignment.target.'@odata.type'
+        $Type = $Type -replace '^#?microsoft\.graph\.', ''
+        if ($Type -cnotmatch '^[A-Za-z0-9.]{1,80}$') { $Type = 'unknown' }
+        if ($Types.Contains($Type)) { $Types[$Type]++ } else { $Types[$Type] = 1 }
+    }
+    return [pscustomobject]@{ AssignmentCount = $Count; AssignmentTargetTypes = $Types }
+}
+
+function ConvertTo-W365UtcDate {
+    param($Value)
+    if ($Value -is [DateTimeOffset]) { return $Value.UtcDateTime.ToString('yyyy-MM-dd') }
+    if ($Value -is [datetime]) {
+        $Utc = if ($Value.Kind -eq [DateTimeKind]::Unspecified) { $Value } else { $Value.ToUniversalTime() }
+        return $Utc.ToString('yyyy-MM-dd')
+    }
+    if ($Value -isnot [string] -or [string]::IsNullOrWhiteSpace($Value)) { return $null }
+    $Parsed = [DateTimeOffset]::MinValue
+    if ([DateTimeOffset]::TryParse($Value, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal, [ref]$Parsed)) {
+        return $Parsed.UtcDateTime.ToString('yyyy-MM-dd')
+    }
+    return $null
+}
+
+function Get-W365LastLoginDate {
+    param($LastLoginResult)
+    if ($null -eq $LastLoginResult) { return $null }
+    foreach ($Key in @('lastLoginDateTime','LastLoginDateTime','time','Time')) {
+        $Date = ConvertTo-W365UtcDate $LastLoginResult.$Key
+        if ($Date) { return $Date }
+    }
+    return $null
+}
+
+function Get-W365UserLabel {
+    param($CloudPc)
+    $Label = if ($CloudPc.PSObject.Properties['UserPrincipalName']) { [string]$CloudPc.UserPrincipalName } else { [string]$CloudPc.UserKey }
+    if ([string]::IsNullOrWhiteSpace($Label)) { return 'none' }
+    return $Label
+}
+
+function ConvertTo-W365HealthChecks {
+    param($Connection)
+    $Rows = if ($Connection.healthCheckStatusDetail -and $Connection.healthCheckStatusDetail.healthChecks) {
+        $Connection.healthCheckStatusDetail.healthChecks
+    } elseif ($Connection.healthCheckStatusDetails -and $Connection.healthCheckStatusDetails.healthChecks) {
+        $Connection.healthCheckStatusDetails.healthChecks
+    } else {
+        $Connection.healthChecks
+    }
+    foreach ($Row in @($Rows)) {
+        if ($null -eq $Row) { continue }
+        [pscustomobject]@{
+            displayName       = $Row.displayName
+            status            = $Row.status
+            errorType         = $Row.errorType
+            recommendedAction = $Row.recommendedAction
+            startDateTime     = $Row.startDateTime
+            endDateTime       = $Row.endDateTime
+        }
+    }
 }
 
 function New-CheckResult {
@@ -373,8 +472,10 @@ $Discovery = [PSCustomObject]@{
     SchemaVersion = '1.0'
     ToolVersion   = $ScriptVersion
     Timestamp     = (Get-Date -Format 'o')
-    AssessorId    = $Context.Account
+    CollectionId  = $Script:CollectionId
+    Assessor      = $Assessor
     TenantId      = $Context.TenantId
+    Privacy       = $null
     Inventory     = [ordered]@{
         CloudPCs                = @()
         ProvisioningPolicies    = @()
@@ -426,28 +527,36 @@ try {
     $CloudPCs = @(Invoke-GraphPaged -Uri "$GraphBaseV1/cloudPCs")
     Write-Status "Found $($CloudPCs.Count) Cloud PC(s)" -Level 'SUCCESS'
     foreach ($cpc in $CloudPCs) {
-        $Discovery.Inventory.CloudPCs += [PSCustomObject]@{
-            Id                       = $cpc.id
-            DisplayName              = $cpc.displayName
-            Status                   = $cpc.status
-            UserPrincipalName        = $cpc.userPrincipalName
-            ImageDisplayName         = $cpc.imageDisplayName
-            ProvisioningPolicyId     = $cpc.provisioningPolicyId
-            ProvisioningPolicyName   = $cpc.provisioningPolicyName
-            ProvisioningType         = $cpc.provisioningType
-            ServicePlanName          = $cpc.servicePlanName
-            ServicePlanId            = $cpc.servicePlanId
-            ManagedDeviceId          = $cpc.managedDeviceId
-            AadDeviceId              = $cpc.aadDeviceId
-            OnPremisesConnectionName = $cpc.onPremisesConnectionName
-            LastModifiedDateTime     = $cpc.lastModifiedDateTime
-            LastLoginResult          = $cpc.lastLoginResult
-            GracePeriodEndDateTime   = $cpc.gracePeriodEndDateTime
-            DiskEncryptionState      = $cpc.diskEncryptionState
+        $Identified = $Script:PrivacyContext.Mode -eq 'Identified'
+        $HasUser = -not [string]::IsNullOrWhiteSpace([string]$cpc.userPrincipalName)
+        $Row = [ordered]@{
+            Id              = $cpc.id
+            DisplayName     = ConvertTo-CollectorIdentity $Script:PrivacyContext 'dev' $cpc.displayName
+            Status          = $cpc.status
+            HasAssignedUser = $HasUser
         }
+        if ($Identified) { $Row.UserPrincipalName = $cpc.userPrincipalName }
+        else { $Row.UserKey = $(if ($HasUser) { ConvertTo-CollectorIdentity $Script:PrivacyContext 'usr' $cpc.userPrincipalName } else { $null }) }
+        $Row.ImageDisplayName         = $cpc.imageDisplayName
+        $Row.ProvisioningPolicyId     = $cpc.provisioningPolicyId
+        $Row.ProvisioningPolicyName   = $cpc.provisioningPolicyName
+        $Row.ProvisioningType         = $cpc.provisioningType
+        $Row.ServicePlanName          = $cpc.servicePlanName
+        $Row.ServicePlanId            = $cpc.servicePlanId
+        if ($Identified) {
+            $Row.ManagedDeviceId      = $cpc.managedDeviceId
+            $Row.AadDeviceId          = $cpc.aadDeviceId
+        }
+        $Row.OnPremisesConnectionName = $cpc.onPremisesConnectionName
+        $Row.LastModifiedDateTime     = $cpc.lastModifiedDateTime
+        $Row.LastLoginDate            = Get-W365LastLoginDate $cpc.lastLoginResult
+        if ($Identified) { $Row.LastLoginResult = $cpc.lastLoginResult }
+        $Row.GracePeriodEndDateTime   = $cpc.gracePeriodEndDateTime
+        $Row.DiskEncryptionState      = $cpc.diskEncryptionState
+        $Discovery.Inventory.CloudPCs += [PSCustomObject]$Row
     }
 } catch {
-    Add-DiscoveryError 'CloudPCs' $_.Exception.Message
+    Add-DiscoveryError 'CloudPCs' (Get-CollectorErrorText $Script:PrivacyContext $_)
 }
 
 # ─── PROVISIONING POLICIES ────────────────────────────────────────────────
@@ -458,31 +567,33 @@ try {
     Write-Status "Found $($ProvPols.Count) provisioning policy/policies" -Level 'SUCCESS'
     foreach ($pp in $ProvPols) {
         $GraceHours = if (($pp.gracePeriodInHours -is [int] -or $pp.gracePeriodInHours -is [long]) -and $pp.gracePeriodInHours -ge 0 -and $pp.gracePeriodInHours -le [int]::MaxValue) { $pp.gracePeriodInHours } else { $null }
-        $Discovery.Inventory.ProvisioningPolicies += [PSCustomObject]@{
+        $AssignmentSummary = ConvertTo-W365AssignmentSummary $pp.assignments
+        $Row = [ordered]@{
             Id                           = $pp.id
             DisplayName                  = $pp.displayName
-            Description                  = $pp.description
-            DomainJoinConfigurations     = $pp.domainJoinConfigurations
-            ImageId                      = $pp.imageId
-            ImageDisplayName             = $pp.imageDisplayName
-            ImageType                    = $pp.imageType
-            EnableSingleSignOn           = $pp.enableSingleSignOn
-            LocalAdminEnabled            = $pp.localAdminEnabled
-            ProvisioningType             = $pp.provisioningType
-            CloudPcGroupDisplayName      = $pp.cloudPcGroupDisplayName
-            CloudPcNamingTemplate        = $pp.cloudPcNamingTemplate
-            MicrosoftManagedDesktop      = $pp.microsoftManagedDesktop
-            WindowsSetting               = $pp.windowsSetting
-            AlternateResourceUrl         = $pp.alternateResourceUrl
-            GracePeriodInHours           = $GraceHours
-            GracePeriodFieldState        = $(if ($null -eq $GraceHours) { 'Unknown' } else { 'Observed' })
-            AutopatchEnabled             = $pp.autopatch.autopatchGroupId -ne $null
-            AssignmentCount              = (@($pp.assignments)).Count
-            Assignments                  = $pp.assignments
         }
+        if ($Script:PrivacyContext.Mode -eq 'Identified') { $Row.Description = $pp.description }
+        $Row.DomainJoinConfigurations     = $pp.domainJoinConfigurations
+        $Row.ImageId                      = $pp.imageId
+        $Row.ImageDisplayName             = $pp.imageDisplayName
+        $Row.ImageType                    = $pp.imageType
+        $Row.EnableSingleSignOn           = $pp.enableSingleSignOn
+        $Row.LocalAdminEnabled            = $pp.localAdminEnabled
+        $Row.ProvisioningType             = $pp.provisioningType
+        if ($Script:PrivacyContext.Mode -eq 'Identified') { $Row.CloudPcGroupDisplayName = $pp.cloudPcGroupDisplayName }
+        $Row.CloudPcNamingTemplate        = $pp.cloudPcNamingTemplate
+        $Row.MicrosoftManagedDesktop      = $pp.microsoftManagedDesktop
+        $Row.WindowsSetting               = $pp.windowsSetting
+        $Row.AlternateResourceUrl         = $pp.alternateResourceUrl
+        $Row.GracePeriodInHours           = $GraceHours
+        $Row.GracePeriodFieldState        = $(if ($null -eq $GraceHours) { 'Unknown' } else { 'Observed' })
+        $Row.AutopatchEnabled             = $pp.autopatch.autopatchGroupId -ne $null
+        $Row.AssignmentCount              = $AssignmentSummary.AssignmentCount
+        $Row.AssignmentTargetTypes        = $AssignmentSummary.AssignmentTargetTypes
+        $Discovery.Inventory.ProvisioningPolicies += [PSCustomObject]$Row
     }
 } catch {
-    Add-DiscoveryError 'ProvisioningPolicies' $_.Exception.Message
+    Add-DiscoveryError 'ProvisioningPolicies' (Get-CollectorErrorText $Script:PrivacyContext $_)
 }
 
 # ─── USER SETTINGS ────────────────────────────────────────────────────────
@@ -492,6 +603,7 @@ try {
     $UserSet = @(Invoke-GraphPaged -Uri "$GraphBaseV1/userSettings?`$expand=assignments")
     Write-Status "Found $($UserSet.Count) user settings policy/policies" -Level 'SUCCESS'
     foreach ($us in $UserSet) {
+        $AssignmentSummary = ConvertTo-W365AssignmentSummary $us.assignments
         $Discovery.Inventory.UserSettings += [PSCustomObject]@{
             Id                              = $us.id
             DisplayName                     = $us.displayName
@@ -502,12 +614,12 @@ try {
             ApiVersion                      = 'v1.0'
             CrossRegionDisasterRecoveryState = 'NotCollectedByV1Contract'
             NotificationSettingState        = 'NotCollectedByV1Contract'
-            AssignmentCount                 = (@($us.assignments)).Count
-            Assignments                     = $us.assignments
+            AssignmentCount                 = $AssignmentSummary.AssignmentCount
+            AssignmentTargetTypes           = $AssignmentSummary.AssignmentTargetTypes
         }
     }
 } catch {
-    Add-DiscoveryError 'UserSettings' $_.Exception.Message
+    Add-DiscoveryError 'UserSettings' (Get-CollectorErrorText $Script:PrivacyContext $_)
 }
 
 # ─── AZURE NETWORK CONNECTIONS ────────────────────────────────────────────
@@ -517,24 +629,15 @@ try {
     $ANCs = @(Invoke-GraphPaged -Uri "$GraphBase/onPremisesConnections")
     Write-Status "Found $($ANCs.Count) network connection(s)" -Level 'SUCCESS'
     foreach ($anc in $ANCs) {
-        $Discovery.Inventory.AzureNetworkConnections += [PSCustomObject]@{
+        $Row = [ordered]@{
             Id                           = $anc.id
             DisplayName                  = $anc.displayName
             Type                         = $anc.type
             ConnectionType               = $anc.connectionType
             HealthCheckStatus            = $anc.healthCheckStatus
-            # Real schema: the detail object is 'healthCheckStatusDetail' (singular) carrying a
-            # 'healthChecks' collection; accept the legacy plural key too, and surface the array.
-            HealthCheckStatusDetail      = $anc.healthCheckStatusDetail
-            HealthChecks                 = @(
-                if ($anc.healthCheckStatusDetail -and $anc.healthCheckStatusDetail.healthChecks) {
-                    $anc.healthCheckStatusDetail.healthChecks
-                } elseif ($anc.healthCheckStatusDetails -and $anc.healthCheckStatusDetails.healthChecks) {
-                    $anc.healthCheckStatusDetails.healthChecks
-                } elseif ($anc.healthChecks) {
-                    $anc.healthChecks
-                }
-            )
+            # Real schema: healthCheckStatusDetail.healthChecks; legacy plural and flat keys accepted.
+            # Only the reviewed health-check fields are exported.
+            HealthChecks                 = @(ConvertTo-W365HealthChecks $anc)
             InUse                        = $anc.inUse
             SubscriptionId               = $anc.subscriptionId
             SubscriptionName             = $anc.subscriptionName
@@ -543,13 +646,15 @@ try {
             VirtualNetworkLocation       = $anc.virtualNetworkLocation
             SubnetId                     = $anc.subnetId
             AdDomainName                 = $anc.adDomainName
-            AdDomainUsername             = $anc.adDomainUsername
-            OrganizationalUnit           = $anc.organizationalUnit
-            ConnectionStatus             = $anc.connectionStatus
+            HasDomainJoinAccount         = -not [string]::IsNullOrWhiteSpace([string]$anc.adDomainUsername)
+            HasOrganizationalUnit        = -not [string]::IsNullOrWhiteSpace([string]$anc.organizationalUnit)
         }
+        if ($Script:PrivacyContext.Mode -eq 'Identified') { $Row.OrganizationalUnit = $anc.organizationalUnit }
+        $Row.ConnectionStatus = $anc.connectionStatus
+        $Discovery.Inventory.AzureNetworkConnections += [PSCustomObject]$Row
     }
 } catch {
-    Add-DiscoveryError 'AzureNetworkConnections' $_.Exception.Message
+    Add-DiscoveryError 'AzureNetworkConnections' (Get-CollectorErrorText $Script:PrivacyContext $_)
 }
 
 # ─── DEVICE IMAGES (CUSTOM) ───────────────────────────────────────────────
@@ -573,7 +678,7 @@ try {
         }
     }
 } catch {
-    Add-DiscoveryError 'DeviceImages' $_.Exception.Message
+    Add-DiscoveryError 'DeviceImages' (Get-CollectorErrorText $Script:PrivacyContext $_)
 }
 
 # ─── GALLERY IMAGES ───────────────────────────────────────────────────────
@@ -597,7 +702,7 @@ try {
         }
     }
 } catch {
-    Add-DiscoveryError 'GalleryImages' $_.Exception.Message
+    Add-DiscoveryError 'GalleryImages' (Get-CollectorErrorText $Script:PrivacyContext $_)
 }
 
 # ─── SERVICE PLANS ────────────────────────────────────────────────────────
@@ -617,7 +722,7 @@ try {
         }
     }
 } catch {
-    Add-DiscoveryError 'ServicePlans' $_.Exception.Message
+    Add-DiscoveryError 'ServicePlans' (Get-CollectorErrorText $Script:PrivacyContext $_)
 }
 
 # ─── AUDIT EVENTS (last 30 days) ──────────────────────────────────────────
@@ -630,20 +735,20 @@ try {
     $audits = @(Invoke-GraphPaged -Uri $auditUri)
     Write-Status "Found $($audits.Count) audit event(s)" -Level 'SUCCESS'
     foreach ($ae in $audits) {
-        $Discovery.Inventory.AuditEvents += [PSCustomObject]@{
-            Id               = $ae.id
-            DisplayName      = $ae.displayName
-            ActivityType     = $ae.activityType
-            ActivityResult   = $ae.activityResult
-            ActivityDateTime = $ae.activityDateTime
-            CategoryName     = $ae.category
-            ActorUpn         = $ae.actor.userPrincipalName
-            ActorAppName     = $ae.actor.applicationDisplayName
-            ComponentName    = $ae.componentName
-        }
+        $Row = [ordered]@{}
+        if ($Script:PrivacyContext.Mode -eq 'Identified') { $Row.Id = $ae.id }
+        $Row.DisplayName      = $ae.displayName
+        $Row.ActivityType     = $ae.activityType
+        $Row.ActivityResult   = $ae.activityResult
+        $Row.ActivityDateTime = $(if ($Script:PrivacyContext.Mode -eq 'Identified') { $ae.activityDateTime } else { ConvertTo-W365UtcDate $ae.activityDateTime })
+        $Row.CategoryName     = $ae.category
+        if ($Script:PrivacyContext.Mode -eq 'Identified') { $Row.ActorUpn = $ae.actor.userPrincipalName }
+        $Row.ActorAppName     = $ae.actor.applicationDisplayName
+        $Row.ComponentName    = $ae.componentName
+        $Discovery.Inventory.AuditEvents += [PSCustomObject]$Row
     }
 } catch {
-    Add-DiscoveryError 'AuditEvents' $_.Exception.Message
+    Add-DiscoveryError 'AuditEvents' (Get-CollectorErrorText $Script:PrivacyContext $_)
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -927,26 +1032,27 @@ $failStates = @('failed','notProvisioned')
 $warnStates = @('provisionedWithWarnings','provisioning','deprovisioning','resizing','restoring','pendingProvision','movingRegion','unknown')
 foreach ($cpc in $Discovery.Inventory.CloudPCs) {
     $s = "$($cpc.Status)"
+    $UserLabel = Get-W365UserLabel $cpc
     if ($s -in $failStates) {
         [void]$AllChecks.Add((New-CheckResult `
             -Id "W365-CPC-001-$($cpc.Id)" -Category 'Inventory & Topology' `
             -Name "Cloud PC in unhealthy state ($s): $($cpc.DisplayName)" `
             -Description 'Cloud PCs in failed or not-provisioned states are not usable and usually indicate a provisioning, networking, or licensing issue.' `
             -Status 'Fail' -Severity 'High' `
-            -Details "Cloud PC '$($cpc.DisplayName)' for $($cpc.UserPrincipalName) is in status: $s." `
+            -Details "Cloud PC '$($cpc.DisplayName)' for user $UserLabel is in status: $s." `
             -Recommendation 'Investigate via Intune > Devices > Cloud PCs. Check the provisioning policy, ANC health, and license assignment; reprovision or open a support ticket if persistent.' `
             -Reference 'https://learn.microsoft.com/en-us/windows-365/enterprise/known-issues-provisioning' `
-            -Evidence @{ Name = $cpc.DisplayName; UPN = $cpc.UserPrincipalName; Status = $s }))
+            -Evidence @{ Name = $cpc.DisplayName; User = $UserLabel; Status = $s }))
     } elseif ($s -in $warnStates) {
         [void]$AllChecks.Add((New-CheckResult `
             -Id "W365-CPC-001-$($cpc.Id)" -Category 'Inventory & Topology' `
             -Name "Cloud PC in transient/degraded state ($s): $($cpc.DisplayName)" `
             -Description 'The Cloud PC is not in the steady "provisioned" state. Transient states are expected briefly; persistence indicates a stuck operation or a partially-successful provision.' `
             -Status 'Warning' -Severity 'Medium' `
-            -Details "Cloud PC '$($cpc.DisplayName)' for $($cpc.UserPrincipalName) is in status: $s." `
+            -Details "Cloud PC '$($cpc.DisplayName)' for user $UserLabel is in status: $s." `
             -Recommendation 'If the state persists beyond the expected operation window, review the Cloud PC action status and ANC health, then reprovision if stuck.' `
             -Reference 'https://learn.microsoft.com/en-us/windows-365/enterprise/known-issues-provisioning' `
-            -Evidence @{ Name = $cpc.DisplayName; UPN = $cpc.UserPrincipalName; Status = $s }))
+            -Evidence @{ Name = $cpc.DisplayName; User = $UserLabel; Status = $s }))
     } elseif ($s -eq 'inGracePeriod') {
         [void]$AllChecks.Add((New-CheckResult `
             -Id "W365-CPC-002-$($cpc.Id)" -Category 'Inventory & Topology' `
@@ -956,25 +1062,22 @@ foreach ($cpc in $Discovery.Inventory.CloudPCs) {
             -Details "Cloud PC '$($cpc.DisplayName)' grace ends $($cpc.GracePeriodEndDateTime)." `
             -Recommendation 'Reassign a license, end the grace period to deprovision now, or restore the user assignment.' `
             -Reference 'https://learn.microsoft.com/en-us/windows-365/enterprise/end-grace-period' `
-            -Evidence @{ Name = $cpc.DisplayName; UPN = $cpc.UserPrincipalName; GraceEnd = $cpc.GracePeriodEndDateTime }))
+            -Evidence @{ Name = $cpc.DisplayName; User = $UserLabel; GraceEnd = $cpc.GracePeriodEndDateTime }))
     }
 }
 
 # COST-001 (was CPC-003): Cloud PCs likely inactive — license reclaim / downsize candidates.
-# C-1: use the real inactivity signal, LastLoginResult (already collected), instead of
-# LastModifiedDateTime (which bumps on any config change). Cloud PCs whose login data is null are
-# counted and handled via the reports fallback (getInactiveCloudPcReport family) in the Reports section.
+# C-1: use the real inactivity signal from lastLoginResult, exported as a UTC date, instead of
+# LastModifiedDateTime (which bumps on any config change). Cloud PCs without login data are
+# counted for the disabled report fallback in the Reports section.
 $CpcNoLoginCount = 0
+$Today = $now.ToUniversalTime().Date
 foreach ($cpc in $Discovery.Inventory.CloudPCs) {
     if ("$($cpc.Status)" -notin @('provisioned','provisionedWithWarnings')) { continue }
-    $lastLogin = $null
-    if ($cpc.LastLoginResult) {
-        foreach ($k in @('lastLoginDateTime','LastLoginDateTime','time','Time')) {
-            if ($cpc.LastLoginResult.$k) { $lastLogin = $cpc.LastLoginResult.$k; break }
-        }
-    }
-    if (-not $lastLogin) { $CpcNoLoginCount++; continue }
-    try { $idle = ($now - [datetime]$lastLogin).Days } catch { continue }
+    $lastLogin = "$($cpc.LastLoginDate)"
+    $LastLoginDay = [datetime]::MinValue
+    if (-not [datetime]::TryParseExact($lastLogin, 'yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::None, [ref]$LastLoginDay)) { $CpcNoLoginCount++; continue }
+    $idle = ($Today - $LastLoginDay).Days
     if ($idle -lt 0) { continue }
     if ($idle -gt $InactiveDays) {
         [void]$AllChecks.Add((New-CheckResult `
@@ -982,10 +1085,10 @@ foreach ($cpc in $Discovery.Inventory.CloudPCs) {
             -Name "Inactive Cloud PC: $($cpc.DisplayName)" `
             -Description 'Provisioned Cloud PCs with no interactive sign-in for an extended period are candidates for license reclaim or SKU downsizing.' `
             -Status 'Warning' -Severity 'Low' `
-            -Details "Cloud PC '$($cpc.DisplayName)' ($($cpc.UserPrincipalName)) last signed in $idle day(s) ago (threshold $InactiveDays). Signal: LastLoginResult." `
+            -Details "Cloud PC '$($cpc.DisplayName)' (user $(Get-W365UserLabel $cpc)) last signed in on $lastLogin UTC, $idle day(s) ago (threshold $InactiveDays). Signal: lastLoginResult." `
             -Recommendation 'Confirm inactivity in Endpoint Analytics / the inactive Cloud PC report, then reclaim the license or downsize the SKU.' `
             -Reference 'https://learn.microsoft.com/en-us/windows-365/enterprise/report-cloud-pc-utilization' `
-            -Evidence @{ Name = $cpc.DisplayName; UPN = $cpc.UserPrincipalName; IdleDays = $idle; LastLogin = "$lastLogin" }))
+            -Evidence @{ Name = $cpc.DisplayName; User = (Get-W365UserLabel $cpc); IdleDays = $idle; LastLogin = $lastLogin }))
     }
 }
 
@@ -1033,15 +1136,15 @@ foreach ($pp in $Discovery.Inventory.ProvisioningPolicies) {
         -Evidence @{ PolicyName = $pp.DisplayName; Locale = "$($ws.locale)" }))
 }
 
-# CPC-004: Provisioned Cloud PC with missing UPN (orphaned)
+# CPC-004: Provisioned Cloud PC without an assigned user (orphaned)
 foreach ($cpc in $Discovery.Inventory.CloudPCs) {
-    if ([string]::IsNullOrWhiteSpace($cpc.UserPrincipalName) -and $cpc.Status -in @('provisioned','provisionedWithWarnings','inGracePeriod')) {
+    if ($cpc.HasAssignedUser -ne $true -and $cpc.Status -in @('provisioned','provisionedWithWarnings','inGracePeriod')) {
         [void]$AllChecks.Add((New-CheckResult `
             -Id "W365-CPC-004-$($cpc.Id)" -Category 'Inventory & Topology' `
             -Name "Orphaned Cloud PC (no user assigned): $($cpc.DisplayName)" `
             -Description 'A provisioned Cloud PC without an assigned user is consuming a license but cannot be signed into. This usually indicates a stale assignment after an HR offboarding or a failed reassignment.' `
             -Status 'Fail' -Severity 'High' `
-            -Details "Cloud PC '$($cpc.DisplayName)' (status: $($cpc.Status)) has no userPrincipalName." `
+            -Details "Cloud PC '$($cpc.DisplayName)' (status: $($cpc.Status)) has no assigned user." `
             -Recommendation 'Reassign the Cloud PC to an active user via the provisioning policy assignment, or end the grace period to deprovision and reclaim the license.' `
             -Reference 'https://learn.microsoft.com/en-us/windows-365/enterprise/end-grace-period' `
             -Evidence @{ Name = $cpc.DisplayName; Status = $cpc.Status }))
@@ -1224,24 +1327,25 @@ try {
         -Evidence $cqReport))
 } catch {
     Write-Status "Connection quality report unavailable: $($_.Exception.Message)" -Level 'WARN'
+    $ErrorText = Get-CollectorErrorText $Script:PrivacyContext $_
     [void]$AllChecks.Add((New-CheckResult `
         -Id 'W365-MON-002-Q' -Category 'Monitoring & Diagnostics' `
         -Name 'Connection quality report unavailable' `
         -Status 'Error' -Severity 'Medium' `
         -Description 'The connection quality report (retrieveConnectionQualityReports) could not be retrieved.' `
-        -Details "POST reports/retrieveConnectionQualityReports failed: $($_.Exception.Message)" `
+        -Details "POST reports/retrieveConnectionQualityReports failed: $ErrorText" `
         -Recommendation 'Confirm the signed-in account holds CloudPC.Read.All and re-run.' `
         -Reference 'https://learn.microsoft.com/en-us/graph/api/cloudpcreports-retrieveconnectionqualityreports?view=graph-rest-beta' `
-        -Evidence @{ Action = 'retrieveConnectionQualityReports'; RequiredScope = 'CloudPC.Read.All'; Error = $_.Exception.Message }))
+        -Evidence @{ Action = 'retrieveConnectionQualityReports'; RequiredScope = 'CloudPC.Read.All'; Error = $ErrorText }))
     [void]$AllChecks.Add((New-CheckResult `
         -Id 'W365-UX-002-CONN' -Category 'User Experience' `
         -Name 'Sign-in performance not assessed' `
         -Status 'Error' -Severity 'Medium' `
         -Description 'The connection-quality page was unavailable and would not establish sign-in duration even if retrieved.' `
-        -Details "POST reports/retrieveConnectionQualityReports failed: $($_.Exception.Message)" `
+        -Details "POST reports/retrieveConnectionQualityReports failed: $ErrorText" `
         -Recommendation 'Confirm the signed-in account holds CloudPC.Read.All and re-run.' `
         -Reference 'https://learn.microsoft.com/en-us/windows-365/enterprise/report-connection-quality' `
-        -Evidence @{ Action = 'retrieveConnectionQualityReports'; RequiredScope = 'CloudPC.Read.All'; Error = $_.Exception.Message }))
+        -Evidence @{ Action = 'retrieveConnectionQualityReports'; RequiredScope = 'CloudPC.Read.All'; Error = $ErrorText }))
 }
 
 try {
@@ -1260,15 +1364,16 @@ try {
         -Evidence $perfReport))
 } catch {
     Write-Status "Tenant connection-trend report unavailable: $($_.Exception.Message)" -Level 'WARN'
+    $ErrorText = Get-CollectorErrorText $Script:PrivacyContext $_
     [void]$AllChecks.Add((New-CheckResult `
         -Id 'W365-MON-010-R' -Category 'Monitoring & Diagnostics' `
         -Name 'Resource performance not assessed' `
         -Status 'Error' -Severity 'Medium' `
         -Description 'The tenant connection-trend page could not be retrieved; this adapter does not collect CPU/RAM/disk resource-performance evidence.' `
-        -Details "POST reports/retrieveCloudPcTenantMetricsReport failed: $($_.Exception.Message)" `
+        -Details "POST reports/retrieveCloudPcTenantMetricsReport failed: $ErrorText" `
         -Recommendation 'Confirm the signed-in account holds CloudPC.Read.All and re-run.' `
         -Reference 'https://learn.microsoft.com/en-us/graph/api/cloudpcreports-retrievecloudpctenantmetricsreport?view=graph-rest-beta' `
-        -Evidence @{ Action = 'retrieveCloudPcTenantMetricsReport'; RequiredScope = 'CloudPC.Read.All'; Error = $_.Exception.Message }))
+        -Evidence @{ Action = 'retrieveCloudPcTenantMetricsReport'; RequiredScope = 'CloudPC.Read.All'; Error = $ErrorText }))
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1297,15 +1402,16 @@ try {
         -Evidence @{ CandidateDevices = $mdeTotal; Compliant = $mdeCompliant; NonCompliant = $mdeNonCompliant; OtherOrMissing = $mdeUnknown; AssessmentState = 'InsufficientEvidence' }))
 } catch {
     Write-Status "Cloud PC managed devices unavailable: $($_.Exception.Message)" -Level 'WARN'
+    $ErrorText = Get-CollectorErrorText $Script:PrivacyContext $_
     [void]$AllChecks.Add((New-CheckResult `
         -Id 'W365-SEC-002-MDE' -Category 'Security & Compliance' `
         -Name 'Cloud PC managed-device health unavailable' `
         -Status 'Error' -Severity 'High' `
         -Description 'Cloud PC managed devices could not be enumerated from Intune.' `
-        -Details "GET managedDevices (filter model contains 'Cloud PC') failed: $($_.Exception.Message)" `
+        -Details "GET managedDevices (filter model contains 'Cloud PC') failed: $ErrorText" `
         -Recommendation 'Confirm the signed-in account holds DeviceManagementManagedDevices.Read.All and re-run.' `
         -Reference 'https://learn.microsoft.com/en-us/graph/api/resources/intune-devices-manageddevice?view=graph-rest-beta' `
-        -Evidence @{ RequiredScope = 'DeviceManagementManagedDevices.Read.All'; Error = $_.Exception.Message }))
+        -Evidence @{ RequiredScope = 'DeviceManagementManagedDevices.Read.All'; Error = $ErrorText }))
 }
 
 # SEC-004-COMP: tenant policy metadata does not establish Cloud PC coverage.
@@ -1324,15 +1430,16 @@ try {
         -Evidence @{ Policies = $compPols.Count; AssessmentState = 'InsufficientEvidence' }))
 } catch {
     Write-Status "Compliance policies unavailable: $($_.Exception.Message)" -Level 'WARN'
+    $ErrorText = Get-CollectorErrorText $Script:PrivacyContext $_
     [void]$AllChecks.Add((New-CheckResult `
         -Id 'W365-SEC-004-COMP' -Category 'Security & Compliance' `
         -Name 'Device compliance policies unavailable' `
         -Status 'Error' -Severity 'High' `
         -Description 'Intune device compliance policies could not be enumerated.' `
-        -Details "GET deviceCompliancePolicies failed: $($_.Exception.Message)" `
+        -Details "GET deviceCompliancePolicies failed: $ErrorText" `
         -Recommendation 'Confirm the signed-in account holds DeviceManagementConfiguration.Read.All and re-run.' `
         -Reference 'https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfig-devicecompliancepolicy?view=graph-rest-beta' `
-        -Evidence @{ RequiredScope = 'DeviceManagementConfiguration.Read.All'; Error = $_.Exception.Message }))
+        -Evidence @{ RequiredScope = 'DeviceManagementConfiguration.Read.All'; Error = $ErrorText }))
 }
 
 # SEC-003-BASE: configuration metadata does not establish baseline identity or application.
@@ -1351,15 +1458,16 @@ try {
         -Evidence @{ ConfigPolicies = $cfgPols.Count; AssessmentState = 'InsufficientEvidence' }))
 } catch {
     Write-Status "Config profiles unavailable: $($_.Exception.Message)" -Level 'WARN'
+    $ErrorText = Get-CollectorErrorText $Script:PrivacyContext $_
     [void]$AllChecks.Add((New-CheckResult `
         -Id 'W365-SEC-003-BASE' -Category 'Security & Compliance' `
         -Name 'Security baseline / config profiles unavailable' `
         -Status 'Error' -Severity 'Medium' `
         -Description 'Intune configuration profiles could not be enumerated.' `
-        -Details "GET configurationPolicies failed: $($_.Exception.Message)" `
+        -Details "GET configurationPolicies failed: $ErrorText" `
         -Recommendation 'Confirm the signed-in account holds DeviceManagementConfiguration.Read.All and re-run.' `
         -Reference 'https://learn.microsoft.com/en-us/windows-365/enterprise/deploy-security-baselines' `
-        -Evidence @{ RequiredScope = 'DeviceManagementConfiguration.Read.All'; Error = $_.Exception.Message }))
+        -Evidence @{ RequiredScope = 'DeviceManagementConfiguration.Read.All'; Error = $ErrorText }))
 }
 
 # MON-001-EA: Endpoint Analytics device scores availability.
@@ -1389,15 +1497,16 @@ try {
         -Evidence @{ ScoreEntries = $AnalyticsEvidence.Count; AssessmentState = 'CloudPcCoverageNotEvaluated' }))
 } catch {
     Write-Status "Endpoint Analytics unavailable: $($_.Exception.Message)" -Level 'WARN'
+    $ErrorText = Get-CollectorErrorText $Script:PrivacyContext $_
     [void]$AllChecks.Add((New-CheckResult `
         -Id 'W365-MON-001-EA' -Category 'Monitoring & Diagnostics' `
         -Name 'Endpoint Analytics unavailable' `
         -Status 'Error' -Severity 'Medium' `
         -Description 'Endpoint Analytics device scores could not be retrieved.' `
-        -Details "GET userExperienceAnalyticsDeviceScores failed: $($_.Exception.Message)" `
+        -Details "GET userExperienceAnalyticsDeviceScores failed: $ErrorText" `
         -Recommendation 'Confirm the signed-in account holds DeviceManagementManagedDevices.Read.All and that Endpoint Analytics is available.' `
         -Reference 'https://learn.microsoft.com/en-us/graph/api/intune-devices-userexperienceanalyticsdevicescores-list?view=graph-rest-beta' `
-        -Evidence @{ RequiredScope = 'DeviceManagementManagedDevices.Read.All'; Error = $_.Exception.Message }))
+        -Evidence @{ RequiredScope = 'DeviceManagementManagedDevices.Read.All'; Error = $ErrorText }))
 }
 
 # MON-005-UPD: software update status summary.
@@ -1423,15 +1532,16 @@ try {
         -Evidence $UpdateEvidence))
 } catch {
     Write-Status "Update status summary unavailable: $($_.Exception.Message)" -Level 'WARN'
+    $ErrorText = Get-CollectorErrorText $Script:PrivacyContext $_
     [void]$AllChecks.Add((New-CheckResult `
         -Id 'W365-MON-005-UPD' -Category 'Monitoring & Diagnostics' `
         -Name 'Software update compliance summary unavailable' `
         -Status 'Error' -Severity 'Medium' `
         -Description 'The software update status summary could not be retrieved.' `
-        -Details "GET softwareUpdateStatusSummary failed: $($_.Exception.Message)" `
+        -Details "GET softwareUpdateStatusSummary failed: $ErrorText" `
         -Recommendation 'Confirm the signed-in account holds DeviceManagementConfiguration.Read.All and re-run.' `
         -Reference 'https://learn.microsoft.com/en-us/graph/api/intune-deviceconfig-softwareupdatestatussummary-get?view=graph-rest-beta' `
-        -Evidence @{ RequiredScope = 'DeviceManagementConfiguration.Read.All'; Error = $_.Exception.Message }))
+        -Evidence @{ RequiredScope = 'DeviceManagementConfiguration.Read.All'; Error = $ErrorText }))
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1468,6 +1578,7 @@ if ($IncludeConditionalAccess) {
     } catch {
         $Discovery.Inventory['ConditionalAccessCollectionState'] = 'Error'
         Write-Status "Conditional Access unavailable: $($_.Exception.Message)" -Level 'WARN'
+        $ErrorText = Get-CollectorErrorText $Script:PrivacyContext $_
         foreach ($ca in @(
             @{ Id = 'W365-IAM-003-CA'; Name = 'Conditional Access targeting'; Sev = 'High' },
             @{ Id = 'W365-IAM-004-MFA'; Name = 'MFA for Cloud PC sign-in'; Sev = 'High' },
@@ -1479,10 +1590,10 @@ if ($IncludeConditionalAccess) {
                 -Name "$($ca.Name) — not assessed" `
                 -Status 'Error' -Severity $ca.Sev `
                 -Description 'Conditional Access policies could not be read, so Cloud PC access-control posture was not assessed.' `
-                -Details "GET conditionalAccess/policies failed: $($_.Exception.Message)" `
+                -Details "GET conditionalAccess/policies failed: $ErrorText" `
                 -Recommendation 'Verify Policy.Read.All, a supported Entra reader role, tenant visibility and service availability before retrying. Discovery does not grant access.' `
                 -Reference 'https://learn.microsoft.com/en-us/graph/api/conditionalaccessroot-list-policies?view=graph-rest-1.0' `
-                -Evidence @{ RequiredScope = 'Policy.Read.All'; Error = $_.Exception.Message }))
+                -Evidence @{ RequiredScope = 'Policy.Read.All'; Error = $ErrorText }))
         }
     }
 } else {
@@ -1541,21 +1652,15 @@ Write-Metric 'Checks: Warn'  $warn '!'
 Write-Metric 'Checks: Fail'  $fail 'X'
 Write-Metric 'Checks: Error' $err  'E'
 
-# Resolve output path
-if (-not $OutputPath) {
-    $assessDir = Join-Path $ScriptRoot 'assessments'
-    if (-not (Test-Path $assessDir)) { New-Item -ItemType Directory -Path $assessDir | Out-Null }
-    $OutputPath = Join-Path $assessDir ("discovery_{0}.json" -f (Get-Date -Format 'yyyyMMdd_HHmmss'))
-} else {
-    $parent = Split-Path -Parent $OutputPath
-    if ($parent -and -not (Test-Path $parent)) { New-Item -ItemType Directory -Path $parent | Out-Null }
-}
+$Discovery.Privacy = New-CollectorPrivacyManifest $Script:PrivacyContext @($(if ($IncludeConditionalAccess.IsPresent) { 'IncludeConditionalAccess' }), $(if ($IncludeUserExperienceSync.IsPresent) { 'IncludeUserExperienceSync' }))
 
 try {
     $json = $Discovery | ConvertTo-Json -Depth 12
-    [System.IO.File]::WriteAllText($OutputPath, $json, [System.Text.UTF8Encoding]::new($false))
+    $OutputPath = Write-CollectorExport $Script:PrivacyContext $OutputPath $json $IdentityMapPath
     Write-Host ""
     Write-Status "Discovery written to: $OutputPath" -Level 'SUCCESS'
+    if ($Script:PrivacyContext.KeyPath) { Write-Status "Pseudonym key: $($Script:PrivacyContext.KeyPath)" -Level 'INFO' }
+    if (Test-CollectorSyncedPath $OutputPath) { Write-Status 'The output is in a OneDrive-synchronized folder. Treat it as Confidential.' -Level 'WARN' }
 } catch {
     Write-Status "Failed to write discovery JSON: $($_.Exception.Message)" -Level 'ERROR'
     exit 1

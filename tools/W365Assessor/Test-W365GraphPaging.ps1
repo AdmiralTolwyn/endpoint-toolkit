@@ -99,7 +99,9 @@ $script:TestPagerClock = $null
 . ([scriptblock]::Create($Function.Extent.Text))
 
 function Write-Status { param($Message, $Level) }
-foreach ($Name in @('New-CheckResult','Add-DiscoveryError')) {
+. (Join-Path $PSScriptRoot 'CollectorPrivacy.ps1')
+$script:PrivacyContext = [pscustomobject]@{ Mode = 'Pseudonymous'; Key = [byte[]](1..32); KeyId = 'test'; KeyPath = $null; Identities = [Collections.Generic.Dictionary[string,string]]::new() }
+foreach ($Name in @('New-CheckResult','Add-DiscoveryError','ConvertTo-W365UtcDate','Get-W365LastLoginDate')) {
     $Definition = $Ast.Find({ param($Node) $Node -is [Management.Automation.Language.FunctionDefinitionAst] -and $Node.Name -ceq $Name }, $true)
     . ([scriptblock]::Create($Definition.Extent.Text))
 }

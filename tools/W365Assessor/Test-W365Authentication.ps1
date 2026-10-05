@@ -139,5 +139,6 @@ Assert-Auth (-not $Case.Rejected) 'Validated context unavailable for export test
 $Context = $script:GraphContext
 $ScriptVersion = 'synthetic'
 . ([scriptblock]::Create($DiscoveryStart.Extent.Text))
-Assert-Auth ($Discovery.TenantId -eq $Valid.TenantId -and $Discovery.TenantId -eq $Case.Result.ValidatedTenant -and $Discovery.AssessorId -eq $Valid.Account) 'Export metadata did not use validated context'
+Assert-Auth ($Discovery.TenantId -eq $Valid.TenantId -and $Discovery.TenantId -eq $Case.Result.ValidatedTenant) 'Export metadata did not use validated context'
+Assert-Auth ($null -eq $Discovery.PSObject.Properties['AssessorId'] -and ($Discovery | ConvertTo-Json -Depth 4) -notmatch [regex]::Escape($Valid.Account)) 'Signed-in account exported'
 Write-Output 'PASS: delegated Global tenant/scope binding, strict SkipLogin, process-scoped reconnect, post-connect checks and optional permission selection; all authentication mocked.'
