@@ -4875,7 +4875,10 @@ public static class RegKeyTs {
                         $logText = [IO.File]::ReadAllText($logPath)
                         # Extract Id -> Name from policy JSON
                         foreach ($m in [regex]::Matches($logText, '"Id"\s*:\s*"([^"]+)"[^}]{0,500}?"Name"\s*:\s*"([^"]+)"')) {
-                            $imeNameMap[$m.Groups[1].Value] = $m.Groups[2].Value
+                            # Raw JSON text: decode escapes such as \u0026
+                            $imeName = $m.Groups[2].Value
+                            try { $imeName = [regex]::Unescape($imeName) } catch { }
+                            $imeNameMap[$m.Groups[1].Value] = $imeName
                         }
                         # Extract ReportingState JSON per app (last entry wins for each app)
                         foreach ($m in [regex]::Matches($logText, 'ReportingState: (\{[^}]+\})')) {
@@ -6533,7 +6536,10 @@ td { padding:9px 14px; border-bottom:1px solid var(--border); vertical-align:top
   word-wrap:break-word; overflow-wrap:break-word; }
 tr:hover td { background:var(--card-hover); }
 tr.highlight td { background:var(--accent-dim); }
-td.val { font-family:var(--mono); font-size:11px; word-break:break-all; overflow-wrap:break-word; }
+td.val { font-family:var(--mono); font-size:11px; word-break:normal; overflow-wrap:anywhere; }
+td.val .val-code { font-weight:600; color:var(--text-bright); }
+td.val .val-desc { display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden;
+  font-family:var(--font); font-size:11.5px; color:var(--muted); margin-top:2px; line-height:1.45; }
 details.val-list { cursor:pointer; }
 details.val-list > summary { list-style:none; }
 details.val-list > summary::-webkit-details-marker { display:none; }
@@ -6652,6 +6658,7 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
   .cat-chip { background:#f3e8ff; }
   tr:hover td { background:none; }
   tr { break-inside:avoid; }
+  td.val .val-desc { display:block; -webkit-line-clamp:unset; overflow:visible; }
   .section-header { break-after:avoid; }
 }
 </style>
@@ -6756,7 +6763,7 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
 "@)
         }
         if ($comp.Issues -and $comp.Issues.Count -gt 0) {
-            [void]$html.Append('<div style="margin-top:8px;padding:8px 12px;background:var(--yellow-dim);border-radius:6px;border-left:3px solid var(--yellow)">')
+            [void]$html.Append('<div style="grid-column:1/-1;margin-top:8px;padding:8px 12px;background:var(--yellow-dim);border-radius:6px;border-left:3px solid var(--yellow)">')
             foreach ($issue in $comp.Issues) {
                 [void]$html.Append("<div style=`"font-size:12px;color:var(--yellow);margin:2px 0`">&#x26A0; $(& $enc $issue)</div>")
             }
@@ -6816,6 +6823,9 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
             if ($lineCount -gt 5) {
                 $firstLines = (($s.ValueData -split "`n") | Select-Object -First 3 | ForEach-Object { & $enc $_ }) -join '<br>'
                 $v = "<details class=`"val-list`"><summary>$firstLines<br><em>… $lineCount items total (click to expand)</em></summary>$v</details>"
+            } elseif ("$($s.ValueData)" -match '^\s*(\S{1,40}) - (.{20,})$') {
+                # "<value> - <allowed-value description>": show the value, keep the long description secondary
+                $v = "<span class=`"val-code`">$(& $enc $Matches[1])</span><span class=`"val-desc`" title=`"$(& $enc $Matches[2])`">$(& $enc $Matches[2])</span>"
             }
             $dv     = & $enc $s.DefaultValue
             $stEnc  = & $enc $s.State
