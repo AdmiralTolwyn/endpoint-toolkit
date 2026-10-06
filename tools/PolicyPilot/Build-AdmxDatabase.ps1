@@ -124,28 +124,74 @@ function Resolve-String {
 }
 
 # Category name resolution
+# Parents often live in another file (e.g. windows:WindowsComponents), so index categories from all ADMX first
 $CategoryNames = @{}
+$GlobalCategories = @{}
+$XmlCache = @{}
+
+function Get-AdmlFile {
+    param($AdmxFile)
+    $local = Join-Path (Join-Path $AdmxFile.DirectoryName $Language) "$($AdmxFile.BaseName).adml"
+    if (Test-Path $local) { return $local }
+    return (Join-Path $AdmlPath "$($AdmxFile.BaseName).adml")
+}
+
+function Get-Namespaces {
+    param($Admx)
+    $map = @{}; $target = ''
+    $pn = $Admx.policyDefinitions.policyNamespaces
+    if ($pn.target) { $target = $pn.target.namespace; $map[$pn.target.prefix] = $target }
+    foreach ($u in @($pn.using)) { if ($u -and $u.prefix) { $map[$u.prefix] = $u.namespace } }
+    @{ Target = $target; Map = $map }
+}
+
+function Get-QualifiedRef {
+    param([string]$Ref, $Ns)
+    if (-not $Ref) { return '' }
+    if ($Ref.Contains(':')) {
+        $prefix, $name = $Ref.Split(':', 2)
+        if ($Ns.Map.ContainsKey($prefix)) { return "$($Ns.Map[$prefix]):$name" }
+        return $Ref
+    }
+    return "$($Ns.Target):$Ref"
+}
+
+foreach ($f in $AllAdmx) {
+    try {
+        [xml]$x = Get-Content $f.FullName -Raw -Encoding UTF8
+        $XmlCache[$f.FullName] = $x
+        $ns = Get-Namespaces $x
+        $catStrings = Load-StringTable (Get-AdmlFile $f)
+        foreach ($c in @($x.policyDefinitions.categories.category)) {
+            if (-not $c -or -not $c.name) { continue }
+            $GlobalCategories[(Get-QualifiedRef $c.name $ns)] = @{
+                Name   = Resolve-String $c.displayName $catStrings
+                Parent = Get-QualifiedRef $c.parentCategory.ref $ns
+            }
+        }
+    } catch { }
+}
 
 function Resolve-Category {
-    param([string]$CatRef, [hashtable]$Strings, $Categories)
-    if (-not $CatRef) { return '' }
-    if ($CategoryNames.ContainsKey($CatRef)) { return $CategoryNames[$CatRef] }
+    param([string]$QualifiedRef)
+    if (-not $QualifiedRef) { return '' }
+    if ($CategoryNames.ContainsKey($QualifiedRef)) { return $CategoryNames[$QualifiedRef] }
 
     # Build path: walk up parentCategory chain
     $path = @()
-    $current = $CatRef
+    $current = $QualifiedRef
     $maxDepth = 10
     while ($current -and $maxDepth -gt 0) {
         $maxDepth--
-        $cat = $Categories | Where-Object { $_.name -eq $current } | Select-Object -First 1
-        if (-not $cat) { $path += $current; break }
-        $displayName = Resolve-String $cat.displayName $Strings
-        if ($displayName) { $path += $displayName } else { $path += $current }
-        $current = $cat.parentCategory.ref
+        $cat = $GlobalCategories[$current]
+        $shortName = $current -replace '^.*:', ''
+        if (-not $cat) { $path += $shortName; break }
+        if ($cat.Name) { $path += $cat.Name } else { $path += $shortName }
+        $current = $cat.Parent
     }
     [array]::Reverse($path)
     $fullPath = $path -join ' > '
-    $CategoryNames[$CatRef] = $fullPath
+    $CategoryNames[$QualifiedRef] = $fullPath
     return $fullPath
 }
 
@@ -157,20 +203,17 @@ $Errors = 0
 
 foreach ($admxFile in $AdmxFiles) {
     $baseName = $admxFile.BaseName
-    # Look for ADML next to the ADMX first (local templates), then system PolicyDefinitions
-    $admlFile = Join-Path (Join-Path $admxFile.DirectoryName $Language) "$baseName.adml"
-    if (-not (Test-Path $admlFile)) {
-        $admlFile = Join-Path $AdmlPath "$baseName.adml"
-    }
+    $admlFile = Get-AdmlFile $admxFile
 
     Write-Host "  [$($ParsedFiles+1)/$($AdmxFiles.Count)] $baseName " -NoNewline
 
     try {
-        [xml]$admx = Get-Content $admxFile.FullName -Raw -Encoding UTF8
+        $admx = $XmlCache[$admxFile.FullName]
+        if (-not $admx) { [xml]$admx = Get-Content $admxFile.FullName -Raw -Encoding UTF8 }
         $strings = Load-StringTable $admlFile
+        $namespaces = Get-Namespaces $admx
 
         $policies = $admx.policyDefinitions.policies.policy
-        $categories = $admx.policyDefinitions.categories.category
 
         if (-not $policies -or $policies.Count -eq 0) {
             Write-Host "0 policies" -ForegroundColor DarkGray
@@ -187,16 +230,12 @@ foreach ($admxFile in $AdmxFiles) {
             $description = Resolve-String $pol.explainText $strings
             if (-not $description) { $description = Resolve-String $pol.displayName $strings }
 
-            # Truncate description to 500 chars
-            if ($description.Length -gt 500) { $description = $description.Substring(0, 497) + '...' }
-
             $regKey = $pol.key
             $valueName = $pol.valueName
             $class = $pol.class  # Machine, User, Both
 
             # Category path
-            $catRef = $pol.parentCategory.ref
-            $catPath = Resolve-Category $catRef $strings $categories
+            $catPath = Resolve-Category (Get-QualifiedRef $pol.parentCategory.ref $namespaces)
 
             # Enabled/Disabled values
             $enabledValue = $null; $disabledValue = $null
@@ -222,7 +261,7 @@ foreach ($admxFile in $AdmxFiles) {
                     }
                     # For enum elements, extract items
                     if ($elem.LocalName -eq 'enum' -and $elem.item) {
-                        $enumItems = @{}
+                        $enumItems = [ordered]@{}
                         foreach ($item in $elem.item) {
                             $itemDisplay = Resolve-String $item.displayName $strings
                             $itemValue = if ($item.value.decimal) { $item.value.decimal.value }

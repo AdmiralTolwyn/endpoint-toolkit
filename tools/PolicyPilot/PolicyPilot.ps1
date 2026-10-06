@@ -5732,7 +5732,7 @@ public static class RegKeyTs {
         if ($ScanMode -eq 'Intune') {
             $domain = 'Intune (Local MDM)'
         } elseif ($ScanMode -eq 'Combined') {
-            $domain = if ($domain -ne 'LocalMachine') { "$domain (Co-managed)" } else { 'Co-managed (Local + Intune)' }
+            $domain = if ($domain -ne 'LocalMachine') { "$domain + Intune" } else { 'Local policy + Intune' }
         }
 
         # ── Inject provisioning package settings into the settings list ──
@@ -6432,9 +6432,9 @@ function Build-HtmlReport {
   --bg: #0a0a0c; --bg2: #111114; --card: #18181b; --card-hover: #1e1e22;
   --border: rgba(255,255,255,0.08); --border-strong: rgba(255,255,255,0.15);
   --accent: #60cdff; --accent-dim: rgba(96,205,255,0.12); --accent-text: #60cdff;
-  --text: #e4e4e7; --text-bright: #fafafa; --muted: #71717a; --subtle: #52525b;
+  --text: #e4e4e7; --text-bright: #fafafa; --muted: #a1a1aa; --subtle: #8b8b94;
   --green: #22c55e; --green-dim: rgba(34,197,94,0.12);
-  --red: #ef4444; --red-dim: rgba(239,68,68,0.12);
+  --red: #f87171; --red-dim: rgba(239,68,68,0.12);
   --yellow: #eab308; --yellow-dim: rgba(234,179,8,0.12);
   --orange: #f97316; --purple: #a855f7;
   --radius: 10px; --radius-sm: 6px;
@@ -6447,11 +6447,11 @@ function Build-HtmlReport {
   --bg: #f8f9fa; --bg2: #ffffff; --card: #ffffff; --card-hover: #f4f4f5;
   --border: rgba(0,0,0,0.08); --border-strong: rgba(0,0,0,0.15);
   --accent: #0078d4; --accent-dim: rgba(0,120,212,0.08); --accent-text: #0066b8;
-  --text: #18181b; --text-bright: #09090b; --muted: #71717a; --subtle: #a1a1aa;
-  --green: #16a34a; --green-dim: rgba(22,163,74,0.08);
-  --red: #dc2626; --red-dim: rgba(220,38,38,0.08);
-  --yellow: #ca8a04; --yellow-dim: rgba(202,138,4,0.08);
-  --orange: #ea580c; --purple: #9333ea;
+  --text: #18181b; --text-bright: #09090b; --muted: #52525b; --subtle: #6b6b74;
+  --green: #166534; --green-dim: rgba(22,163,74,0.08);
+  --red: #b91c1c; --red-dim: rgba(220,38,38,0.08);
+  --yellow: #854d0e; --yellow-dim: rgba(202,138,4,0.08);
+  --orange: #c2410c; --purple: #9333ea;
   --shadow: 0 1px 3px rgba(0,0,0,0.06), 0 4px 12px rgba(0,0,0,0.04);
 }
 *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
@@ -6478,7 +6478,7 @@ body { font-family:var(--font); background:var(--bg); color:var(--text); line-he
 .container { max-width:1320px; margin:0 auto; padding:24px 32px 64px; }
 
 /* Stats bar */
-.stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px; margin-bottom:28px; }
+.stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:10px; margin-bottom:28px; }
 .stat-card { background:var(--card); border:1px solid var(--border); border-radius:var(--radius);
   padding:16px 18px; transition:all 0.15s; }
 .stat-card:hover { border-color:var(--border-strong); box-shadow:var(--shadow); }
@@ -6514,7 +6514,7 @@ body { font-family:var(--font); background:var(--bg); color:var(--text); line-he
 .section-header .chevron { color:var(--subtle); transition:transform 0.2s; font-size:12px; }
 details[open] .chevron { transform:rotate(90deg); }
 .section-body { border:1px solid var(--border); border-top:none; border-radius:0 0 var(--radius) var(--radius);
-  background:var(--bg2); overflow:hidden; }
+  background:var(--bg2); overflow-x:auto; }
 
 /* Tables */
 table { width:100%; border-collapse:collapse; font-size:12px; table-layout:fixed; }
@@ -6561,6 +6561,7 @@ tr.csp-row td { padding:0; border-bottom:none; }
   border-radius:var(--radius-sm); background:var(--bg); display:flex; align-items:baseline; gap:6px; }
 .csp-ref .csp-av-item .av-key { color:var(--accent-text); font-weight:700; min-width:16px; }
 .csp-ref .csp-av-item .av-eq { color:var(--subtle); }
+.csp-ref .csp-av-group { grid-column:1/-1; font-size:10.5px; color:var(--muted); font-weight:600; margin-top:6px; }
 .csp-ref .csp-gp { margin-top:0; }
 .csp-ref .csp-gp-title { color:var(--muted); font-size:9.5px; text-transform:uppercase; letter-spacing:0.8px;
   font-weight:600; margin-bottom:6px; }
@@ -6575,7 +6576,7 @@ tr.csp-row td { padding:0; border-bottom:none; }
   background:var(--yellow-dim); color:var(--yellow); font-size:10px; font-weight:600; }
 
 /* Badges */
-.badge { display:inline-block; padding:2px 8px; border-radius:4px; font-size:10px; font-weight:600; }
+.badge { display:inline-block; padding:2px 8px; border-radius:4px; font-size:10px; font-weight:600; white-space:nowrap; }
 .badge-enabled { background:var(--green-dim); color:var(--green); }
 .badge-disabled { background:var(--red-dim); color:var(--red); }
 .badge-conflict { background:var(--red-dim); color:var(--red); }
@@ -6626,17 +6627,24 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
   .stats { grid-template-columns:repeat(2,1fr); }
   .meta-bar { flex-direction:column; gap:4px; }
   td.val { max-width:180px; }
+  .section-body > table, .section-body details > table { min-width:720px; }
 }
-/* Print */
+/* Print: light palette regardless of the on-screen theme */
 @media print {
-  .toolbar { position:static; }
-  .btn, .search-box, .filter-bar select { display:none; }
-  body { background:#fff; color:#000; }
-  .stat-card, .section-header, .section-body, th { background:#f5f5f5; border-color:#ddd; }
-  .stat-num, .section-header .title { color:#000; }
-  td { border-color:#ddd; }
-  details { open:true; }
-  details > .section-body { display:block !important; }
+  :root, [data-theme="light"] {
+    --bg:#fff; --bg2:#fff; --card:#fff; --card-hover:#fff;
+    --border:#d4d4d8; --border-strong:#a1a1aa;
+    --accent:#0b5cad; --accent-dim:#eef4fb; --accent-text:#0b5cad;
+    --text:#18181b; --text-bright:#000; --muted:#52525b; --subtle:#52525b;
+    --green:#166534; --green-dim:#f0fdf4; --red:#991b1b; --red-dim:#fef2f2;
+    --yellow:#854d0e; --yellow-dim:#fefce8; --orange:#9a3412; --purple:#6b21a8; --shadow:none;
+  }
+  .toolbar { position:static; backdrop-filter:none; }
+  .btn, .search-box, .filter-bar, tr.csp-row { display:none; }
+  .cat-chip { background:#f3e8ff; }
+  tr:hover td { background:none; }
+  tr { break-inside:avoid; }
+  .section-header { break-after:avoid; }
 }
 </style>
 </head>
@@ -6662,7 +6670,7 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
 <div class="device-info">
   <div class="di-item"><span class="di-label">Computer Name</span><span class="di-value">$(& $enc $deviceName)</span></div>
   <div class="di-item"><span class="di-label">Domain</span><span class="di-value">$(& $enc $domain)</span></div>
-  <div class="di-item"><span class="di-label">Logged-on User</span><span class="di-value">$(& $enc $userName)</span></div>
+  <div class="di-item"><span class="di-label">Scanned As</span><span class="di-value">$(& $enc $userName)</span></div>
   <div class="di-item"><span class="di-label">Operating System</span><span class="di-value">$(& $enc $osInfo)</span></div>
   <div class="di-item"><span class="di-label">Scan Mode</span><span class="di-value">$(& $enc $scanMode)</span></div>
   <div class="di-item"><span class="di-label">Scan Time</span><span class="di-value">$scanTime</span></div>
@@ -6745,8 +6753,8 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
     [void]$html.Append('<div id="settingsContainer">')
     foreach ($grp in $grouped) {
         $gpoNameEnc = if ($grp.Name) { & $enc $grp.Name } else { '(Unnamed source)' }
-        [void]$html.Append("<details class=`"gpo-group`"><summary class=`"group-heading`"><span class=`"grp-chevron`">&#x25B6;</span>$gpoNameEnc <span class=`"cnt`">($($grp.Count) settings)</span></summary>")
-        [void]$html.Append('<table class="settings-table"><thead><tr><th style="width:28%">Policy Name</th><th style="width:7%">State</th><th style="width:7%">Scope</th><th style="width:20%">Category</th><th style="width:25%">Value</th><th style="width:13%">Default</th></tr></thead><tbody>')
+        [void]$html.Append("<details class=`"gpo-group`"><summary class=`"group-heading`"><span class=`"grp-chevron`">&#x25B6;</span>$gpoNameEnc <span class=`"cnt`">($($grp.Count) $(if ($grp.Count -eq 1) { 'setting' } else { 'settings' }))</span></summary>")
+        [void]$html.Append('<table class="settings-table"><thead><tr><th style="width:26%">Policy Name</th><th style="width:9%">State</th><th style="width:9%">Scope</th><th style="width:18%">Category</th><th style="width:25%">Value</th><th style="width:13%">Default</th></tr></thead><tbody>')
         foreach ($s in ($grp.Group | Sort-Object Category, PolicyName)) {
             $isNonDef = $s.DefaultValue -and $s.ValueData -and "$($s.ValueData)" -ne "$($s.DefaultValue)" -and "$($s.ValueData)" -notlike "$($s.DefaultValue) *"
             $rowClass = if ($isNonDef) { ' class="non-default"' } else { '' }
@@ -6799,6 +6807,7 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
                     if ($avObj -is [array]) {
                         foreach ($elem in $avObj) {
                             if ($elem.EnumValues) {
+                                if ($elem.Id) { [void]$html.Append("<div class=`"csp-av-group`">$(& $enc "[$($elem.Type)] $($elem.Id)")</div>") }
                                 $evProps = if ($elem.EnumValues -is [hashtable]) { $elem.EnumValues.GetEnumerator() } elseif ($elem.EnumValues.PSObject) { $elem.EnumValues.PSObject.Properties } else { @() }
                                 foreach ($ev in $evProps) {
                                     $evK = if ($ev.Key) { $ev.Key } else { $ev.Name }
@@ -6844,7 +6853,7 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
 
     # ── Section 2: GPO / Area Inventory ──
     [void]$html.Append(@"
-<details class="section" open>
+<details class="section">
 <summary class="section-header">
   <span class="icon">&#x1F4C1;</span>
   <span class="title">GPO / Area Inventory</span>
@@ -6903,7 +6912,7 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
         $installedCnt = @($apps | Where-Object { $_.InstallState -eq 'Installed' }).Count
         $failedCnt    = @($apps | Where-Object { $_.InstallState -eq 'Failed' }).Count
         [void]$html.Append(@"
-<details class="section" open>
+<details class="section">
 <summary class="section-header">
   <span class="icon">&#x1F4E6;</span>
   <span class="title">Intune Managed Apps</span>
@@ -6913,7 +6922,8 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
 <div class="section-body">
 <table><thead><tr><th>Application</th><th>Type</th><th>Version</th><th>Enforcement</th><th>Install State</th></tr></thead><tbody>
 "@)
-        foreach ($a in ($apps | Sort-Object AppName)) {
+        $stateOrder = @{ 'Failed' = 0; 'Installed' = 2 }
+        foreach ($a in ($apps | Sort-Object @{ Expression = { if ($stateOrder.ContainsKey("$($_.InstallState)")) { $stateOrder["$($_.InstallState)"] } else { 1 } } }, AppName)) {
             $appNameEnc = & $enc $a.AppName
             $typeEnc = & $enc $a.AppType
             $verEnc = & $enc $a.AppVersion
@@ -6932,7 +6942,7 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
         $certCount = if ($mdmInfo.MdmDiag.Certificates) { $mdmInfo.MdmDiag.Certificates.Count } else { 0 }
         $mgdPolCount = $mdmInfo.MdmDiag.ManagedPolicies
         [void]$html.Append(@"
-<details class="section" open>
+<details class="section">
 <summary class="section-header">
   <span class="icon">&#x1F511;</span>
   <span class="title">MDM Enrollment &amp; Certificates</span>

@@ -240,7 +240,7 @@ PolicyPilot/
 ├── Launch_PolicyPilot.bat     # Batch launcher (auto-detects PS7/PS5.1)
 ├── Build-AdmxDatabase.ps1    # ADMX → JSON metadata builder
 ├── Build-CspDatabase.ps1     # CSP → JSON metadata scraper
-├── admx_metadata.json         # Pre-built ADMX database (26H2 + SecGuide/MSS-legacy, 3,726 policies, 8.9 MB)
+├── admx_metadata.json         # Pre-built ADMX database (26H2 + SecGuide/MSS-legacy, 3,726 policies, 10.1 MB)
 ├── csp_metadata.json          # Pre-built CSP database (1,617 settings)
 ├── templates/                 # SecGuide / MSS-legacy ADMX from the Security Baseline
 ├── README.md                  # This file
