@@ -36,6 +36,13 @@ Assert-Privacy (-not (Test-BaselineOffHours $Monday.AddHours(23) @(1) 1320 360))
 Assert-Privacy (Test-BaselineOffHours $Monday.AddHours(12) @(1) 1320 360) 'Overnight shift midday must be off-hours'
 Write-Output 'PASS: configurable business hours and work days, including wrapped ranges, overnight windows and rejected input.'
 
+$NoMatches = [Management.Automation.ErrorRecord]::new([Exception]::new('Localized no-match message'), 'NoMatchingEventsFound,Microsoft.PowerShell.Commands.GetWinEventCommand', [Management.Automation.ErrorCategory]::ObjectNotFound, $null)
+Assert-Privacy (Test-BaselineNoEvents $NoMatches) 'NoMatchingEventsFound must be recognized independently of the localized message'
+$ProviderFailure = [Management.Automation.ErrorRecord]::new([Exception]::new('Provider failure for PII_SENTINEL'), 'EventQueryFailed', [Management.Automation.ErrorCategory]::ReadError, $null)
+Assert-Privacy (-not (Test-BaselineNoEvents $ProviderFailure)) 'Generic exception HRESULT must not mean an empty event query'
+$MissingLog = [Management.Automation.ErrorRecord]::new([System.Diagnostics.Eventing.Reader.EventLogNotFoundException]::new('Missing log'), 'NoMatchingLogsFound', [Management.Automation.ErrorCategory]::ObjectNotFound, $null)
+Assert-Privacy (-not (Test-BaselineNoEvents $MissingLog)) 'Missing event logs must remain unavailable, not empty'
+
 function New-SyntheticEvent([int]$Id, [datetime]$Time, [hashtable]$Named, [string[]]$Values = @()) {
     $Data = foreach ($Key in $Named.Keys) { '<Data Name="{0}">{1}</Data>' -f $Key, [Security.SecurityElement]::Escape([string]$Named[$Key]) }
     $Data += foreach ($Value in $Values) { '<Data>{0}</Data>' -f [Security.SecurityElement]::Escape($Value) }
@@ -122,6 +129,19 @@ $Summary = Invoke-EventArea 'Pseudonymous' $false $true $Key
 Assert-Privacy (-not ($Summary | ConvertTo-Json -Depth 10).Contains('topUsers') -and $Summary.logonEvents.count -gt 0) 'Summary mode exported users or lost counts'
 Write-Output 'PASS: minimal event records, derived flags, keyed pseudonyms, opt-in diagnostics and prohibited content.'
 
+function Get-WinEvent {
+    param($FilterHashtable, $MaxEvents, $ErrorAction)
+    throw $script:EventQueryFailure
+}
+foreach ($Failure in @($ProviderFailure, $MissingLog)) {
+    $script:EventQueryFailure = $Failure
+    $Unavailable = Invoke-EventArea 'Pseudonymous' $false $false $Key
+    Assert-Privacy ($Unavailable._queryMeta.elevatedCorrelation -ceq 'Unavailable' -and $Unavailable.logonEvents.ContainsKey('error')) 'Failed event queries must not become successful empty collections'
+    Assert-Privacy (-not ($Unavailable | ConvertTo-Json -Depth 10).Contains('PII_SENTINEL')) 'Event query failure exported its raw message'
+}
+Remove-Variable EventQueryFailure -Scope Script
+Write-Output 'PASS: event query failures remain unavailable and error messages are minimized.'
+
 $script:PrivacyContext = [pscustomobject]@{ Mode = 'Pseudonymous'; Key = $Key; KeyId = 'synthetic'; KeyPath = $null; Identities = New-Object 'Collections.Generic.Dictionary[string,string]' }
 function Get-CimInstance {
     param([string]$ClassName, $ErrorAction)
@@ -132,9 +152,14 @@ $Drivers = & (Get-Area '$drivers')
 $DriversJson = $Drivers | ConvertTo-Json -Depth 6
 Assert-Privacy (-not $DriversJson.Contains('PII_SENTINEL') -and $Drivers.problematic[0].Name -ceq 'WPD USB\VID_05AC&PID_12A8' -and $Drivers.unsigned[0].Name -like 'BLUETOOTH BTHENUM*') 'Driver names leaked or lost class evidence'
 Remove-Item Function:\Get-CimInstance
-function Get-ScheduledTask { [pscustomobject]@{ TaskName = 'OneDrive Reporting Task-S-1-5-21-111-222-333-1001'; TaskPath = '\'; State = 'Ready'; LastTaskResult = 1; Principal = [pscustomobject]@{ UserId = 'SYSTEM' } } }
+function Get-ScheduledTask {
+    [pscustomobject]@{ TaskName = 'OneDrive Reporting Task-S-1-5-21-111-222-333-1001'; TaskPath = '\'; State = 'Ready'; LastTaskResult = 1; Principal = [pscustomobject]@{ UserId = 'SYSTEM' } }
+    [pscustomobject]@{ TaskName = 'User maintenance'; TaskPath = '\'; State = 'Ready'; LastTaskResult = 0; Principal = [pscustomobject]@{ UserId = 'CONTOSO\SYSTEM_PII_SENTINEL' } }
+    [pscustomobject]@{ TaskName = 'Other principal'; TaskPath = '\'; State = 'Ready'; LastTaskResult = 0; Principal = [pscustomobject]@{ UserId = 'S-1-5-180' } }
+}
 $Tasks = & (Get-Area '$scheduledTasks')
 Assert-Privacy (($Tasks | ConvertTo-Json -Depth 6) -cmatch 'Task-sid_[0-9a-f]{16}' -and -not ($Tasks | ConvertTo-Json -Depth 6).Contains('S-1-5-21-111')) 'Task SID not pseudonymized'
+Assert-Privacy ($Tasks.highPrivilegeTasks.Count -eq 1 -and $Tasks.highPrivilegeTasks[0].RunAs -ceq 'SYSTEM' -and -not ($Tasks | ConvertTo-Json -Depth 6).Contains('PII_SENTINEL')) 'SYSTEM-like account names must not be classified or exported as SYSTEM principals'
 Remove-Item Function:\Get-ScheduledTask
 function Get-MpPreference { [pscustomobject]@{ ExclusionPath = @('C:\Users\PII_SENTINEL\Source', 'D:\Builds\*', '\\PII_HOST\share\tools') } }
 function Get-MpComputerStatus { $null }

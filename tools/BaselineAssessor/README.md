@@ -16,15 +16,23 @@ The default is `-PrivacyMode Pseudonymous`:
 - A top-level `Privacy` manifest records the mode, `Confidential` classification, key ID and opt-ins.
 - Hostnames become `dev_` pseudonyms; user SIDs in task names become `sid_` pseudonyms; user-profile
   and UNC segments in exclusion, transcription and log paths are masked.
+- High-privilege task evidence accepts only the exact SYSTEM aliases `SYSTEM`, `LocalSystem`,
+  `NT AUTHORITY\SYSTEM` and `S-1-5-18`, not account names containing those strings.
 - Event records contain only `id`, UTC hour, and derived `accountKey`, `logonType`, `offHours`,
   `elevated`, `lolbin` and `faultingApp`. Command lines, object names and raw messages are never
   exported. `-IncludeSecurityEvents` adds named detail fields; identity fields need Identified mode.
 - `-BusinessHours` (default `06:00-22:00`) and `-WorkDays` (default `Mon-Fri`) define off-hours in device
   local time for `AUTH-026`, which reports review evidence rather than an automatic failure.
 - `-EventSummaryOnly` emits counts only; Assay event rules are then `NotAssessed`.
+- Failed event queries retain a minimized error, and failed privilege-event queries mark elevation
+  correlation `Unavailable`. Missing logs and generic provider failures are not successful empty queries.
 
 `-PrivacyMode Identified -ConfirmIdentifiedExport` keeps names. Reuse `-PseudonymKeyPath` across
-machines for stable pseudonyms; `-IdentityMapPath` writes a separate pseudonym map.
+machines for stable pseudonyms; `-IdentityMapPath` writes a separate pseudonym map. By default, the
+key replaces the export's extension: `baseline.json` uses `baseline.pseudonym-key`.
+
+Offline regression checks: `Test-BaselinePrivacy.ps1` covers these transformations and error states;
+`../Shared/Test-CollectorDocumentation.ps1` checks collector and helper help without executing them.
 
 BaselinePilot writes saved assessments, autosaves, backups and exports with the same restricted ACL,
 states the classification in HTML and CSV exports, and does not render `topUsers` for pseudonymous

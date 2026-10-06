@@ -136,7 +136,8 @@ function Write-CollectorProtectedFile {
 .PARAMETER ConfirmIdentified
     Must be true for Identified mode.
 .PARAMETER KeyPath
-    Existing or new pseudonym key file. Empty uses <output>.pseudonym-key.
+    Existing or new pseudonym key file. Empty replaces the output extension with .pseudonym-key
+    (for example, export.json uses export.pseudonym-key).
 .PARAMETER OutputPath
     Export path used to place the default key.
 .OUTPUTS

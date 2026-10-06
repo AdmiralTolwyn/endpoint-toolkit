@@ -16,7 +16,7 @@
     Required with -PrivacyMode Identified.
 .PARAMETER PseudonymKeyPath
     Base64 32-byte key file. Reuse the same key across machines and reruns for stable pseudonyms.
-    Default: <OutputPath>.pseudonym-key. Never share it with the export.
+    Default: the output path with its extension replaced by .pseudonym-key. Never share it with the export.
 .PARAMETER IdentityMapPath
     Optional new file mapping pseudonyms to original values. Keep it with the key, not the export.
 .PARAMETER Assessor
@@ -245,7 +245,8 @@ function Write-CollectorProtectedFile {
 .PARAMETER ConfirmIdentified
     Must be true for Identified mode.
 .PARAMETER KeyPath
-    Existing or new pseudonym key file. Empty uses <output>.pseudonym-key.
+    Existing or new pseudonym key file. Empty replaces the output extension with .pseudonym-key
+    (for example, export.json uses export.pseudonym-key).
 .PARAMETER OutputPath
     Export path used to place the default key.
 .OUTPUTS
@@ -2726,7 +2727,7 @@ $scheduledTasks = Invoke-CollectionArea -Step 16 -Name 'Scheduled Tasks' -Sectio
 
     # High-privilege tasks running as SYSTEM (security review)
     $systemTasks = @($allTasks | Where-Object {
-        $_.Principal.UserId -match 'SYSTEM|LocalSystem|S-1-5-18' -and
+        $_.Principal.UserId -in @('SYSTEM', 'LocalSystem', 'NT AUTHORITY\SYSTEM', 'S-1-5-18') -and
         $_.State -ne 'Disabled' -and
         $_.TaskPath -notmatch '\\Microsoft\\'  # Exclude built-in MS tasks
     })
@@ -2930,6 +2931,9 @@ $eventLogMetadata = Invoke-CollectionArea -Step 21 -Name 'Event Log Metadata' -S
 <#
 .SYNOPSIS
     Tests whether an event query error only means that no events matched.
+.DESCRIPTION
+    Recognizes the Get-WinEvent no-match error ID and known localized no-match messages.
+    Missing logs and other provider failures are not successful empty queries.
 .PARAMETER ErrorRecord
     Error from Get-WinEvent.
 .OUTPUTS
@@ -2937,8 +2941,7 @@ $eventLogMetadata = Invoke-CollectionArea -Step 21 -Name 'Event Log Metadata' -S
 #>
 function Test-BaselineNoEvents {
     param($ErrorRecord)
-    return $ErrorRecord.Exception -is [System.Diagnostics.Eventing.Reader.EventLogNotFoundException] -or
-        $ErrorRecord.Exception.HResult -eq -2146233088 -or
+    return $ErrorRecord.FullyQualifiedErrorId -match '^NoMatchingEventsFound(?:,|$)' -or
         $ErrorRecord.Exception.Message -match 'No events were found|Es wurden keine Ereignisse|Aucun .v.nement|No se encontraron eventos'
 }
 
