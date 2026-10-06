@@ -1,897 +1,111 @@
 # Intune Discovery for Assay
 
-Version 0.6.0. Experimental pending a live tenant pilot. Offline-tested with
-Windows PowerShell 5.1 and PowerShell 7.
-
-The [contract audit](AUDIT.md) currently verifies 49 enabled Graph GET contracts
-and quarantines two assignment reads. Nested values and the live tenant pilot
-remain separate gates; do not label the full collector audit complete.
-
-Exports read-only observations for Assay's Intune pack. Assay owns control
-definitions and scores: 50 source-linked controls, two bounded automatic checks,
-and 48 evidence-assisted manual checks. The collector does not mutate a tenant.
-
-## Privacy Mode (0.6.0)
-
-The default is `-PrivacyMode Pseudonymous`:
-
-- Without `-OutputPath`, output goes to
-  `%LOCALAPPDATA%\AssayCollections\intune\intune_<collectionId>.json`. Files are created with
-  `CreateNew` and an ACL for the current user, SYSTEM and Administrators only. OneDrive-synchronized
-  paths produce a warning.
-- A top-level `Privacy` manifest records the mode, `Confidential` classification, key ID and opt-ins.
-- `deviceName` and `deviceDisplayName` become `dev_` pseudonyms; `Observations[].Data` inherits them.
-  `azureADDeviceId`, Defender `aadDeviceId` and endpoint `DeviceId` stay as join keys.
-- Conditional Access and device-registration user, group and role lists keep only `All`, `None` and
-  `GuestsOrExternalUsers`; other entries become `<list>Count` values.
-- `LAPS/Policies/AdministratorAccountName` becomes `NotConfigured`, `BuiltIn` or `Custom`.
-- Defender exclusion paths and EPM `filePath`/`fileName` mask user-profile, UNC host and share
-  segments. Wildcards, network indicators and `\\?\`/`\\.\` prefixes are preserved.
-
-`-PrivacyMode Identified -ConfirmIdentifiedExport` keeps these values. `-PseudonymKeyPath` reuses a
-key for stable pseudonyms; `-IdentityMapPath` writes a separate pseudonym map. The endpoint and
-Defender companion exports add the manifest and the same restricted ACL; their data shapes are unchanged.
-Library callers of `Invoke-IntuneDiscoveryCore` apply the transform only when they pass `-PrivacyContext`.
-
-## Option Candidate Integrity (0.5.21)
-
-The shared general-configuration/EPM option resolver now validates candidate
-identities before filtering. A valid option plus a malformed duplicate previously
-could appear unique. Options must be an array of objects with nonblank string
-itemIds; malformed containers, items or IDs leave the choice unresolved rather
-than disappearing. Exact ordinal matching and selected payload validation remain
-unchanged. Unselected payloads are not decoded. Descendant uncertainty and
-independent evidence are preserved by the existing callers.
-
-Microsoft documents [the options collection](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationchoicesettingdefinition?view=graph-rest-beta)
-and [option identity/value types](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationoptiondefinition?view=graph-rest-beta).
-Nonblank identity and whole-choice withholding are conservative Assay boundaries,
-not full schema, dependency, applicability or effective-enforcement validation.
-152 shared dictionary/JSON cases and two EPM reproductions cover malformed
-candidate lists, both orders, singular/collection choices, valid zero controls
-and selected/descendant ADMX withholding.
-`ASSAY_INTUNE_OPTION_FIXTURE` and `ASSAY_INTUNE_EPM_OPTION_FIXTURE` exercise actual
-mocked discovery, native reassessment and app save/load/HTML/PDF. A Complete read
-can still contain unresolved values. No raw option payloads, new fields, routes,
-permissions, providers, findings or scores; rules remain 1.8.0-preview.
-Recollect affected older flattened exports; discarded candidates cannot be recovered.
-Live validation and the broader trust audit remain open; no automatic migration.
-
-Full offline verification for this increment: all 13 Intune Test-* suites passed
-on Windows PowerShell 5.1 and PowerShell 7, including cached Graph/CSP/endpoint
-documentation checks. Assay passed 311 Rust tests with available collector inputs,
-122 Flutter tests with native/review opt-ins, and 432 Intune visual matrix cases.
-Dart LCOV measured 5,176/7,620 lines (67.93%) across 48 instrumented files, not
-100% coverage. Packaged platform integration and live tenant/provider validation
-were not run; no running application was rebuilt or replaced.
-
-## EPM Singular Values (0.5.20)
-
-Non-null singular choice/simple values must now be object containers. Reproduced
-array-shaped choice values could hide descendants while other fields resolved;
-arrays/scalars now reject the affected setting and leave partial coverage without
-a completed-parent marker. Independent settings remain evidence but cannot restore
-a clean Pass. Missing/null values retain unknown handling; empty objects are not
-treated as resolved values or proof of complete schema validity.
-
-Microsoft's [choice-instance](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationchoicesettinginstance?view=graph-rest-beta)
-and [simple-instance](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationsimplesettinginstance?view=graph-rest-beta)
-contracts define singular complex values. This minimum container check does not
-certify all members, OData types, dependencies, applicability or live behavior.
-42 dictionary/JSON cases plus production-path controls verify supported objects,
-unknowns and rejection. `ASSAY_INTUNE_EPM_VALUE_SHAPE_FIXTURE` remains NotAssessed
-through native/app reassessment, save/load and reports with a valid sibling retained;
-its complete control gives Pass/Observed. No new source fields, routes, permissions,
-providers, findings or scores. Recollect affected older flattened exports; discarded
-shapes cannot be recovered. No live occurrence or automatic migration claimed.
-
-## EPM Root Value Kinds (0.5.19)
-
-Recognized EPM rule roots now reject any non-null alternate choice/simple value
-or choice/simple collection alongside the expected group collection. This closes
-a reproduced gap where the root ignored a second kind while decoding valid group
-fields. False, zero and empty strings/objects/arrays are still present values;
-absent/null alternatives remain supported. Rejection uses Partial coverage with
-no completed-parent marker; independent settings cannot restore a clean Pass.
-
-Microsoft documents the [group collection instance](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationgroupsettingcollectioninstance?view=graph-rest-beta)
-shape. This guard is Assay's conservative input boundary, not proof of product
-validation or effective enforcement. Full schemas, dependencies, applicability
-and live behavior remain under audit; EPM constants remain sample-backed.
-
-80 dictionary/JSON cases cover the four alternate kinds and ten value/presence
-forms, plus mocked discovery controls beside valid sibling settings.
-`ASSAY_INTUNE_EPM_ROOT_MIX_FIXTURE` retains one valid rule but stays NotAssessed
-through native/app reassessment, save/load and reports; its complete control
-remains Pass/Observed. No new fields, routes, permissions, providers, findings or
-scores. Recollect affected older flattened exports; discarded root ambiguity
-cannot be reconstructed. No live occurrence or automatic migration is claimed.
-
-## EPM Nested Collections (0.5.18)
-
-The rule walker now traverses nested group and choice collections, fixing a
-reproduced case where hidden descendants escaped duplicate-field detection.
-Group items retain template uncertainty; choice items each use strict option
-resolution and carry independent template/choice uncertainty. Inherited unknowns
-cannot be cleared by descendants, and unresolved duplicates remain counted.
-Mixed non-null value kinds stay unresolved. Child containers must be arrays when
-non-null; nested collection containers require arrays of objects. Invalid shapes
-cause partial collection coverage, not clean evidence.
-
-Microsoft documents [group children](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationgroupsettingvalue?view=graph-rest-beta),
-[choice collections](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationchoicesettingcollectioninstance?view=graph-rest-beta)
-and [choice values/children](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationchoicesettingvalue?view=graph-rest-beta).
-This is bounded evidence traversal, not effective Windows dependency evaluation.
-EPM bindings remain sample-backed; full schema, base/parent relationships,
-simple-collection decoding, applicability and live validation remain open.
-
-82 new dictionary/JSON cases cover positive nested values, duplicates, uncertainty,
-mixed/malformed shapes and item isolation. `ASSAY_INTUNE_EPM_COLLECTION_FIXTURE`
-exports ambiguous fields as null, with EPM-03/EPM-04 NotAssessed;
-`ASSAY_INTUNE_EPM_COLLECTION_CONTROL_FIXTURE` resolves nested-only fields with
-Pass/Observed. Native/app save/load and HTML/PDF preserve both outcomes. Complete
-collection coverage does not certify unambiguous values. No new source fields,
-providers, permissions, routes, findings or scores; rules remain 1.8.0-preview.
-Recollect affected older exports; discarded descendants cannot be reconstructed.
-No live defect occurrence or automatic migration is asserted.
-
-## EPM Nonblank Identities (0.5.17)
-
-Closes a reviewed gap in the 0.5.16 guards: empty/whitespace string IDs could still
-be silently skipped while valid siblings left coverage complete. Root, supplied
-definition and traversed-child identities must now be nonblank strings. Rejection
-marks coverage Partial without completed-parent evidence. Independently valid
-settings remain available; they cannot restore a clean Pass. Nonblank strings are
-not trimmed, normalized or case-folded.
-
-This is an Assay evidence boundary, consistent with the general setting decoder;
-Microsoft's [instance](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationsettinginstance?view=graph-rest-beta)
-and [definition](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationsettingdefinition?view=graph-rest-beta)
-contracts specify String types, not the rejection behavior implemented here.
-24 dictionary/JSON cases and production coverage controls verify the fix.
-`ASSAY_INTUNE_EPM_EMPTY_ID_FIXTURE` retains a valid sibling but stays NotAssessed
-through native/app reassessment, persistence and reports; its complete control
-still gives Pass/Observed. No new fields, permissions, routes, findings or scores.
-Full schema/collection/dependency/applicability and live validation remain open.
-Recollect affected older flattened exports; no automatic migration or live defect
-occurrence is claimed.
-
-## EPM Malformed Duplicates (0.5.16)
-
-Fixes a reviewed regression in 0.5.15: filtering malformed IDs before duplicate
-counting could make a valid plus malformed candidate look unique. For recognized
-rule roots, definition IDs are checked before matching; traversed child IDs are
-checked before decoding/filtering. Non-string, missing or null identities reject
-the affected setting, giving Partial coverage and no completed-parent marker.
-An invalid ID cannot safely identify just one affected field. Independent settings
-remain as partial evidence; they cannot restore a clean Pass. Known warnings remain
-visible. This supersedes the previous field-only unknown behavior for malformed IDs.
-
-Microsoft's [instance ID](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationsettinginstance?view=graph-rest-beta)
-and [definition ID](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationsettingdefinition?view=graph-rest-beta)
-contracts specify strings. Rejection is conservative Assay handling; EPM-specific
-bindings remain sample-backed. Full schema, collection shapes, dependencies,
-base/parent relationships, applicability and live behavior are not certified.
-
-96 mixed-duplicate cases cover malformed child/root/field-definition IDs, both
-orders and dictionary/JSON forms. Actual mocked discovery includes a wildcard-free
-complete control and partial exports with a valid sibling retained.
-`ASSAY_INTUNE_EPM_DUPLICATE_FIXTURE` remains NotAssessed for EPM-03/EPM-04;
-`ASSAY_INTUNE_EPM_DUPLICATE_CONTROL_FIXTURE` gives Pass/Observed respectively,
-through native reassessment and app save/load/HTML/PDF. EPM_BINDING now exports
-Partial coverage with no rules for malformed field IDs. No new fields, routes,
-permissions, providers, findings or scores; rules remain 1.8.0-preview. Recollect
-affected older flattened exports; no live occurrence or automatic migration claimed.
-
-## EPM Typed Bindings (0.5.15)
-
-The rule decoder now requires strings and exact ordinal matches for root/field
-settingDefinitionId, definition id and offsetUri. Arrays containing recognized
-values cannot be treated as scalar bindings. Unsupported field bindings remain
-null without hiding independently bound fields; recognized roots with unsupported
-definitions/offsets fail with Partial coverage and no completed-parent marker.
-Non-string root IDs invalidate collection coverage even alongside a valid setting;
-unrecognized string root IDs do not match this adapter. Exact duplicates remain
-unresolved. Existing transport duplicate filtering may retain rows but still marks
-the policy incomplete; it is not proof of complete rule coverage.
-
-Microsoft documents [instance IDs](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationsettinginstance?view=graph-rest-beta)
-and [definition IDs/offsets](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationsettingdefinition?view=graph-rest-beta)
-as strings. The specific EPM identities/offsets remain sample-backed, not new Learn
-CSP guarantees. Base-URI interpretation, parent relationships, full collection/value
-shapes, dependencies, applicability and live behavior still require further review.
-
-Test-IntuneEpmRules covers 156 binding cases plus direct duplicate and actual
-discovery coverage controls. `ASSAY_INTUNE_EPM_BINDING_FIXTURE` exports unknown
-fields with preserved siblings; `ASSAY_INTUNE_EPM_BINDING_ROOT_FIXTURE` exports
-partial coverage after root rejection. Native/app tests keep EPM-03/EPM-04
-NotAssessed through save/load and HTML/PDF. No new source field, provider, route,
-permission, finding or score; native rules remain 1.8.0-preview. Recollect affected
-older flattened exports; discarded binding types cannot be reconstructed. No
-live defect occurrence or automatic migration is asserted.
-
-## EPM Choice Context (0.5.14)
-
-The EPM rule decoder now carries unresolved ancestor-choice context into its
-descendants and uses the shared strict resolver for leaf choices. One exact typed
-definition/option match and an object-valued optionValue are required. Missing or
-duplicate matches, malformed choice IDs and unusable payloads keep affected fields
-null. Mixed non-null choice/simple nodes and their descendants also stay unknown.
-A valid descendant cannot clear inherited uncertainty; explicit sibling fields
-and other groups remain available. Unresolved nodes still count as duplicates.
-
-Microsoft documents [choice value as an OptionDefinition ItemId with children](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationchoicesettingvalue?view=graph-rest-beta).
-Withholding unresolved descendants is conservative Assay handling, not proof that
-Windows disables them. EPM root/field identities and offsets remain sample-backed;
-their complete validation, collection shapes and applicability remain under audit.
-
-Test-IntuneEpmRules adds 68 choice cases and transitive/duplicate controls.
-`ASSAY_INTUNE_EPM_CHOICE_FIXTURE` writes actual mocked discovery output with an
-unresolved ancestor and a mixed leaf choice for native/app reassessment, save/load
-and HTML/PDF tests. EPM checks remain NotAssessed, not clean Pass. No new field,
-permission, route, provider, finding or score; native rules remain 1.8.0-preview.
-No live occurrence is asserted. Recollect affected older flattened rule exports;
-the original choice context cannot be reconstructed from retained values.
-
-## EPM Template Context (0.5.13)
-
-The separate EPM elevation-rule decoder now retains ancestor template context
-when flattening choice children. Previously a template-defaulted ancestor could
-produce explicit rule fields. Group, field, choice and uniquely selected option
-references now use strict Boolean useTemplateDefault handling: absent/null or
-false permits existing explicit decoding; true or malformed references withhold
-affected values. Child false flags cannot clear inherited uncertainty.
-
-Unresolved children remain visible to duplicate-field detection. Explicit sibling
-fields and other rule groups stay independent. The output shape is unchanged;
-unknown name/fileName/filePath/elevationType fields remain null and rule identities
-are retained. No raw unresolved payload or internal traversal wrapper is exported.
-
-The [Graph template-reference contract](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationsettingvaluetemplatereference?view=graph-rest-beta)
-defines the Boolean. Descendant withholding is conservative Assay interpretation,
-not a runtime inheritance claim. EPM rule IDs/offsets remain sample-backed, and
-the separate decoder's full identity/shape/choice-resolution and applicability
-audit remains open. No new source field, provider, route, permission or score.
-
-Test-IntuneEpmRules covers 120 template cases plus transitive/duplicate controls.
-`ASSAY_INTUNE_EPM_TEMPLATE_FIXTURE` writes actual mocked discovery output for
-native reassessment, application persistence and HTML/PDF regression tests.
-Affected EPM checks stay NotAssessed, not clean Pass. No live occurrence is claimed;
-recollect affected old flattened rule evidence because lost context is unrecoverable.
-
-## Typed CSP Paths (0.5.12)
-
-The generic setting decoder now requires string baseUri and offsetUri before
-constructing an allowed CSP path. This repairs a reproduced case where singleton
-arrays were stringified into valid paths. Non-string fields remain
-UnsupportedDefinition without cspUri, scalar or ADMX values. Raw malformed path
-metadata is not exported. Existing accepted string normalization is unchanged.
-
-Microsoft's [setting-definition contract](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationsettingdefinition?view=graph-rest-beta)
-declares both fields as String. This is a type boundary, not proof of applicability,
-assignment, payload validity or enforcement. Independently decoded children keep
-their own path and existing template/choice checks.
-
-The four EPM client-setting mappings require string IDs and offsets too. Their
-existing absent/null-base or string-base handling remains supported; a supplied
-non-string base is rejected. These mappings remain sample-backed, separate from
-generic CSP construction. The EPM elevation-rule decoder is outside this repair.
-
-Tests cover dictionary/JSON forms, valid string/zero-value controls and all four
-EPM mappings. `ASSAY_INTUNE_PATH_FIXTURE` exports actual mocked discovery output
-for native/app reassessment, save/load and HTML/PDF tests. No new field, scope,
-route, provider, finding or score; native rules stay 1.8.0-preview. Recollect
-affected old evidence because a projected URI cannot recover discarded raw types.
-No live occurrence or full schema audit is claimed.
-
-## Choice Context (0.5.11)
-
-An unresolved singular choice or collection item now keeps its descendants
-unresolved, rather than exporting detached child values as Resolved. One exact
-typed definition/option match and an object-valued optionValue are required to
-establish choice context. Missing/duplicate matches and missing/scalar/array
-option payloads withhold descendant scalar/ADMX values but retain safe metadata.
-Valid children cannot clear ancestor uncertainty; valid collection siblings stay
-independent. Selected-option template flags are evaluated per item. Valid groups
-retain their existing traversal without an invented option requirement.
-
-Microsoft documents the [choice value and children](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationchoicesettingvalue?view=graph-rest-beta)
-and [choice collection](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationchoicesettingcollectioninstance?view=graph-rest-beta).
-Withholding values under unresolved context is conservative Assay interpretation,
-not proof that Windows disables a child or that matched options are effective.
-Full OData payload/dependency/applicability validation remains open.
-
-Both PowerShell runtimes test singular/collection matches, sibling isolation,
-unsupported parent paths, template interaction, transitive propagation and ADMX.
-`ASSAY_INTUNE_CHOICE_FIXTURE` exposes actual mocked discovery output for native
-and application reassessment/save/load/report tests. No new field, provider,
-scope, route, finding, score or native rule (still 1.8.0-preview). Recollect
-affected old flattened policy evidence; lost ancestor context is not recovered
-by importing a previously Resolved child. No live occurrence is asserted.
-
-## Template Context (0.5.10)
-
-The decoder now carries unresolved value-template context into descendant
-settings. Previously, a parent marked UnresolvedTemplateDefault could emit a
-Resolved child. Direct values, selected option values, group/choice-collection
-values and transitive children now retain that uncertainty without exporting
-scalar or ADMX values. Known child identities/CSP paths remain as metadata;
-independent explicit siblings are not contaminated.
-
-Absent/null `settingValueTemplateReference` permits explicit decoding as before.
-A present reference must be an object with Boolean `useTemplateDefault`: false
-permits explicit decoding, true remains unresolved. Missing/null/non-Boolean flags
-or malformed reference objects remain unresolved, never coerced by truthiness.
-An explicit child false flag does not clear inherited uncertainty.
-
-Microsoft documents the [template reference Boolean](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationsettingvaluetemplatereference?view=graph-rest-beta)
-and [group child/reference structure](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationgroupsettingvalue?view=graph-rest-beta).
-The collector's propagation is a conservative evidence rule while context is
-unresolved, not proof that Windows disables or ignores children. No template
-lookup, effective dependency evaluation or new network operation is added.
-
-Both PowerShell runtimes test typed flags, value kinds, unsupported parent paths,
-transitive/sibling isolation and ADMX withholding. Test-IntuneCfaEvidence can write
-`ASSAY_INTUNE_TEMPLATE_FIXTURE` through the actual mocked discovery pipeline.
-Native/app tests keep the parent and child unknown through reassessment, save/load
-and HTML/PDF. Native rules 1.8.0-preview, findings, scores and scopes are unchanged.
-Recollect affected older exports: flattened Resolved child evidence may no longer
-carry the context needed to recognize this defect. Full schema/template/dependency
-validation remains open; no live-tenant defect occurrence is asserted.
-
-## Typed Setting Identities (0.5.9)
-
-ConvertTo-IntuneSettingFacts now requires nonblank string settingDefinitionId and
-choice value identities, and matches string definition id / option itemId by
-ordinal equality. This repairs reproduced numeric/Boolean/array coercion and
-null-identity matching. No trimming, case folding or numeric conversion; exact
-opaque strings such as `0` and `01` remain supported. Exactly one match is required.
-
-Microsoft defines [setting definition id](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationsettingdefinition?view=graph-rest-beta),
-[choice value](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationchoicesettingvalue?view=graph-rest-beta)
-and [option itemId](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationoptiondefinition?view=graph-rest-beta)
-as strings. Nonblank and ordinal matching are conservative adapter rules, not a
-full service-schema guarantee. Unsupported instance IDs produce safe metadata
-with an empty definitionId; invalid choices stay unresolved. Malformed instance/
-choice IDs stop child traversal. Raw non-string IDs are not stringified into export.
-
-Tests exercise dictionary/JSON forms, exact/duplicate matches and malformed
-parents. `ASSAY_INTUNE_IDENTITY_FIXTURE` exports the actual mocked production
-pipeline's negative cases for native/app persistence and report tests. No live
-tenant occurrence is asserted; no new source field, provider, route, permission,
-finding or score. Native rules remain 1.8.0-preview. Other decoder shape/type/
-dependency checks remain open. Recollect affected older evidence: projected
-Resolved scalars cannot reconstruct original malformed identity types.
-
-## Mixed Setting Decoder Repair (0.5.8)
-
-The setting decoder now rejects a node containing both non-null
-`choiceSettingValue` and `simpleSettingValue`. Previously, a failed choice lookup
-could fall back to the simple value; a valid choice could also silently ignore
-the contradictory simple value. Unknown mixed parents could emit resolved children.
-The repaired decoder retains unresolved metadata and stops descending through the
-mixed node. No scalar, ADMX value or raw payload is exported for that node.
-Other independent settings and supported nested groups continue to decode.
-
-Microsoft documents separate [choice](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationchoicesettinginstance?view=graph-rest-beta)
-and [simple](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfigv2-devicemanagementconfigurationsimplesettinginstance?view=graph-rest-beta)
-instance shapes. This is a bounded rejection of their unsupported coexistence,
-not a full type/collection/enum audit. No live Graph payload is claimed to have
-triggered the bug. Tests use injected dictionary and JSON-decoded objects.
-
-Recollect affected policy evidence: an older export that already labels a scalar
-Resolved cannot reconstruct the original discarded ambiguity. Assay rules remain
-1.8.0-preview, with no count/score changes or automatic snapshot migration. New
-unresolved facts cannot establish RTP-01/BM-01 references. The offline production
-test can write `ASSAY_INTUNE_MIXED_SETTING_FIXTURE` for native/app regressions,
-including persistence and reports. No new route, permission or provider.
-
-## Run
+`Invoke-IntuneDiscovery.ps1` 0.6.0 collects read-only Graph observations for
+[Assay](https://github.com/AdmiralTolwyn/assay). The pack contains 50 controls: two bounded Auto
+checks and 48 evidence-assisted Manual checks. Experimental; a live tenant pilot remains required.
+
+## Requirements and Usage
+
+Windows PowerShell 5.1 or PowerShell 7; `Az.Accounts` for delegated sign-in unless supplying an
+approved delegated token. Keep this folder's helpers and JSON contracts together. The collector
+uses allowlisted GET requests, never tenant changes or credential-field reads.
 
 ```powershell
-.\Invoke-IntuneDiscovery.ps1 -TenantId '<tenant-guid>' -OutputPath '.\intune-discovery.json'
+.\Invoke-IntuneDiscovery.ps1 -TenantId '<tenant-guid>'
+.\Invoke-IntuneDiscovery.ps1 -TenantId '<tenant-guid>' -IncludeConfiguration -IncludeEntra
 ```
 
-Requires Az.Accounts for interactive/existing-connection authentication, or an
-approved delegated Graph token provided as SecureString through
-`-GraphAccessToken $SecureToken`. Never include token literals in scripts,
-command history, logs, or chat. No automatic module installation, consent,
-app registration, or role assignment.
+Import the result into Assay's Intune pack. Service policy observations do not establish effective
+endpoint enforcement or assignment. Use the Baseline pack separately for machine-level assessment.
 
-`-UseExistingConnection` verifies the selected commercial-cloud tenant.
-Authentication uses Microsoft's
-[Get-AzAccessToken](https://learn.microsoft.com/en-us/powershell/module/az.accounts/get-azaccesstoken)
-and [Connect-AzAccount](https://learn.microsoft.com/en-us/powershell/module/az.accounts/connect-azaccount).
-An Az token may not contain the required delegated read scopes. If missing,
-use an administrator-approved reader application's token; no write-permission
-fallback. Decoded token metadata checks tenant/audience/expiry/scopes, not
-authenticity; Graph validates the credential. Application-only/opaque tokens
-and noncommercial clouds are not supported by this collector release.
+## Arguments
 
-| Module | Delegated read scope | Microsoft reference |
+### Invoke-IntuneDiscovery.ps1
+
+| Argument | Default | Purpose |
 | --- | --- | --- |
-| Devices | `DeviceManagementManagedDevices.Read.All` | [List managedDevices](https://learn.microsoft.com/en-us/graph/api/intune-devices-manageddevice-list?view=graph-rest-1.0) |
-| Compliance definitions/assignments/reports | `DeviceManagementConfiguration.Read.All` | [Policies](https://learn.microsoft.com/en-us/graph/api/intune-deviceconfig-devicecompliancepolicy-list?view=graph-rest-1.0), [assignments](https://learn.microsoft.com/en-us/graph/api/intune-deviceconfig-devicecompliancepolicyassignment-list?view=graph-rest-1.0), [reports](https://learn.microsoft.com/en-us/graph/api/intune-deviceconfig-devicecompliancedevicestatus-list?view=graph-rest-1.0) |
-| Legacy configuration | `DeviceManagementConfiguration.Read.All` | [Definitions](https://learn.microsoft.com/en-us/graph/api/intune-deviceconfig-deviceconfiguration-list?view=graph-rest-1.0), [assignments](https://learn.microsoft.com/en-us/graph/api/intune-deviceconfig-deviceconfigurationassignment-list?view=graph-rest-1.0) |
-| Apps | `DeviceManagementConfiguration.Read.All` | [Apps](https://learn.microsoft.com/en-us/graph/api/intune-apps-mobileapp-list?view=graph-rest-1.0), [assignments](https://learn.microsoft.com/en-us/graph/api/intune-apps-mobileappassignment-list?view=graph-rest-1.0) |
-| Optional `-IncludeRbac` | `DeviceManagementRBAC.Read.All` | [Roles](https://learn.microsoft.com/en-us/graph/api/intune-rbac-roledefinition-list?view=graph-rest-1.0), [assignments](https://learn.microsoft.com/en-us/graph/api/intune-rbac-roleassignment-list?view=graph-rest-1.0) |
-| Optional `-IncludeAudit` | `DeviceManagementApps.Read.All` | [Audit](https://learn.microsoft.com/en-us/graph/api/intune-auditing-auditevent-list?view=graph-rest-1.0) |
+| `-TenantId` | Required for collection | Entra tenant GUID; token tenant must match. |
+| `-OutputPath` | `%LOCALAPPDATA%\AssayCollections\intune\intune_<collectionId>.json` | New JSON path; never overwrites. |
+| `-IncludeRbac` | Off | Read role definitions/assignments; `DeviceManagementRBAC.Read.All`. |
+| `-IncludeAudit` | Off | Read audit events since `AuditSinceUtc`. |
+| `-IncludeConfiguration` | Off | Settings catalog, decoded settings, intents/templates, scope tags, filters and supported assignments. |
+| `-IncludeEntra` | Off | Device registration and CA; `Policy.Read.DeviceConfiguration` and `Policy.Read.All`. |
+| `-IncludeRecoveryMetadata` | Off | LAPS/BitLocker metadata only; `DeviceLocalCredential.ReadBasic.All`, `BitlockerKey.ReadBasic.All`. Never passwords or keys. |
+| `-IncludeEnrollment` | Off | Enrollment and Autopilot profiles; `DeviceManagementServiceConfig.Read.All`. |
+| `-IncludeApple` | Off | Push-certificate/VPP metadata; `DeviceManagementServiceConfig.Read.All`. |
+| `-IncludeMam` | Off | App-protection policies; `DeviceManagementApps.Read.All`. |
+| `-IncludeMamLaunch` | Off | App-protection launch conditions; `DeviceManagementApps.Read.All`. |
+| `-IncludeRemoteHelp` | Off | Remote Help tenant settings. |
+| `-IncludeConnectors` | Off | Threat-defense connectors; `DeviceManagementServiceConfig.Read.All`. |
+| `-IncludeAppConfiguration` | Off | App-configuration metadata; `DeviceManagementApps.Read.All`. |
+| `-IncludePlatformCompliance` | Off | Modern settings-catalog compliance policies. |
+| `-IncludeTunnel` | Off | Microsoft Tunnel sites/servers. |
+| `-EndpointEvidencePaths` | Empty | Same-tenant companion endpoint exports, maximum 1 MB each. |
+| `-DefenderEvidencePath` | None | Same-tenant Defender companion export, maximum 64 MB. |
+| `-AppControlPolicyPaths` | Empty | WDAC policy XML to summarize, maximum 1 MB each. |
+| `-AuditSinceUtc` | UTC now minus seven days | Start of the audit window. |
+| `-UseExistingConnection` | Off | Reuse the Az.Accounts context instead of signing in. |
+| `-GraphAccessToken` | None | Delegated Graph `SecureString` token; tenant, audience, expiry and scopes checked before requests. |
+| `-Assessor` | None | Free-text operator label for AssessmentRequirements. |
+| `-ScopeDescription` | None | Free-text scope; required to write AssessmentRequirements. |
+| `-MaxCollectionAgeHours` | No target | Customer collection-age target, 1-87600 hours. |
+| `-MaxPolicyReportAgeHours` | No target | Customer policy-report-age target, 1-87600 hours. |
+| `-MaxDeviceSyncAgeDays` | No target | Customer device-sync-age target, 1-87600 days. |
+| `-PrivacyMode` | `Pseudonymous` | `Pseudonymous` or `Identified`; Identified requires confirmation. |
+| `-ConfirmIdentifiedExport` | Off | Explicitly permit Identified export. |
+| `-PseudonymKeyPath` | Output extension replaced by `.pseudonym-key` | Load/create protected Base64 32-byte key; reuse for stable pseudonyms. |
+| `-IdentityMapPath` | None | New pseudonym-to-original map; keep separate from exports. |
+| `-LibraryOnly` | Off | Load functions without collecting, for tests/library callers. |
 
-These scopes do not establish actual RBAC visibility or licensing. Intune API
-license prerequisites are stated on the linked endpoint references.
+Core and optional read scopes are enforced by [GraphContracts.json](GraphContracts.json), not
+granted by the script. Service roles/licensing/visibility remain additional requirements. See
+[AUDIT.md](AUDIT.md) for enabled and quarantined routes; unsupported assignment reads are not absence.
 
-Optional assessment inputs: `-Assessor`, `-ScopeDescription`,
-`-MaxCollectionAgeHours`, `-MaxPolicyReportAgeHours`, `-MaxDeviceSyncAgeDays`.
-These are customer requirements, not Microsoft defaults. Alternatively set them
-in Assay's **Intune evidence** dialog after importing. Audit collection accepts
-`-AuditSinceUtc`; default seven-day lookback is only a collection convenience.
+### Get-IntuneEndpointEvidence.ps1
 
-## Evidence boundaries
+Run on the target Windows device with Defender, NetSecurity, BitLocker and Device Guard providers.
+The device must have an unambiguous Entra identity in the selected tenant. Provider failures are
+recorded per module; the script does not elevate itself or remediate.
 
-- Explicit tenant, collection ID, UTC interval, API version, module state and child-report completion.
-- Full [paging](https://learn.microsoft.com/en-us/graph/paging), including empty pages with next links; bounded retries using [Retry-After](https://learn.microsoft.com/en-us/graph/throttling).
-- GET-only endpoint allowlist, HTTPS, no redirects, four attempts, 120-second request timeout, 30-minute run budget, 16 MB response and 64 MB export limits. These are collector safeguards, not Microsoft service limits.
-- Partial and empty states are retained; collection completeness does not establish unrestricted tenant visibility or compliance.
-- Allowlisted fields exclude password/recovery values, scripts, app content, actor identifiers, and audit modified-property values. Names and IDs remain confidential organizational data.
-- Existing output is not overwritten. Use a writable local folder; do not weaken endpoint protection to bypass a blocked write.
-- Definitions/assignments are not effective targeting. Compliance-report IDs are entity IDs, not assumed device IDs; see the [report-row resource](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfig-devicecompliancedevicestatus?view=graph-rest-1.0).
-- No legacy configuration-status binding: Microsoft documents deprecation starting May 2026 for that [entity](https://learn.microsoft.com/en-us/graph/api/resources/intune-deviceconfig-deviceconfigurationdevicestatus?view=graph-rest-1.0).
-- No report export-job creation: its [reference](https://learn.microsoft.com/en-us/graph/api/intune-reporting-devicemanagementexportjob-create?view=graph-rest-1.0) lists write scopes.
-
-Modern configuration, enrollment, Entra and recovery modules are opt-in as
-described below, as are MAM, app configuration, threat connectors and platform
-compliance. Other unsupported families remain NotRequested. Inventory is independent of Windows device counts. No group
-expansion, device action, tenant mutation, targeted secret retrieval, cross-tenant
-collection, or automatic token renewal after 401. External process termination
-may prevent an export from being written.
-Field projection limits exports, not the contents of full responses in memory;
-see the audit's data-handling limits.
-
-## Offline verification
-
-```powershell
-.\Test-IntuneDiscovery.ps1
-.\Test-IntuneExpansion.ps1
-.\Test-IntuneDefenderEvidence.ps1
-.\Test-IntuneServices.ps1
-.\Test-IntuneTunnel.ps1
-.\Test-IntuneEpmRules.ps1
-.\Test-IntuneMamLaunch.ps1
-.\Test-IntuneCfaEvidence.ps1
-.\Test-IntuneSignatureTimestamp.ps1
-powershell.exe -NoProfile -File .\Test-IntuneDiscovery.ps1
-powershell.exe -NoProfile -File .\Test-IntuneExpansion.ps1
-powershell.exe -NoProfile -File .\Test-IntuneDefenderEvidence.ps1
-powershell.exe -NoProfile -File .\Test-IntuneServices.ps1
-powershell.exe -NoProfile -File .\Test-IntuneTunnel.ps1
-powershell.exe -NoProfile -File .\Test-IntuneEpmRules.ps1
-powershell.exe -NoProfile -File .\Test-IntuneMamLaunch.ps1
-powershell.exe -NoProfile -File .\Test-IntuneCfaEvidence.ps1
-powershell.exe -NoProfile -File .\Test-IntuneSignatureTimestamp.ps1
-```
-
-Tests load library-only functions and use synthetic HTTP responses, never a
-tenant connection. `ASSAY_INTUNE_FIXTURE` optionally writes a synthetic export
-for cross-language testing. A live pilot must reconcile authentication, API
-responses and counts with portal evidence for the same visible scope before
-production-validation claims.
-
-## Configuration Expansion
-
-### Signature Timestamp Integrity (0.5.5)
-
-**Keep `IntuneEndpointTimestamps.ps1` beside the endpoint companion and discovery
-scripts.** The companion now serializes AntivirusSignatureLastUpdated as an
-explicit UTC ISO string before JSON export. UTC/offset dates and unambiguous Local
-DateTime values are supported; Unspecified DateTime never inherits the importing
-machine's timezone. This fixes the [.NET local-time assumption](https://learn.microsoft.com/en-us/dotnet/api/system.datetime.touniversaltime).
-
-PowerShell 7's [automatic JSON date conversion](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.utility/convertfrom-json?view=powershell-7.5)
-can erase original syntax. The file-import adapter restores this field's raw
-string using System.Text.Json before validating it; other fields are unchanged.
-The reviewed Windows PowerShell 5.1 path preserves JSON strings. No 7.5-only
-DateKind parameter or module installation is required.
-
-ISO strings must include Z or a numeric offset and at most seven fractional
-digits. Missing timezone, unknown-offset -00:00, legacy /Date(...), invalid values
-or unreviewed types stay unavailable; no default is inferred. Adjacent Defender
-fields survive. Rules 1.5.2-preview apply corresponding guards to direct native
-imports. Historical lost timezone information requires recollection, not guessing.
-Valid syntax is not clock accuracy, signature freshness or update-health proof.
-That integrity repair added no fields, commands, permissions, findings or scores.
-The separate signature-age comparison below now uses this evidence.
-Test-IntuneSignatureTimestamp uses injected values only;
-ASSAY_INTUNE_SIGNATURE_TIME_FIXTURE optionally writes native-test cases.
-
-### Reported Signature-Update Age (Assay 1.6.0-preview)
-
-Assay N-04-AGE uses the already collected `AntivirusSignatureLastUpdated` from
-[Get-MpComputerStatus](https://learn.microsoft.com/en-us/powershell/module/defender/get-mpcomputerstatus?view=windowsserver2025-ps).
-Age is measured at the assessment-as-of time. It defaults to Observed / Evidence;
-the optional Reference input **Signature-update age limit (hours)** supplies
-`AssessmentRequirements.ConfigurationReview.MaxSignatureAgeHours`. Accepted values
-are integers 0-87600; absent/null means no target. These are customer/Assay inputs,
-not a Microsoft freshness SLA. At or below the inclusive limit is Pass, above it
-Warning, using full timestamp precision. Clearing the input restores observation.
-
-The selected Windows device must uniquely match one fresh, complete endpoint
-sample and one Complete DefenderStatus row. All four signature/sample/completion/
-assessment times require supported explicit instants and valid ordering. Missing,
-unknown-offset, future, stale or incomplete evidence cannot establish a clean
-Pass. `MaxCollectionAgeHours` remains an independent sample-age gate. Preferences
-or active antivirus are not prerequisites for a timestamp-age comparison.
-This is not proof of latest security intelligence, current device state, update
-delivery, active protection or platform/engine currency. Clocks/identity are not
-authenticated; old timestamp provenance cannot be recovered.
-
-This age-only increment required no collector change: existing requirement pass-through retains
-the limit without a new field, command, permission or update action. Offline
-production-import tests in PowerShell 5.1/7 preserve 0, 2 and 87600; native and
-application tests cover boundaries, target changes, persistence and reports.
-
-### File-Share Source State (0.5.7)
-
-The existing preference read now also projects
-`SignatureDefinitionUpdateFileSharesSources` in memory, removes the raw property
-before JSON, and emits Assay-derived `SignatureFileSharesState`. Empty means a
-typed empty string, NonEmpty a non-whitespace string, and Unknown all missing,
-null, whitespace-only or unsupported types. It is independent of
-SharedSignaturesPathState; both raw properties are removed before export.
-
-The [PowerShell reference](https://learn.microsoft.com/en-us/powershell/module/defender/set-mppreference?view=windowsserver2025-ps#-signaturedefinitionupdatefilesharessources)
-defines the exact plural property and a pipe-separated UNC string. The
-[product guide](https://learn.microsoft.com/en-us/defender-endpoint/manage-protection-updates-microsoft-defender-antivirus)
-documents skipping FileShares when no paths are entered. Its shorter singular
-command example is not used to infer a provider alias.
-
-Assay N-03 (rules 1.6.2-preview) describes FileShares listed with an empty reported
-source string, but remains Observed / Evidence. It never claims that runtime
-skipping occurred. NonEmpty is not a valid-location, access, content or delivery
-check; even an unparsed pipe-only string is NonEmpty. FileShares not listed does
-not create a requirement to add it. Shared-signature override context remains
-separate, with no effective-source or protection conclusion.
-
-Only exact derived states survive import; raw paths and malformed states are
-dropped. Older/missing evidence stays Unknown. The existing platform, selection,
-identity, freshness and complete-provider gates apply. Five provider commands
-now project 38 fields: 36 direct exports and two derived states. No new provider,
-route, scope, finding or score; no share/network probes or update operation.
-Offline tests cover both row forms, independent reduction, malformed/missing
-values, forged states, privacy, save/load and reports. Live validation remains open.
-
-### Shared-Signature State (0.5.6)
-
-The existing Get-MpPreference read adds `SharedSignaturesPath` in memory. Before
-JSON serialization, the companion removes it and emits the Assay-derived
-`SharedSignaturesPathState`: `Empty` for a typed empty string, `NonEmpty` for a
-non-whitespace string, otherwise `Unknown`. Missing/null/whitespace/non-string
-values never imply an empty setting. No raw path is exported or accessed; no UNC
-syntax, path validity, applicability or runtime-use check is performed. The
-provider object can contain the raw value in memory before reduction.
-
-Assay N-03 (rules 1.6.1-preview) reports this state alongside the source list,
-with the documented [SharedSignaturesPath override](https://learn.microsoft.com/en-us/powershell/module/defender/set-mppreference?view=windowsserver2025-ps#-sharedsignaturespath)
-(revision `4a7aa7a27f92a5df33b61c78efc584abf2aad4a9`). Microsoft's
-[VDI guidance](https://learn.microsoft.com/en-us/defender-endpoint/deployment-vdi-microsoft-defender-antivirus)
-describes the feature and separate share/access prerequisites. These are source
-references; no Set cmdlet, share access or update operation is executed.
-
-The derived name/enum is an Assay contract, not a Microsoft provider field.
-Import accepts only exact Empty/NonEmpty/Unknown values and drops raw paths.
-Older or malformed state evidence stays Unknown, not a guessed empty setting.
-Valid source lists remain Observed; malformed lists remain NotAssessed while
-retaining supported state evidence. Existing identity/platform/freshness/provider
-gates apply; no state yields a new health verdict or establishes effective source
-selection, network reachability, update delivery or protection.
-
-The 0.5.6 increment projected 37 source fields, exporting 36 directly and
-one as a derived state; 0.5.7 adds the second state above. Test-IntuneEndpointContracts distinguishes read/export
-names. The production pipeline test covers dictionary/object rows, missing and
-malformed inputs, forged states and raw-path privacy; native/app tests cover
-reassessment, save/load and reports. No new provider, permission, route, finding
-or score. Tests mock providers and HTTP; live behavior remains unverified.
-
-### Defender Update Cadence (0.5.4)
-
-The existing endpoint preference read adds `SignatureScheduleDay` and
-`SignatureUpdateInterval`. Assay N-04 (rules 1.5.1-preview) requires both fields
-and records day 0-8 (or documented names Everyday/Sunday through Saturday/Never)
-and integer interval 0-24 hours. Missing or invalid values stay NotAssessed.
-Per Microsoft's [scheduling guide](https://learn.microsoft.com/en-us/defender-endpoint/manage-protection-update-schedule-microsoft-defender-antivirus),
-day 8 plus interval 0 means no Defender-owned schedule. Interval 0 alone does not
-mean all updates are disabled: a day can still be specified. Both day and interval
-present is reported without guessing precedence. All valid combinations yield
-Observed, never a health or compliance verdict.
-
-Scheduled local clock time, randomization, runtime mode, actual execution and
-signature freshness are not evaluated. Other update mechanisms and passive-mode
-limitations need separate review. No new provider, Graph route, scope, scheduled
-task or update action is introduced. Existing production pipeline tests cover
-zero/missing/named values and exclude SignatureScheduleTime; native and report
-tests use the generated synthetic endpoint fixture. No live endpoint query.
-
-### Defender Update Source Evidence (0.5.3)
-
-The existing endpoint `Get-MpPreference` projection now includes
-`SignatureFallbackOrder`. Assay N-03 (rules 1.5.0-preview) retains the order of the
-four documented tokens: InternalDefinitionUpdateServer, MicrosoftUpdateServer,
-MMPC and FileShares. One to four unique pipe-separated tokens are supported,
-including ASCII spaces around tokens; missing, malformed or unknown values stay
-unassessed without discarding tokens or inventing defaults.
-
-This is Observed/NotAssessed evidence only. It identifies MMPC's listed position
-against [Microsoft's final-fallback guidance](https://learn.microsoft.com/en-us/defender-endpoint/manage-protection-updates-microsoft-defender-antivirus),
-not a health verdict. File-share locations/access are not collected. The
-[PowerShell reference](https://learn.microsoft.com/en-us/powershell/module/defender/set-mppreference?view=windowsserver2025-ps#-signaturefallbackorder)
-also documents SharedSignaturesPath overriding fallback-order updates; 0.5.6 adds
-only the path-free value state above. Never treat the list as proof of the effective source,
-successful updates, WSUS approvals, signature freshness or platform/engine servicing.
-No new provider, Graph request, scope, update action or path export is added.
-
-`Test-IntuneCfaEvidence.ps1` now tests this field through the actual provider
-callback and companion/discovery import with mocked providers/HTTP. Its existing
-synthetic fixture includes both CFA and source-order observations. N-03 requires
-the selected Windows identity, fresh sample and complete preference module, but
-does not require Defender runtime status to report configuration evidence.
-
-### Controlled Folder Access Evidence (0.5.2)
-
-The optional endpoint companion now retains `EnableControlledFolderAccess` from
-its existing `Get-MpPreference` call. No additional provider, Graph request or scope
-is added. Import the companion file using `-EndpointEvidencePaths`; select managed
-device IDs and confirm scope/freshness in the existing Assay evidence workflow.
-The cloud collector does not remotely execute the endpoint companion.
-
-Assay N-01 (rules 1.4.1-preview) distinguishes all five [CFA modes](https://learn.microsoft.com/en-us/defender-endpoint/controlled-folder-access-overview)
-and reports active-AV/real-time prerequisites separately. The [PowerShell reference](https://learn.microsoft.com/en-us/defender-endpoint/controlled-folder-access-configure#enable-and-configure-cfa-in-powershell)
-documents the exact field and integer/named values. [Defender compatibility](https://learn.microsoft.com/en-us/defender-endpoint/microsoft-defender-antivirus-compatibility)
-explains why passive/EDR-block status is not active CFA protection.
-
-By default this is unscored Observed/NotAssessed evidence. Assay's Reference tab
-now offers **CFA mode target**, default Observe only. The optional exact
-`ConfigurationReview.ControlledFolderAccessTarget` accepts Disabled, Enabled,
-AuditMode, BlockDiskModificationOnly or AuditDiskModificationOnly. A matching
-non-disabled target requires observed active AV/real-time prerequisites for Pass;
-known mismatch or unmet prerequisites yields Warning. Matching Disabled does not
-require active CFA, but still requires known evidence. Unknown evidence stays
-unassessed; no fleet/protection verdict is implied. Clearing the target restores
-observation-only behavior. Targets apply uniformly to the selected samples.
-
-Audit and Disabled are not universal policy violations; disk-only modes do not
-protect files in folders. No folder/app lists, effective
-assignment or actual block event is evaluated. Missing/unknown fields and stale,
-ambiguous or incomplete selected-device evidence stay unassessed. Old samples
-without this field do not acquire an inferred default. Provider projection does
-not mean unrelated data was never present in the provider's in-memory object.
-
-Run `Test-IntuneCfaEvidence.ps1` in 5.1/7 for mocked production provider/import
-checks. `ASSAY_INTUNE_CFA_FIXTURE` optionally writes a synthetic discovery export
-for native reassessment/save/load/report tests. No provider or Graph query runs
-in the test. Live provider serialization and endpoint enforcement remain unverified.
-
-### Configuration Collection
+| Argument | Default | Purpose |
+| --- | --- | --- |
+| `-TenantId` | Required | Entra tenant GUID matching the device join. |
+| `-OutputPath` | Required | New endpoint evidence JSON path. |
+| `-LibraryOnly` | Off | Load functions without collecting. |
 
 ```powershell
-.\Invoke-IntuneDiscovery.ps1 -TenantId '<tenant-guid>' `
-	-OutputPath '.\intune-expanded.json' `
-	-IncludeConfiguration -IncludeRbac -IncludeEnrollment
+.\Get-IntuneEndpointEvidence.ps1 -TenantId '<tenant-guid>' -OutputPath .\endpoint.json
 ```
 
-- `-IncludeConfiguration`: beta modern policy/settings/definitions,
-	legacy intent/template/assignment metadata, filters and v1 noncompliance
-	schedules. Uses existing Configuration.Read.All. Legacy setting bodies and
-	unrecognized modern definitions are not decoded.
-	Modern assignment reads are currently quarantined as Unsupported.
-- `-IncludeRbac` also collects scope tags when configuration is requested.
-- `-IncludeEnrollment`: beta ESP metadata/assignments and Autopilot metadata; requires
-	DeviceManagementServiceConfig.Read.All.
-	Autopilot assignment reads are currently quarantined as Unsupported.
-- `-IncludeEntra`: device registration and Conditional Access; requires
-	Policy.Read.DeviceConfiguration and Policy.Read.All plus a supported Entra role.
-- `-IncludeRecoveryMetadata`: metadata-only lists with
-	DeviceLocalCredential.ReadBasic.All and BitlockerKey.ReadBasic.All. No passwords
-	or recovery keys are requested or exported.
-- `-IncludeApple`: APNs/VPP metadata projections with ServiceConfig.Read.All.
-	Projection and response compatibility still need live validation.
+### Get-IntuneDefenderEvidence.ps1
 
-The [settings API](https://learn.microsoft.com/en-us/graph/api/intune-deviceconfigv2-devicemanagementconfigurationsetting-list?view=graph-rest-beta)
-and [definition API](https://learn.microsoft.com/en-us/graph/api/intune-deviceconfigv2-devicemanagementconfigurationchoicesettingdefinition-list?view=graph-rest-beta)
-are interpreted by exact definition/CSP/option identities, not display names
-or numeric suffixes. Unknown setting values are omitted.
+Reads the Defender machines API with an approved delegated token. Device names are omitted;
+device-group visibility and retention limit coverage. Do not paste tokens into scripts or reports.
 
-Run the companion independently on an explicitly authorized endpoint:
+| Argument | Default | Purpose |
+| --- | --- | --- |
+| `-TenantId` | Required | Entra tenant GUID matching the token. |
+| `-AccessToken` | Required | Unexpired delegated Defender `SecureString` token with `Machine.Read`. |
+| `-OutputPath` | Required | New Defender evidence JSON path. |
+| `-LibraryOnly` | Off | Load functions without collecting. |
 
-```powershell
-.\Get-IntuneEndpointEvidence.ps1 -TenantId '<tenant-guid>' -OutputPath '.\endpoint.json'
-```
+## Privacy and Interpretation
 
-It reads selected Defender, ActiveStore firewall, BitLocker-volume and DeviceGuard
-fields after checking local device/tenant identity. No automatic elevation or
-remediation. Attach samples using `-EndpointEvidencePaths '.\endpoint.json'` in
-the discovery command. The tenant collector never remotely runs the companion.
+Exports are **Confidential**, not anonymous. Default mode pseudonymizes device names, counts
+CA/registration members, classifies LAPS names and masks profile/UNC path segments. Join GUIDs
+remain available for correlation. Observations inherit the transformed values. Keys/maps are
+separate protected files; OneDrive destinations are discouraged. Existing outputs are never overwritten.
 
-Assay exposes 104 supplementary unscored findings: by default 63 bounded comparison
-entries and 41 evidence entries (64/40 with either an explicit CFA target or a
-signature-age limit; 65/39 with both). All have
-handlers, but several cover only part of their
-feature; evidence collection is not complete automatic assessment. The original
-50-control scoring catalog remains unchanged. Set reference/scenario scope in
-the native evidence dialog. `ASSAY_INTUNE_EXPANSION_FIXTURE` optionally writes a
-synthetic expanded snapshot, including companion imports, from the offline test.
+Collection completion does not certify decoded settings, applicability or enforcement. Unresolved
+option/ADMX/EPM payloads remain unknown. Correlation does not prove assignment, and timestamp/metadata
+checks do not prove update delivery, current release versions or runtime protection.
 
-## Selected Real-Time Policy Correlation
+## Verification and References
 
-Assay rules 1.7.0-preview add RTP-01 without changing collector production 0.5.7.
-Use the existing `-IncludeConfiguration` and `-EndpointEvidencePaths` workflow,
-then select exactly one modern Windows policy in Reference `PolicyIds` and a
-device cohort in `DeviceIds`. The policy is an analyst reference, not a proven
-assignment. Complete supported collections and selected-parent settings coverage
-must expose exactly one Resolved integer 0/1
-[AllowRealtimeMonitoring](https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-defender#allowrealtimemonitoring).
+Use `Get-Help <script> -Full`. Run `Test-Intune*.ps1` and
+`../Shared/Test-CollectorDocumentation.ps1` in both runtimes. Graph/policy contract suites need
+the external metadata paths documented in their parameters; offline tests do not replace live validation.
+See [AUDIT.md](AUDIT.md), [Assay implementation](https://github.com/AdmiralTolwyn/assay/blob/main/docs/INTUNE_ASSESSMENT_IMPLEMENTATION.md)
+and [privacy specification](https://github.com/AdmiralTolwyn/assay/blob/main/docs/COLLECTOR_PRIVACY_SPEC.md).
 
-RTP-01 compares that value with the inverse Boolean DisableRealtimeMonitoring
-preference and independently with reported Boolean RealTimeProtectionEnabled.
-Both fields are already collected. Each comparison is Aligned or Different;
-the finding stays Observed / Evidence, never a protection or deployment verdict.
-Missing/ambiguous/partial evidence, malformed values and stale/future samples stay
-NotAssessed. A disabled reference can align without being approved as secure.
-Assignment filters/groups, applicability, precedence, intervening changes, tamper
-protection and runtime health are not resolved. Snapshots are not atomic.
-
-No new route, provider, field, permission or action. Test-IntuneCfaEvidence can
-write `ASSAY_INTUNE_REALTIME_FIXTURE` from the actual mocked provider callback,
-definition decoder and companion import. It verifies opaque option-value joins,
-typed fields and unavailable assignment coverage on PowerShell 5.1/7. Native
-tests cover reference switching, unknown coverage, persistence and reports.
-
-### Behavior Monitoring (Assay 1.8.0-preview)
-
-BM-01 independently correlates the selected policy's exact integer 0/1
-[AllowBehaviorMonitoring](https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-defender#allowbehaviormonitoring)
-with the inverse Boolean DisableBehaviorMonitoring preference and reported Boolean
-BehaviorMonitorEnabled. All are already collected; production remains 0.5.7.
-The same single-policy, complete-settings/parent-coverage, unique Windows endpoint,
-typed-provider and precise timestamp gates apply as for RTP-01. Neither finding
-borrows the other's setting or endpoint fields. Missing data stays NotAssessed;
-Aligned/Different stay Observed / Evidence, not security or deployment verdicts.
-
-The existing ASSAY_INTUNE_REALTIME_FIXTURE now includes two settings per policy
-and opposite real-time/behavior values to detect cross-wiring. Mocked production
-definition joins and endpoint imports are tested in PowerShell 5.1/7; native
-tests cover both mappings' gates, switching, persistence and HTML/PDF exports.
-No new field, provider, route, permission or action. Real-time and behavior
-monitoring runtime dependencies, applicability, assignment and enforcement are
-not established by these independent evidence labels.
-
-## MAM, Remote Help And Platform Services
-
-```powershell
-.\Invoke-IntuneDiscovery.ps1 -TenantId '<tenant-guid>' `
-		-OutputPath '.\intune-services.json' `
-		-IncludeMam -IncludeMamLaunch -IncludeRemoteHelp -IncludeConnectors `
-		-IncludeAppConfiguration -IncludePlatformCompliance `
-		-IncludeConfiguration -IncludeRbac -IncludeEntra -IncludeTunnel
-```
-
-- `IncludeMam`: v1 Android/iOS APP policies, assignments and apps; separate beta
-	Windows APP policies. Additional `DeviceManagementApps.Read.All`. Collection
-	runs even with zero enrolled devices. No MAM registration/user inventory.
-- `IncludeRemoteHelp`: beta tenant singleton, state, unenrolled permission and
-	chat flag. Existing Configuration.Read.All is a documented read alternative.
-	No remote sessions, chat contents or device actions.
-- `IncludeMamLaunch`: independent beta Android/iOS APP lists with reviewed
-	root/action, PIN retry, offline/biometric timers, attestation, notification,
-	clipboard, threat/priority and platform applicability fields. Apps.Read.All
-	is already requested by IncludeMam; the switches can also run independently.
-	No user registrations, app payloads or secrets; v1 APP evidence is not merged.
-- `IncludeConnectors`: v1 mobile threat connectors, heartbeat/state, distinct
-	MAM/MDM flags and privacy controls; ServiceConfig.Read.All.
-- `IncludeAppConfiguration`: v1 managed-app and managed-device app configuration
-	metadata/assignments. Apps.Read.All. Exact metadata-only select is required;
-	arbitrary customSettings, encoded XML and secrets are excluded.
-- `IncludePlatformCompliance`: separate beta Android device-owner compliance
-	and modern compliance metadata (including Linux); existing Configuration read
-	scope. The original v1 scoring/report module is unchanged.
-- Existing `IncludeConfiguration` also decodes four exact EPM client-setting
-	ID/path pairs and grouped rule name/file/path/type definitions using returned
-	typed option values. Rule groups are isolated; only automatic-wildcard and
-	empty/network-path checks are added. Hash/certificate/child-process safety and
-	effective client settings remain unassessed.
-- `IncludeTunnel`: beta sites and per-site server lists using existing
-	Configuration.Read.All. Health/check-in and upgrade metadata only, with
-	per-site completion. No probes, log actions, upgrades or new permissions.
-	Public/probe URLs are omitted. Select Tunnel sites and a customer check-in-age
-	target in Assay; a healthy captured state is not proof of current connectivity.
-
-In Assay's Reference tab, choose a separate MAM framework level and APP policy
-IDs, nullable Remote Help targets and platform security requirements. These are
-bounded configuration comparisons, not proof of user/device enforcement.
-`ASSAY_INTUNE_SERVICES_FIXTURE` optionally exports a synthetic service fixture
-from the new offline test.
-
-Microsoft references: [MAM framework](https://learn.microsoft.com/en-us/intune/app-management/protection/data-protection-framework),
-[APP list](https://learn.microsoft.com/en-us/graph/api/intune-mam-managedapppolicy-list?view=graph-rest-1.0),
-[Remote Help GET](https://learn.microsoft.com/en-us/graph/api/intune-remoteassistance-remoteassistancesettings-get?view=graph-rest-beta),
-[threat connectors](https://learn.microsoft.com/en-us/graph/api/intune-onboarding-mobilethreatdefenseconnector-list?view=graph-rest-1.0),
-[managed app configuration](https://learn.microsoft.com/en-us/graph/api/intune-mam-targetedmanagedappconfiguration-list?view=graph-rest-1.0),
-[device app configuration](https://learn.microsoft.com/en-us/graph/api/intune-apps-manageddevicemobileappconfiguration-list?view=graph-rest-1.0),
-[Android device-owner](https://learn.microsoft.com/en-us/graph/api/intune-deviceconfig-androiddeviceownercompliancepolicy-list?view=graph-rest-beta),
-[modern compliance](https://learn.microsoft.com/en-us/graph/api/intune-deviceconfigv2-devicemanagementcompliancepolicy-list?view=graph-rest-beta),
-[EPM settings](https://learn.microsoft.com/en-us/intune/epm/manage-elevation-settings).
-
-Tunnel references: [sites](https://learn.microsoft.com/en-us/graph/api/intune-mstunnel-microsofttunnelsite-list?view=graph-rest-beta),
-[servers](https://learn.microsoft.com/en-us/graph/api/intune-mstunnel-microsofttunnelserver-list?view=graph-rest-beta),
-[health resource](https://learn.microsoft.com/en-us/graph/api/resources/intune-mstunnel-microsofttunnelserver?view=graph-rest-beta).
-EPM rule recommendations: [rule creation](https://learn.microsoft.com/en-us/intune/epm/create-elevation-rules),
-[planning](https://learn.microsoft.com/en-us/intune/epm/deployment-planning).
-Exact grouped definition binding: [Microsoft365DSC test fixture](https://github.com/microsoft/Microsoft365DSC/blob/Dev/Tests/Unit/Microsoft365DSC/Microsoft365DSC.IntuneEpmElevationRulesPolicyWindows10.Tests.ps1),
-reviewed 2026-09-17. A public fixture is not live-tenant validation.
-`ASSAY_INTUNE_TUNNEL_FIXTURE` and `ASSAY_INTUNE_EPM_FIXTURE` enable synthetic
-exports from their offline suites for cross-language/native testing.
-
-## MAM Launch Review
-
-For launch checks, select a MAM framework level and **Selected APP launch
-policies** in Assay. Android/iOS IDs are qualified independently. Graph PIN
-retry actions are not assumed equivalent to the UI's Reset PIN action. Timers
-accept positive whole-component day/hour/minute/second forms; unsupported forms
-remain Not Assessed. Platform/SDK/app enforcement still needs pilot evidence.
-`ASSAY_INTUNE_MAM_LAUNCH_FIXTURE` enables the synthetic launch export in its test.
-
-MAM launch references: [Android list](https://learn.microsoft.com/en-us/graph/api/intune-mam-androidmanagedappprotection-list?view=graph-rest-beta),
-[iOS list](https://learn.microsoft.com/en-us/graph/api/intune-mam-iosmanagedappprotection-list?view=graph-rest-beta),
-[Android settings](https://learn.microsoft.com/en-us/intune/app-management/protection/ref-settings-android),
-[iOS settings](https://learn.microsoft.com/en-us/intune/app-management/protection/ref-settings-ios).
-The previous count-based MTD conflict claim is withdrawn: current APP guidance
-supports primary-partner selection with multiple connectors; effective priority
-and client behavior require separate evidence.
-
-## Defender And App Control Evidence
-
-The Defender companion uses a separate delegated service token supplied locally
-as SecureString. It performs no login, consent, tenant changes or device actions.
-
-```powershell
-.\Get-IntuneDefenderEvidence.ps1 -TenantId '<tenant-guid>' `
-	-AccessToken $SecureDefenderToken -OutputPath '.\defender-evidence.json'
-.\Invoke-IntuneDiscovery.ps1 -TenantId '<tenant-guid>' `
-	-OutputPath '.\intune-combined.json' -IncludeConfiguration `
-	-DefenderEvidencePath '.\defender-evidence.json' `
-	-AppControlPolicyPaths '.\reviewed-policy.xml'
-```
-
-Obtain `$SecureDefenderToken` through an approved local authentication flow;
-never paste token literals into chat or command history. The supported audience
-is Defender, not Graph, with delegated `Machine.Read`. Opaque/application-only
-tokens and unrecognized audience forms remain unsupported. See Microsoft's
-[machine list](https://learn.microsoft.com/en-us/defender-endpoint/api/get-machines)
-and [machine resource](https://learn.microsoft.com/en-us/defender-endpoint/api/machine).
-Device-group visibility and retention apply. `lastSeen` is the last full report,
-normally daily, not a portal UI heartbeat. Assay requires selected device IDs
-and an explicit **Defender full-report age target (hours)** before comparison.
-
-Defender reads stay on the exact HTTPS machine-list path, with redirects off,
-bounded paging/retries, Retry-After support and a 30-minute budget. Non-200
-responses, including 404, do not establish clean absence. Exports retain IDs,
-onboarding/health state, platform metadata and timestamps, not IP/user inventory.
-
-App Control XML files are explicit source evidence, not a live policy query.
-The parser rejects DTDs/external entities and files over 1 MB, retaining only
-policy/base IDs, type, selected options and Audit/Managed Installer trust flags.
-No raw XML, signers or file rules are exported. Source mode does not prove policy
-assignment, runtime enforcement or Managed Installer tagging. See
-[Microsoft's App Control guidance](https://learn.microsoft.com/en-us/intune/device-configuration/endpoint-security/manage-app-control).
-
-Reviewed ADMX policy payloads retain enablement and exact typed Boolean/enum elements;
-unsupported/default/unresolved payloads do not become successful comparisons.
-The IE COM-launch policy accepts the reviewed enable/disable-only payload. The
-three BitLocker startup/recovery policies require all documented data IDs with
-their exact Boolean or numeric enum types; unknown IDs or values remain unresolved.
-`Test-IntuneAdmxContracts.ps1` tests these bindings without tenant calls. Add
-`-EvidenceDirectory <directory>` containing the CSP source cache from
-`Test-IntunePolicyContracts.ps1` to verify the published sample IDs/types/enums.
-Set `ASSAY_INTUNE_ADMX_FIXTURE` to write synthetic production-decoded evidence
-for native import/reassessment tests. See [AUDIT.md](AUDIT.md) for source details.
-Legacy setting bodies, per-rule exclusion coverage, effective targeting, full
-BitLocker/LAPS prerequisites and runtime installer pairing still need further
-evidence. All verification here is synthetic, not a live-tenant validation claim.
+This script is provided "AS IS" with no warranties and confers no rights.

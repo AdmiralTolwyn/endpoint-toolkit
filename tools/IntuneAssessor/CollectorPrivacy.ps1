@@ -323,8 +323,8 @@ function New-CollectorPrivacyManifest {
         Classification = 'Confidential'
         OptIns = @($OptIns | Where-Object { $_ } | Sort-Object -Unique)
         RemovedFieldClasses = $(if ($Pseudonymous) { @('Secret', 'Content', 'FreeText') } else { @('Secret', 'Content') })
-        PseudonymizedFieldClasses = $(if ($Pseudonymous) { @('Person') } else { @() })
-        ClassifiedFieldClasses = $(if ($Pseudonymous) { @('Network') } else { @() })
+        PseudonymizedFieldClasses = @(if ($Pseudonymous) { 'Person' })
+        ClassifiedFieldClasses = @(if ($Pseudonymous) { 'Network' })
     }
 }
 

@@ -1,404 +1,85 @@
-# BaselinePilot — Windows Client Security Baseline Assessment Tool
+# Baseline Collector and BaselinePilot
 
-BaselinePilot is a two-component security baseline assessment tool for Windows 11 clients. It combines Microsoft Security Baselines (Intune MDM + GPO) with ODA-style operational health checks in a rich WPF dashboard.
+`Invoke-BaselineCollection.ps1` 1.4.1 collects Windows configuration and event evidence for
+[Assay](https://github.com/AdmiralTolwyn/assay). BaselinePilot is the legacy Windows/WPF assessor;
+its catalog and evaluator are separate from Assay's 312 checks.
 
-> The project folder is `tools/BaselineAssessor/` (matching this repo's tool-directory convention); the product itself is named **BaselinePilot** — the two names are not a typo.
+## Requirements and Usage
 
-**Versions**: App `0.2.0` · Collector `1.4.0` · Catalog (`checks.json`) `1.1`. See [`AUDIT.md`](AUDIT.md) for the July 2026 audit and fix-pass history behind the current versions.
+Windows PowerShell 5.1 or PowerShell 7, local administrator rights, and Windows built-in providers.
+The collector reads configuration; it does not apply policy or remediate. Optional providers may
+be unavailable on some editions/builds. No external module installation is required.
 
-### Privacy Mode (1.4.0)
-
-The default is `-PrivacyMode Pseudonymous`:
-
-- Output is a new file at `%LOCALAPPDATA%\AssayCollections\baseline\baseline_<collectionId>.json`,
-  created with `CreateNew` and an ACL for the current user, SYSTEM and Administrators only. The file
-  name contains no hostname. OneDrive-synchronized paths produce a warning.
-- A top-level `Privacy` manifest records the mode, `Confidential` classification, key ID and opt-ins.
-- Hostnames become `dev_` pseudonyms; user SIDs in task names become `sid_` pseudonyms; user-profile
-  and UNC segments in exclusion, transcription and log paths are masked.
-- High-privilege task evidence accepts only the exact SYSTEM aliases `SYSTEM`, `LocalSystem`,
-  `NT AUTHORITY\SYSTEM` and `S-1-5-18`, not account names containing those strings.
-- Event records contain only `id`, UTC hour, and derived `accountKey`, `logonType`, `offHours`,
-  `elevated`, `lolbin` and `faultingApp`. Command lines, object names and raw messages are never
-  exported. `-IncludeSecurityEvents` adds named detail fields; identity fields need Identified mode.
-- `-BusinessHours` (default `06:00-22:00`) and `-WorkDays` (default `Mon-Fri`) define off-hours in device
-  local time for `AUTH-026`, which reports review evidence rather than an automatic failure.
-- `-EventSummaryOnly` emits counts only; Assay event rules are then `NotAssessed`.
-- Failed event queries retain a minimized error, and failed privilege-event queries mark elevation
-  correlation `Unavailable`. Missing logs and generic provider failures are not successful empty queries.
-
-`-PrivacyMode Identified -ConfirmIdentifiedExport` keeps names. Reuse `-PseudonymKeyPath` across
-machines for stable pseudonyms; `-IdentityMapPath` writes a separate pseudonym map. By default, the
-key replaces the export's extension: `baseline.json` uses `baseline.pseudonym-key`.
-
-Offline regression checks: `Test-BaselinePrivacy.ps1` covers these transformations and error states;
-`../Shared/Test-CollectorDocumentation.ps1` checks collector and helper help without executing them.
-
-BaselinePilot writes saved assessments, autosaves, backups and exports with the same restricted ACL,
-states the classification in HTML and CSV exports, and does not render `topUsers` for pseudonymous
-collections.
-
-### Assay SCT Audit Profiles (1.3.1)
-
-`-AssessmentProfile` also accepts `Windows11_25H2`, `WindowsServer2025Member` and
-`WindowsServer2025DC`. Each declares a separate versioned profile for **two controls
-only**: MON-005 Sensitive Privilege Use and MON-010 Audit Policy Change. These
-options do not compose with the Cloud PC overlay and do not apply policy.
-
-The reviewed [Windows 11 25H2 SCT archive](https://download.microsoft.com/download/e99be2d2-e077-4986-a06b-6078051999dd/Windows%2011%20v25H2%20Security%20Baseline.zip)
-specifies Success for both; the [Server 2025 v2602 SCT archive](https://download.microsoft.com/download/e99be2d2-e077-4986-a06b-6078051999dd/Windows%20Server%202025%20Security%20Baseline%20-%202602.zip)
-specifies Success and Failure in both member-server and DC policies. Assay requires
-base build 26200/ProductType 1/client/non-DC or build 26100/ProductType 3/server/non-DC
-or build 26100/ProductType 2/server/DC, respectively. Missing, conflicting, failed
-or unsupported platform metadata stays unassessed, with no generic substitution.
-
-Other 310 controls keep generic targets; this is not a full platform baseline.
-English audit strings and exact known GUID/name identities are supported;
-unrecognized/localized or conflicting evidence stays unassessed. Extra audit flags
-are a baseline mismatch, not automatically less secure. Effective GPO/MDM precedence,
-patch freshness and platform attestation remain outside this comparison.
-
-`Test-BaselineApplicability.ps1` also runs the actual audit parsing block using
-mocked `auditpol` CSV, then the real profile/export blocks. Optional
-`ASSAY_BASELINE_PLATFORM_FIXTURES` writes three synthetic JSON documents for native
-import/report testing. No endpoint command is executed. Assay includes a separate
-`rust/tests/Test-BaselinePlatformSources.ps1` for six exact source-row checks against
-the pinned SCT ZIPs. The legacy WPF evaluator does not implement these profiles.
-
-### Assay Cloud PC Applicability (1.3.0)
+Run from an elevated PowerShell session:
 
 ```powershell
-.\Invoke-BaselineCollection.ps1 -AssessmentProfile Windows365CloudPc -OutputPath .\cloud-pc-baseline.json
-```
-
-Use only for independently identified Windows 365 Cloud PCs. This adds an explicit
-operator declaration (`assessmentContext`: schema 1.0, windows365-cloud-pc,
-profile version 2026-09-18, selectionSource Operator); it does not detect devices,
-skip collection or change configuration. Default `Generic` omits the declaration.
-
-The updated **Assay** importer excludes eight guest BitLocker controls and UAC-011
-Administrator Protection, based on Microsoft's [security overview](https://learn.microsoft.com/en-us/windows-365/enterprise/security-guidelines).
-Removable-drive encryption DATA-013 stays unassessed for scope review. This is a
-bounded exclusion overlay, not a complete Cloud PC security baseline. Other targets
-are unchanged; service-side encryption and recovery protection are not evaluated.
-Malformed/unsupported declarations or conflicting/missing client metadata stay
-unassessed. Declaration provenance is not authenticated device identity.
-
-The legacy WPF evaluator does **not** implement the profile. Existing exports and
-saved assessments are not automatically migrated. Assay retains profile evidence
-in results/reports, and mixed-machine Pass plus unknown no longer yields Pass.
-`Test-BaselineApplicability.ps1` exercises actual production parameter/export blocks
-without running the administrator collector. Set `ASSAY_BASELINE_APPLICABILITY_FIXTURE`
-to a local output path to write synthetic production JSON for native tests.
-
-Collector 1.2.1 adds a read-only [Get-TlsCipherSuite](https://learn.microsoft.com/en-us/powershell/module/tls/get-tlsciphersuite?view=windowsserver2025-ps)
-inventory under `tlsConfig.cipherSuites`, with provider, names and explicit
-Complete/Partial/Error state. Assay uses it for NET-028 instead of incorrectly
-testing legacy protocol registry switches. NULL suites require application review,
-not an inference of unencrypted traffic; see the [Microsoft cipher-suite reference](https://learn.microsoft.com/en-us/windows/win32/secauthn/tls-cipher-suites-in-windows-11-v22h2).
-No TLS settings are changed. The legacy GUI evaluator is unchanged. Offline tests
-mock the production provider block and do not query this machine's TLS settings.
-
-### Collector Evidence Review (18 September 2026)
-
-- Firewall profiles now use [ActiveStore](https://learn.microsoft.com/en-us/powershell/module/netsecurity/get-netfirewallprofile?view=windowsserver2025-ps), not the default PersistentStore. Unknown/NotConfigured values remain null, not false. Provider failures have explicit collection-failure markers.
-- The fields `RealTimeProtectionEnabled`, `BehaviorMonitoringEnabled` and `IoavProtectionEnabled` now represent [Get-MpComputerStatus](https://learn.microsoft.com/en-us/powershell/module/defender/get-mpcomputerstatus?view=windowsserver2025-ps) observations. Preference-derived intent is retained separately in `*Configured` fields. Missing status is not inferred from policy intent.
-- `TamperProtectionSource` retains the source property rather than duplicating `IsTamperProtected`. The [controlled-configuration reference](https://learn.microsoft.com/en-us/defender-endpoint/secure-controlled-configuration) documents their different meanings and preview limits.
-- Unavailable [Win32_DeviceGuard](https://learn.microsoft.com/en-us/windows/security/hardware-security/enable-virtualization-based-protection-of-code-integrity#use-win32_deviceguard-wmi-class) runtime evidence remains null, even if registry configuration exists. Known absent services remain false; configured and running states are distinct.
-
-Run `Test-BaselineCollector.ps1` for offline tests of the actual collector area
-bodies with mocked providers. It does not run the administrator-only collector
-or query the development device. Recollect with 1.1.2 for these fixes: older
-exports cannot recover provider provenance that was not recorded.
-
-The collector does not load `csp_metadata.json` or `admx_metadata.json`.
-BaselinePilot loads CSP metadata for UI/remediation enrichment, not as baseline
-targets; no ADMX loader is used in that app. Assay independently embeds its
-reviewed source/unified catalog and evaluates the exported JSON. The metadata
-files do not automatically change Assay checks, defaults or recommendations.
-
-Collector 1.1.3 additionally records `powershellConfig.legacyEngine` using the
-[Microsoft PowerShell team's documented feature queries](https://devblogs.microsoft.com/powershell/windows-powershell-2-0-deprecation/):
-`Get-WindowsOptionalFeature -Online -FeatureName MicrosoftWindowsPowerShellV2`
-on clients, or `Get-WindowsFeature -Name PowerShell-V2` on servers. No features
-are changed. Unknown platform, unavailable provider, absent result and query
-failure remain unsupported/error evidence, never inferred removal. DISM can
-write its own diagnostic log. Assay's updated SEC-065 consumes this evidence;
-the legacy BaselinePilot check catalog/evaluator is not updated by this change.
-
-`Test-BaselineCollector.ps1 -AssayCatalogPath <assay>/rust/catalogs/source/baseline.json`
-also checks every automatic registry binding against the actual collector read
-list with mocked named/bulk reads. This proves declared path coverage, not real
-provider success, safe policy precedence or complete coverage of nonregistry checks.
-
-### Embedded Speculation Control (1.2.0)
-
-The collector contains Microsoft's `Get-SpeculationControlSettings` function
-from SpeculationControl 1.0.19, unchanged apart from line-ending normalization,
-with the upstream MIT license and attribution. Only the collector script needs
-to be deployed; no module installation or companion file is required.
-
-```powershell
-.\Invoke-BaselineCollection.ps1 -IncludeSpeculationControl -SkipEventCollection -OutputPath .\baseline.json
-```
-
-This opt-in calls the embedded function with `-Quiet`. It reads Windows native
-mitigation information and CIM processor/OS information, using `Add-Type` for
-the native query. It does not download, install a module, change execution policy,
-write mitigation registry values, update firmware or remediate. Normal collector
-administrator requirements and local diagnostic/output side effects still apply.
-Restricted language mode, platform/provider incompatibility and query failures
-produce explicit Error evidence, not a guessed protection status. No opt-in
-means NotRequested. The optional section has its own state; the legacy 22-area
-progress counters are unchanged.
-
-The `speculationControl` section records schema/version, UTC capture time,
-embedded source commit/hash, 39 allowlisted Boolean/null fields and five status
-strings. Unsupported types make the section Partial; absent/conditional fields
-remain absent. Arbitrary module properties and error text are not exported.
-Source hashes identify the reviewed code, not an authenticated device attestation.
-
-Assay replaces SEC-057's old registry-only comparison with 13 family results:
-BTI, KVA shadow, SSBD, L1TF OS, MDS, three MMIO families, branch confusion, GDS,
-SRSO, divide-by-zero and RFDS. Reported applicable enablement passes; reported
-unaffected/immune hardware is not a failure; observed disabled mitigations warn
-for review. Unknown reporting/applicability never becomes a clean result. BHB
-flags are observations only until their applicability/reporting contract is
-reviewed. PCID/retpoline optimizations are not independent security requirements.
-Pass is scoped to these evaluated families, not all silicon vulnerabilities or
-firmware freshness. A guest does not certify the host or L1TF VMM protection.
-The legacy BaselinePilot catalog/evaluator is not changed by this addition.
-
-Sources: [client guidance](https://support.microsoft.com/help/4073119),
-[server guidance](https://support.microsoft.com/help/4072698),
-[output interpretation](https://support.microsoft.com/help/4074629),
-[pinned source](https://github.com/microsoft/SpeculationControl/blob/f4d2a2d4f32e93279703d50283b80672e3d3a2c3/SpeculationControl.psm1).
-The implementation source is authoritative for exact field names and polarity;
-some older KB prose/examples use inconsistent names or inverse wording. Do not
-copy a single registry override value across clients, servers and CPU families.
-
-`Test-SpeculationEvidence.ps1` parses the collector without executing its main
-body, checks the embedded function SHA256 and license, and tests the wrapper
-with synthetic results. Optional `-UpstreamPath` compares a separately obtained
-pinned source file; no source download or detector execution occurs in tests.
-The normalized function SHA256 is
-`6ACA20A3EAD9E45CC9E6043223502B09DBFFB915A8D0EBF44700107985C87E21`.
-The original Authenticode block was not copied: it would not sign the combined
-collector. Organizations may sign the complete collector through their normal
-deployment process; do not bypass execution policy for this feature.
-
-## Architecture
-
-```
-Customer Machine                        Assessor Workstation
-┌─────────────────────────┐             ┌──────────────────────────────┐
-│ Invoke-BaselineCollection│  JSON file  │ BaselinePilot.ps1 (WPF GUI) │
-│ .ps1                     │ ──────────► │ + BaselinePilot_UI.xaml      │
-│ (headless, admin, no     │  transfer   │ + checks.json (312 checks)  │
-│  external modules)       │             │ + csp_metadata.json         │
-└─────────────────────────┘             └──────────────────────────────┘
-```
-
-- **Collection** runs on the target machine with local admin rights — no modules, no internet, outputs a single JSON file
-- **Assessment** runs on the assessor's workstation — WPF GUI with dashboard, findings, report export
-
-## Quick Start
-
-### 1. Collect Data (on target machine)
-
-```powershell
-# Run as Administrator
 .\Invoke-BaselineCollection.ps1
-
-# Quick run (skip event log collection, ~30s)
-.\Invoke-BaselineCollection.ps1 -SkipEventCollection
-
-# Summary-only events (counts only; Assay event rules become NotAssessed)
-.\Invoke-BaselineCollection.ps1 -EventSummaryOnly
-
-# Silent (for automation)
-.\Invoke-BaselineCollection.ps1 -Quiet -OutputPath C:\Reports\baseline.json
+.\Invoke-BaselineCollection.ps1 -IncludeSpeculationControl -OutputPath C:\Evidence\baseline.json
+.\Invoke-BaselineCollection.ps1 -BusinessHours '07:00-19:00' -WorkDays 'Sun-Thu'
 ```
 
-Output: `%LOCALAPPDATA%\AssayCollections\baseline\baseline_<collectionId>.json`
+Import into Assay's Baseline pack. For the legacy GUI, use `Launch_BaselinePilot.bat`.
+Use `Get-Help .\Invoke-BaselineCollection.ps1 -Full` for detailed help.
 
-### 2. Assess (on your workstation)
+## Arguments
+
+| Argument | Default | Purpose |
+| --- | --- | --- |
+| `-OutputPath` | `%LOCALAPPDATA%\AssayCollections\baseline\baseline_<collectionId>.json` | New JSON path; never overwrites an existing file. |
+| `-LookbackDays` | `30` | Requested event-history window in days; retained history can be shorter. |
+| `-MaxEventsPerQuery` | `2000` | Retrieval cap per group, including privilege correlation. Capped queries are incomplete. |
+| `-SkipEventCollection` | Off | Skip event queries; event checks remain unassessed. |
+| `-EventSummaryOnly` | Off | Export counts rather than records; Assay event checks remain unassessed. |
+| `-IncludeGpoData` | Off | Run the slower gpresult/RSOP step for manual review. |
+| `-IncludeSpeculationControl` | Off | Run embedded Microsoft SpeculationControl 1.0.19; no install or remediation. |
+| `-AssessmentProfile` | `Generic` | `Generic`, `Windows365CloudPc`, `Windows11_25H2`, `WindowsServer2025Member`, or `WindowsServer2025DC`. Bounded applicability, not full certification. |
+| `-PrivacyMode` | `Pseudonymous` | `Pseudonymous` or `Identified`; Identified requires confirmation. |
+| `-ConfirmIdentifiedExport` | Off | Explicitly permit Identified export. |
+| `-PseudonymKeyPath` | Output extension replaced by `.pseudonym-key` | Load/create a protected Base64 32-byte key. Reuse for stable identities. |
+| `-IdentityMapPath` | None | New pseudonym-to-original map; protect and share separately. |
+| `-Assessor` | None | Operator-supplied free-text label, exported as supplied. |
+| `-IncludeSecurityEvents` | Off | Add named diagnostics; account/IP fields also require Identified mode. Never adds command lines, object names or raw messages. |
+| `-BusinessHours` | `06:00-22:00` | Device-local, start-inclusive/end-exclusive `HH:mm-HH:mm`; start and end must differ. Overnight windows supported. |
+| `-WorkDays` | `Mon-Fri` | Local calendar work days; ranges or lists such as `Sun-Thu` or `Mon,Wed,Fri`. |
+| `-Quiet` | Off | Suppress progress/banner output. |
+
+## Evidence Limits
+
+- Area completion is not evidence completeness. Inspect query states, provider errors and missing
+  values. Registry absence does not prove secure defaults or a disabled policy.
+- 1.4.1 preserves empty arrays and limits crashes to `Application Error` event 1000 with validated
+  named filenames. WER 1001 is excluded to avoid unrelated providers and duplicate crash counts.
+- Metadata records query outcomes, caps and the oldest retained record per log. Assay withholds
+  clean-window verdicts without sufficient retention and current audit prerequisites. Historical
+  audit continuity and absence of logging gaps are not attested.
+- `AUTH-026` is review evidence, not automatic failure. Disabled auditing cannot prove absence.
+- Search resource impact, Defender platform/engine currency, service recovery and orphaned tasks
+  require manual review in Assay. The legacy WPF evaluator is unchanged.
+- Cloud PC applicability is bounded. SCT profiles override only two audit controls and require
+  matching build/role evidence. Do not select a profile merely to reduce unknown results.
+
+Recollect older exports with 1.4.1 and re-import into an updated Assay build. Missing provider and
+retention evidence cannot be reconstructed; saved assessments are not automatically migrated.
+
+## Data Handling
+
+Exports remain **Confidential**, not anonymous. Files receive ACLs for the current user, SYSTEM
+and Administrators. OneDrive paths warn but are allowed. Resource/domain names and configuration
+remain linkable. Keep pseudonym keys and identity maps separate from shared exports.
+The privacy helper is embedded, so this collector remains a single deployable script.
+
+## Verification
 
 ```powershell
-# Double-click or run:
-.\Launch_BaselinePilot.bat
+.\Test-BaselinePrivacy.ps1
+.\Test-BaselineCollector.ps1
+.\Test-BaselineApplicability.ps1
+.\Test-SpeculationEvidence.ps1
+..\Shared\Test-CollectorDocumentation.ps1
 ```
 
-Import the JSON file in the GUI → Dashboard populates with scores, findings, and remediation guidance.
+Run under both PowerShell runtimes. Mocked-provider tests do not replace live endpoint validation.
+See [AUDIT.md](AUDIT.md), [applicability](https://github.com/AdmiralTolwyn/assay/blob/main/docs/BASELINE_APPLICABILITY.md)
+and [privacy specification](https://github.com/AdmiralTolwyn/assay/blob/main/docs/COLLECTOR_PRIVACY_SPEC.md).
 
-## Data Collection Areas (22)
-
-| # | Area | Method |
-|---|------|--------|
-| 1 | System Information | CIM/WMI |
-| 2 | Join Type Detection | `dsregcmd /status` |
-| 3 | Applied Policies | `gpresult /scope computer` (opt-in via `-IncludeGpoData`) |
-| 4 | MDM Enrollment | Registry (Enrollments + PolicyManager) |
-| 5 | Security Policy Export | `secedit /export` |
-| 6 | Audit Policy | `auditpol /get /category:*` |
-| 7 | Registry Baselines | ~300 registry keys (Intune + GPO paths) |
-| 8 | Defender Configuration | `Get-MpPreference` + `Get-MpComputerStatus` |
-| 9 | Firewall Profiles | `Get-NetFirewallProfile` |
-| 10 | Services | `Get-Service` (37 baseline-relevant services) |
-| 11 | BitLocker Status | `Get-BitLockerVolume` |
-| 12 | Credential Guard / VBS | WMI `Win32_DeviceGuard` + Registry |
-| 13 | Windows Update History | `Get-HotFix` |
-| 14 | Driver Inventory | `Win32_PnPSignedDriver` |
-| 15 | Startup Performance | Diagnostics-Performance Event 100 |
-| 16 | Scheduled Tasks | `Get-ScheduledTask` |
-| 17 | SMB Configuration | `Get-SmbServer/ClientConfiguration` |
-| 18 | TLS Configuration | SCHANNEL registry (SSL 2.0–TLS 1.3) |
-| 19 | PowerShell Configuration | Script block logging, transcription, CLM |
-| 20 | WinRM Configuration | Registry + `winrm get` |
-| 21 | Event Log Metadata | Log sizes, retention, record counts |
-| 22 | Security Event Collection | 8 minimal query groups across Security/System/Application logs |
-
-### Collector Parameters
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `-OutputPath` | `%LOCALAPPDATA%\AssayCollections\baseline\baseline_<collectionId>.json` | New output file path; existing files are never overwritten |
-| `-PrivacyMode` | `Pseudonymous` | `Identified` keeps names and requires `-ConfirmIdentifiedExport` |
-| `-PseudonymKeyPath` | next to the output | Existing or new 32-byte key for stable pseudonyms |
-| `-IdentityMapPath` | none | Optional separate pseudonym-to-name map |
-| `-Assessor` | none | Operator-supplied label exported as-is |
-| `-IncludeSecurityEvents` | `$false` | Add named event detail fields |
-| `-BusinessHours` / `-WorkDays` | `06:00-22:00` / `Mon-Fri` | Off-hours window for `AUTH-026` |
-| `-LookbackDays` | 30 | Event log query lookback window |
-| `-MaxEventsPerQuery` | 2000 | Cap per event query group (raise for deeper forensic pulls; large values can produce multi-MB JSON on busy hosts) |
-| `-SkipEventCollection` | `$false` | Skip Area 22 entirely (~30s total) |
-| `-EventSummaryOnly` | `$false` | Counts only |
-| `-IncludeGpoData` | `$false` | Opt-in to Area 3 (`gpresult /scope computer`) — the most expensive/fragile collection step; skipped by default |
-| `-IncludeSpeculationControl` | `$false` | Query the embedded Microsoft 1.0.19 detector; export explicit mitigation state and provenance without external modules or remediation |
-| `-AssessmentProfile` | `Generic` | `Windows365CloudPc`, `Windows11_25H2`, `WindowsServer2025Member` or `WindowsServer2025DC`: bounded operator-selected profiles for updated Assay; no automatic detection |
-| `-Quiet` | `$false` | Suppress console output |
-
-### Join Type Awareness
-
-The collector auto-detects the device join type and adjusts behavior:
-
-| Join Type | gpresult | MDM PolicyManager | Registry Paths |
-|-----------|----------|-------------------|----------------|
-| Entra ID (Intune) | Skipped (no DC) | Full scan | CSP paths |
-| Domain-joined (GPO) | With 90s timeout | Skipped | Policy paths |
-| Hybrid (both) | With 90s timeout | Full scan | Both |
-| Workgroup | Skipped | Skipped | Local policy |
-
-## GUI Tabs
-
-| Tab | Purpose |
-|-----|---------|
-| **Dashboard** | Overall score, category cards, system info, maturity dimensions |
-| **Baseline** | Per-check comparison: expected vs actual, grouped by category |
-| **Findings** | Filtered view (Fail + Warning) with sort/filter by severity, category, effort |
-| **Report** | Executive summary preview with RTF clipboard copy, HTML/CSV export |
-| **Settings** | Theme, preferences, assessor name, baseline version |
-
-## Check Categories (312 checks)
-
-| Category | Prefix | Count | Scope |
-|----------|--------|-------|-------|
-| Security Configuration | SEC | 87 | Security options, services, user rights, SmartScreen, RDP, WinRM, PowerShell |
-| Monitoring & Audit | MON | 50 | Audit policy, event log sizing, audit gap detection |
-| Defender & Endpoint Security | DEF | 38 | Defender settings, ASR rules, VBS, Credential Guard |
-| Network Security | NET | 35 | Firewall, SMB, TLS/SCHANNEL, LLMNR/NetBIOS |
-| Authentication & Credentials | AUTH | 33 | Password policy, lockout, Kerberos, LAPS, NTLM |
-| Operations & Health | OPS | 31 | Updates, drivers, services, tasks |
-| Data Protection | DATA | 22 | BitLocker, encryption, privacy, removable media |
-| User Account Control | UAC | 11 | UAC settings, elevation prompts, admin approval |
-| Performance & Stability | PERF | 5 | Boot performance, reliability events |
-
-Some numeric IDs within a category are non-contiguous — 10 IDs from earlier catalog revisions were retired rather than reused, to avoid breaking saved-assessment compatibility; the July 2026 fix pass documented these gaps explicitly in `_metadata.retiredIds` (`checks.json`) instead of leaving them unexplained.
-
-## Scoring Model
-
-**Weighted Risk Score** (0–100):
-
-```
-Score = Σ(points × weight) / Σ(weight)
-```
-
-| Status | Points | Severity | Weight |
-|--------|--------|----------|--------|
-| Pass | 100 | Critical | 5× |
-| Warning | 50 | High | 4× |
-| Fail | 0 | Medium | 3× |
-| Deferred | 0 | Low | 2× |
-| Not Assessed | 0 | — | — |
-| Accepted Risk | — | — | Excluded from both |
-| N/A | — | — | Excluded from both |
-
-- **Not Assessed** (e.g. a collection section failed or a value could not be resolved) scores 0 points but **stays in the Risk Score denominator** — it is not the same as a Fail, but it is not silently dropped either. It **is excluded** from the Baseline Compliance % denominator.
-- **Accepted Risk** and **N/A** are excluded from *both* the weighted Risk Score and Baseline Compliance % — this matches the documented governance intent (a risk that's been formally accepted, or a check that doesn't apply, should not drag down either score).
-
-**Baseline Compliance %**: Flat pass/total ratio across all assessed checks (Not Assessed, Accepted Risk, and N/A excluded from the denominator).
-
-## Governance Actions
-
-Each failing check supports one of four governance states:
-
-| Action | Icon | Effect |
-|--------|------|--------|
-| **Remediate** | ✓ green | Marked for remediation (counted toward projected score) |
-| **Accept Risk** | shield amber | Excluded from scoring with mandatory justification |
-| **N/A** | ○ gray | Not applicable to this environment |
-| **Defer** | clock blue | Acknowledged but deferred — still counts as Fail |
-
-## Executive Summary & RTF Export
-
-The Report tab includes an **Executive Summary** generator with one-click clipboard copy:
-
-- **Plain text**: Structured 8-section summary (Device Info, Scores, Category Breakdown, Key Passes, Failures by severity, Quick Wins, Governance Overrides, Methodology)
-- **Rich RTF**: Professional formatted report with color-coded tables, severity badges, category score cards — pastes directly into Word, Outlook, or OneNote with full formatting
-- **Dual clipboard**: `DataObject` carries both RTF and UnicodeText — rich apps get formatted output, plain editors get clean text
-
-## Check Origins
-
-Each check is tagged with its origin for traceability:
-
-| Badge | Color | Source |
-|-------|-------|--------|
-| SCT | Blue | Microsoft Security Compliance Toolkit (GPO baselines) |
-| INTUNE | Teal | Microsoft Intune Security Baseline |
-| OPS | Gray | Operational health checks (ODA-inspired) |
-
-## Prerequisites
-
-### Collection Script
-- PowerShell 5.1+ (ships with Windows 10/11)
-- Local administrator rights
-- No external modules
-
-### BaselinePilot GUI
-- PowerShell 5.1+ with WPF (PresentationFramework)
-- .NET Framework 4.7.2+ (ships with Windows 10 1803+)
-- No external modules
-
-## File Structure
-
-```
-BaselineAssessor/
-├── BaselinePilot.ps1              # WPF GUI application (~4500 lines)
-├── BaselinePilot_UI.xaml          # WPF XAML layout
-├── Invoke-BaselineCollection.ps1  # Headless data collector (22 areas)
-├── checks.json                    # 312 check definitions
-├── csp_metadata.json              # CSP metadata (descriptions, allowed values)
-├── admx_metadata.json             # ADMX policy metadata
-├── Launch_BaselinePilot.bat       # Batch launcher — starts the GUI
-├── Run_Collection.bat             # Batch launcher — elevation-gated collector run
-├── Test-BaselinePilot.ps1         # Offline validation tests (collection/catalog/evaluation)
-├── README.md                      # This file
-├── AUDIT.md                       # July 2026 audit + fix-pass changelog
-├── assessments/                   # Saved assessment JSON files (created on first save, not shipped)
-├── reports/                       # Generated HTML reports (created on first export, not shipped)
-└── templates/                     # Report templates
-```
-
-## Changelog
-
-- **2026-07 fix pass** — App `0.2.0` / Collector `1.1.0` / Catalog `1.1`. Resolved the correctness, drift, and duplicate-severity findings from the July 2026 audit (collector key mismatches, stale baseline values, Not-Assessed scoring, new 2026 checks). Full findings and fix status: [`AUDIT.md`](AUDIT.md).
+This script is provided "AS IS" with no warranties and confers no rights.

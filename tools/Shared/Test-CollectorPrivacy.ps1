@@ -127,8 +127,12 @@ try {
     try { throw '{"error":{"code":"Authorization_RequestDenied","message":"alice@contoso.com"}}' } catch { $Record = $_ }
     Assert-Privacy ((Get-CollectorErrorText $Context $Record) -ceq 'RuntimeException; code Authorization_RequestDenied') 'Graph error code not extracted'
     $Manifest = New-CollectorPrivacyManifest $Context @('B', 'A', '', 'A')
+    $SerializedManifest = ($Manifest | ConvertTo-Json -Depth 4) | ConvertFrom-Json
+    Assert-Privacy ($SerializedManifest.PseudonymizedFieldClasses -is [array] -and $SerializedManifest.ClassifiedFieldClasses -is [array]) 'Single-item manifest classes must remain arrays'
     Assert-Privacy ($Manifest.Mode -ceq 'Pseudonymous' -and $Manifest.PseudonymKeyId -ceq $Context.KeyId -and ($Manifest.OptIns -join ',') -ceq 'A,B' -and ($Manifest.PseudonymizedFieldClasses -join ',') -ceq 'Person') 'Pseudonymous manifest incorrect'
     $Manifest = New-CollectorPrivacyManifest $Identified @()
+    $SerializedManifest = ($Manifest | ConvertTo-Json -Depth 4) | ConvertFrom-Json
+    Assert-Privacy ($SerializedManifest.PseudonymizedFieldClasses -is [array] -and $SerializedManifest.PseudonymizedFieldClasses.Count -eq 0) 'Empty manifest classes must remain arrays'
     Assert-Privacy ($Manifest.Mode -ceq 'Identified' -and $null -eq $Manifest.PseudonymKeyId -and @($Manifest.PseudonymizedFieldClasses).Count -eq 0 -and ($Manifest.RemovedFieldClasses -join ',') -ceq 'Secret,Content') 'Identified manifest incorrect'
     Write-Output 'PASS: error text minimization and privacy manifest contents.'
 } finally {

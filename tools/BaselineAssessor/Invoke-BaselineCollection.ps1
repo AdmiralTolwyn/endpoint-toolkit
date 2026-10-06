@@ -55,8 +55,8 @@
     This does not skip collection, change policy, or update the legacy WPF evaluator.
 .NOTES
     Author : Anton Romanyuk
-    Version: 1.4.0
-    Date   : 2026-10-05
+    Version: 1.4.1
+    Date   : 2026-10-06
     Requires: PowerShell 5.1, Local Admin, No external modules
     Runs headless on arbitrary Windows targets (client, member server, DC, Server Core).
     Disclaimer: This script is provided "AS IS" with no warranties and confers no rights.
@@ -97,7 +97,7 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
-$Script:CollectorVersion = '1.4.0'
+$Script:CollectorVersion = '1.4.1'
 $Script:StartTime        = [DateTime]::Now
 # Area 3 (GPO/gpresult) only runs when -IncludeGpoData; Area 22 (events) only when not -SkipEventCollection.
 $Script:TotalAreas       = 20
@@ -432,8 +432,8 @@ function New-CollectorPrivacyManifest {
         Classification = 'Confidential'
         OptIns = @($OptIns | Where-Object { $_ } | Sort-Object -Unique)
         RemovedFieldClasses = $(if ($Pseudonymous) { @('Secret', 'Content', 'FreeText') } else { @('Secret', 'Content') })
-        PseudonymizedFieldClasses = $(if ($Pseudonymous) { @('Person') } else { @() })
-        ClassifiedFieldClasses = $(if ($Pseudonymous) { @('Network') } else { @() })
+        PseudonymizedFieldClasses = @(if ($Pseudonymous) { 'Person' })
+        ClassifiedFieldClasses = @(if ($Pseudonymous) { 'Network' })
     }
 }
 
@@ -2461,7 +2461,7 @@ $defenderConfig = Invoke-CollectionArea -Step 8 -Name 'Defender Configuration' -
         $result['DisableScanningMappedNetworkDrivesForFullScan'] = $pref.DisableScanningMappedNetworkDrivesForFullScan
         # ExclusionPath: always emit as an array (empty when none configured) so DEF-042 assesses.
         # Guard against $null, which @() would otherwise wrap into a 1-element [$null] array.
-        $result['ExclusionPath']                   = if ($null -ne $pref.ExclusionPath) { @($pref.ExclusionPath | ForEach-Object { ConvertTo-CollectorMaskedPath $Script:PrivacyContext $_ }) } else { @() }
+        $result['ExclusionPath']                   = @($pref.ExclusionPath | Where-Object { $null -ne $_ } | ForEach-Object { ConvertTo-CollectorMaskedPath $Script:PrivacyContext $_ })
     }
     if ($status) {
         $result['AMServiceEnabled']                = $status.AMServiceEnabled
@@ -2987,7 +2987,9 @@ function Get-BaselineEventData {
 #>
 function ConvertTo-BaselineEventRecord {
     param($Record, $Query, [System.Collections.Generic.HashSet[string]]$ElevatedLogons)
+    if ($Query.Key -eq 'applicationCrashes' -and ($Record.Id -ne 1000 -or $Record.ProviderName -cne 'Application Error')) { return $null }
     $Entry = [ordered]@{ id = $Record.Id; time = $Record.TimeCreated.ToUniversalTime().ToString('yyyy-MM-ddTHH:00:00Z') }
+    if ($Query.Key -eq 'applicationCrashes') { $Entry['provider'] = 'Application Error' }
     if ($Query.Key -eq 'systemErrors') { return $Entry }
     $Data = Get-BaselineEventData $Record
     $Named = $Data.Named
@@ -3013,8 +3015,9 @@ function ConvertTo-BaselineEventRecord {
             if ($Leaf -in $Script:LolbinNames) { $Entry['lolbin'] = $Leaf }
         }
         1000 {
-            $Application = [string]@($Data.Values)[0]
-            if ($Application) { $Entry['faultingApp'] = ($Application -split '[\\/]')[-1] }
+            $Application = [string]$Named['AppName']
+            $Leaf = ($Application -split '[\\/]')[-1]
+            if ($Application -notmatch '[\r\n]' -and $Leaf -match '^[^<>:"/\\|?*\x00-\x1f]{1,240}\.(exe|dll|com|scr)$') { $Entry['faultingApp'] = $Leaf }
         }
     }
     if ($IncludeSecurityEvents) {
@@ -3044,9 +3047,24 @@ if (-not $SkipEventCollection) {
             businessHours         = $BusinessHours
             workDays              = $WorkDays
             elevatedCorrelation   = 'NotEvaluated'
+            logCoverage           = @{}
+            queryStates           = @{}
+            crashProviderSchema   = 'application-error-1.0'
         }}
         $totalEvents = 0
         $querySw     = [System.Diagnostics.Stopwatch]::StartNew()
+        foreach ($LogName in @('Security', 'Application', 'System')) {
+            try {
+                $Oldest = Get-WinEvent -LogName $LogName -Oldest -MaxEvents 1 -ErrorAction Stop
+                if ($null -eq $Oldest.TimeCreated) { throw 'Event timestamp unavailable' }
+                $result['_queryMeta']['logCoverage'][$LogName] = @{
+                    state = 'Read'
+                    oldestRecordUtc = $Oldest.TimeCreated.ToUniversalTime().ToString('o')
+                }
+            } catch {
+                $result['_queryMeta']['logCoverage'][$LogName] = @{ state = 'Unavailable' }
+            }
+        }
 
         # Detail fields need -IncludeSecurityEvents; Identity fields additionally need Identified mode.
         $queries = @(
@@ -3056,7 +3074,7 @@ if (-not $SkipEventCollection) {
             @{ Name = 'Process Creation (4688)';              Key = 'processCreation';    Log = 'Security';    Ids = @(4688);                                   Detail = @();                                               Identity = @('SubjectUserName') }
             @{ Name = 'Audit Policy Change (4902/4906/4907)'; Key = 'auditPolicyChange';  Log = 'Security';    Ids = @(4902,4904,4905,4906,4907);               Detail = @('SubcategoryGuid','AuditPolicyChanges');         Identity = @('SubjectUserName') }
             @{ Name = 'Kerberos (4768/4769/4771)';           Key = 'kerberosAuth';       Log = 'Security';    Ids = @(4768,4769,4771);                         Detail = @('ServiceName','TicketOptions','Status');         Identity = @('TargetUserName','IpAddress') }
-            @{ Name = 'Application Crashes (1000/1001)';     Key = 'applicationCrashes'; Log = 'Application'; Ids = @(1000,1001);                              Detail = @();                                               Identity = @() }
+            @{ Name = 'Application Crashes (1000)';          Key = 'applicationCrashes'; Log = 'Application'; Ids = @(1000); Provider = 'Application Error';   Detail = @();                                               Identity = @() }
             @{ Name = 'System Errors (41/6008/6013)';        Key = 'systemErrors';       Log = 'System';      Ids = @(41,6008,6013);                           Detail = @();                                               Identity = @() }
         )
 
@@ -3083,7 +3101,9 @@ if (-not $SkipEventCollection) {
                     Id        = $q.Ids
                     StartTime = $cutoff
                 }
+                if ($q.Provider) { $filter['ProviderName'] = $q.Provider }
                 $events = @(Get-WinEvent -FilterHashtable $filter -MaxEvents $MaxEventsPerQuery -ErrorAction Stop)
+                $result['_queryMeta']['queryStates'][$q.Key] = 'Complete'
                 $count  = $events.Count
                 # R-2: flag queries that hit the cap so consumers know the window was truncated.
                 $isTruncated = ($count -ge $MaxEventsPerQuery)
@@ -3099,15 +3119,21 @@ if (-not $SkipEventCollection) {
                     $result[$q.Key] = $summary
                 } else {
                     $extracted = [System.Collections.ArrayList]::new()
-                    foreach ($evt in $events) { [void]$extracted.Add((ConvertTo-BaselineEventRecord $evt $q $elevatedLogons)) }
+                    foreach ($evt in $events) {
+                        $entry = ConvertTo-BaselineEventRecord $evt $q $elevatedLogons
+                        if ($null -ne $entry) { [void]$extracted.Add($entry) }
+                    }
                     $result[$q.Key] = @($extracted)
                 }
                 $totalEvents += $count
             } catch [Exception] {
                 if (Test-BaselineNoEvents $_) {
+                    $result['_queryMeta']['queryStates'][$q.Key] = 'Complete'
                     $count = 0
-                    $result[$q.Key] = if ($EventSummaryOnly) { @{ count = 0 } } else { @() }
+                    if ($EventSummaryOnly) { $result[$q.Key] = @{ count = 0 } }
+                    else { $result[$q.Key] = @() }
                 } else {
+                    $result['_queryMeta']['queryStates'][$q.Key] = 'Unavailable'
                     $result[$q.Key] = @{ error = (Get-CollectorErrorText $Script:PrivacyContext $_) }
                     $count = 0
                 }
@@ -3194,8 +3220,8 @@ $output = [ordered]@{
     }
     systemInfo        = $systemInfo
     joinType          = $joinType
-    appliedGPOs       = if ($appliedGPOs -and $appliedGPOs.appliedGPOs) { $appliedGPOs.appliedGPOs } else { @() }
-    deniedGPOs        = if ($appliedGPOs -and $appliedGPOs.deniedGPOs) { $appliedGPOs.deniedGPOs } else { @() }
+    appliedGPOs       = @(if ($appliedGPOs -and $appliedGPOs.appliedGPOs) { $appliedGPOs.appliedGPOs })
+    deniedGPOs        = @(if ($appliedGPOs -and $appliedGPOs.deniedGPOs) { $appliedGPOs.deniedGPOs })
     mdmEnrollment     = $mdmEnrollment
     securityPolicy    = $securityPolicy
     auditPolicy       = $auditPolicy

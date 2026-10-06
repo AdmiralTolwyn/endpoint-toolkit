@@ -43,11 +43,11 @@ Assert-Privacy (-not (Test-BaselineNoEvents $ProviderFailure)) 'Generic exceptio
 $MissingLog = [Management.Automation.ErrorRecord]::new([System.Diagnostics.Eventing.Reader.EventLogNotFoundException]::new('Missing log'), 'NoMatchingLogsFound', [Management.Automation.ErrorCategory]::ObjectNotFound, $null)
 Assert-Privacy (-not (Test-BaselineNoEvents $MissingLog)) 'Missing event logs must remain unavailable, not empty'
 
-function New-SyntheticEvent([int]$Id, [datetime]$Time, [hashtable]$Named, [string[]]$Values = @()) {
+function New-SyntheticEvent([int]$Id, [datetime]$Time, [hashtable]$Named, [string[]]$Values = @(), [string]$Provider = 'Application Error') {
     $Data = foreach ($Key in $Named.Keys) { '<Data Name="{0}">{1}</Data>' -f $Key, [Security.SecurityElement]::Escape([string]$Named[$Key]) }
     $Data += foreach ($Value in $Values) { '<Data>{0}</Data>' -f [Security.SecurityElement]::Escape($Value) }
     $Xml = '<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event"><EventData>' + ($Data -join '') + '</EventData></Event>'
-    $Record = [pscustomobject]@{ Id = $Id; TimeCreated = $Time; Message = 'RAW_MESSAGE_SENTINEL C:\Users\PII_SENTINEL' }
+    $Record = [pscustomobject]@{ Id = $Id; ProviderName = $Provider; TimeCreated = $Time; Message = 'RAW_MESSAGE_SENTINEL C:\Users\PII_SENTINEL' }
     $Record | Add-Member -MemberType ScriptMethod -Name ToXml -Value ([scriptblock]::Create("'" + $Xml.Replace("'", "''") + "'"))
     return $Record
 }
@@ -69,12 +69,14 @@ $script:SyntheticEvents = @(
     (New-SyntheticEvent 4740 $Weekday @{ TargetUserName = 'pii_sentinel'; TargetDomainName = 'contoso'; CallerComputerName = 'PII_HOST' }),
     (New-SyntheticEvent 4688 $OffHours @{ NewProcessName = 'C:\Windows\System32\CertUtil.exe'; CommandLine = 'certutil -urlcache SECRET_TOKEN=abc'; SubjectUserName = 'PII_SENTINEL' }),
     (New-SyntheticEvent 4688 $Weekday @{ NewProcessName = 'C:\Users\PII_SENTINEL\private.exe'; CommandLine = 'private.exe --password SECRET_TOKEN'; SubjectUserName = 'PII_SENTINEL' }),
-    (New-SyntheticEvent 1000 $Weekday @{} @('C:\Users\PII_SENTINEL\tool.exe', '1.0.0.0')),
+    (New-SyntheticEvent 1000 $Weekday @{ AppName = 'C:\Users\PII_SENTINEL\tool.exe' }),
+    (New-SyntheticEvent 1000 $Weekday @{} @("RAW_MESSAGE_SENTINEL`nPII_SENTINEL") 'Unrelated Provider'),
     (New-SyntheticEvent 41 $Weekday @{ BugcheckCode = '0' })
 )
 function Get-WinEvent {
-    param($FilterHashtable, $MaxEvents, $ErrorAction)
-    $Matched = @($script:SyntheticEvents | Where-Object { $_.Id -in @($FilterHashtable.Id) -and $_.TimeCreated -ge $FilterHashtable.StartTime })
+    param($FilterHashtable, $MaxEvents, $ErrorAction, $LogName, [switch]$Oldest)
+    if ($Oldest) { return [pscustomobject]@{ TimeCreated = (Get-Date).AddDays(-40) } }
+    $Matched = @($script:SyntheticEvents | Where-Object { $_.Id -in @($FilterHashtable.Id) -and $_.TimeCreated -ge $FilterHashtable.StartTime -and (-not $FilterHashtable.ProviderName -or $_.ProviderName -ceq $FilterHashtable.ProviderName) })
     if ($Matched.Count -eq 0) { throw 'No events were found that match the specified selection criteria.' }
     $Matched | Sort-Object TimeCreated -Descending | Select-Object -First $MaxEvents
 }
@@ -107,6 +109,7 @@ $Service = @($Minimal.logonEvents | Where-Object { $_.id -eq 4624 -and $_.logonT
 Assert-Privacy ($Service[0].elevated -eq $false) 'Service SYSTEM logon counted as elevated administrator'
 Assert-Privacy (@($Minimal.logonEvents | Where-Object { $_.id -eq 4625 -and $_.logonType -eq 10 }).Count -eq 1) 'RDP failure logon type lost'
 Assert-Privacy ($Minimal._queryMeta.elevatedCorrelation -eq 'Complete' -and $Minimal._queryMeta.recordSchema -eq 'minimal-1.0') 'Derivation metadata missing'
+Assert-Privacy ($Minimal._queryMeta.logCoverage.Security.state -ceq 'Read' -and $Minimal._queryMeta.queryStates.kerberosAuth -ceq 'Complete') 'Retention and query outcomes must be explicit'
 $Accounts = @($Minimal.accountLockout | ForEach-Object { $_.accountKey } | Sort-Object -Unique)
 Assert-Privacy ($Accounts.Count -eq 1 -and $Accounts[0] -cmatch '^usr_[0-9a-f]{16}$') 'Lockout account pseudonym missing or not case-normalized'
 $Again = Invoke-EventArea 'Pseudonymous' $false $false $Key
@@ -115,6 +118,14 @@ $Other = Invoke-EventArea 'Pseudonymous' $false $false ([byte[]](32..63))
 Assert-Privacy ($Other.accountLockout[0].accountKey -cne $Minimal.accountLockout[0].accountKey) 'Pseudonym did not depend on the key'
 Assert-Privacy (@($Minimal.processCreation | Where-Object { $_.lolbin -ceq 'certutil.exe' }).Count -eq 1 -and @($Minimal.processCreation | Where-Object { $_.Contains('lolbin') }).Count -eq 1) 'LOLBin derivation incorrect'
 Assert-Privacy ($Minimal.applicationCrashes[0].faultingApp -ceq 'tool.exe') 'Faulting application must be a file name only'
+Assert-Privacy ($Minimal.applicationCrashes.Count -eq 1 -and $Minimal.applicationCrashes[0].provider -ceq 'Application Error') 'Unrelated providers must not become crash evidence'
+$RoundTrip = $MinimalJson | ConvertFrom-Json
+foreach ($Group in @('accountManagement', 'auditPolicyChange', 'kerberosAuth')) {
+    Assert-Privacy ($RoundTrip.$Group -is [array] -and $RoundTrip.$Group.Count -eq 0) "Empty $Group must serialize as an array"
+}
+$UnsafeCrash = New-SyntheticEvent 1000 $Weekday @{ AppName = "RAW_MESSAGE_SENTINEL`ntool.exe" }
+$CrashRow = ConvertTo-BaselineEventRecord $UnsafeCrash @{ Key = 'applicationCrashes' } ([Collections.Generic.HashSet[string]]::new())
+Assert-Privacy (-not $CrashRow.Contains('faultingApp')) 'Multiline AppName must not be exported'
 Assert-Privacy (@($Minimal.Values | Where-Object { $_ -is [array] } | ForEach-Object { $_ } | Where-Object { $_.time -notmatch '^\d{4}-\d{2}-\d{2}T\d{2}:00:00Z$' }).Count -eq 0) 'Event time not truncated to the UTC hour'
 
 $Detailed = Invoke-EventArea 'Pseudonymous' $true $false $Key
@@ -130,13 +141,14 @@ Assert-Privacy (-not ($Summary | ConvertTo-Json -Depth 10).Contains('topUsers') 
 Write-Output 'PASS: minimal event records, derived flags, keyed pseudonyms, opt-in diagnostics and prohibited content.'
 
 function Get-WinEvent {
-    param($FilterHashtable, $MaxEvents, $ErrorAction)
+    param($FilterHashtable, $MaxEvents, $ErrorAction, $LogName, [switch]$Oldest)
     throw $script:EventQueryFailure
 }
 foreach ($Failure in @($ProviderFailure, $MissingLog)) {
     $script:EventQueryFailure = $Failure
     $Unavailable = Invoke-EventArea 'Pseudonymous' $false $false $Key
     Assert-Privacy ($Unavailable._queryMeta.elevatedCorrelation -ceq 'Unavailable' -and $Unavailable.logonEvents.ContainsKey('error')) 'Failed event queries must not become successful empty collections'
+    Assert-Privacy ($Unavailable._queryMeta.logCoverage.Security.state -ceq 'Unavailable' -and $Unavailable._queryMeta.queryStates.logonEvents -ceq 'Unavailable') 'Failed retention/query reads must stay unavailable'
     Assert-Privacy (-not ($Unavailable | ConvertTo-Json -Depth 10).Contains('PII_SENTINEL')) 'Event query failure exported its raw message'
 }
 Remove-Variable EventQueryFailure -Scope Script
@@ -165,6 +177,9 @@ function Get-MpPreference { [pscustomobject]@{ ExclusionPath = @('C:\Users\PII_S
 function Get-MpComputerStatus { $null }
 $Defender = & (Get-Area '$defenderConfig')
 Assert-Privacy (($Defender.ExclusionPath -join '|') -ceq 'C:\Users\{profile}\Source|D:\Builds\*|\\{host}\{share}\tools') 'Exclusion paths not masked'
+function Get-MpPreference { [pscustomobject]@{ ExclusionPath = $null } }
+$EmptyDefender = (& (Get-Area '$defenderConfig') | ConvertTo-Json -Depth 10) | ConvertFrom-Json
+Assert-Privacy ($EmptyDefender.ExclusionPath -is [array] -and $EmptyDefender.ExclusionPath.Count -eq 0) 'Empty exclusions must serialize as an array'
 Remove-Item Function:\Get-MpPreference, Function:\Get-MpComputerStatus
 function Get-NetFirewallProfile { throw 'Access denied for C:\Users\PII_SENTINEL' }
 $Firewall = & (Get-Area '$firewallProfiles')

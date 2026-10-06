@@ -48,6 +48,9 @@ foreach ($RelativePath in $Scripts) {
     foreach ($Parameter in $Ast.ParamBlock.Parameters) {
         $Name = $Parameter.Name.VariablePath.UserPath
         if ([string]::IsNullOrWhiteSpace($ScriptHelp.Parameters[$Name.ToUpperInvariant()])) { throw "${RelativePath}: missing script parameter help for $Name" }
+        $Readme = Join-Path (Split-Path $Path -Parent) 'README.md'
+        $ReadmeText = [IO.File]::ReadAllText($Readme)
+        if ($ReadmeText -notmatch ('(?m)^\| `-' + [regex]::Escape($Name) + '` \|')) { throw "${RelativePath}: missing README argument table row for $Name" }
     }
     foreach ($Definition in $Ast.FindAll({ param($Node) $Node -is [Management.Automation.Language.FunctionDefinitionAst] }, $true)) {
         $FunctionCount++

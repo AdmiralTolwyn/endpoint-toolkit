@@ -1,101 +1,63 @@
 # Endpoint Toolkit
 
-A collection of scripts, templates, and tools for managing Windows endpoints at scale — covering Azure Virtual Desktop image builds, session host lifecycle, and day-to-day operational tasks.
+Scripts, templates and tools for Windows endpoint operations, Azure Virtual Desktop,
+Windows 365, Intune and selected macOS maintenance tasks.
 
-## Repository Structure
+## Assessment Collectors
 
-```
-avd/
-├── bicep/          # Bicep templates for AVD session host deployment
-│   ├── modules/    # Reusable modules (session hosts, image templates)
-│   └── main-*.bicep
-├── customizer/     # AIB / Packer customizer scripts (image-bake)
-│   └── ConfigurationFiles/  # Bundled VDOT JSON (no runtime download required)
-├── pipelines/      # Azure DevOps YAML pipelines
-└── scripts/        # PowerShell scripts used by pipelines
+Each guide includes prerequisites, examples, a complete argument table and evidence limitations.
 
-devops/
-└── aib-task-v2/           # Azure Image Builder DevOps task (v2)
+| Tool | Guide |
+| --- | --- |
+| Windows Security Baseline | [BaselineAssessor](tools/BaselineAssessor/README.md#arguments) |
+| Azure Virtual Desktop | [AvdAssessor](tools/AvdAssessor/README.md#arguments) |
+| Windows 365 | [W365Assessor](tools/W365Assessor/README.md#arguments) |
+| Microsoft Intune and companion evidence | [IntuneAssessor](tools/IntuneAssessor/README.md#arguments) |
 
-intune/
-├── bitlocker/        # BitLocker detection & remediation scripts for Intune
-├── client-health/    # Single ConfigMgr baseline discovery for major Intune client issues
-├── mdm-enrollment/   # Repair expired Intune MDM device cert (omadmclient high-CPU)
-├── mdm-sync-service/ # Local MDM diagnostics, disabled-service repair, one-time sync and IME logs
-└── onedrive-photos/  # Detect and remove shortcuts targeting OneDrive.App.exe
+## Other Tools
 
-macos/
-└── servicing/      # Developer-storage cleanup and reclaim helpers for macOS
+| Tool | Purpose |
+| --- | --- |
+| [ADMXPolicyComparer](tools/ADMXPolicyComparer/) | Compare ADMX policy baselines |
+| [AIBLogMonitor](tools/AIBLogMonitor/) | Monitor Azure Image Builder logs |
+| [AvdRewind](tools/AvdRewind/) | Roll back AVD session hosts |
+| [AzChangeTracker](tools/AzChangeTracker/) | Track Azure resource changes |
+| [DeviceDecommissioner](tools/DeviceDecommissioner/) | Guided device removal across management services |
+| [PolicyPilot](tools/PolicyPilot/) | Document Group Policy and MDM configuration |
+| [WinGetManifestManager](tools/WinGetManifestManager/) | Manage private package manifests |
 
-tools/              # Standalone PowerShell/WPF utilities
+## Scripts and Templates
 
-windows/
-├── applications/   # Generic MSI uninstaller by name pattern / publisher / GUID
-├── configuration/  # Startup-app delay, Modern Standby power plans, processor boost settings
-├── diagnostics/    # Read-only endpoint diagnostics — Location policy state, Defender/EDR coexistence, Delivery Optimization stats, power/standby evidence, audio artifact investigation, Microsoft service endpoint connectivity / proxy detection
-├── dot3svc/        # Wired AutoConfig (dot3svc) migration reset
-├── migration/      # Hybrid Join → Entra-only join in-place migration (EntraCutover)
-├── print/          # Windows Protected Print (WPP) readiness — flag third-party v3/v4 drivers
-├── rdp/            # Per-user RDP file signing (no admin required)
-├── security/       # Hardware speculation mitigations, Secure Boot remediation
-├── servicing/      # Pre-upgrade disk-space cleanup, WinRE partition resize, ESP free-space reporter
-└── w365/           # Windows 365 Cloud PC utilities (disk resize, keyboard layout)
-```
+| Area | Purpose |
+| --- | --- |
+| [avd/bicep](avd/bicep/) | Session-host deployment templates |
+| [avd/customizer](avd/customizer/) | AIB/Packer image customization and bundled VDOT configuration |
+| [avd/pipelines](avd/pipelines/), [avd/scripts](avd/scripts/) | Image builds and session-host lifecycle |
+| [devops/aib-task-v2](devops/aib-task-v2/) | Azure Image Builder pipeline task |
+| [intune/bitlocker](intune/bitlocker/) | Key-escrow detection/remediation |
+| [intune/client-health](intune/client-health/README.md) | Read-only ConfigMgr baseline discovery of Intune client faults |
+| [intune/mdm-enrollment](intune/mdm-enrollment/) | Expired enrollment-certificate audit and opt-in repair |
+| [intune/mdm-sync-service](intune/mdm-sync-service/README.md) | Local diagnostics, service repair and opt-in sync |
+| [intune/onedrive-photos](intune/onedrive-photos/) | Shortcut-only detection/remediation |
+| [macos/servicing](macos/servicing/) | Developer-storage cleanup |
+| [windows/applications](windows/applications/UninstallMsiProduct/README.md) | Registry-based MSI uninstallation |
+| [windows/configuration](windows/configuration/README.md) | Startup delay, power plans and [processor boost](windows/configuration/ProcessorBoost/README.md) |
+| [windows/diagnostics](windows/diagnostics/) | Location, Defender coexistence, Delivery Optimization, power and audio diagnostics |
+| [NTLM usage](windows/diagnostics/NtlmUsageDetection/README.md) | Read-only NTLM evidence detector for Ivanti |
+| [windows/dot3svc](windows/dot3svc/) | Wired AutoConfig migration reset |
+| [EntraCutover](windows/migration/EntraCutover/README.md) | Experimental Hybrid-to-Entra migration; not supported by Microsoft |
+| [windows/print](windows/print/) | Windows Protected Print readiness |
+| [windows/rdp](windows/rdp/) | Per-user RDP file signing |
+| [windows/security](windows/security/) | Speculation mitigation and Secure Boot servicing |
+| [windows/servicing](windows/servicing/) | Upgrade cleanup, recovery-partition resize and ESP reporting |
+| [windows/w365](windows/w365/) | Cloud PC disk and keyboard utilities |
 
-## Tools
+## Before Running
 
-| Tool | Description |
-|------|-------------|
-| [ADMXPolicyComparer](tools/ADMXPolicyComparer/) | Compare ADMX policy baselines across Windows versions |
-| [AIBLogMonitor](tools/AIBLogMonitor/) | Azure Image Builder log monitor |
-| [AvdAssessor](tools/AvdAssessor/) | AVD environment assessment |
-| [AvdRewind](tools/AvdRewind/) | AVD session host rollback |
-| [AzChangeTracker](tools/AzChangeTracker/) | Azure resource change tracking |
-| [BaselineAssessor](tools/BaselineAssessor/) | Windows security baseline assessment (263 checks) |
-| [DeviceDecommissioner](tools/DeviceDecommissioner/) | Remove a device from AD, Entra ID, Intune, Autopilot, and SCCM in one guided workflow — pre-flight cards, BitLocker/LAPS warnings, dry-run, audit trail |
-| [PolicyPilot](tools/PolicyPilot/) | Group Policy & MDM documentation — scans AD/Local/Intune, conflict detection, ADMX/CSP enrichment |
-| [mdmresult](tools/mdmresult/) | gpresult for Intune / hybrid devices — standalone script + ADMX/CSP metadata, same HTML report as PolicyPilot, no GUI |
-| [W365Assessor](tools/W365Assessor/) | Windows 365 (Cloud PC) Enterprise & Frontline tenant assessment — 128 checks, 23 automated via Microsoft Graph |
-| [WinGetManifestManager](tools/WinGetManifestManager/) | WinGet package manifest manager for private repos |
+Read the tool-specific README and `Get-Help <script> -Full`; privileges, modules and supported
+PowerShell versions vary. WPF tools require Windows. Pipeline `<YOURVALUE>` placeholders must
+be replaced. Review repair/deletion actions in a lab and use preview modes where supported.
+Assessment evidence may contain confidential configuration and identifiers; follow the relevant
+collector's data-handling guidance.
 
-The AVD, Windows 365, Intune and Baseline collectors pseudonymize personal data by default and write Confidential exports to `%LOCALAPPDATA%\AssayCollections`. See each tool's README for `-PrivacyMode`.
-
-## Scripts
-
-| Area | Description |
-|------|-------------|
-| [avd/customizer/](avd/customizer/) | AIB / Packer image-bake customizers — AdminSysPrep, DisableAutoUpdates, InstallLanguagePacks, RemoveAppxPackages, RemoveUserApps, ResetAutoUpdateSettings, TimezoneRedirection, UpdateWinGet, WindowsOptimization (VDOT wrapper, JSON bundled in-repo) |
-| [avd/scripts/](avd/scripts/) | AVD pipeline helpers — host-pool drain, deployment telemetry, FSLogix repair, Get-StubAppPayloads / Install-AppxPayloads, hybrid activator, Remove-AvdHosts |
-| [avd/pipelines/](avd/pipelines/) | Azure DevOps YAML pipelines for AVD activation, host-pool updates, image bakes |
-| [avd/bicep/](avd/bicep/) | Bicep templates for AVD session-host deployment (Entra ID + AD-joined variants) |
-| [intune/bitlocker/](intune/bitlocker/) | Intune Proactive Remediation pair — ensure BitLocker recovery key escrow to Entra ID; MBAM client uninstall |
-| [intune/client-health/](intune/client-health/README.md) | `Discover-IntuneClientMajorIssues.ps1` — self-contained ConfigMgr Compliance Baseline discovery for major service, enrollment, certificate and task faults. One String-equals-`Passed` rule; stopped services and routine log errors do not cause noncompliance. Includes WPN/IME checks and detailed local evidence; no sync or repair |
-| [intune/mdm-enrollment/](intune/mdm-enrollment/) | `Repair-IntuneMdmCert.ps1` — audit (read-only) or repair hosts whose expired Intune MDM device cert wedges `omadmclient.exe` at high CPU. Repair tears down the enrollment + re-enrolls via device credential. Built for cloned AVD fleets that expire together |
-| [intune/mdm-sync-service/](intune/mdm-sync-service/README.md) | Three standalone scripts: disabled `dmwappushservice` detection, startup repair plus one enrollment-specific PushLaunch request, and local MDM diagnostics with opt-in sync. Bounded task observation, JSON/object output and per-script IME logs. PowerShell 5.1/7; no Graph authentication or automatic re-enrollment |
-| [intune/onedrive-photos/](intune/onedrive-photos/) | Detection/remediation pair to remove Start Menu and Desktop shortcuts targeting `OneDrive.App.exe`. Shortcut-only cleanup; leaves the OneDrive client installed. Supports remediation preview with `-WhatIf` |
-| [macos/servicing/](macos/servicing/) | `macos_dev_cleanup.sh` — semi-interactive developer-storage cleanup (Xcode, VS Code/Cursor/Windsurf, .NET, Gradle, Android, Flutter, JetBrains, Homebrew, Docker, Time Machine) |
-| [windows/applications/](windows/applications/UninstallMsiProduct/README.md) | `Uninstall-MsiProduct.ps1` — generic MSI uninstaller by DisplayName / Publisher / Version / ProductCode wildcards. Registry-driven (no `Win32_Product` side effects); built for vendor agents whose GUID changes per release (e.g. Quest / KACE Agent) |
-| [windows/configuration/](windows/configuration/README.md) | Startup-app delay and Modern Standby power-plan configuration. [Configure-ProcessorBoost.ps1](windows/configuration/ProcessorBoost/README.md) queries the active plan by default; `-Disable`, `-Enable`, or `-Configure 0-6` sets processor boost for both AC and battery power. Changes require elevation. |
-| [windows/diagnostics/](windows/diagnostics/) | [`LocationPolicyState/Get-LocationPolicyState.ps1`](windows/diagnostics/LocationPolicyState/README.md) — report the effective Windows Location policy state and every author that can force/lock the toggle. [`MdeCoexistenceState/Get-MdeCoexistenceState.ps1`](windows/diagnostics/MdeCoexistenceState/README.md) — effective Defender AV / Defender for Endpoint state, detection of third-party AV/EDR sharing the endpoint (minifilters by altitude band, services, Security Center), sensor health from the SENSE log, and an automated exclusion-hygiene review that catches `%USERPROFILE%`-style rules that silently match nothing under LocalSystem. Read-only, JSON output, Intune exit codes. [`DeliveryOptimizationStatistics/Get-DeliveryOptimizationStatistics.ps1`](windows/diagnostics/DeliveryOptimizationStatistics/README.md) — local Delivery Optimization configuration, month-to-date traffic split by source (direct CDN, Connected Cache, LAN / Group / Internet / Link-Local peers), bandwidth-savings and P2P efficiency, cache size, peer count and active jobs. Reads the `root/Microsoft/Windows/DeliveryOptimization` CIM provider directly to recover `MonthlyGroupBytes` and `MonthlyLinkLocalBytes`, which the in-box PowerShell wrapper silently drops, and derives direct-CDN bytes before applying the mutually exclusive WUfB source formulas. Read-only; console table, `PSCustomObject`, or single-line JSON for Grafana / Loki / Telegraf ingestion. [`PowerEvidence/Get-PowerEvidence.ps1`](windows/diagnostics/PowerEvidence/README.md) — one-pass power / standby / screen-on evidence collector (`powercfg /a`, battery report, SleepStudy, System Power, wake diagnostics, Kernel power/boot events, Fast Startup / Hibernate config) that auto-zips a bundle for return. Runs unelevated; elevation adds SleepStudy / System Power / active requests. [`AudioArtifactHunter/`](windows/diagnostics/AudioArtifactHunter/README.md) — evidence-collection suite for intermittent audio artifacts (unexpected loud transients, self-changing volume, mute that will not stick). Separates *signal-level* from *gain-level* causes by running a rolling WASAPI loopback capture (peak/true-RMS levels, discontinuity flags, auto-trigger + user-dropped incident markers) alongside a no-audio endpoint-state monitor (volume scalar, mute, device identity, per-app sessions). Adds a controlled stimulus runner with a silent-toast control case, an audio-stack inventory with baseline diff, EVTX/ZIP retention profiling and incident correlation, a run-review pass that ranks incident candidates so an unattended capture can be triaged without listening to it, and a reversible notification-sound silencer. Loopback capture is privacy-gated behind a mandatory acknowledgement. [`WindowsServiceEndpoints/Test-WindowsServiceEndpoints.ps1`](windows/diagnostics/WindowsServiceEndpoints/README.md) — connectivity check for the Microsoft endpoints Windows 11 services depend on (Windows Update, Delivery Optimization, Store, Defender, certificate trust, activation, diagnostics, NCSI, WNS, Edge update): DNS, direct TCP, HTTP and TLS through the proxy Windows would use. Detects a proxy in the middle — explicit/PAC/WPAD proxy, TLS inspection (chain root), proxy headers, `407`, refused tunnels, block pages served as HTTP 200, redirects to proxy portals, Microsoft-signed trust-list integrity over plain HTTP, Zscaler path and steering agents. Colour-coded report, CSV export, exit codes 0/1/2. Read-only |
-| [windows/dot3svc/](windows/dot3svc/) | Reset 802.1X / wired-AutoConfig profiles after migration |
-| [windows/migration/](windows/migration/EntraCutover/README.md) | `EntraCutover` — **experimental, not supported by Microsoft.** In-place Hybrid Join → Entra-only join migration (no reinstall). Resumable 5-phase state machine (Assess/Prepare/Teardown/Join/Finalize), Intune enrollment + stale-GPO cleanup, fresh-profile + OneDrive KFM, BitLocker re-escrow to the new device object, break-glass admin + `djoin` offline-rejoin rollback. CLI, CMTrace logging |
-| [windows/print/](windows/print/) | `Get-PrintDriverWppReadiness.ps1` — flag machines with third-party v3/v4 print drivers (not yet Windows Protected Print ready) ahead of WPP enforcement. Intune Proactive Remediation detection script (exit 0/1) + standalone CSV/JSON fleet inventory; maps drivers to printers actually using them. Read-only |
-| [windows/rdp/](windows/rdp/) | Sign `.rdp` files in user context (no admin required) |
-| [windows/diagnostics/NtlmUsageDetection/](windows/diagnostics/NtlmUsageDetection/README.md) | Read-only NTLM usage evidence detector for Ivanti: four-line output, collection diagnostics, optional JSON and offline tests |
-| [windows/security/](windows/security/) | Hardware speculation mitigations + Secure Boot UEFI CA 2023 remediation (Intune PR pair) |
-| [windows/servicing/](windows/servicing/) | `Invoke-PreUpgradeCleanup.ps1` — reclaim disk space via cleanmgr + DISM before a feature update or after image bake. `Resize-RecoveryPartition.ps1` — resize the WinRE recovery partition (KB5034441 / CVE-2024-20666 remediation). `Get-EspPartitionStatus.ps1` — EFI System Partition size/free reporter as JSON for Grafana/Loki/Telegraf (KB5089549 / 0x800f0922 monitoring) |
-| [windows/w365/](windows/w365/) | Windows 365 Cloud PC utilities — disk resize, keyboard layout configuration |
-
-## Getting Started
-
-Most pipeline files use `<YOURVALUE>` placeholders — search for `<YOUR` and replace with your environment-specific values before use.
-
-## Requirements
-
-- PowerShell 5.1+
-- Azure CLI / Az PowerShell modules (for AVD scripts and pipelines)
-- Windows 11 (for WPF-based tools)
-
-## License
-
-MIT
+[MIT license](LICENSE). Scripts are provided "AS IS" with no warranties and confer no rights.
