@@ -6653,11 +6653,11 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
   <h1>&#x1F4CB; Policy Report</h1>
   <span class="domain-badge">$(& $enc $domain)</span>
   <span class="spacer"></span>
-  <input type="text" class="search-box" id="globalSearch" placeholder="Search policies, values, categories..." />
+  <input type="text" class="search-box" id="globalSearch" placeholder="Search policies, values, categories..." aria-label="Search report" />
   <button class="btn" onclick="expandAll()" title="Expand all sections">&#x25BC; Expand</button>
   <button class="btn" onclick="collapseAll()" title="Collapse all sections">&#x25B6; Collapse</button>
-  <button class="btn btn-icon" id="themeToggle" onclick="toggleTheme()" title="Toggle dark/light mode">&#x263E;</button>
-  <button class="btn" onclick="window.print()" title="Print report">&#x1F5A8;</button>
+  <button class="btn btn-icon" id="themeToggle" onclick="toggleTheme()" title="Toggle dark/light mode" aria-label="Toggle dark/light mode">&#x263E;</button>
+  <button class="btn btn-icon" onclick="window.print()" title="Print report" aria-label="Print report">&#x1F5A8;&#xFE0F;</button>
 </div>
 
 <div class="container">
@@ -6695,9 +6695,11 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
   <div class="stat-card"><div class="stat-num">$totalSettings</div><div class="stat-label">Total Settings</div></div>
   <div class="stat-card red"><div class="stat-num">$conflictCount</div><div class="stat-label">Conflicts</div></div>
   <div class="stat-card yellow"><div class="stat-num">$redundantCount</div><div class="stat-label">Redundant</div></div>
-  <div class="stat-card"><div class="stat-num">$unlinkedCount</div><div class="stat-label">Unlinked GPOs</div></div>
 "@)
 
+    if ($scanMode -eq 'AD') {
+        [void]$html.Append("<div class=`"stat-card`"><div class=`"stat-num`">$unlinkedCount</div><div class=`"stat-label`">Unlinked GPOs</div></div>")
+    }
     if ($appCount -gt 0) {
         [void]$html.Append("<div class=`"stat-card accent`"><div class=`"stat-num`">$appCount</div><div class=`"stat-label`">Intune Apps</div></div>")
     }
@@ -6713,6 +6715,42 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
     $cspStale = $cspDbAge -and $cspDbAge -gt 90
     if ($cspStale) {
         [void]$html.Append("<div style=`"margin:12px 0 0`"><span class=`"csp-db-warn`">&#x26A0; CSP reference database is $cspDbAge days old &mdash; run Build-CspDatabase.ps1 to refresh</span></div>")
+    }
+
+    # ── Compliance & App Summary (first: the at-a-glance verdict) ──
+    if ($mdmInfo -and $mdmInfo.MdmDiag.Compliance -and $mdmInfo.MdmDiag.Compliance.Status -ne 'N/A') {
+        $comp = $mdmInfo.MdmDiag.Compliance
+        $appSum = $mdmInfo.MdmDiag.AppSummary
+        $compColor = switch ($comp.Status) { 'Compliant' { 'var(--green)' } 'Non-compliant' { 'var(--red)' } 'At Risk' { 'var(--yellow)' } default { 'var(--muted)' } }
+        [void]$html.Append(@"
+<details class="section" open>
+<summary class="section-header">
+  <span class="icon" style="color:$compColor">$(if ($comp.Status -eq 'Compliant') { '&#x2705;' } else { '&#x26A0;&#xFE0F;' })</span>
+  <span class="title">Compliance &amp; App Install Summary</span>
+  <span class="count" style="background:$(if($comp.Status -eq 'Compliant'){'var(--green-dim)'}else{'var(--yellow-dim)'});color:$compColor">$($comp.Status)</span>
+  <span class="chevron">&#x25B6;</span>
+</summary>
+<div class="section-body">
+<div class="device-info" style="border:none;margin:0;padding:12px 16px;">
+  <div class="di-item"><span class="di-label">Overall Status</span><span class="di-value" style="color:$compColor;font-weight:600">$(& $enc $comp.Status)</span></div>
+  <div class="di-item"><span class="di-label">Configured Policies</span><span class="di-value">$($comp.ConfiguredPolicies)</span></div>
+"@)
+        if ($appSum -and $appSum.Total -gt 0) {
+            [void]$html.Append(@"
+  <div class="di-item"><span class="di-label">App Success Rate</span><span class="di-value">$($appSum.SuccessRate)%</span></div>
+  <div class="di-item"><span class="di-label">Apps Installed</span><span class="di-value" style="color:var(--green)">$($appSum.Installed) / $($appSum.Total)</span></div>
+  <div class="di-item"><span class="di-label">Apps Failed</span><span class="di-value"$(if($appSum.Failed -gt 0){' style="color:var(--red);font-weight:600"'}else{''})>$($appSum.Failed)</span></div>
+  <div class="di-item"><span class="di-label">Apps Pending</span><span class="di-value"$(if($appSum.Pending -gt 0){' style="color:var(--yellow)"'}else{''})>$($appSum.Pending)</span></div>
+"@)
+        }
+        if ($comp.Issues -and $comp.Issues.Count -gt 0) {
+            [void]$html.Append('<div style="margin-top:8px;padding:8px 12px;background:var(--yellow-dim);border-radius:6px;border-left:3px solid var(--yellow)">')
+            foreach ($issue in $comp.Issues) {
+                [void]$html.Append("<div style=`"font-size:12px;color:var(--yellow);margin:2px 0`">&#x26A0; $(& $enc $issue)</div>")
+            }
+            [void]$html.Append('</div>')
+        }
+        [void]$html.Append('</div></div></details>')
     }
 
     # ── Section 1: All Settings ──
@@ -6731,17 +6769,17 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
 <div class="section-body">
 <div class="filter-bar">
   <span class="label">Category:</span>
-  <select id="fltCat" onchange="filterSettings()">
+  <select id="fltCat" onchange="filterSettings()" aria-label="Filter by category">
     <option value="">All Categories</option>
 "@)
     foreach ($cat in $categories) {
         [void]$html.Append("<option value=`"$(& $enc $cat.Name)`">$(& $enc $cat.Name) ($($cat.Count))</option>")
     }
-    [void]$html.Append('</select><span class="label">Scope:</span><select id="fltScope" onchange="filterSettings()"><option value="">All Scopes</option>')
+    [void]$html.Append('</select><span class="label">Scope:</span><select id="fltScope" onchange="filterSettings()" aria-label="Filter by scope"><option value="">All Scopes</option>')
     foreach ($sc in $scopes) {
         [void]$html.Append("<option value=`"$(& $enc $sc)`">$(& $enc $sc)</option>")
     }
-    [void]$html.Append('</select><span class="label">State:</span><select id="fltState" onchange="filterSettings()"><option value="">All States</option>')
+    [void]$html.Append('</select><span class="label">State:</span><select id="fltState" onchange="filterSettings()" aria-label="Filter by state"><option value="">All States</option>')
     foreach ($st in $states) {
         [void]$html.Append("<option value=`"$(& $enc $st)`">$(& $enc $st)</option>")
     }
@@ -6967,17 +7005,17 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
             [void]$html.Append(@"
 <div class="device-info" style="border-top:1px solid var(--border);margin:12px 0 0;padding:12px 16px 0;">
   <div style="font-weight:600;font-size:12px;margin-bottom:8px;">&#x1F512; LAPS (Local Admin Password Solution)</div>
-  <div class="di-item"><span class="di-label">Backup Directory</span><span class="di-value">$(& `$enc `$laps.BackupDirectory)</span></div>
-  <div class="di-item"><span class="di-label">Password Age</span><span class="di-value">$(& `$enc `$laps.PasswordAgeDays)</span></div>
-  <div class="di-item"><span class="di-label">Complexity</span><span class="di-value">$(& `$enc `$laps.PasswordComplexity)</span></div>
-  <div class="di-item"><span class="di-label">Password Length</span><span class="di-value">$(& `$enc `$laps.PasswordLength)</span></div>
-  <div class="di-item"><span class="di-label">Post-auth Action</span><span class="di-value">$(& `$enc `$laps.PostAuthActions)</span></div>
-  <div class="di-item"><span class="di-label">Post-auth Reset Delay</span><span class="di-value">$(& `$enc `$laps.PostAuthResetDelay)</span></div>
-  <div class="di-item"><span class="di-label">Auto-manage Enabled</span><span class="di-value">$(& `$enc `$laps.AutoManageEnabled)</span></div>
-  <div class="di-item"><span class="di-label">Auto-manage Target</span><span class="di-value">$(& `$enc `$laps.AutoManageTarget)</span></div>
-  <div class="di-item"><span class="di-label">Last Password Rotation</span><span class="di-value">$(& `$enc `$laps.LocalLastPasswordUpdate)</span></div>
-  <div class="di-item"><span class="di-label">Azure Password Expiry</span><span class="di-value">$(& `$enc `$laps.LocalAzurePasswordExpiry)</span></div>
-  <div class="di-item"><span class="di-label">Managed Account</span><span class="di-value">$(& `$enc `$laps.LocalManagedAccountName)</span></div>
+  <div class="di-item"><span class="di-label">Backup Directory</span><span class="di-value">$(& $enc $laps.BackupDirectory)</span></div>
+  <div class="di-item"><span class="di-label">Password Age</span><span class="di-value">$(& $enc $laps.PasswordAgeDays)</span></div>
+  <div class="di-item"><span class="di-label">Complexity</span><span class="di-value">$(& $enc $laps.PasswordComplexity)</span></div>
+  <div class="di-item"><span class="di-label">Password Length</span><span class="di-value">$(& $enc $laps.PasswordLength)</span></div>
+  <div class="di-item"><span class="di-label">Post-auth Action</span><span class="di-value">$(& $enc $laps.PostAuthActions)</span></div>
+  <div class="di-item"><span class="di-label">Post-auth Reset Delay</span><span class="di-value">$(& $enc $laps.PostAuthResetDelay)</span></div>
+  <div class="di-item"><span class="di-label">Auto-manage Enabled</span><span class="di-value">$(& $enc $laps.AutoManageEnabled)</span></div>
+  <div class="di-item"><span class="di-label">Auto-manage Target</span><span class="di-value">$(& $enc $laps.AutoManageTarget)</span></div>
+  <div class="di-item"><span class="di-label">Last Password Rotation</span><span class="di-value">$(& $enc $laps.LocalLastPasswordUpdate)</span></div>
+  <div class="di-item"><span class="di-label">Azure Password Expiry</span><span class="di-value">$(& $enc $laps.LocalAzurePasswordExpiry)</span></div>
+  <div class="di-item"><span class="di-label">Managed Account</span><span class="di-value">$(& $enc $laps.LocalManagedAccountName)</span></div>
 </div>
 "@)
         }
@@ -6998,42 +7036,6 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
             [void]$html.Append('</tbody></table>')
         }
         [void]$html.Append('</div></details>')
-    }
-
-    # ── Section 5b: Compliance & App Summary ──
-    if ($mdmInfo -and $mdmInfo.MdmDiag.Compliance -and $mdmInfo.MdmDiag.Compliance.Status -ne 'N/A') {
-        $comp = $mdmInfo.MdmDiag.Compliance
-        $appSum = $mdmInfo.MdmDiag.AppSummary
-        $compColor = switch ($comp.Status) { 'Compliant' { 'var(--green)' } 'Non-compliant' { 'var(--red)' } 'At Risk' { 'var(--yellow)' } default { 'var(--muted)' } }
-        [void]$html.Append(@"
-<details class="section" open>
-<summary class="section-header">
-  <span class="icon" style="color:$compColor">&#x2705;</span>
-  <span class="title">Compliance &amp; App Install Summary</span>
-  <span class="count" style="background:$(if($comp.Status -eq 'Compliant'){'rgba(34,197,94,0.12)'}else{'rgba(245,158,11,0.12)'});color:$compColor">$($comp.Status)</span>
-  <span class="chevron">&#x25B6;</span>
-</summary>
-<div class="section-body">
-<div class="device-info" style="border:none;margin:0;padding:12px 16px;">
-  <div class="di-item"><span class="di-label">Overall Status</span><span class="di-value" style="color:$compColor;font-weight:600">$(& $enc $comp.Status)</span></div>
-  <div class="di-item"><span class="di-label">Configured Policies</span><span class="di-value">$($comp.ConfiguredPolicies)</span></div>
-"@)
-        if ($appSum -and $appSum.Total -gt 0) {
-            [void]$html.Append(@"
-  <div class="di-item"><span class="di-label">App Success Rate</span><span class="di-value">$($appSum.SuccessRate)%</span></div>
-  <div class="di-item"><span class="di-label">Apps Installed</span><span class="di-value" style="color:var(--green)">$($appSum.Installed) / $($appSum.Total)</span></div>
-  <div class="di-item"><span class="di-label">Apps Failed</span><span class="di-value"$(if($appSum.Failed -gt 0){' style="color:var(--red);font-weight:600"'}else{''})>$($appSum.Failed)</span></div>
-  <div class="di-item"><span class="di-label">Apps Pending</span><span class="di-value"$(if($appSum.Pending -gt 0){' style="color:var(--yellow)"'}else{''})>$($appSum.Pending)</span></div>
-"@)
-        }
-        if ($comp.Issues -and $comp.Issues.Count -gt 0) {
-            [void]$html.Append('<div style="margin-top:8px;padding:8px 12px;background:rgba(245,158,11,0.08);border-radius:6px;border-left:3px solid var(--yellow)">')
-            foreach ($issue in $comp.Issues) {
-                [void]$html.Append("<div style=`"font-size:12px;color:var(--yellow);margin:2px 0`">&#x26A0; $(& $enc $issue)</div>")
-            }
-            [void]$html.Append('</div>')
-        }
-        [void]$html.Append('</div></div></details>')
     }
 
     # ── Section 5c: Script Policies (Proactive Remediations) ──
@@ -9704,9 +9706,9 @@ $ui.CmbScanMode.Add_SelectionChanged({
             $ui.BtnScanGPOs.ToolTip = 'Scan Intune/MDM policies from local registry'
             if ($ui.BtnGetStartedText) { $ui.BtnGetStartedText.Text = 'Scan Intune Policies' }
         } elseif ($mode -eq 'Combined') {
-            $ui.BtnScanText.Text = 'Scan Co-managed Policies'
+            $ui.BtnScanText.Text = 'Scan Local + Intune Policies'
             $ui.BtnScanGPOs.ToolTip = 'Scan both GP policies (gpresult) and Intune/MDM policies'
-            if ($ui.BtnGetStartedText) { $ui.BtnGetStartedText.Text = 'Scan Co-managed Policies' }
+            if ($ui.BtnGetStartedText) { $ui.BtnGetStartedText.Text = 'Scan Local + Intune Policies' }
         } else {
             $ui.BtnScanText.Text = 'Scan Domain GPOs'
             $ui.BtnScanGPOs.ToolTip = 'Scan all GPOs from Active Directory using Get-GPO -All'
@@ -9722,7 +9724,7 @@ $ui.CmbScanMode.SelectedIndex = $modeIdx
 $scanLabel = switch ($Script:Prefs.ScanMode) {
     'Local'    { 'Scan Local Policies' }
     'AD'       { 'Scan Domain GPOs' }
-    'Combined' { 'Scan Co-managed Policies' }
+    'Combined' { 'Scan Local + Intune Policies' }
     default    { 'Scan Intune Policies' }
 }
 $ui.BtnScanText.Text = $scanLabel
@@ -13573,7 +13575,7 @@ if ($Headless) {
                 foreach ($g in $intuneResult.GPOs) { [void]$mergedGPOs.Add($g) }
                 foreach ($s in $localResult.Settings) { [void]$mergedSettings.Add($s) }
                 foreach ($s in $intuneResult.Settings) { [void]$mergedSettings.Add($s) }
-                $domain = if ($localResult.Domain -ne 'LocalMachine') { "$($localResult.Domain) (Co-managed)" } else { 'Co-managed (Local + Intune)' }
+                $domain = if ($localResult.Domain -ne 'LocalMachine') { "$($localResult.Domain) + Intune" } else { 'Local policy + Intune' }
                 $scanResult = @{ Timestamp=[datetime]::Now; Domain=$domain; GPOs=$mergedGPOs; Settings=$mergedSettings }
             } elseif ($localResult -and -not $localResult.Error) {
                 $scanResult = $localResult

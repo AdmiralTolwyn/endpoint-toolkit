@@ -948,7 +948,7 @@
                                     <ComboBoxItem Content="Intune / Endpoint Manager" Tag="Intune"/>
                                     <ComboBoxItem Content="Local Machine (gpresult)" Tag="Local"/>
                                     <ComboBoxItem Content="Active Directory (RSAT)" Tag="AD"/>
-                                    <ComboBoxItem Content="Combined (Co-managed)" Tag="Combined"/>
+                                    <ComboBoxItem Content="Combined (Local + Intune)" Tag="Combined"/>
                                 </ComboBox>
                                 <TextBlock Text="Local reads gpresult, AD queries domain GPOs via RSAT, Intune reads MDM registry" FontSize="10" Foreground="{DynamicResource ThemeTextMuted}" TextWrapping="Wrap" Margin="0,0,0,8"/>
 

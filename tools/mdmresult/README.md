@@ -29,7 +29,7 @@ Intune apps, certificates, LAPS, provisioning packages and compliance summary.
 
 | Parameter | Default | Description |
 |---|---|---|
-| `-Mode` | `Combined` | `Local` (Group Policy), `Intune` (MDM), `Combined` (hybrid / co-managed) |
+| `-Mode` | `Combined` | `Local` (Group Policy), `Intune` (MDM), `Combined` (both; hybrid joined or co-managed devices) |
 | `-Path` (`-H`) | `.\mdmresult_<COMPUTER>_<timestamp>.html` | Report file |
 | `-Force` (`-F`) | off | Overwrite an existing report |
 | `-Open` | off | Open the report when finished |
