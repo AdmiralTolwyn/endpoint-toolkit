@@ -12,7 +12,7 @@ PolicyPilot is a WPF-based PowerShell tool that scans, documents, and compares G
 │  AD Scan    │  Local RSoP   │  Intune Scan │  Combined (Local+MDM)  │
 │  LDAP/SYSVOL│  gpresult /x  │  Local MDM   │                        │
 ├─────────────┴───────────────┴──────────────┴────────────────────────┤
-│  admx_metadata.json (2,027 policies)  │  csp_metadata.json (~3,000) │
+│  admx_metadata.json (3,726 policies)  │  csp_metadata.json (1,617)  │
 │  Built by Build-AdmxDatabase.ps1      │  Built by Build-CspDatabase │
 └───────────────────────────────────────┴─────────────────────────────┘
 ```
@@ -119,7 +119,13 @@ Runs Local + Intune scans and merges results into a single view with source tagg
 
 ### ADMX Metadata (`admx_metadata.json`)
 
-Maps raw registry keys to human-readable policy names, categories, descriptions, and allowed values. Ships with **2,027 policies** from 46 ADMX files covering Windows, Edge, Office, Defender, and security baselines.
+Maps raw registry keys to human-readable policy names, categories, descriptions, and allowed values. Ships with **3,726 policies**: all 236 Windows 11 26H2 templates plus SecGuide and MSS-legacy from `templates/`. It doesn't include Office or Chromium Edge templates; add them to `-AdmxPath` or `templates/` and rebuild.
+
+The shipped file was built with:
+
+```powershell
+.\Build-AdmxDatabase.ps1 -IncludeAll -AdmxPath 'C:\Program Files (x86)\Microsoft Group Policy\Windows 11 Sep 2026 Update (26H2)\PolicyDefinitions'
+```
 
 **Rebuild from your environment:**
 
@@ -145,7 +151,7 @@ The builder also picks up SecGuide and MSS-Legacy ADMX templates from a local `t
 
 ### CSP Metadata (`csp_metadata.json`)
 
-Maps MDM policy CSP paths to friendly names, descriptions, defaults, allowed values, scope, editions, and minimum Windows version. Includes GP↔CSP cross-references. Ships with **~3,000 settings** across 100+ CSP areas.
+Maps MDM policy CSP paths to friendly names, descriptions, defaults, allowed values, scope, editions, and minimum Windows version. Includes GP↔CSP cross-references. Ships with **1,617 settings** across 116 CSP areas.
 
 **Rebuild from Microsoft docs:**
 

@@ -3651,9 +3651,11 @@ if ($Script:Prefs.ScanMode -in @('Intune','Combined')) {
 
 $conflicts = @(Find-Conflicts $scanResult.Settings)
 $html = Build-HtmlReport
+if (-not $html) { throw 'Report generation failed: Build-HtmlReport returned no output.' }
 $outDir = Split-Path -Parent $Path
 if ($outDir -and -not (Test-Path -LiteralPath $outDir)) { [void](New-Item -ItemType Directory -Path $outDir -Force) }
-[System.IO.File]::WriteAllText($Path, $html, [System.Text.Encoding]::UTF8)
+# Method exceptions don't stop the script under EAP Continue; rethrow so a failed write can't print success
+try { [System.IO.File]::WriteAllText($Path, $html, [System.Text.Encoding]::UTF8) } catch { throw "Cannot write report to ${Path}: $($_.Exception.Message)" }
 
 # gpresult /r-style summary
 $compliance = $null
