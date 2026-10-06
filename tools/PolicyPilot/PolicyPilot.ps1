@@ -4034,13 +4034,30 @@ $ui.BtnScanGPOs.Add_Click({
                         if ($wmiGpoId -match '\{([0-9a-fA-F-]+)\}') {
                             $gpoGuid = $Matches[1].ToUpper()
                             $gpoName = if ($guidToName[$gpoGuid]) { $guidToName[$gpoGuid] } else { $wmiGpoId }
+                        } elseif ($wmiGpoId) {
+                            $gpoName = if ($wmiGpoId -eq 'LocalGPO') { 'Local Group Policy' } else { $wmiGpoId }
                         }
                         $fullPath = if ($wmiVal) { "$wmiKey\$wmiVal" } else { $wmiKey }
                         $sName = if ($wmiVal) { $wmiVal } else { $wmiKey.Split('\')[-1] }
                         $wmiState = if ($wmiPrec -eq 1) { 'Applied' } else { 'Superseded' }
+                        $wmiCategory = 'Administrative Templates (WMI)'
+                        # AppLocker (not ADMX): one key per rule GUID holding the rule XML in 'Value'
+                        if ($wmiKey -match '\\SrpV2\\(\w+)(\\\{?[0-9a-fA-F-]{36}\}?)?$') {
+                            $srpCollection = $Matches[1]
+                            $isRuleKey = [bool]$Matches[2]
+                            if (-not $wmiVal) { continue }
+                            $wmiCategory = "AppLocker: $srpCollection"
+                            if ($isRuleKey -and $wmiVal -eq 'Value') {
+                                try {
+                                    $rule = ([xml]$wmiValueData).DocumentElement
+                                    if ($rule.GetAttribute('Name')) { $sName = $rule.GetAttribute('Name') }
+                                    $wmiValueData = "$($rule.GetAttribute('Action')) - $($rule.LocalName -replace 'Rule$', '') rule - $($rule.GetAttribute('UserOrGroupSid'))"
+                                } catch { }
+                            }
+                        }
                         [void]$allSettingsList.Add([PSCustomObject]@{
                             Id=($settIdCounter); GPOName=$gpoName; GPOGuid=$wmiGpoId
-                            Category='Administrative Templates (WMI)'; PolicyName=$sName; SettingKey=$fullPath
+                            Category=$wmiCategory; PolicyName=$sName; SettingKey=$fullPath
                             State=$wmiState; RegistryKey=$fullPath; ValueData=$wmiValueData
                             Scope='Computer'; Source='WMI RSoP'; IntuneGroup='Group Policy'
                             Precedence=$wmiPrec
@@ -6589,6 +6606,10 @@ tr.non-default td:first-child { border-left:3px solid var(--orange); }
 .group-heading { background:var(--card); padding:10px 14px; font-size:12px; font-weight:600;
   color:var(--accent-text); border-bottom:1px solid var(--border); display:flex; align-items:center; gap:8px; }
 .group-heading .cnt { color:var(--muted); font-weight:400; }
+details.gpo-group > summary { list-style:none; cursor:pointer; }
+details.gpo-group > summary::-webkit-details-marker { display:none; }
+.grp-chevron { color:var(--subtle); font-size:10px; transition:transform 0.2s; }
+details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
 
 /* Empty state */
 .empty { padding:32px; text-align:center; color:var(--muted); font-size:13px; }
@@ -6723,8 +6744,8 @@ tr.non-default td:first-child { border-left:3px solid var(--orange); }
     $grouped = $settings | Group-Object GPOName | Sort-Object Name
     [void]$html.Append('<div id="settingsContainer">')
     foreach ($grp in $grouped) {
-        $gpoNameEnc = & $enc $grp.Name
-        [void]$html.Append("<div class=`"group-heading`">$gpoNameEnc <span class=`"cnt`">($($grp.Count) settings)</span></div>")
+        $gpoNameEnc = if ($grp.Name) { & $enc $grp.Name } else { '(Unnamed source)' }
+        [void]$html.Append("<details class=`"gpo-group`"><summary class=`"group-heading`"><span class=`"grp-chevron`">&#x25B6;</span>$gpoNameEnc <span class=`"cnt`">($($grp.Count) settings)</span></summary>")
         [void]$html.Append('<table class="settings-table"><thead><tr><th style="width:28%">Policy Name</th><th style="width:7%">State</th><th style="width:7%">Scope</th><th style="width:20%">Category</th><th style="width:25%">Value</th><th style="width:13%">Default</th></tr></thead><tbody>')
         foreach ($s in ($grp.Group | Sort-Object Category, PolicyName)) {
             $isNonDef = $s.DefaultValue -and $s.ValueData -and "$($s.ValueData)" -ne "$($s.DefaultValue)" -and "$($s.ValueData)" -notlike "$($s.DefaultValue) *"
@@ -6817,7 +6838,7 @@ tr.non-default td:first-child { border-left:3px solid var(--orange); }
                 [void]$html.Append("<tr class=`"csp-row`"><td colspan=`"6`"><span class=`"csp-db-warn`">&#x26A0; ADMX metadata not available - run Build-AdmxDatabase.ps1 to enable policy name resolution</span></td></tr>")
             }
         }
-        [void]$html.Append('</tbody></table>')
+        [void]$html.Append('</tbody></table></details>')
     }
     [void]$html.Append('</div></div></details>')
 
@@ -7204,8 +7225,9 @@ function toggleTheme() {
   } catch(e) {}
 })();
 
-function expandAll() { document.querySelectorAll('details.section').forEach(d => d.open = true); }
-function collapseAll() { document.querySelectorAll('details.section').forEach(d => d.open = false); }
+function expandAll() { document.querySelectorAll('details.section, details.gpo-group').forEach(d => d.open = true); }
+function collapseAll() { document.querySelectorAll('details.section, details.gpo-group').forEach(d => d.open = false); }
+window.addEventListener('beforeprint', function() { document.querySelectorAll('details.gpo-group').forEach(d => d.open = true); });
 
 // Global search
 document.getElementById('globalSearch').addEventListener('input', function() {
@@ -7216,7 +7238,7 @@ document.getElementById('globalSearch').addEventListener('input', function() {
   });
   // Auto-expand sections with matches
   if (q) {
-    document.querySelectorAll('details.section').forEach(function(d) {
+    document.querySelectorAll('details.section, details.gpo-group').forEach(function(d) {
       const hasVisible = d.querySelector('tbody tr:not([style*="display: none"])');
       if (hasVisible) d.open = true;
     });
@@ -7243,13 +7265,12 @@ function filterSettings() {
     if (next && next.classList.contains('csp-row')) next.style.display = show ? '' : 'none';
   });
 
-  // Hide empty group headings
-  document.querySelectorAll('#settingsContainer .group-heading').forEach(function(gh) {
-    const table = gh.nextElementSibling;
-    if (!table) return;
-    const visibleRows = table.querySelectorAll('tbody tr:not([style*="display: none"])');
-    gh.style.display = visibleRows.length > 0 ? '' : 'none';
-    table.style.display = visibleRows.length > 0 ? '' : 'none';
+  // Hide empty groups; open groups with matches while a filter is active
+  const filtering = cat || scope || state || ndOnly;
+  document.querySelectorAll('#settingsContainer details.gpo-group').forEach(function(g) {
+    const visibleRows = g.querySelectorAll('tbody tr[data-cat]:not([style*="display: none"])');
+    g.style.display = visibleRows.length > 0 ? '' : 'none';
+    if (filtering) g.open = visibleRows.length > 0;
   });
   updateSettingsCount();
 }
