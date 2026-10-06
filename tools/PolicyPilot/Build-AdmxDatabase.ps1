@@ -156,6 +156,18 @@ function Get-QualifiedRef {
     return "$($Ns.Target):$Ref"
 }
 
+# The XML adapter turns text-only <string> into System.String, so .string.InnerText is always empty
+function Get-ValueText {
+    param($ValueNode)
+    if ($ValueNode -isnot [System.Xml.XmlElement]) { return $null }
+    $node = $ValueNode.SelectSingleNode("*[local-name()='decimal' or local-name()='longDecimal']")
+    if ($node) { return $node.GetAttribute('value') }
+    $node = $ValueNode.SelectSingleNode("*[local-name()='string']")
+    if ($node) { return $node.InnerText }
+    if ($ValueNode.SelectSingleNode("*[local-name()='delete']")) { return '(value deleted)' }
+    return $null
+}
+
 foreach ($f in $AllAdmx) {
     try {
         [xml]$x = Get-Content $f.FullName -Raw -Encoding UTF8
@@ -238,15 +250,8 @@ foreach ($admxFile in $AdmxFiles) {
             $catPath = Resolve-Category (Get-QualifiedRef $pol.parentCategory.ref $namespaces)
 
             # Enabled/Disabled values
-            $enabledValue = $null; $disabledValue = $null
-            if ($pol.enabledValue) {
-                if ($pol.enabledValue.decimal) { $enabledValue = $pol.enabledValue.decimal.value }
-                elseif ($pol.enabledValue.string) { $enabledValue = $pol.enabledValue.string.InnerText }
-            }
-            if ($pol.disabledValue) {
-                if ($pol.disabledValue.decimal) { $disabledValue = $pol.disabledValue.decimal.value }
-                elseif ($pol.disabledValue.string) { $disabledValue = $pol.disabledValue.string.InnerText }
-            }
+            $enabledValue = Get-ValueText $pol.enabledValue
+            $disabledValue = Get-ValueText $pol.disabledValue
 
             # Elements (dropdown, text, numeric sub-settings)
             $elements = @()
@@ -264,9 +269,8 @@ foreach ($admxFile in $AdmxFiles) {
                         $enumItems = [ordered]@{}
                         foreach ($item in $elem.item) {
                             $itemDisplay = Resolve-String $item.displayName $strings
-                            $itemValue = if ($item.value.decimal) { $item.value.decimal.value }
-                                        elseif ($item.value.string) { $item.value.string.InnerText }
-                                        else { '' }
+                            $itemValue = Get-ValueText $item.value
+                            if ($null -eq $itemValue) { $itemValue = '' }
                             $enumItems["$itemValue"] = $itemDisplay
                         }
                         $elemInfo['EnumValues'] = $enumItems

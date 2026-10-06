@@ -54,8 +54,8 @@ These come from PolicyPilot's scan code and apply to the GUI as well:
 ## Data handling
 
 The report contains the computer and user name, enrollment UPN, policy values, installed
-apps and certificate details. Treat it as internal. The scan leaves `PolicyPilot_RSoP.xml`,
-`gpresult_out.txt` and `gpresult_err.txt` in `%TEMP%`; the MDM diagnostics folder is deleted.
+apps and certificate details. Treat it as internal. The scan leaves `gpresult_out.txt` and
+`gpresult_err.txt` in `%TEMP%`; the RSoP XML and the MDM diagnostics folder are deleted.
 
 ## Rebuilding
 

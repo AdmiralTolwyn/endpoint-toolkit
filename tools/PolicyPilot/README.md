@@ -108,7 +108,7 @@ Runs Local + Intune scans and merges results into a single view with source tagg
 
 | Format | Description |
 |--------|-------------|
-| **HTML** | Rich report with dark/light toggle, sortable tables, conflict highlights, executive summary |
+| **HTML** | Rich report with dark/light toggle, search and filters, conflict highlights, executive summary |
 | **CSV** (settings) | All settings with GPO source, scope, category, registry key, value |
 | **CSV** (conflicts) | Conflicting settings with precedence winner and all competing GPOs |
 | **REG** | Windows `.reg` file for selected registry-based settings |

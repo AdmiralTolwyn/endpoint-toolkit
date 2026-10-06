@@ -1,7 +1,7 @@
 ﻿{
     "_metadata":  {
                       "version":  "1.0.0",
-                      "generatedAt":  "2026-10-06T12:14:36.2286291+02:00",
+                      "generatedAt":  "2026-10-06T13:26:50.0355865+02:00",
                       "source":  "C:\\Program Files (x86)\\Microsoft Group Policy\\Windows 11 Sep 2026 Update (26H2)\\PolicyDefinitions",
                       "language":  "en-US",
                       "totalPolicies":  3726,
@@ -5438,8 +5438,8 @@
                                                                                        "Category":  "Control Panel \u003e Personalization",
                                                                                        "RegistryKey":  "Software\\Policies\\Microsoft\\Windows\\Control Panel\\Desktop",
                                                                                        "ValueName":  "ScreenSaveActive",
-                                                                                       "EnabledValue":  null,
-                                                                                       "DisabledValue":  null,
+                                                                                       "EnabledValue":  "1",
+                                                                                       "DisabledValue":  "0",
                                                                                        "AdmxFile":  "ControlPanelDisplay.admx",
                                                                                        "SupportedOn":  "windows:SUPPORTED_Win2kSP1"
                                                                                    },
@@ -5470,8 +5470,8 @@
                                                                                          "Category":  "Control Panel \u003e Personalization",
                                                                                          "RegistryKey":  "Software\\Policies\\Microsoft\\Windows\\Control Panel\\Desktop",
                                                                                          "ValueName":  "ScreenSaverIsSecure",
-                                                                                         "EnabledValue":  null,
-                                                                                         "DisabledValue":  null,
+                                                                                         "EnabledValue":  "1",
+                                                                                         "DisabledValue":  "0",
                                                                                          "AdmxFile":  "ControlPanelDisplay.admx",
                                                                                          "SupportedOn":  "windows:SUPPORTED_Win2kSP1"
                                                                                      },
@@ -7591,7 +7591,12 @@
                                                                     "Id":  "WallpaperStyle",
                                                                     "Type":  "enum",
                                                                     "EnumValues":  {
-                                                                                       "":  "Span"
+                                                                                       "0":  "Center",
+                                                                                       "1":  "Tile",
+                                                                                       "2":  "Stretch",
+                                                                                       "3":  "Fit",
+                                                                                       "4":  "Fill",
+                                                                                       "5":  "Span"
                                                                                    }
                                                                 }
                                                             ]
@@ -10884,8 +10889,8 @@
                                                                "Category":  "Windows Components \u003e Event Log Service \u003e Application",
                                                                "RegistryKey":  "Software\\Policies\\Microsoft\\Windows\\EventLog\\Application",
                                                                "ValueName":  "AutoBackupLogFiles",
-                                                               "EnabledValue":  null,
-                                                               "DisabledValue":  null,
+                                                               "EnabledValue":  "1",
+                                                               "DisabledValue":  "0",
                                                                "AdmxFile":  "EventLog.admx",
                                                                "SupportedOn":  "windows:SUPPORTED_WindowsVista"
                                                            },
@@ -10936,8 +10941,8 @@
                                                               "Category":  "Windows Components \u003e Event Log Service \u003e Application",
                                                               "RegistryKey":  "Software\\Policies\\Microsoft\\Windows\\EventLog\\Application",
                                                               "ValueName":  "Retention",
-                                                              "EnabledValue":  null,
-                                                              "DisabledValue":  null,
+                                                              "EnabledValue":  "1",
+                                                              "DisabledValue":  "0",
                                                               "AdmxFile":  "EventLog.admx",
                                                               "SupportedOn":  "windows:SUPPORTED_WindowsVista"
                                                           },
@@ -10990,8 +10995,8 @@
                                                                "Category":  "Windows Components \u003e Event Log Service \u003e Security",
                                                                "RegistryKey":  "Software\\Policies\\Microsoft\\Windows\\EventLog\\Security",
                                                                "ValueName":  "AutoBackupLogFiles",
-                                                               "EnabledValue":  null,
-                                                               "DisabledValue":  null,
+                                                               "EnabledValue":  "1",
+                                                               "DisabledValue":  "0",
                                                                "AdmxFile":  "EventLog.admx",
                                                                "SupportedOn":  "windows:SUPPORTED_WindowsVista"
                                                            },
@@ -11042,8 +11047,8 @@
                                                               "Category":  "Windows Components \u003e Event Log Service \u003e Security",
                                                               "RegistryKey":  "Software\\Policies\\Microsoft\\Windows\\EventLog\\Security",
                                                               "ValueName":  "Retention",
-                                                              "EnabledValue":  null,
-                                                              "DisabledValue":  null,
+                                                              "EnabledValue":  "1",
+                                                              "DisabledValue":  "0",
                                                               "AdmxFile":  "EventLog.admx",
                                                               "SupportedOn":  "windows:SUPPORTED_WindowsVista"
                                                           },
@@ -11096,8 +11101,8 @@
                                                                "Category":  "Windows Components \u003e Event Log Service \u003e Setup",
                                                                "RegistryKey":  "Software\\Policies\\Microsoft\\Windows\\EventLog\\Setup",
                                                                "ValueName":  "AutoBackupLogFiles",
-                                                               "EnabledValue":  null,
-                                                               "DisabledValue":  null,
+                                                               "EnabledValue":  "1",
+                                                               "DisabledValue":  "0",
                                                                "AdmxFile":  "EventLog.admx",
                                                                "SupportedOn":  "windows:SUPPORTED_WindowsVista"
                                                            },
@@ -11148,8 +11153,8 @@
                                                               "Category":  "Windows Components \u003e Event Log Service \u003e Setup",
                                                               "RegistryKey":  "Software\\Policies\\Microsoft\\Windows\\EventLog\\Setup",
                                                               "ValueName":  "Retention",
-                                                              "EnabledValue":  null,
-                                                              "DisabledValue":  null,
+                                                              "EnabledValue":  "1",
+                                                              "DisabledValue":  "0",
                                                               "AdmxFile":  "EventLog.admx",
                                                               "SupportedOn":  "windows:SUPPORTED_WindowsVista"
                                                           },
@@ -11160,8 +11165,8 @@
                                                          "Category":  "Windows Components \u003e Event Log Service \u003e Setup",
                                                          "RegistryKey":  "Software\\Policies\\Microsoft\\Windows\\EventLog\\Setup",
                                                          "ValueName":  "Enabled",
-                                                         "EnabledValue":  null,
-                                                         "DisabledValue":  null,
+                                                         "EnabledValue":  "1",
+                                                         "DisabledValue":  "0",
                                                          "AdmxFile":  "EventLog.admx",
                                                          "SupportedOn":  "windows:SUPPORTED_WindowsVista"
                                                      },
@@ -11214,8 +11219,8 @@
                                                                "Category":  "Windows Components \u003e Event Log Service \u003e System",
                                                                "RegistryKey":  "Software\\Policies\\Microsoft\\Windows\\EventLog\\System",
                                                                "ValueName":  "AutoBackupLogFiles",
-                                                               "EnabledValue":  null,
-                                                               "DisabledValue":  null,
+                                                               "EnabledValue":  "1",
+                                                               "DisabledValue":  "0",
                                                                "AdmxFile":  "EventLog.admx",
                                                                "SupportedOn":  "windows:SUPPORTED_WindowsVista"
                                                            },
@@ -11266,8 +11271,8 @@
                                                               "Category":  "Windows Components \u003e Event Log Service \u003e System",
                                                               "RegistryKey":  "Software\\Policies\\Microsoft\\Windows\\EventLog\\System",
                                                               "ValueName":  "Retention",
-                                                              "EnabledValue":  null,
-                                                              "DisabledValue":  null,
+                                                              "EnabledValue":  "1",
+                                                              "DisabledValue":  "0",
                                                               "AdmxFile":  "EventLog.admx",
                                                               "SupportedOn":  "windows:SUPPORTED_WindowsVista"
                                                           },
@@ -12401,7 +12406,42 @@
                                                                                       "Id":  "UILangSelect",
                                                                                       "Type":  "enum",
                                                                                       "EnumValues":  {
-                                                                                                         "":  "Ukrainian"
+                                                                                                         "en-US":  "English",
+                                                                                                         "ja-JP":  "Japanese",
+                                                                                                         "ko-KR":  "Korean",
+                                                                                                         "de-DE":  "German",
+                                                                                                         "zh-CN":  "Simplified Chinese",
+                                                                                                         "zh-TW":  "Traditional Chinese (Taiwan)",
+                                                                                                         "fr-FR":  "French",
+                                                                                                         "es-ES":  "Spanish",
+                                                                                                         "it-IT":  "Italian",
+                                                                                                         "sv-SE":  "Swedish",
+                                                                                                         "nl-NL":  "Dutch",
+                                                                                                         "pt-BR":  "Portuguese (Brazil)",
+                                                                                                         "fi-FI":  "Finnish",
+                                                                                                         "nb-NO":  "Norwegian",
+                                                                                                         "da-DK":  "Danish",
+                                                                                                         "hu-HU":  "Hungarian",
+                                                                                                         "pl-PL":  "Polish",
+                                                                                                         "ru-RU":  "Russian",
+                                                                                                         "cs-CZ":  "Czech",
+                                                                                                         "el-GR":  "Greek",
+                                                                                                         "pt-PT":  "Portuguese (Portugal)",
+                                                                                                         "tr-TR":  "Turkish",
+                                                                                                         "ar-SA":  "Arabic",
+                                                                                                         "he-IL":  "Hebrew",
+                                                                                                         "sk-SK":  "Slovak",
+                                                                                                         "sl-SI":  "Slovenian",
+                                                                                                         "ro-RO":  "Romanian",
+                                                                                                         "hr-HR":  "Croatian",
+                                                                                                         "bg-BG":  "Bulgarian",
+                                                                                                         "et-EE":  "Estonian",
+                                                                                                         "lt-LT":  "Lithuanian",
+                                                                                                         "lv-LV":  "Latvian",
+                                                                                                         "th-TH":  "Thai",
+                                                                                                         "zh-HK":  "Traditional Chinese (Hong Kong SAR)",
+                                                                                                         "sr-Latn-CS":  "Serbian (Latin)",
+                                                                                                         "uk-UA":  "Ukrainian"
                                                                                                      }
                                                                                   }
                                                                               ]
@@ -12424,7 +12464,42 @@
                                                                                    "Id":  "UILangSelect",
                                                                                    "Type":  "enum",
                                                                                    "EnumValues":  {
-                                                                                                      "":  "Ukrainian"
+                                                                                                      "en-US":  "English",
+                                                                                                      "ja-JP":  "Japanese",
+                                                                                                      "ko-KR":  "Korean",
+                                                                                                      "de-DE":  "German",
+                                                                                                      "zh-CN":  "Simplified Chinese",
+                                                                                                      "zh-TW":  "Traditional Chinese (Taiwan)",
+                                                                                                      "fr-FR":  "French",
+                                                                                                      "es-ES":  "Spanish",
+                                                                                                      "it-IT":  "Italian",
+                                                                                                      "sv-SE":  "Swedish",
+                                                                                                      "nl-NL":  "Dutch",
+                                                                                                      "pt-BR":  "Portuguese (Brazil)",
+                                                                                                      "fi-FI":  "Finnish",
+                                                                                                      "nb-NO":  "Norwegian",
+                                                                                                      "da-DK":  "Danish",
+                                                                                                      "hu-HU":  "Hungarian",
+                                                                                                      "pl-PL":  "Polish",
+                                                                                                      "ru-RU":  "Russian",
+                                                                                                      "cs-CZ":  "Czech",
+                                                                                                      "el-GR":  "Greek",
+                                                                                                      "pt-PT":  "Portuguese (Portugal)",
+                                                                                                      "tr-TR":  "Turkish",
+                                                                                                      "ar-SA":  "Arabic",
+                                                                                                      "he-IL":  "Hebrew",
+                                                                                                      "sk-SK":  "Slovak",
+                                                                                                      "sl-SI":  "Slovenian",
+                                                                                                      "ro-RO":  "Romanian",
+                                                                                                      "hr-HR":  "Croatian",
+                                                                                                      "bg-BG":  "Bulgarian",
+                                                                                                      "et-EE":  "Estonian",
+                                                                                                      "lt-LT":  "Lithuanian",
+                                                                                                      "lv-LV":  "Latvian",
+                                                                                                      "th-TH":  "Thai",
+                                                                                                      "zh-HK":  "Traditional Chinese (Hong Kong SAR)",
+                                                                                                      "sr-Latn-CS":  "Serbian (Latin)",
+                                                                                                      "uk-UA":  "Ukrainian"
                                                                                                   }
                                                                                }
                                                                            ]
@@ -12459,7 +12534,39 @@
                                                                                      "Id":  "UILangSelect",
                                                                                      "Type":  "enum",
                                                                                      "EnumValues":  {
-                                                                                                        "":  "Thai"
+                                                                                                        "00000409":  "English",
+                                                                                                        "00000411":  "Japanese",
+                                                                                                        "00000412":  "Korean",
+                                                                                                        "00000407":  "German",
+                                                                                                        "00000804":  "Simplified Chinese",
+                                                                                                        "00000404":  "Traditional Chinese",
+                                                                                                        "0000040c":  "French",
+                                                                                                        "00000c0a":  "Spanish",
+                                                                                                        "00000410":  "Italian",
+                                                                                                        "0000041d":  "Swedish",
+                                                                                                        "00000413":  "Dutch",
+                                                                                                        "00000416":  "Portuguese (Brazil)",
+                                                                                                        "0000040b":  "Finnish",
+                                                                                                        "00000414":  "Norwegian",
+                                                                                                        "00000406":  "Danish",
+                                                                                                        "0000040e":  "Hungarian",
+                                                                                                        "00000415":  "Polish",
+                                                                                                        "00000419":  "Russian",
+                                                                                                        "00000405":  "Czech",
+                                                                                                        "00000408":  "Greek",
+                                                                                                        "00000816":  "Portuguese (Portugal)",
+                                                                                                        "0000041f":  "Turkish",
+                                                                                                        "00000401":  "Arabic",
+                                                                                                        "0000040d":  "Hebrew",
+                                                                                                        "0000041b":  "Slovak",
+                                                                                                        "00000424":  "Slovenian",
+                                                                                                        "00000418":  "Romanian",
+                                                                                                        "0000041a":  "Croatian",
+                                                                                                        "00000402":  "Bulgarian",
+                                                                                                        "00000425":  "Estonian",
+                                                                                                        "00000427":  "Lithuanian",
+                                                                                                        "00000426":  "Latvian",
+                                                                                                        "0000041e":  "Thai"
                                                                                                     }
                                                                                  }
                                                                              ]
@@ -12636,7 +12743,9 @@
                                                                              "Id":  "FontMitigation_DL",
                                                                              "Type":  "enum",
                                                                              "EnumValues":  {
-                                                                                                "":  "Log events without blocking untrusted fonts"
+                                                                                                "1000000000000":  "Block untrusted fonts and log events",
+                                                                                                "2000000000000":  "Do not block untrusted fonts",
+                                                                                                "3000000000000":  "Log events without blocking untrusted fonts"
                                                                                             }
                                                                          }
                                                                      ]
@@ -13546,7 +13655,7 @@
                                                                      "Category":  "System \u003e Group Policy",
                                                                      "RegistryKey":  "Software\\Policies\\Microsoft\\Windows\\Group Policy\\{F9C77450-3A41-477E-9310-9ACD617BD9E3}",
                                                                      "ValueName":  "",
-                                                                     "EnabledValue":  null,
+                                                                     "EnabledValue":  "Applications Policy Processing",
                                                                      "DisabledValue":  null,
                                                                      "AdmxFile":  "grouppolicypreferences.admx",
                                                                      "SupportedOn":  "windows:SUPPORTED_WindowsXPSP2_Or_WindowsNET",
@@ -13651,7 +13760,7 @@
                                                                     "Category":  "System \u003e Group Policy",
                                                                     "RegistryKey":  "Software\\Policies\\Microsoft\\Windows\\Group Policy\\{728EE579-943C-4519-9EF7-AB56765798ED}",
                                                                     "ValueName":  "",
-                                                                    "EnabledValue":  null,
+                                                                    "EnabledValue":  "Data Sources Policy Processing",
                                                                     "DisabledValue":  null,
                                                                     "AdmxFile":  "grouppolicypreferences.admx",
                                                                     "SupportedOn":  "windows:SUPPORTED_WindowsXPSP2_Or_WindowsNET",
@@ -13756,7 +13865,7 @@
                                                                 "Category":  "System \u003e Group Policy",
                                                                 "RegistryKey":  "Software\\Policies\\Microsoft\\Windows\\Group Policy\\{1A6364EB-776B-4120-ADE1-B63A406A76B5}",
                                                                 "ValueName":  "",
-                                                                "EnabledValue":  null,
+                                                                "EnabledValue":  "Devices Policy Processing",
                                                                 "DisabledValue":  null,
                                                                 "AdmxFile":  "grouppolicypreferences.admx",
                                                                 "SupportedOn":  "windows:SUPPORTED_WindowsXPSP2_Or_WindowsNET",
@@ -13861,7 +13970,7 @@
                                                                "Category":  "System \u003e Group Policy",
                                                                "RegistryKey":  "Software\\Policies\\Microsoft\\Windows\\Group Policy\\{5794DAFD-BE60-433f-88A2-1A31939AC01F}",
                                                                "ValueName":  "",
-                                                               "EnabledValue":  null,
+                                                               "EnabledValue":  "Drive Maps Policy Processing",
                                                                "DisabledValue":  null,
                                                                "AdmxFile":  "grouppolicypreferences.admx",
                                                                "SupportedOn":  "windows:SUPPORTED_WindowsXPSP2_Or_WindowsNET",
@@ -13966,7 +14075,7 @@
                                                                     "Category":  "System \u003e Group Policy",
                                                                     "RegistryKey":  "Software\\Policies\\Microsoft\\Windows\\Group Policy\\{0E28E245-9368-4853-AD84-6DA3BA35BB75}",
                                                                     "ValueName":  "",
-                                                                    "EnabledValue":  null,
+                                                                    "EnabledValue":  "Environment Policy Processing",
                                                                     "DisabledValue":  null,
                                                                     "AdmxFile":  "grouppolicypreferences.admx",
                                                                     "SupportedOn":  "windows:SUPPORTED_WindowsXPSP2_Or_WindowsNET",
@@ -14071,7 +14180,7 @@
                                                               "Category":  "System \u003e Group Policy",
                                                               "RegistryKey":  "Software\\Policies\\Microsoft\\Windows\\Group Policy\\{7150F9BF-48AD-4da4-A49C-29EF4A8369BA}",
                                                               "ValueName":  "",
-                                                              "EnabledValue":  null,
+                                                              "EnabledValue":  "Files Policy Processing",
                                                               "DisabledValue":  null,
                                                               "AdmxFile":  "grouppolicypreferences.admx",
                                                               "SupportedOn":  "windows:SUPPORTED_WindowsXPSP2_Or_WindowsNET",
@@ -14176,7 +14285,7 @@
                                                                       "Category":  "System \u003e Group Policy",
                                                                       "RegistryKey":  "Software\\Policies\\Microsoft\\Windows\\Group Policy\\{A3F3E39B-5D83-4940-B954-28315B82F0A8}",
                                                                       "ValueName":  "",
-                                                                      "EnabledValue":  null,
+                                                                      "EnabledValue":  "Folder Options Policy Processing",
                                                                       "DisabledValue":  null,
                                                                       "AdmxFile":  "grouppolicypreferences.admx",
                                                                       "SupportedOn":  "windows:SUPPORTED_WindowsXPSP2_Or_WindowsNET",
@@ -14281,7 +14390,7 @@
                                                                 "Category":  "System \u003e Group Policy",
                                                                 "RegistryKey":  "Software\\Policies\\Microsoft\\Windows\\Group Policy\\{6232C319-91AC-4931-9385-E70C2B099F0E}",
                                                                 "ValueName":  "",
-                                                                "EnabledValue":  null,
+                                                                "EnabledValue":  "Folders Policy Processing",
                                                                 "DisabledValue":  null,
                                                                 "AdmxFile":  "grouppolicypreferences.admx",
                                                                 "SupportedOn":  "windows:SUPPORTED_WindowsXPSP2_Or_WindowsNET",
@@ -14386,7 +14495,7 @@
                                                                  "Category":  "System \u003e Group Policy",
                                                                  "RegistryKey":  "Software\\Policies\\Microsoft\\Windows\\Group Policy\\{74EE6C03-5363-4554-B161-627540339CAB}",
                                                                  "ValueName":  "",
-                                                                 "EnabledValue":  null,
+                                                                 "EnabledValue":  "Ini Files Policy Processing",
                                                                  "DisabledValue":  null,
                                                                  "AdmxFile":  "grouppolicypreferences.admx",
                                                                  "SupportedOn":  "windows:SUPPORTED_WindowsXPSP2_Or_WindowsNET",
@@ -14491,7 +14600,7 @@
                                                                  "Category":  "System \u003e Group Policy",
                                                                  "RegistryKey":  "Software\\Policies\\Microsoft\\Windows\\Group Policy\\{E47248BA-94CC-49c4-BBB5-9EB7F05183D0}",
                                                                  "ValueName":  "",
-                                                                 "EnabledValue":  null,
+                                                                 "EnabledValue":  "Internet Settings Policy Processing",
                                                                  "DisabledValue":  null,
                                                                  "AdmxFile":  "grouppolicypreferences.admx",
                                                                  "SupportedOn":  "windows:SUPPORTED_WindowsXPSP2_Or_WindowsNET",
@@ -14596,7 +14705,7 @@
                                                                             "Category":  "System \u003e Group Policy",
                                                                             "RegistryKey":  "Software\\Policies\\Microsoft\\Windows\\Group Policy\\{17D89FEC-5C44-4972-B12D-241CAEF74509}",
                                                                             "ValueName":  "",
-                                                                            "EnabledValue":  null,
+                                                                            "EnabledValue":  "Local Users and Groups Policy Processing",
                                                                             "DisabledValue":  null,
                                                                             "AdmxFile":  "grouppolicypreferences.admx",
                                                                             "SupportedOn":  "windows:SUPPORTED_WindowsXPSP2_Or_WindowsNET",
@@ -14701,7 +14810,7 @@
                                                                        "Category":  "System \u003e Group Policy",
                                                                        "RegistryKey":  "Software\\Policies\\Microsoft\\Windows\\Group Policy\\{3A0DBA37-F8B2-4356-83DE-3E90BD5C261F}",
                                                                        "ValueName":  "",
-                                                                       "EnabledValue":  null,
+                                                                       "EnabledValue":  "Network Options Policy Processing",
                                                                        "DisabledValue":  null,
                                                                        "AdmxFile":  "grouppolicypreferences.admx",
                                                                        "SupportedOn":  "windows:SUPPORTED_WindowsXPSP2_Or_WindowsNET",
@@ -14806,7 +14915,7 @@
                                                                   "Category":  "System \u003e Group Policy",
                                                                   "RegistryKey":  "Software\\Policies\\Microsoft\\Windows\\Group Policy\\{6A4C88C6-C502-4f74-8F60-2CB23EDC24E2}",
                                                                   "ValueName":  "",
-                                                                  "EnabledValue":  null,
+                                                                  "EnabledValue":  "Network Shares Policy Processing",
                                                                   "DisabledValue":  null,
                                                                   "AdmxFile":  "grouppolicypreferences.admx",
                                                                   "SupportedOn":  "windows:SUPPORTED_WindowsXPSP2_Or_WindowsNET",
@@ -14911,7 +15020,7 @@
                                                                      "Category":  "System \u003e Group Policy",
                                                                      "RegistryKey":  "Software\\Policies\\Microsoft\\Windows\\Group Policy\\{E62688F0-25FD-4c90-BFF5-F508B9D2E31F}",
                                                                      "ValueName":  "",
-                                                                     "EnabledValue":  null,
+                                                                     "EnabledValue":  "Power Options Policy Processing",
                                                                      "DisabledValue":  null,
                                                                      "AdmxFile":  "grouppolicypreferences.admx",
                                                                      "SupportedOn":  "windows:SUPPORTED_WindowsXPSP2_Or_WindowsNET",
@@ -15016,7 +15125,7 @@
                                                                  "Category":  "System \u003e Group Policy",
                                                                  "RegistryKey":  "Software\\Policies\\Microsoft\\Windows\\Group Policy\\{BC75B1ED-5833-4858-9BB8-CBF0B166DF9D}",
                                                                  "ValueName":  "",
-                                                                 "EnabledValue":  null,
+                                                                 "EnabledValue":  "Printers Policy Processing",
                                                                  "DisabledValue":  null,
                                                                  "AdmxFile":  "grouppolicypreferences.admx",
                                                                  "SupportedOn":  "windows:SUPPORTED_WindowsXPSP2_Or_WindowsNET",
@@ -15121,7 +15230,7 @@
                                                                         "Category":  "System \u003e Group Policy",
                                                                         "RegistryKey":  "Software\\Policies\\Microsoft\\Windows\\Group Policy\\{E5094040-C46C-4115-B030-04FB2E545B00}",
                                                                         "ValueName":  "",
-                                                                        "EnabledValue":  null,
+                                                                        "EnabledValue":  "Regional Options Policy Processing",
                                                                         "DisabledValue":  null,
                                                                         "AdmxFile":  "grouppolicypreferences.admx",
                                                                         "SupportedOn":  "windows:SUPPORTED_WindowsXPSP2_Or_WindowsNET",
@@ -15226,7 +15335,7 @@
                                                                      "Category":  "System \u003e Group Policy",
                                                                      "RegistryKey":  "Software\\Policies\\Microsoft\\Windows\\Group Policy\\{B087BE9D-ED37-454f-AF9C-04291E351182}",
                                                                      "ValueName":  "",
-                                                                     "EnabledValue":  null,
+                                                                     "EnabledValue":  "Registry Policy Processing",
                                                                      "DisabledValue":  null,
                                                                      "AdmxFile":  "grouppolicypreferences.admx",
                                                                      "SupportedOn":  "windows:SUPPORTED_WindowsXPSP2_Or_WindowsNET",
@@ -15331,7 +15440,7 @@
                                                                        "Category":  "System \u003e Group Policy",
                                                                        "RegistryKey":  "Software\\Policies\\Microsoft\\Windows\\Group Policy\\{AADCED64-746C-4633-A97C-D61349046527}",
                                                                        "ValueName":  "",
-                                                                       "EnabledValue":  null,
+                                                                       "EnabledValue":  "Scheduled Tasks Policy Processing",
                                                                        "DisabledValue":  null,
                                                                        "AdmxFile":  "grouppolicypreferences.admx",
                                                                        "SupportedOn":  "windows:SUPPORTED_WindowsXPSP2_Or_WindowsNET",
@@ -15436,7 +15545,7 @@
                                                                  "Category":  "System \u003e Group Policy",
                                                                  "RegistryKey":  "Software\\Policies\\Microsoft\\Windows\\Group Policy\\{91FBB303-0CD5-4055-BF42-E512A681B325}",
                                                                  "ValueName":  "",
-                                                                 "EnabledValue":  null,
+                                                                 "EnabledValue":  "Services Policy Processing",
                                                                  "DisabledValue":  null,
                                                                  "AdmxFile":  "grouppolicypreferences.admx",
                                                                  "SupportedOn":  "windows:SUPPORTED_WindowsXPSP2_Or_WindowsNET",
@@ -15541,7 +15650,7 @@
                                                                   "Category":  "System \u003e Group Policy",
                                                                   "RegistryKey":  "Software\\Policies\\Microsoft\\Windows\\Group Policy\\{C418DD9D-0D14-4efb-8FBF-CFE535C8FAC7}",
                                                                   "ValueName":  "",
-                                                                  "EnabledValue":  null,
+                                                                  "EnabledValue":  "Shortcuts Policy Processing",
                                                                   "DisabledValue":  null,
                                                                   "AdmxFile":  "grouppolicypreferences.admx",
                                                                   "SupportedOn":  "windows:SUPPORTED_WindowsXPSP2_Or_WindowsNET",
@@ -15646,7 +15755,7 @@
                                                                   "Category":  "System \u003e Group Policy",
                                                                   "RegistryKey":  "Software\\Policies\\Microsoft\\Windows\\Group Policy\\{E4F48E54-F38D-4884-BFB9-D4D2E5729C18}",
                                                                   "ValueName":  "",
-                                                                  "EnabledValue":  null,
+                                                                  "EnabledValue":  "Start Menu Policy Processing",
                                                                   "DisabledValue":  null,
                                                                   "AdmxFile":  "grouppolicypreferences.admx",
                                                                   "SupportedOn":  "windows:SUPPORTED_WindowsXPSP2_Or_WindowsNET",
@@ -18148,8 +18257,8 @@
                                                                "Category":  "Windows Components \u003e Internet Explorer \u003e Internet Control Panel \u003e Advanced Page",
                                                                "RegistryKey":  "Software\\Policies\\Microsoft\\Internet Explorer\\Main",
                                                                "ValueName":  "UseClearType",
-                                                               "EnabledValue":  null,
-                                                               "DisabledValue":  null,
+                                                               "EnabledValue":  "no",
+                                                               "DisabledValue":  "yes",
                                                                "AdmxFile":  "inetres.admx",
                                                                "SupportedOn":  "SUPPORTED_IE7"
                                                            },
@@ -18172,8 +18281,8 @@
                                                                           "Category":  "Windows Components \u003e Internet Explorer \u003e Internet Control Panel \u003e Advanced Page",
                                                                           "RegistryKey":  "Software\\Policies\\Microsoft\\Internet Explorer\\Main",
                                                                           "ValueName":  "Isolation",
-                                                                          "EnabledValue":  null,
-                                                                          "DisabledValue":  null,
+                                                                          "EnabledValue":  "PMEM",
+                                                                          "DisabledValue":  "PMIL",
                                                                           "AdmxFile":  "inetres.admx",
                                                                           "SupportedOn":  "SUPPORTED_IE10"
                                                                       },
@@ -18364,8 +18473,8 @@
                                                                  "Category":  "Windows Components \u003e Internet Explorer \u003e Internet Control Panel \u003e Advanced Page",
                                                                  "RegistryKey":  "Software\\Policies\\Microsoft\\Internet Explorer\\Download",
                                                                  "ValueName":  "CheckExeSignatures",
-                                                                 "EnabledValue":  null,
-                                                                 "DisabledValue":  null,
+                                                                 "EnabledValue":  "yes",
+                                                                 "DisabledValue":  "no",
                                                                  "AdmxFile":  "inetres.admx",
                                                                  "SupportedOn":  "SUPPORTED_IE6SRVSP1"
                                                              },
@@ -18376,8 +18485,8 @@
                                                                       "Category":  "Windows Components \u003e Internet Explorer \u003e Internet Control Panel \u003e Advanced Page",
                                                                       "RegistryKey":  "Software\\Policies\\Microsoft\\Internet Explorer\\Main",
                                                                       "ValueName":  "Enable Browser Extensions",
-                                                                      "EnabledValue":  null,
-                                                                      "DisabledValue":  null,
+                                                                      "EnabledValue":  "yes",
+                                                                      "DisabledValue":  "no",
                                                                       "AdmxFile":  "inetres.admx",
                                                                       "SupportedOn":  "SUPPORTED_IE6SRVSP1"
                                                                   },
@@ -18436,8 +18545,8 @@
                                                              "Category":  "Windows Components \u003e Internet Explorer \u003e Internet Control Panel \u003e Advanced Page",
                                                              "RegistryKey":  "Software\\Policies\\Microsoft\\Internet Explorer\\Main",
                                                              "ValueName":  "Play_Animations",
-                                                             "EnabledValue":  null,
-                                                             "DisabledValue":  null,
+                                                             "EnabledValue":  "yes",
+                                                             "DisabledValue":  "no",
                                                              "AdmxFile":  "inetres.admx",
                                                              "SupportedOn":  "SUPPORTED_IE6SRVSP1"
                                                          },
@@ -18448,8 +18557,8 @@
                                                          "Category":  "Windows Components \u003e Internet Explorer \u003e Internet Control Panel \u003e Advanced Page",
                                                          "RegistryKey":  "Software\\Policies\\Microsoft\\Internet Explorer\\Main",
                                                          "ValueName":  "Play_Background_Sounds",
-                                                         "EnabledValue":  null,
-                                                         "DisabledValue":  null,
+                                                         "EnabledValue":  "yes",
+                                                         "DisabledValue":  "no",
                                                          "AdmxFile":  "inetres.admx",
                                                          "SupportedOn":  "SUPPORTED_IE6SRVSP1"
                                                      },
@@ -18460,8 +18569,8 @@
                                                          "Category":  "Windows Components \u003e Internet Explorer \u003e Internet Control Panel \u003e Advanced Page",
                                                          "RegistryKey":  "Software\\Policies\\Microsoft\\Internet Explorer\\Main",
                                                          "ValueName":  "Display Inline Videos",
-                                                         "EnabledValue":  null,
-                                                         "DisabledValue":  null,
+                                                         "EnabledValue":  "yes",
+                                                         "DisabledValue":  "no",
                                                          "AdmxFile":  "inetres.admx",
                                                          "SupportedOn":  "SUPPORTED_IE6SRVSP1ONLY"
                                                      },
@@ -18520,8 +18629,8 @@
                                                   "Category":  "Windows Components \u003e Internet Explorer \u003e Internet Settings \u003e AutoComplete",
                                                   "RegistryKey":  "SOFTWARE\\Policies\\Microsoft\\Windows\\CurrentVersion\\Explorer\\AutoComplete",
                                                   "ValueName":  "Append Completion",
-                                                  "EnabledValue":  null,
-                                                  "DisabledValue":  null,
+                                                  "EnabledValue":  "yes",
+                                                  "DisabledValue":  "no",
                                                   "AdmxFile":  "inetres.admx",
                                                   "SupportedOn":  "SUPPORTED_IE7"
                                               },
@@ -18532,8 +18641,8 @@
                                                             "Category":  "Windows Components \u003e Internet Explorer \u003e Internet Settings \u003e AutoComplete",
                                                             "RegistryKey":  "SOFTWARE\\Policies\\Microsoft\\Windows\\CurrentVersion\\Explorer\\AutoComplete",
                                                             "ValueName":  "Use AutoComplete",
-                                                            "EnabledValue":  null,
-                                                            "DisabledValue":  null,
+                                                            "EnabledValue":  "no",
+                                                            "DisabledValue":  "yes",
                                                             "AdmxFile":  "inetres.admx",
                                                             "SupportedOn":  "SUPPORTED_IE4ONLY"
                                                         },
@@ -18556,8 +18665,8 @@
                                                      "Category":  "Windows Components \u003e Internet Explorer \u003e Internet Settings \u003e Advanced settings \u003e Browsing",
                                                      "RegistryKey":  "Software\\Policies\\Microsoft\\Internet Explorer\\Main",
                                                      "ValueName":  "Disable Script Debugger",
-                                                     "EnabledValue":  null,
-                                                     "DisabledValue":  null,
+                                                     "EnabledValue":  "no",
+                                                     "DisabledValue":  "yes",
                                                      "AdmxFile":  "inetres.admx",
                                                      "SupportedOn":  "SUPPORTED_IE7"
                                                  },
@@ -18568,8 +18677,8 @@
                                                        "Category":  "Windows Components \u003e Internet Explorer \u003e Internet Settings \u003e Advanced settings \u003e Browsing",
                                                        "RegistryKey":  "Software\\Policies\\Microsoft\\Internet Explorer\\Main",
                                                        "ValueName":  "Friendly http errors",
-                                                       "EnabledValue":  null,
-                                                       "DisabledValue":  null,
+                                                       "EnabledValue":  "no",
+                                                       "DisabledValue":  "yes",
                                                        "AdmxFile":  "inetres.admx",
                                                        "SupportedOn":  "SUPPORTED_IE7"
                                                    },
@@ -18592,8 +18701,8 @@
                                                       "Category":  "Windows Components \u003e Internet Explorer \u003e Internet Settings \u003e Advanced settings \u003e Browsing",
                                                       "RegistryKey":  "Software\\Policies\\Microsoft\\Internet Explorer\\Main",
                                                       "ValueName":  "Error Dlg Displayed On Every Error",
-                                                      "EnabledValue":  null,
-                                                      "DisabledValue":  null,
+                                                      "EnabledValue":  "yes",
+                                                      "DisabledValue":  "no",
                                                       "AdmxFile":  "inetres.admx",
                                                       "SupportedOn":  "SUPPORTED_IE7"
                                                   },
@@ -18639,7 +18748,9 @@
                                                                             "Id":  "UnderlineLinks",
                                                                             "Type":  "enum",
                                                                             "EnumValues":  {
-                                                                                               "":  "Hover"
+                                                                                               "yes":  "Always",
+                                                                                               "no":  "Never",
+                                                                                               "hover":  "Hover"
                                                                                            }
                                                                         }
                                                                     ]
@@ -19100,8 +19211,8 @@
                                                       "Category":  "Windows Components \u003e Internet Explorer \u003e Internet Settings \u003e Display settings \u003e General Colors",
                                                       "RegistryKey":  "Software\\Policies\\Microsoft\\Internet Explorer\\Main",
                                                       "ValueName":  "Use_DlgBox_Colors",
-                                                      "EnabledValue":  null,
-                                                      "DisabledValue":  null,
+                                                      "EnabledValue":  "no",
+                                                      "DisabledValue":  "yes",
                                                       "AdmxFile":  "inetres.admx",
                                                       "SupportedOn":  "SUPPORTED_IE7"
                                                   },
@@ -19244,8 +19355,8 @@
                                                                 "Category":  "Windows Components \u003e Internet Explorer \u003e Security Features \u003e Add-on Management",
                                                                 "RegistryKey":  "Software\\Policies\\Microsoft\\Internet Explorer\\Main\\FeatureControl\\FEATURE_ADDON_MANAGEMENT",
                                                                 "ValueName":  "*",
-                                                                "EnabledValue":  null,
-                                                                "DisabledValue":  null,
+                                                                "EnabledValue":  "1",
+                                                                "DisabledValue":  "0",
                                                                 "AdmxFile":  "inetres.admx",
                                                                 "SupportedOn":  "SUPPORTED_IE6SP2"
                                                             },
@@ -19308,8 +19419,8 @@
                                                                "Category":  "Windows Components \u003e Internet Explorer \u003e Security Features \u003e Binary Behavior Security Restriction",
                                                                "RegistryKey":  "Software\\Policies\\Microsoft\\Internet Explorer\\Main\\FeatureControl\\FEATURE_BEHAVIORS",
                                                                "ValueName":  "*",
-                                                               "EnabledValue":  null,
-                                                               "DisabledValue":  null,
+                                                               "EnabledValue":  "1",
+                                                               "DisabledValue":  "0",
                                                                "AdmxFile":  "inetres.admx",
                                                                "SupportedOn":  "SUPPORTED_IE6SP2"
                                                            },
@@ -19352,8 +19463,8 @@
                                                                "Category":  "Windows Components \u003e Internet Explorer \u003e Security Features \u003e Consistent Mime Handling",
                                                                "RegistryKey":  "Software\\Policies\\Microsoft\\Internet Explorer\\Main\\FeatureControl\\FEATURE_MIME_HANDLING",
                                                                "ValueName":  "*",
-                                                               "EnabledValue":  null,
-                                                               "DisabledValue":  null,
+                                                               "EnabledValue":  "1",
+                                                               "DisabledValue":  "0",
                                                                "AdmxFile":  "inetres.admx",
                                                                "SupportedOn":  "SUPPORTED_IE6SP2"
                                                            },
@@ -19396,8 +19507,8 @@
                                                                 "Category":  "Windows Components \u003e Internet Explorer \u003e Security Features \u003e Notification bar",
                                                                 "RegistryKey":  "Software\\Policies\\Microsoft\\Internet Explorer\\Main\\FeatureControl\\FEATURE_SECURITYBAND",
                                                                 "ValueName":  "*",
-                                                                "EnabledValue":  null,
-                                                                "DisabledValue":  null,
+                                                                "EnabledValue":  "1",
+                                                                "DisabledValue":  "0",
                                                                 "AdmxFile":  "inetres.admx",
                                                                 "SupportedOn":  "SUPPORTED_IE6SP2"
                                                             },
@@ -19440,8 +19551,8 @@
                                                                "Category":  "Windows Components \u003e Internet Explorer \u003e Security Features \u003e Local Machine Zone Lockdown Security",
                                                                "RegistryKey":  "Software\\Policies\\Microsoft\\Internet Explorer\\Main\\FeatureControl\\FEATURE_LOCALMACHINE_LOCKDOWN",
                                                                "ValueName":  "*",
-                                                               "EnabledValue":  null,
-                                                               "DisabledValue":  null,
+                                                               "EnabledValue":  "1",
+                                                               "DisabledValue":  "0",
                                                                "AdmxFile":  "inetres.admx",
                                                                "SupportedOn":  "SUPPORTED_IE6SP2"
                                                            },
@@ -19484,8 +19595,8 @@
                                                                "Category":  "Windows Components \u003e Internet Explorer \u003e Security Features \u003e Mime Sniffing Safety Feature",
                                                                "RegistryKey":  "Software\\Policies\\Microsoft\\Internet Explorer\\Main\\FeatureControl\\FEATURE_MIME_SNIFFING",
                                                                "ValueName":  "*",
-                                                               "EnabledValue":  null,
-                                                               "DisabledValue":  null,
+                                                               "EnabledValue":  "1",
+                                                               "DisabledValue":  "0",
                                                                "AdmxFile":  "inetres.admx",
                                                                "SupportedOn":  "SUPPORTED_IE6SP2"
                                                            },
@@ -19528,8 +19639,8 @@
                                                                "Category":  "Windows Components \u003e Internet Explorer \u003e Security Features \u003e MK Protocol Security Restriction",
                                                                "RegistryKey":  "Software\\Policies\\Microsoft\\Internet Explorer\\Main\\FeatureControl\\FEATURE_DISABLE_MK_PROTOCOL",
                                                                "ValueName":  "*",
-                                                               "EnabledValue":  null,
-                                                               "DisabledValue":  null,
+                                                               "EnabledValue":  "1",
+                                                               "DisabledValue":  "0",
                                                                "AdmxFile":  "inetres.admx",
                                                                "SupportedOn":  "SUPPORTED_IE6SP2"
                                                            },
@@ -19572,8 +19683,8 @@
                                                                 "Category":  "Windows Components \u003e Internet Explorer \u003e Security Features \u003e Network Protocol Lockdown",
                                                                 "RegistryKey":  "Software\\Policies\\Microsoft\\Internet Explorer\\Main\\FeatureControl\\FEATURE_PROTOCOL_LOCKDOWN",
                                                                 "ValueName":  "*",
-                                                                "EnabledValue":  null,
-                                                                "DisabledValue":  null,
+                                                                "EnabledValue":  "1",
+                                                                "DisabledValue":  "0",
                                                                 "AdmxFile":  "inetres.admx",
                                                                 "SupportedOn":  "SUPPORTED_IE6SP2"
                                                             },
@@ -19616,8 +19727,8 @@
                                                                "Category":  "Windows Components \u003e Internet Explorer \u003e Security Features \u003e Object Caching Protection",
                                                                "RegistryKey":  "Software\\Policies\\Microsoft\\Internet Explorer\\Main\\FeatureControl\\FEATURE_OBJECT_CACHING",
                                                                "ValueName":  "*",
-                                                               "EnabledValue":  null,
-                                                               "DisabledValue":  null,
+                                                               "EnabledValue":  "1",
+                                                               "DisabledValue":  "0",
                                                                "AdmxFile":  "inetres.admx",
                                                                "SupportedOn":  "SUPPORTED_IE6SP2"
                                                            },
@@ -19660,8 +19771,8 @@
                                                                "Category":  "Windows Components \u003e Internet Explorer \u003e Security Features \u003e Protection From Zone Elevation",
                                                                "RegistryKey":  "Software\\Policies\\Microsoft\\Internet Explorer\\Main\\FeatureControl\\FEATURE_ZONE_ELEVATION",
                                                                "ValueName":  "*",
-                                                               "EnabledValue":  null,
-                                                               "DisabledValue":  null,
+                                                               "EnabledValue":  "1",
+                                                               "DisabledValue":  "0",
                                                                "AdmxFile":  "inetres.admx",
                                                                "SupportedOn":  "SUPPORTED_IE6SP2"
                                                            },
@@ -19704,8 +19815,8 @@
                                                                 "Category":  "Windows Components \u003e Internet Explorer \u003e Security Features \u003e Restrict ActiveX Install",
                                                                 "RegistryKey":  "Software\\Policies\\Microsoft\\Internet Explorer\\Main\\FeatureControl\\FEATURE_RESTRICT_ACTIVEXINSTALL",
                                                                 "ValueName":  "*",
-                                                                "EnabledValue":  null,
-                                                                "DisabledValue":  null,
+                                                                "EnabledValue":  "1",
+                                                                "DisabledValue":  "0",
                                                                 "AdmxFile":  "inetres.admx",
                                                                 "SupportedOn":  "SUPPORTED_IE6SP2"
                                                             },
@@ -19748,8 +19859,8 @@
                                                                 "Category":  "Windows Components \u003e Internet Explorer \u003e Security Features \u003e Restrict File Download",
                                                                 "RegistryKey":  "Software\\Policies\\Microsoft\\Internet Explorer\\Main\\FeatureControl\\FEATURE_RESTRICT_FILEDOWNLOAD",
                                                                 "ValueName":  "*",
-                                                                "EnabledValue":  null,
-                                                                "DisabledValue":  null,
+                                                                "EnabledValue":  "1",
+                                                                "DisabledValue":  "0",
                                                                 "AdmxFile":  "inetres.admx",
                                                                 "SupportedOn":  "SUPPORTED_IE6SP2"
                                                             },
@@ -19792,8 +19903,8 @@
                                                                "Category":  "Windows Components \u003e Internet Explorer \u003e Security Features \u003e Scripted Window Security Restrictions",
                                                                "RegistryKey":  "Software\\Policies\\Microsoft\\Internet Explorer\\Main\\FeatureControl\\FEATURE_WINDOW_RESTRICTIONS",
                                                                "ValueName":  "*",
-                                                               "EnabledValue":  null,
-                                                               "DisabledValue":  null,
+                                                               "EnabledValue":  "1",
+                                                               "DisabledValue":  "0",
                                                                "AdmxFile":  "inetres.admx",
                                                                "SupportedOn":  "SUPPORTED_IE6SP2"
                                                            },
@@ -20910,8 +21021,8 @@
                                                              "Category":  "Windows Components \u003e Internet Explorer",
                                                              "RegistryKey":  "Software\\Policies\\Microsoft\\Internet Explorer\\Main",
                                                              "ValueName":  "Check_Associations",
-                                                             "EnabledValue":  null,
-                                                             "DisabledValue":  null,
+                                                             "EnabledValue":  "yes",
+                                                             "DisabledValue":  "no",
                                                              "AdmxFile":  "inetres.admx",
                                                              "SupportedOn":  "SUPPORTED_IE10"
                                                          },
@@ -20982,8 +21093,8 @@
                                                          "Category":  "Windows Components \u003e Internet Explorer",
                                                          "RegistryKey":  "Software\\Policies\\Microsoft\\Internet Explorer\\Main",
                                                          "ValueName":  "Use FormSuggest",
-                                                         "EnabledValue":  null,
-                                                         "DisabledValue":  null,
+                                                         "EnabledValue":  "no",
+                                                         "DisabledValue":  "yes",
                                                          "AdmxFile":  "inetres.admx",
                                                          "SupportedOn":  "SUPPORTED_IE5"
                                                      },
@@ -20994,8 +21105,8 @@
                                                            "Category":  "Windows Components \u003e Internet Explorer",
                                                            "RegistryKey":  "Software\\Policies\\Microsoft\\Internet Explorer\\Main",
                                                            "ValueName":  "FormSuggest Passwords",
-                                                           "EnabledValue":  null,
-                                                           "DisabledValue":  null,
+                                                           "EnabledValue":  "yes",
+                                                           "DisabledValue":  "no",
                                                            "AdmxFile":  "inetres.admx",
                                                            "SupportedOn":  "SUPPORTED_IE5",
                                                            "Elements":  [
@@ -21195,8 +21306,8 @@
                                                                "Category":  "Windows Components \u003e Internet Explorer",
                                                                "RegistryKey":  "Software\\Policies\\Microsoft\\Windows\\CurrentVersion\\Explorer\\AutoComplete",
                                                                "ValueName":  "AutoSuggest",
-                                                               "EnabledValue":  null,
-                                                               "DisabledValue":  null,
+                                                               "EnabledValue":  "no",
+                                                               "DisabledValue":  "yes",
                                                                "AdmxFile":  "inetres.admx",
                                                                "SupportedOn":  "SUPPORTED_IE5"
                                                            },
@@ -35430,8 +35541,8 @@
                                                    "Category":  "Windows Components \u003e Internet Explorer \u003e Internet Settings \u003e Display settings \u003e Link Colors",
                                                    "RegistryKey":  "Software\\Policies\\Microsoft\\Internet Explorer\\Settings",
                                                    "ValueName":  "Use Anchor Hover Color",
-                                                   "EnabledValue":  null,
-                                                   "DisabledValue":  null,
+                                                   "EnabledValue":  "yes",
+                                                   "DisabledValue":  "no",
                                                    "AdmxFile":  "inetres.admx",
                                                    "SupportedOn":  "SUPPORTED_IE7"
                                                },
@@ -35622,8 +35733,8 @@
                                                           "Category":  "Windows Components \u003e Internet Explorer \u003e Browser menus",
                                                           "RegistryKey":  "Software\\Policies\\Microsoft\\Internet Explorer\\Main",
                                                           "ValueName":  "NoReportSiteProblems",
-                                                          "EnabledValue":  null,
-                                                          "DisabledValue":  null,
+                                                          "EnabledValue":  "yes",
+                                                          "DisabledValue":  "no",
                                                           "AdmxFile":  "inetres.admx",
                                                           "SupportedOn":  "SUPPORTED_IE11"
                                                       },
@@ -35658,8 +35769,8 @@
                                                              "Category":  "Windows Components \u003e Internet Explorer \u003e Internet Settings \u003e Advanced settings \u003e Multimedia",
                                                              "RegistryKey":  "Software\\Policies\\Microsoft\\Internet Explorer\\Main",
                                                              "ValueName":  "Enable AutoImageResize",
-                                                             "EnabledValue":  null,
-                                                             "DisabledValue":  null,
+                                                             "EnabledValue":  "no",
+                                                             "DisabledValue":  "yes",
                                                              "AdmxFile":  "inetres.admx",
                                                              "SupportedOn":  "SUPPORTED_IE7"
                                                          },
@@ -35670,8 +35781,8 @@
                                                   "Category":  "Windows Components \u003e Internet Explorer \u003e Internet Settings \u003e Advanced settings \u003e Multimedia",
                                                   "RegistryKey":  "Software\\Policies\\Microsoft\\Internet Explorer\\Main",
                                                   "ValueName":  "Display Inline Images",
-                                                  "EnabledValue":  null,
-                                                  "DisabledValue":  null,
+                                                  "EnabledValue":  "no",
+                                                  "DisabledValue":  "yes",
                                                   "AdmxFile":  "inetres.admx",
                                                   "SupportedOn":  "SUPPORTED_IE7"
                                               },
@@ -35682,8 +35793,8 @@
                                                             "Category":  "Windows Components \u003e Internet Explorer \u003e Internet Settings \u003e Advanced settings \u003e Multimedia",
                                                             "RegistryKey":  "Software\\Policies\\Microsoft\\Internet Explorer\\Main",
                                                             "ValueName":  "EnableAlternativeCodec",
-                                                            "EnabledValue":  null,
-                                                            "DisabledValue":  null,
+                                                            "EnabledValue":  "yes",
+                                                            "DisabledValue":  "no",
                                                             "AdmxFile":  "inetres.admx",
                                                             "SupportedOn":  "SUPPORTED_IE9"
                                                         },
@@ -35849,8 +35960,8 @@
                                                       "Category":  "Windows Components \u003e Internet Explorer \u003e Internet Settings \u003e Advanced settings \u003e Printing",
                                                       "RegistryKey":  "Software\\Policies\\Microsoft\\Internet Explorer\\Main",
                                                       "ValueName":  "Print_Background",
-                                                      "EnabledValue":  null,
-                                                      "DisabledValue":  null,
+                                                      "EnabledValue":  "yes",
+                                                      "DisabledValue":  "no",
                                                       "AdmxFile":  "inetres.admx",
                                                       "SupportedOn":  "SUPPORTED_IE7"
                                                   },
@@ -35933,8 +36044,8 @@
                                                                         "Category":  "Windows Components \u003e Internet Explorer \u003e Application Compatibility \u003e Clipboard access",
                                                                         "RegistryKey":  "Software\\Policies\\Microsoft\\Internet Explorer\\Main\\FeatureControl\\Feature_Enable_Script_Paste_URLAction_If_Prompt",
                                                                         "ValueName":  "*",
-                                                                        "EnabledValue":  null,
-                                                                        "DisabledValue":  null,
+                                                                        "EnabledValue":  "1",
+                                                                        "DisabledValue":  "0",
                                                                         "AdmxFile":  "inetres.admx",
                                                                         "SupportedOn":  "SUPPORTED_IE7"
                                                                     },
@@ -36175,8 +36286,8 @@
                                                        "Category":  "Windows Components \u003e Internet Explorer \u003e Internet Settings \u003e Advanced settings \u003e Signup Settings",
                                                        "RegistryKey":  "Software\\Policies\\Microsoft\\IEAK",
                                                        "ValueName":  "NoAutomaticSignup",
-                                                       "EnabledValue":  null,
-                                                       "DisabledValue":  null,
+                                                       "EnabledValue":  "0",
+                                                       "DisabledValue":  "1",
                                                        "AdmxFile":  "inetres.admx",
                                                        "SupportedOn":  "SUPPORTED_IE7"
                                                    },
@@ -36951,7 +37062,7 @@
                                                                           "Id":  "NeedEdgeBrowser",
                                                                           "Type":  "enum",
                                                                           "EnumValues":  {
-                                                                                             "":  null,
+                                                                                             "(value deleted)":  null,
                                                                                              "1":  "Microsoft Edge Stable",
                                                                                              "2":  "Microsoft Edge Beta version 77 or later",
                                                                                              "3":  "Microsoft Edge Dev version 77 or later",
@@ -36965,7 +37076,7 @@
                                                                           "Id":  "NeedEdgeBrowser2",
                                                                           "Type":  "enum",
                                                                           "EnumValues":  {
-                                                                                             "":  null,
+                                                                                             "(value deleted)":  null,
                                                                                              "1":  "Microsoft Edge Stable",
                                                                                              "2":  "Microsoft Edge Beta version 77 or later",
                                                                                              "3":  "Microsoft Edge Dev version 77 or later",
@@ -36979,7 +37090,7 @@
                                                                           "Id":  "NeedEdgeBrowser3",
                                                                           "Type":  "enum",
                                                                           "EnumValues":  {
-                                                                                             "":  null,
+                                                                                             "(value deleted)":  null,
                                                                                              "1":  "Microsoft Edge Stable",
                                                                                              "2":  "Microsoft Edge Beta version 77 or later",
                                                                                              "3":  "Microsoft Edge Dev version 77 or later",
@@ -39439,8 +39550,8 @@
                                                          "Category":  "Windows Components \u003e Microsoft Edge",
                                                          "RegistryKey":  "Software\\Policies\\Microsoft\\MicrosoftEdge\\Main",
                                                          "ValueName":  "Use FormSuggest",
-                                                         "EnabledValue":  null,
-                                                         "DisabledValue":  null,
+                                                         "EnabledValue":  "yes",
+                                                         "DisabledValue":  "no",
                                                          "AdmxFile":  "MicrosoftEdge.admx",
                                                          "SupportedOn":  "SUPPORTED_INTERNET_BROWSER_WIN10"
                                                      },
@@ -39535,8 +39646,8 @@
                                                                 "Category":  "Windows Components \u003e Microsoft Edge",
                                                                 "RegistryKey":  "Software\\Policies\\Microsoft\\MicrosoftEdge\\Main",
                                                                 "ValueName":  "FormSuggest Passwords",
-                                                                "EnabledValue":  null,
-                                                                "DisabledValue":  null,
+                                                                "EnabledValue":  "yes",
+                                                                "DisabledValue":  "no",
                                                                 "AdmxFile":  "MicrosoftEdge.admx",
                                                                 "SupportedOn":  "SUPPORTED_INTERNET_BROWSER_WIN10"
                                                             },
@@ -39547,8 +39658,8 @@
                                                        "Category":  "Windows Components \u003e Microsoft Edge",
                                                        "RegistryKey":  "Software\\Policies\\Microsoft\\MicrosoftEdge\\Main",
                                                        "ValueName":  "AllowPopups",
-                                                       "EnabledValue":  null,
-                                                       "DisabledValue":  null,
+                                                       "EnabledValue":  "yes",
+                                                       "DisabledValue":  "no",
                                                        "AdmxFile":  "MicrosoftEdge.admx",
                                                        "SupportedOn":  "SUPPORTED_INTERNET_BROWSER_WIN10"
                                                    },
@@ -43634,7 +43745,8 @@
                                                                                        "Id":  "StateSelect",
                                                                                        "Type":  "enum",
                                                                                        "EnumValues":  {
-                                                                                                          "":  "Disabled State"
+                                                                                                          "Enabled":  "Enabled State",
+                                                                                                          "Disabled":  "Disabled State"
                                                                                                       }
                                                                                    }
                                                                                ]
@@ -46177,7 +46289,9 @@
                                                                                     "Id":  "InboxActiveSchemeOverrideEnter",
                                                                                     "Type":  "enum",
                                                                                     "EnumValues":  {
-                                                                                                       "":  "High Performance"
+                                                                                                       "381b4222-f694-41f0-9685-ff5bb260df2e":  "Automatic (recommended)",
+                                                                                                       "a1841308-3541-4fab-bc81-f71556f20b4a":  "Power Saver",
+                                                                                                       "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c":  "High Performance"
                                                                                                    }
                                                                                 }
                                                                             ]
@@ -46779,7 +46893,9 @@
                                                                                           "Id":  "ExecutionPolicy",
                                                                                           "Type":  "enum",
                                                                                           "EnumValues":  {
-                                                                                                             "":  "Allow all scripts"
+                                                                                                             "AllSigned":  "Allow only signed scripts",
+                                                                                                             "RemoteSigned":  "Allow local scripts and remote signed scripts",
+                                                                                                             "Unrestricted":  "Allow all scripts"
                                                                                                          }
                                                                                       }
                                                                                   ]
@@ -50702,7 +50818,36 @@
                                                                            "Id":  "SelectOcrLanguage",
                                                                            "Type":  "enum",
                                                                            "EnumValues":  {
-                                                                                              "":  "Korean"
+                                                                                              "ar":  "Arabic",
+                                                                                              "bs-latn-ba":  "Bosnian (Latin)",
+                                                                                              "bg":  "Bulgarian",
+                                                                                              "hr":  "Croatian",
+                                                                                              "sl":  "Slovenian",
+                                                                                              "cs":  "Czech",
+                                                                                              "hu":  "Hungarian",
+                                                                                              "pl":  "Polish",
+                                                                                              "ru":  "Russian",
+                                                                                              "da":  "Danish",
+                                                                                              "nl":  "Dutch",
+                                                                                              "en":  "English",
+                                                                                              "fi":  "Finnish",
+                                                                                              "fr":  "French",
+                                                                                              "de":  "German",
+                                                                                              "it":  "Italian",
+                                                                                              "nb":  "Norwegian",
+                                                                                              "pt":  "Portuguese",
+                                                                                              "ro":  "Romanian",
+                                                                                              "sr-cyrl-rs":  "Serbian (Cyrillic)",
+                                                                                              "sr-latn-rs":  "Serbian (Latin)",
+                                                                                              "sk":  "Slovak",
+                                                                                              "es":  "Spanish",
+                                                                                              "sv":  "Swedish",
+                                                                                              "el":  "Greek",
+                                                                                              "tr":  "Turkish",
+                                                                                              "zh-Hans":  "Chinese (Simplified)",
+                                                                                              "zh-Hant":  "Chinese (Traditional)",
+                                                                                              "ja":  "Japanese",
+                                                                                              "ko":  "Korean"
                                                                                           }
                                                                        }
                                                                    ]
@@ -52302,7 +52447,8 @@
                                                                                         "Id":  "ShellConfigureSmartScreen_Dropdown",
                                                                                         "Type":  "enum",
                                                                                         "EnumValues":  {
-                                                                                                           "":  "Warn"
+                                                                                                           "Block":  "Warn and prevent bypass",
+                                                                                                           "Warn":  "Warn"
                                                                                                        }
                                                                                     }
                                                                                 ]
@@ -52325,7 +52471,10 @@
                                                                                          "Id":  "ConfigureAppInstallControl_Dropdown",
                                                                                          "Type":  "enum",
                                                                                          "EnumValues":  {
-                                                                                                            "":  "Allow apps from Store only"
+                                                                                                            "Anywhere":  "Turn off app recommendations",
+                                                                                                            "Recommendations":  "Show me app recommendations",
+                                                                                                            "PreferStore":  "Warn me before installing apps from outside the Store",
+                                                                                                            "StoreOnly":  "Allow apps from Store only"
                                                                                                         }
                                                                                      }
                                                                                  ]
@@ -54918,7 +55067,9 @@
                                                                      "Id":  "StateSelect",
                                                                      "Type":  "enum",
                                                                      "EnumValues":  {
-                                                                                        "":  "Disabled State"
+                                                                                        "Default":  "Default State",
+                                                                                        "Enabled":  "Enabled State",
+                                                                                        "Disabled":  "Disabled State"
                                                                                     }
                                                                  }
                                                              ]
@@ -54961,7 +55112,9 @@
                                                                    "Id":  "StateSelect",
                                                                    "Type":  "enum",
                                                                    "EnumValues":  {
-                                                                                      "":  "Disabled State"
+                                                                                      "Default":  "Default State",
+                                                                                      "Enabled":  "Enabled State",
+                                                                                      "Disabled":  "Disabled State"
                                                                                   }
                                                                }
                                                            ]
@@ -55026,7 +55179,10 @@
                                                                      "Id":  "StateSelect",
                                                                      "Type":  "enum",
                                                                      "EnumValues":  {
-                                                                                        "":  "Enterprise Client"
+                                                                                        "Default":  "Default State",
+                                                                                        "Disabled":  "Disabled State",
+                                                                                        "Client":  "Client",
+                                                                                        "Enterprise Client":  "Enterprise Client"
                                                                                     }
                                                                  }
                                                              ]
@@ -55113,7 +55269,7 @@
                                                                                  "Id":  "StateSelect",
                                                                                  "Type":  "enum",
                                                                                  "EnumValues":  {
-                                                                                                    "":  "Enabled State"
+                                                                                                    "Enabled":  "Enabled State"
                                                                                                 }
                                                                              }
                                                                          ]
@@ -56238,7 +56394,26 @@
                                                                               "Id":  "TS_DRIVE_LETTER",
                                                                               "Type":  "enum",
                                                                               "EnumValues":  {
-                                                                                                 "":  "Z:"
+                                                                                                 "G:":  "G:",
+                                                                                                 "H:":  "H:",
+                                                                                                 "I:":  "I:",
+                                                                                                 "J:":  "J:",
+                                                                                                 "K:":  "K:",
+                                                                                                 "L:":  "L:",
+                                                                                                 "M:":  "M:",
+                                                                                                 "N:":  "N:",
+                                                                                                 "O:":  "O:",
+                                                                                                 "P:":  "P:",
+                                                                                                 "Q:":  "Q:",
+                                                                                                 "R:":  "R:",
+                                                                                                 "S:":  "S:",
+                                                                                                 "T:":  "T:",
+                                                                                                 "U:":  "U:",
+                                                                                                 "V:":  "V:",
+                                                                                                 "W:":  "W:",
+                                                                                                 "X:":  "X:",
+                                                                                                 "Y:":  "Y:",
+                                                                                                 "Z:":  "Z:"
                                                                                              }
                                                                           }
                                                                       ]
@@ -59257,7 +59432,9 @@
                                                                                                    "Id":  "SyncMethodConfiguration_list",
                                                                                                    "Type":  "enum",
                                                                                                    "EnumValues":  {
-                                                                                                                      "":  "External"
+                                                                                                                      "SyncProvider":  "SyncProvider",
+                                                                                                                      "None":  "None",
+                                                                                                                      "External":  "External"
                                                                                                                   }
                                                                                                },
                                                                                                {
@@ -59929,7 +60106,26 @@
                                                                          "Id":  "DRIVE_LETTER",
                                                                          "Type":  "enum",
                                                                          "EnumValues":  {
-                                                                                            "":  "Z:"
+                                                                                            "G:":  "G:",
+                                                                                            "H:":  "H:",
+                                                                                            "I:":  "I:",
+                                                                                            "J:":  "J:",
+                                                                                            "K:":  "K:",
+                                                                                            "L:":  "L:",
+                                                                                            "M:":  "M:",
+                                                                                            "N:":  "N:",
+                                                                                            "O:":  "O:",
+                                                                                            "P:":  "P:",
+                                                                                            "Q:":  "Q:",
+                                                                                            "R:":  "R:",
+                                                                                            "S:":  "S:",
+                                                                                            "T:":  "T:",
+                                                                                            "U:":  "U:",
+                                                                                            "V:":  "V:",
+                                                                                            "W:":  "W:",
+                                                                                            "X:":  "X:",
+                                                                                            "Y:":  "Y:",
+                                                                                            "Z:":  "Z:"
                                                                                         }
                                                                      }
                                                                  ]
@@ -61256,8 +61452,8 @@
                                                              "Category":  "Windows Components \u003e BitLocker Drive Encryption \u003e Fixed Data Drives",
                                                              "RegistryKey":  "Software\\Policies\\Microsoft\\FVE",
                                                              "ValueName":  "FDVDiscoveryVolumeType",
-                                                             "EnabledValue":  null,
-                                                             "DisabledValue":  null,
+                                                             "EnabledValue":  "FAT32",
+                                                             "DisabledValue":  "\u003cnone\u003e",
                                                              "AdmxFile":  "VolumeEncryption.admx",
                                                              "SupportedOn":  "windows:SUPPORTED_Windows7To1122H2",
                                                              "Elements":  [
@@ -61508,8 +61704,8 @@
                                                              "Category":  "Windows Components \u003e BitLocker Drive Encryption \u003e Removable Data Drives",
                                                              "RegistryKey":  "Software\\Policies\\Microsoft\\FVE",
                                                              "ValueName":  "RDVDiscoveryVolumeType",
-                                                             "EnabledValue":  null,
-                                                             "DisabledValue":  null,
+                                                             "EnabledValue":  "FAT32",
+                                                             "DisabledValue":  "\u003cnone\u003e",
                                                              "AdmxFile":  "VolumeEncryption.admx",
                                                              "SupportedOn":  "windows:SUPPORTED_Windows7To1122H2",
                                                              "Elements":  [
@@ -61811,7 +62007,10 @@
                                                                                              "Id":  "W32TIME_Type",
                                                                                              "Type":  "enum",
                                                                                              "EnumValues":  {
-                                                                                                                "":  "AllSync"
+                                                                                                                "NoSync":  "NoSync",
+                                                                                                                "NTP":  "NTP",
+                                                                                                                "NT5DS":  "NT5DS",
+                                                                                                                "AllSync":  "AllSync"
                                                                                                             }
                                                                                          },
                                                                                          {
@@ -66476,7 +66675,8 @@
                                                                                     "Id":  "EnableSmartScreenDropdown",
                                                                                     "Type":  "enum",
                                                                                     "EnumValues":  {
-                                                                                                       "":  "Warn"
+                                                                                                       "Block":  "Warn and prevent bypass",
+                                                                                                       "Warn":  "Warn"
                                                                                                    }
                                                                                 }
                                                                             ]
@@ -67448,8 +67648,8 @@
                                                                            "Category":  "Windows Components \u003e Windows Media Player",
                                                                            "RegistryKey":  "Software\\Policies\\Microsoft\\WindowsMediaPlayer",
                                                                            "ValueName":  "QuickLaunchShortcut",
-                                                                           "EnabledValue":  null,
-                                                                           "DisabledValue":  null,
+                                                                           "EnabledValue":  "no",
+                                                                           "DisabledValue":  "yes",
                                                                            "AdmxFile":  "windowsmediaplayer.admx",
                                                                            "SupportedOn":  "SUPPORTED_WMP9"
                                                                        },
@@ -67472,8 +67672,8 @@
                                                                           "Category":  "Windows Components \u003e Windows Media Player",
                                                                           "RegistryKey":  "Software\\Policies\\Microsoft\\WindowsMediaPlayer",
                                                                           "ValueName":  "DesktopShortcut",
-                                                                          "EnabledValue":  null,
-                                                                          "DisabledValue":  null,
+                                                                          "EnabledValue":  "no",
+                                                                          "DisabledValue":  "yes",
                                                                           "AdmxFile":  "windowsmediaplayer.admx",
                                                                           "SupportedOn":  "SUPPORTED_WMP9"
                                                                       },
@@ -68075,7 +68275,9 @@
                                                                                               "Id":  "HardeningLevelCombo",
                                                                                               "Type":  "enum",
                                                                                               "EnumValues":  {
-                                                                                                                 "":  "Strict"
+                                                                                                                 "None":  "None",
+                                                                                                                 "Relaxed":  "Relaxed",
+                                                                                                                 "Strict":  "Strict"
                                                                                                              }
                                                                                           }
                                                                                       ]
@@ -70726,8 +70928,8 @@
                                                                "Category":  "MSS (Legacy)",
                                                                "RegistryKey":  "Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon",
                                                                "ValueName":  "AutoAdminLogon",
-                                                               "EnabledValue":  null,
-                                                               "DisabledValue":  null,
+                                                               "EnabledValue":  "1",
+                                                               "DisabledValue":  "0",
                                                                "AdmxFile":  "MSS-legacy.admx",
                                                                "SupportedOn":  "windows:SUPPORTED_WindowsVista"
                                                            },
@@ -71341,7 +71543,9 @@
                                                                                          "Id":  "Pol_SecGuide_Block_Flash",
                                                                                          "Type":  "enum",
                                                                                          "EnumValues":  {
-                                                                                                            "":  "Allow all activation"
+                                                                                                            "Block all Flash activation":  "Block all activation",
+                                                                                                            "Block embedded Flash activation only":  "Block embedding/linking, allow other activation",
+                                                                                                            "Allow all Flash activation":  "Allow all activation"
                                                                                                         }
                                                                                      }
                                                                                  ]

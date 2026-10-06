@@ -3968,7 +3968,7 @@ $ui.BtnScanGPOs.Add_Click({
                             $scriptValue = $scriptCmd
                             if ($scriptPrm) { $scriptValue += " $scriptPrm" }
                             [void]$allSettingsList.Add([PSCustomObject]@{
-                                Id=($settIdCounter); GPOName=(if ($sGPO) { $sGPORaw = $sGPO.InnerText; if ($pathToGpoName[$sGPORaw]) { $pathToGpoName[$sGPORaw] } else { $sGPORaw } } else { '' }); GPOGuid=(if ($sGPO) { $sGPO.InnerText } else { '' })
+                                Id=($settIdCounter); GPOName=$(if ($sGPO) { $sGPORaw = $sGPO.InnerText; if ($pathToGpoName[$sGPORaw]) { $pathToGpoName[$sGPORaw] } else { $sGPORaw } } else { '' }); GPOGuid=$(if ($sGPO) { $sGPO.InnerText } else { '' })
                                 Category="$category (Script: $scriptType)"; PolicyName=$scriptName
                                 SettingKey="$category\$scriptType\$scriptName"; State='Applied'
                                 RegistryKey=''; ValueData=$scriptValue; Scope=$scope; Source='Local GPO'
@@ -7121,9 +7121,11 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
                     $xName = & $enc $xe.XMLName
                     $xArea = & $enc $xe.Area
                     $xMsg = & $enc $xe.Message
-                    $xRes = $xe.LastResult
-                    $xFail = $xe.NumberOfFailures
-                    $xStyle = if ([int]$xFail -gt 0) { ' style="color:var(--red);font-weight:600"' } else { '' }
+                    $xRes = & $enc $xe.LastResult
+                    $xFailNum = 0
+                    [void][int]::TryParse("$($xe.NumberOfFailures)", [ref]$xFailNum)
+                    $xFail = & $enc $xe.NumberOfFailures
+                    $xStyle = if ($xFailNum -gt 0) { ' style="color:var(--red);font-weight:600"' } else { '' }
                     [void]$html.Append("<tr><td class=`"policy-name`">$xName</td><td>$xArea</td><td style=`"font-size:11px`">$xMsg</td><td class=`"val`">$xRes</td><td$xStyle>$xFail</td></tr>")
                 }
                 [void]$html.Append('</tbody></table></div></details></td></tr>')
@@ -7178,7 +7180,7 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
     # ── Section 7: Not Configured (CSP defaults) ──
     if ($notCfgCount -gt 0) {
         [void]$html.Append(@"
-<details class="section">
+<details class="section" data-print="skip">
 <summary class="section-header">
   <span class="icon" style="color:var(--muted)">&#x2B55;</span>
   <span class="title">Not Configured (CSP Defaults)</span>
@@ -7239,23 +7241,32 @@ function toggleTheme() {
 
 function expandAll() { document.querySelectorAll('details.section, details.gpo-group').forEach(d => d.open = true); }
 function collapseAll() { document.querySelectorAll('details.section, details.gpo-group').forEach(d => d.open = false); }
-window.addEventListener('beforeprint', function() { document.querySelectorAll('details.gpo-group').forEach(d => d.open = true); });
-
-// Global search
-document.getElementById('globalSearch').addEventListener('input', function() {
-  const q = this.value.toLowerCase().trim();
-  document.querySelectorAll('table tbody tr').forEach(function(row) {
-    if (!q) { row.style.display = ''; return; }
-    row.style.display = row.textContent.toLowerCase().includes(q) ? '' : 'none';
+// Print every section except the CSP reference catalogue, then restore the on-screen state
+var printOpened = [];
+window.addEventListener('beforeprint', function() {
+  printOpened = [];
+  document.querySelectorAll('details.section, details.gpo-group').forEach(function(d) {
+    if (d.dataset.print === 'skip' || d.open) return;
+    d.open = true; printOpened.push(d);
   });
-  // Auto-expand sections with matches
+});
+window.addEventListener('afterprint', function() { printOpened.forEach(function(d) { d.open = false; }); printOpened = []; });
+
+function searchQuery() { return document.getElementById('globalSearch').value.toLowerCase().trim(); }
+
+// Global search; settings rows go through filterSettings so search and filters combine
+document.getElementById('globalSearch').addEventListener('input', function() {
+  const q = searchQuery();
+  document.querySelectorAll('table tbody tr').forEach(function(row) {
+    if (row.closest('#settingsContainer')) return;
+    row.style.display = (!q || row.textContent.toLowerCase().includes(q)) ? '' : 'none';
+  });
+  filterSettings();
   if (q) {
-    document.querySelectorAll('details.section, details.gpo-group').forEach(function(d) {
-      const hasVisible = d.querySelector('tbody tr:not([style*="display: none"])');
-      if (hasVisible) d.open = true;
+    document.querySelectorAll('details.section').forEach(function(d) {
+      if (d.querySelector('tbody tr:not([style*="display: none"])')) d.open = true;
     });
   }
-  updateSettingsCount();
 });
 
 // Settings-specific filters
@@ -7264,21 +7275,23 @@ function filterSettings() {
   const scope = document.getElementById('fltScope').value;
   const state = document.getElementById('fltState').value;
   const ndOnly = document.getElementById('fltNonDefault').checked;
+  const q = searchQuery();
 
   document.querySelectorAll('#settingsContainer tr[data-cat]').forEach(function(row) {
+    var next = row.nextElementSibling;
+    var ref = (next && next.classList.contains('csp-row')) ? next : null;
     let show = true;
     if (cat && row.dataset.cat !== cat) show = false;
     if (scope && row.dataset.scope !== scope) show = false;
     if (state && row.dataset.state !== state) show = false;
     if (ndOnly && row.dataset.nd !== '1') show = false;
+    if (show && q) show = (row.textContent + ' ' + (ref ? ref.textContent : '')).toLowerCase().includes(q);
     row.style.display = show ? '' : 'none';
-    // Toggle associated CSP reference row
-    var next = row.nextElementSibling;
-    if (next && next.classList.contains('csp-row')) next.style.display = show ? '' : 'none';
+    if (ref) ref.style.display = show ? '' : 'none';
   });
 
-  // Hide empty groups; open groups with matches while a filter is active
-  const filtering = cat || scope || state || ndOnly;
+  // Hide empty groups; open groups with matches while a filter or search is active
+  const filtering = cat || scope || state || ndOnly || q;
   document.querySelectorAll('#settingsContainer details.gpo-group').forEach(function(g) {
     const visibleRows = g.querySelectorAll('tbody tr[data-cat]:not([style*="display: none"])');
     g.style.display = visibleRows.length > 0 ? '' : 'none';
