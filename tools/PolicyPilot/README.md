@@ -45,7 +45,7 @@ Select a scan mode in the sidebar, configure domain/DC/OU scope if needed, and c
 # Generate an AD scan report without the GUI
 .\PolicyPilot.ps1 -Headless -ReportType AD -OutputPath .\report.html
 
-# Scan local machine policies
+# Local / Intune / Combined: runs ..\mdmresult\mdmresult.ps1 (same report as the GUI)
 .\PolicyPilot.ps1 -Headless -ReportType Local
 ```
 
@@ -121,6 +121,8 @@ Runs Local + Intune scans and merges results into a single view with source tagg
 
 Maps raw registry keys to human-readable policy names, categories, descriptions, and allowed values. Ships with **3,726 policies**: all 236 Windows 11 26H2 templates plus SecGuide and MSS-legacy from `templates/`. It doesn't include Office or Chromium Edge templates; add them to `-AdmxPath` or `templates/` and rebuild.
 
+It also stores German and French display names and category paths. Without elevation, gpresult reports policies by name in the device's language and without a registry path; those rows are matched by name and category (182 of 197 in the German test sample).
+
 The shipped file was built with:
 
 ```powershell
@@ -146,6 +148,7 @@ The shipped file was built with:
 | `-Language` | `en-US` | ADML language subfolder |
 | `-OutputPath` | `admx_metadata.json` | Output JSON file path |
 | `-IncludeAll` | `$false` | Parse all ADMX files vs. security-focused subset |
+| `-NameLanguages` | `de-DE`, `fr-FR` | Extra ADML languages stored for name matching (each adds about 2 MB) |
 
 The builder also picks up SecGuide and MSS-Legacy ADMX templates from a local `templates/` folder if present (from the Microsoft Security Compliance Toolkit).
 
@@ -240,9 +243,11 @@ PolicyPilot/
 ├── Launch_PolicyPilot.bat     # Batch launcher (auto-detects PS7/PS5.1)
 ├── Build-AdmxDatabase.ps1    # ADMX → JSON metadata builder
 ├── Build-CspDatabase.ps1     # CSP → JSON metadata scraper
-├── admx_metadata.json         # Pre-built ADMX database (26H2 + SecGuide/MSS-legacy, 3,726 policies, 10.1 MB)
+├── admx_metadata.json         # Pre-built ADMX database (26H2 + SecGuide/MSS-legacy, 3,726 policies, de/fr names, 14 MB)
 ├── csp_metadata.json          # Pre-built CSP database (1,617 settings)
 ├── templates/                 # SecGuide / MSS-legacy ADMX from the Security Baseline
+├── Test-PolicyPilot.ps1       # Offline regression tests (conflicts, name matching, report, metadata)
+├── tests/                     # Test fixtures (German gpresult policy names)
 ├── README.md                  # This file
 ├── reports/                   # Generated HTML/CSV reports (auto-created)
 └── snapshots/                 # Scan snapshots for comparison (auto-created)
@@ -268,6 +273,6 @@ HTML reports include a standalone dark/light toggle independent of the app theme
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `-Headless` | Switch | Run without the GUI — scan and generate an HTML report, then exit |
+| `-Headless` | Switch | Run without the GUI. `AD`: scan and write the HTML report here. `Local`/`Intune`/`Combined`: run `..\mdmresult\mdmresult.ps1` and return its exit code |
 | `-ReportType` | String | Scan mode: `Local`, `AD`, `Intune`, or `Combined` |
 | `-OutputPath` | String | Output path for the HTML report (default: `reports/` with timestamp) |

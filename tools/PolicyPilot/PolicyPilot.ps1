@@ -488,6 +488,7 @@ $Script:AdmxDb     = $null   # keyed by "AdmxFile/PolicyName", each has Registry
 $Script:AdmxByReg  = @{}     # keyed by "HKLM_RegistryKey\ValueName" (normalized) for fast O(1) lookup
 $Script:CspDb      = $null   # keyed by "Area/PolicyName", each has GPMapping with registry key
 $Script:CspByReg   = @{}     # keyed by normalized registry path for CSP enrichment
+$Script:AdmxByLocalName = @{} # lowercase display name (English + L10n languages) -> candidates with category path
 $Script:AdmxDbAge  = $null   # days since DB was generated (show stale warning if >90)
 $Script:CspDbAge   = $null
 
@@ -500,7 +501,7 @@ function Load-MetadataDatabases {
         try {
             $rawJson = Get-Content $Script:AdmxDbPath -Raw -Encoding UTF8
             # PS 5.1 cannot parse JSON with empty-string keys — strip all "": ... entries
-            if (-not $useHashtable) {
+            if (-not $useHashtable -and [regex]::IsMatch($rawJson, '""\s*:')) {
                 # Remove "": "value", "": number, "": null patterns (empty-key properties in EnumValues)
                 $rawJson = $rawJson -replace '""\s*:\s*"[^"]*"\s*,?\s*', '' -replace '""\s*:\s*\d+\s*,?\s*', '' -replace '""\s*:\s*null\s*,?\s*', ''
                 # Clean up any resulting syntax issues (trailing commas, double commas)
@@ -509,19 +510,19 @@ function Load-MetadataDatabases {
             if ($useHashtable) {
                 $raw = $rawJson | ConvertFrom-Json -AsHashtable
                 $Script:AdmxDb = $raw.policies
-                $policyKeys = $raw.policies.Keys
+                $policyEntries = @($raw.policies.Values)
             } else {
                 $raw = $rawJson | ConvertFrom-Json
                 $Script:AdmxDb = $raw.policies
-                $policyKeys = @($raw.policies.PSObject.Properties | ForEach-Object { $_.Name })
+                # $obj.$key per entry is a linear property search in PS 5.1 (quadratic overall); enumerate once instead
+                $policyEntries = foreach ($prop in $raw.policies.PSObject.Properties) { $prop.Value }
             }
             if ($raw._metadata -and $raw._metadata.generatedAt) {
                 $Script:AdmxDbAge = [int]((Get-Date) - [datetime]$raw._metadata.generatedAt).TotalDays
             }
             # Build registry-key index for O(1) lookup
             $keyOnlyCount = 0
-            foreach ($key in $policyKeys) {
-                $entry = if ($useHashtable) { $Script:AdmxDb[$key] } else { $Script:AdmxDb.$key }
+            foreach ($entry in $policyEntries) {
                 if ($entry.RegistryKey) {
                     if ($entry.ValueName) {
                         # Full key+value index (exact match)
@@ -536,6 +537,20 @@ function Load-MetadataDatabases {
                         }
                     }
                 }
+                # gpresult <Policy> rows carry only a (possibly localized) name + category path, no registry key
+                $namePairs = [System.Collections.Generic.List[object]]::new()
+                if ($entry.Friendly) { $namePairs.Add(@($entry.Friendly, $entry.Category)) }
+                if ($entry.L10n) {
+                    # foreach, not ForEach-Object: the pipeline would unroll each [name, category] pair
+                    if ($entry.L10n -is [System.Collections.IDictionary]) { foreach ($pair in $entry.L10n.Values) { $namePairs.Add($pair) } }
+                    else { foreach ($prop in $entry.L10n.PSObject.Properties) { $namePairs.Add($prop.Value) } }
+                }
+                foreach ($pair in $namePairs) {
+                    $localName = "$($pair[0])".Trim().ToLower()
+                    if (-not $localName) { continue }
+                    if (-not $Script:AdmxByLocalName.ContainsKey($localName)) { $Script:AdmxByLocalName[$localName] = [System.Collections.Generic.List[object]]::new() }
+                    $Script:AdmxByLocalName[$localName].Add(@{ Entry = $entry; Category = ("$($pair[1])" -replace '\s*>\s*', '/').Trim().ToLower() })
+                }
             }
             Write-Host "[PolicyPilot] ADMX database loaded: $($Script:AdmxByReg.Count) indexed ($keyOnlyCount key-only fallbacks, age: $($Script:AdmxDbAge)d)" -ForegroundColor DarkGray
         } catch { Write-Host "[PolicyPilot] ADMX database load failed: $_" -ForegroundColor Yellow }
@@ -549,10 +564,10 @@ function Load-MetadataDatabases {
             $cspJson = Get-Content $Script:CspDbPath -Raw -Encoding UTF8
             if ($useHashtable) {
                 $cspRaw = $cspJson | ConvertFrom-Json -AsHashtable
-                $cspKeys = $cspRaw.Keys
+                $cspPairs = foreach ($kv in $cspRaw.GetEnumerator()) { ,@($kv.Key, $kv.Value) }
             } else {
                 $cspRaw = $cspJson | ConvertFrom-Json
-                $cspKeys = @($cspRaw.PSObject.Properties | ForEach-Object { $_.Name })
+                $cspPairs = foreach ($prop in $cspRaw.PSObject.Properties) { ,@($prop.Name, $prop.Value) }
             }
             $Script:CspDb = $cspRaw
             if (($useHashtable -and $cspRaw._metadata -and $cspRaw._metadata.generatedAt) -or
@@ -565,9 +580,10 @@ function Load-MetadataDatabases {
             # Build registry-key index from GPMapping + CSP path index
             $cspKeyOnly = 0
             $Script:CspByPath = @{}  # keyed by CSP OMA-URI path (e.g. "Defender/AllowRealtimeMonitoring")
-            foreach ($key in $cspKeys) {
+            foreach ($pairKv in $cspPairs) {
+                $key = $pairKv[0]
+                $entry = $pairKv[1]
                 if ($key -eq '_metadata') { continue }
-                $entry = if ($useHashtable) { $cspRaw[$key] } else { $cspRaw.$key }
                 # CSP path index (always available)
                 $cspInfo = @{
                     CspPath       = $key
@@ -1781,347 +1797,6 @@ function Invoke-GPOScan {
 # SECTION 5b: LOCAL RSoP SCAN ENGINE (gpresult)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-function Invoke-LocalRSoPScan {
-    Write-DebugLog 'Starting local RSoP scan via gpresult...' -Level STEP
-
-    $gpoRecords     = [System.Collections.Generic.List[PSCustomObject]]::new()
-    $allSettingsList = [System.Collections.Generic.List[PSCustomObject]]::new()
-    $gpoIdCounter   = 0
-    $settIdCounter  = 0
-    $domain         = 'LocalMachine'
-
-    try {
-        $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop
-        if ($cs.PartOfDomain) { $domain = $cs.Domain }
-    } catch { }
-
-    # M4: Loopback processing mode detection
-    $loopbackMode = 'Not Configured'
-    try {
-        $lbReg = Get-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System' -Name 'UserPolicyMode' -ErrorAction SilentlyContinue
-        if ($lbReg -and $null -ne $lbReg.UserPolicyMode) {
-            $loopbackMode = switch ([int]$lbReg.UserPolicyMode) {
-                1 { 'Replace' }
-                2 { 'Merge' }
-                default { "Unknown ($($lbReg.UserPolicyMode))" }
-            }
-        }
-    } catch { }
-
-    # gpresult /scope computer captures computer policies (requires admin)
-    $tmpFile = [IO.Path]::Combine([IO.Path]::GetTempPath(), 'PolicyPilot_RSoP.xml')
-    if (Test-Path $tmpFile) { Remove-Item $tmpFile -Force -ErrorAction SilentlyContinue }
-    Write-DebugLog "Running gpresult /scope computer /x $tmpFile /f" -Level INFO
-
-    try {
-        $errFile = [IO.Path]::Combine([IO.Path]::GetTempPath(), 'gpresult_err.txt')
-        $proc = Start-Process -FilePath 'gpresult.exe' `
-            -ArgumentList '/scope','computer','/x',$tmpFile,'/f' `
-            -NoNewWindow -Wait -PassThru -RedirectStandardError $errFile
-
-        if (-not $proc -or ($null -ne $proc.ExitCode -and $proc.ExitCode -ne 0) -or -not (Test-Path $tmpFile)) {
-            # Fallback: try user-only scope
-            $exitInfo = if ($proc -and $null -ne $proc.ExitCode) { $proc.ExitCode } else { 'N/A' }
-            Write-DebugLog "gpresult /scope computer failed (exit $exitInfo), trying /scope user" -Level WARN
-            $proc = Start-Process -FilePath 'gpresult.exe' `
-                -ArgumentList '/scope','user','/x',$tmpFile,'/f' `
-                -NoNewWindow -Wait -PassThru -RedirectStandardError $errFile
-        }
-
-        $finalFailed = (-not $proc) -or (-not (Test-Path $tmpFile))
-        if (-not $finalFailed -and $proc -and $null -ne $proc.ExitCode -and $proc.ExitCode -ne 0) { $finalFailed = $true }
-        if ($finalFailed) {
-            $exitCode = if ($proc -and $null -ne $proc.ExitCode) { $proc.ExitCode } else { 'N/A' }
-            Write-DebugLog "gpresult failed completely (exit $exitCode)" -Level ERROR
-            return $null
-        }
-
-        [xml]$rsop = Get-Content -Path $tmpFile -Raw -Encoding UTF8
-        $rootNs = $rsop.DocumentElement.NamespaceURI
-        $nsMgr  = New-Object System.Xml.XmlNamespaceManager($rsop.NameTable)
-        $nsMgr.AddNamespace('r', $rootNs)
-
-        # Process both Computer and User results sections
-        foreach ($scopeTag in @('ComputerResults','UserResults')) {
-            $scope = if ($scopeTag -eq 'ComputerResults') { 'Computer' } else { 'User' }
-            $scopeNode = $rsop.SelectSingleNode("//r:$scopeTag", $nsMgr)
-            if (-not $scopeNode) {
-                Write-DebugLog "No $scopeTag section in RSoP XML" -Level INFO
-                continue
-            }
-
-            # 1. Parse GPO list from this scope
-            $gpoNodes = $scopeNode.SelectNodes('r:GPO', $nsMgr)
-            $scopeGpoMap = @{} # Path -> GPO record
-            foreach ($gNode in $gpoNodes) {
-                $gpoIdCounter++
-                $gName   = $gNode.SelectSingleNode('r:Name', $nsMgr)
-                $gPath   = $gNode.SelectSingleNode('r:Path', $nsMgr)
-                $gEnable = $gNode.SelectSingleNode('r:Enabled', $nsMgr)
-                $gLink   = $gNode.SelectSingleNode('r:Link/r:SOMPath', $nsMgr)
-
-                # M1: WMI Filter evaluation status from RSoP XML
-                $gFilterAllowed = $gNode.SelectSingleNode('r:FilterAllowed', $nsMgr)
-                $wmiFilterStatus = if ($gFilterAllowed) {
-                    if ($gFilterAllowed.InnerText -eq 'true') { 'Passed' } else { 'Denied' }
-                } else { '' }
-
-                # H2: Enforced + link order from RSoP
-                $gEnforced = $gNode.SelectSingleNode('r:Link/r:NoOverride', $nsMgr)
-                $gLinkOrder = $gNode.SelectSingleNode('r:Link/r:SOMOrder', $nsMgr)
-                $enforced = ($gEnforced -and $gEnforced.InnerText -eq 'true')
-
-                $displayName = if ($gName) { $gName.InnerText } else { "GPO-$gpoIdCounter" }
-                $pathId      = if ($gPath) { $gPath.InnerText } else { "GPO-$gpoIdCounter" }
-                $isEnabled   = if ($gEnable) { $gEnable.InnerText -eq 'true' } else { $true }
-                $linkPath    = if ($gLink) { $gLink.InnerText } else { '' }
-
-                $gpoRec = [PSCustomObject]@{
-                    Id              = $gpoIdCounter
-                    DisplayName     = $displayName
-                    GpoId           = $pathId
-                    Status          = if ($isEnabled) { 'Enabled' } else { 'Disabled' }
-                    CreatedTime     = ''
-                    ModifiedTime    = ''
-                    WmiFilter       = ''
-                    WmiFilterStatus = $wmiFilterStatus
-                    LinkPath        = $linkPath
-                    IsLinked        = [bool]$linkPath
-                    UserVersion     = '0'
-                    ComputerVersion = '0'
-                    Description     = "Applied via RSoP ($scope scope)"
-                    Enforced        = $enforced
-                    LinkOrder       = if ($gLinkOrder) { [int]$gLinkOrder.InnerText } else { 0 }
-                    SecurityFiltering = ''
-                }
-                [void]$gpoRecords.Add($gpoRec)
-                $scopeGpoMap[$pathId] = $gpoRec
-            }
-
-            # Build path -> friendly GPO name map for setting GPOName resolution
-            $pathToGpoName = @{}
-            foreach ($g in $gpoRecords) { if ($g.GpoId -and $g.DisplayName) { $pathToGpoName[$g.GpoId] = $g.DisplayName } }
-
-            # 2. Parse settings from ExtensionData sections
-            $extDataNodes = $scopeNode.SelectNodes('r:ExtensionData', $nsMgr)
-            foreach ($extData in $extDataNodes) {
-                $extNameNode = $extData.SelectSingleNode('*[local-name()="Name"]')
-                $category    = if ($extNameNode) { $extNameNode.InnerText } else { 'General' }
-
-                $extNode = $extData.SelectSingleNode('*[local-name()="Extension"]')
-                if (-not $extNode) { continue }
-
-                # Parse Policy elements
-                $policies = $extNode.SelectNodes('*[local-name()="Policy"]')
-                foreach ($pol in $policies) {
-                    $settIdCounter++
-                    $polName  = $pol.SelectSingleNode('*[local-name()="Name"]')
-                    $polState = $pol.SelectSingleNode('*[local-name()="State"]')
-                    $polGPO   = $pol.SelectSingleNode('*[local-name()="GPO"]')
-                    $polCat   = $pol.SelectSingleNode('*[local-name()="Category"]')
-                    $polValue = $pol.SelectSingleNode('*[local-name()="Value"]')
-
-                    $sName   = if ($polName)  { $polName.InnerText }  else { "Policy-$settIdCounter" }
-                    $sState  = if ($polState) { $polState.InnerText } else { 'Applied' }
-                    $sGPORaw = if ($polGPO)   { $polGPO.InnerText }   else { '' }
-                    $sGPO    = if ($pathToGpoName[$sGPORaw]) { $pathToGpoName[$sGPORaw] } else { $sGPORaw }
-                    $sCat    = if ($polCat)   { $polCat.InnerText }   else { $category }
-                    $sValue  = if ($polValue) { $polValue.InnerText } else { $sState }
-                    $sValue  = Format-NumberedList $sValue
-
-                    $settRec = [PSCustomObject]@{
-                        Id          = $settIdCounter
-                        GPOName     = $sGPO
-                        GPOGuid     = $sGPORaw
-                        Category    = $sCat
-                        PolicyName  = $sName
-                        SettingKey  = "$sCat\$sName"
-                        State       = $sState
-                        RegistryKey = ''
-                        ValueData   = $sValue
-                        Scope       = $scope
-                        Source      = 'Local GPO'
-                        IntuneGroup = 'Group Policy'
-                    }
-                    [void]$allSettingsList.Add($settRec)
-                }
-
-                # Parse RegistrySetting elements
-                $regSettings = $extNode.SelectNodes('*[local-name()="RegistrySetting"]')
-                foreach ($reg in $regSettings) {
-                    $settIdCounter++
-                    $regGPO     = $reg.SelectSingleNode('*[local-name()="GPO"]')
-                    $regKey     = $reg.SelectSingleNode('*[local-name()="KeyPath"]')
-                    $regVal     = $reg.SelectSingleNode('*[local-name()="ValueName"]')
-                    $regAdm     = $reg.SelectSingleNode('*[local-name()="AdmSetting"]')
-
-                    $sGPORaw = if ($regGPO) { $regGPO.InnerText }  else { '' }
-                    $sGPO    = if ($pathToGpoName[$sGPORaw]) { $pathToGpoName[$sGPORaw] } else { $sGPORaw }
-                    $keyPath = if ($regKey) { $regKey.InnerText }  else { '' }
-                    $valName = if ($regVal) { $regVal.InnerText }  else { '' }
-                    $admSet  = if ($regAdm) { $regAdm.InnerText }  else { '' }
-
-                    $fullPath = if ($valName) { "$keyPath\$valName" } else { $keyPath }
-                    $sName    = if ($valName) { $valName } else { $keyPath.Split('\')[-1] }
-
-                    $settRec = [PSCustomObject]@{
-                        Id          = $settIdCounter
-                        GPOName     = $sGPO
-                        GPOGuid     = $sGPORaw
-                        Category    = "$category (Registry)"
-                        PolicyName  = $sName
-                        SettingKey  = $fullPath
-                        State       = 'Applied'
-                        RegistryKey = $fullPath
-                        ValueData   = "AdmSetting=$admSet"
-                        Scope       = $scope
-                        Source      = 'Local GPO'
-                        IntuneGroup = 'Registry Settings'
-                    }
-                    [void]$allSettingsList.Add($settRec)
-                }
-
-                # Parse Account / SecurityOptions / Audit elements
-                foreach ($tagName in @('Account','SecurityOptions','Audit')) {
-                    $items = $extNode.SelectNodes("*[local-name()='$tagName']")
-                    foreach ($item in $items) {
-                        $settIdCounter++
-                        $iName  = $item.SelectSingleNode('*[local-name()="Name"]')
-                        $iGPO   = $item.SelectSingleNode('*[local-name()="GPO"]')
-                        $iValue = $item.SelectSingleNode('*[local-name()="SettingNumber"] | *[local-name()="SettingBoolean"] | *[local-name()="SettingString"] | *[local-name()="Value"]')
-
-                        $sName  = if ($iName)  { $iName.InnerText }  else { "$tagName-$settIdCounter" }
-                        $sGPORaw = if ($iGPO)   { $iGPO.InnerText }   else { '' }
-                        $sGPO   = if ($pathToGpoName[$sGPORaw]) { $pathToGpoName[$sGPORaw] } else { $sGPORaw }
-                        $sValue = if ($iValue) { $iValue.InnerText } else { '' }
-
-                        $settRec = [PSCustomObject]@{
-                            Id          = $settIdCounter
-                            GPOName     = $sGPO
-                            GPOGuid     = $sGPORaw
-                            Category    = "$category ($tagName)"
-                            PolicyName  = $sName
-                            SettingKey  = "$category\$sName"
-                            State       = 'Applied'
-                            RegistryKey = ''
-                            ValueData   = $sValue
-                            Scope       = $scope
-                            Source      = 'Local GPO'
-                            IntuneGroup = 'Group Policy'
-                        }
-                        [void]$allSettingsList.Add($settRec)
-                    }
-                }
-
-                # M5: Script elements - extract Type (Logon/Logoff/Startup/Shutdown), Command, Parameters
-                $scriptItems = $extNode.SelectNodes("*[local-name()='Script']")
-                foreach ($sItem in $scriptItems) {
-                    $settIdCounter++
-                    $sName    = $sItem.SelectSingleNode('*[local-name()="Name"]')
-                    $sGPO     = $sItem.SelectSingleNode('*[local-name()="GPO"]')
-                    $sType    = $sItem.SelectSingleNode('*[local-name()="Type"]')
-                    $sCommand = $sItem.SelectSingleNode('*[local-name()="Command"]')
-                    $sParams  = $sItem.SelectSingleNode('*[local-name()="Parameters"]')
-                    $sOrder   = $sItem.SelectSingleNode('*[local-name()="Order"]')
-
-                    $scriptType = if ($sType) { $sType.InnerText } else { 'Unknown' }
-                    $scriptCmd  = if ($sCommand) { $sCommand.InnerText } else { '' }
-                    $scriptPrm  = if ($sParams) { $sParams.InnerText } else { '' }
-                    $scriptOrd  = if ($sOrder) { $sOrder.InnerText } else { '' }
-                    $scriptName = if ($sName) { $sName.InnerText } else { "$scriptType Script $settIdCounter" }
-
-                    $scriptValue = $scriptCmd
-                    if ($scriptPrm) { $scriptValue += " $scriptPrm" }
-                    if ($scriptOrd) { $scriptValue += " (Order: $scriptOrd)" }
-
-                    [void]$allSettingsList.Add([PSCustomObject]@{
-                        Id          = $settIdCounter
-                        GPOName     = if ($sGPO) { $sGPORaw = $sGPO.InnerText; if ($pathToGpoName[$sGPORaw]) { $pathToGpoName[$sGPORaw] } else { $sGPORaw } } else { '' }
-                        GPOGuid     = if ($sGPO) { $sGPO.InnerText } else { '' }
-                        Category    = "$category (Script: $scriptType)"
-                        PolicyName  = $scriptName
-                        SettingKey  = "$category\$scriptType\$scriptName"
-                        State       = 'Applied'
-                        RegistryKey = ''
-                        ValueData   = $scriptValue
-                        Scope       = $scope
-                        Source      = 'Local GPO'
-                        IntuneGroup = 'Scripts'
-                        ScriptType  = $scriptType
-                        ScriptPath  = $scriptCmd
-                        ScriptParams = $scriptPrm
-                    })
-                }
-            }
-
-            Write-DebugLog "RSoP ${scope}: $($gpoNodes.Count) GPOs, settings parsed" -Level SUCCESS
-        }
-    } catch {
-        Write-DebugLog "RSoP scan error: $($_.Exception.Message)" -Level ERROR
-    } finally {
-        if (Test-Path $tmpFile) { Remove-Item $tmpFile -Force -ErrorAction SilentlyContinue }
-    }
-
-    # ── WMI RSoP enrichment: replace locale-dependent Policy entries with registry-keyed entries ──
-    try {
-        $rsopWmi = @(Get-CimInstance -Namespace 'root\RSOP\Computer' -ClassName 'RSOP_RegistryPolicySetting' -ErrorAction Stop)
-        if ($rsopWmi.Count -gt 0) {
-            Write-DebugLog "WMI RSoP: $($rsopWmi.Count) registry policy settings found" -Level INFO
-            $guidToName = @{}
-            foreach ($g in $gpoRecords) {
-                if ($g.GpoId -match '\{([0-9a-fA-F-]+)\}') { $guidToName[$Matches[1].ToUpper()] = $g.DisplayName }
-            }
-            $replaceableEntries = @($allSettingsList | Where-Object { $_.Category -notmatch 'Security|Account|Audit|Script' })
-            foreach ($pe in $replaceableEntries) { [void]$allSettingsList.Remove($pe) }
-            Write-DebugLog "Replaced $($replaceableEntries.Count) gpresult entries with WMI RSoP data" -Level DEBUG
-            foreach ($wmi in $rsopWmi) {
-                if ($wmi.deleted) { continue }
-                $settIdCounter++
-                $wmiKey = $wmi.registryKey; $wmiVal = $wmi.valueName; $wmiGpoId = $wmi.GPOID
-                $wmiPrec = if ($wmi.precedence) { [int]$wmi.precedence } else { 1 }
-                $wmiValueData = ''
-                if ($null -ne $wmi.value -and $wmi.value.Count -gt 0) {
-                    switch ($wmi.valueType) {
-                        4 { if ($wmi.value.Count -ge 4) { $wmiValueData = [string][BitConverter]::ToUInt32($wmi.value, 0) } else { $wmiValueData = [string]$wmi.value } }
-                        1 { $wmiValueData = [System.Text.Encoding]::Unicode.GetString($wmi.value).TrimEnd("`0") }
-                        7 { $wmiValueData = [System.Text.Encoding]::Unicode.GetString($wmi.value).TrimEnd("`0") -replace "`0", '; ' }
-                        3 { $wmiValueData = "[Binary $($wmi.value.Count)B]" }
-                        default { if ($wmi.value.Count -gt 0) { $wmiValueData = "[Type$($wmi.valueType) $($wmi.value.Count)B]" } }
-                    }
-                }
-                $gpoGuid = ''; $gpoName = ''
-                if ($wmiGpoId -match '\{([0-9a-fA-F-]+)\}') {
-                    $gpoGuid = $Matches[1].ToUpper()
-                    $gpoName = if ($guidToName[$gpoGuid]) { $guidToName[$gpoGuid] } else { $wmiGpoId }
-                }
-                $fullPath = if ($wmiVal) { "$wmiKey\$wmiVal" } else { $wmiKey }
-                $sName = if ($wmiVal) { $wmiVal } else { $wmiKey.Split('\')[-1] }
-                $wmiState = if ($wmiPrec -eq 1) { 'Applied' } else { 'Superseded' }
-                [void]$allSettingsList.Add([PSCustomObject]@{
-                    Id=$settIdCounter; GPOName=$gpoName; GPOGuid=$wmiGpoId
-                    Category='Administrative Templates (WMI)'; PolicyName=$sName; SettingKey=$fullPath
-                    State=$wmiState; RegistryKey=$fullPath; ValueData=$wmiValueData
-                    Scope='Computer'; Source='WMI RSoP'; IntuneGroup='Group Policy'
-                    Precedence=$wmiPrec
-                })
-            }
-            Write-DebugLog "WMI RSoP: added $($rsopWmi.Count) enrichable settings" -Level SUCCESS
-        }
-    } catch {
-        Write-DebugLog "WMI RSoP unavailable: $($_.Exception.Message)" -Level DEBUG
-    }
-
-    $scanResult = @{
-        Timestamp      = [datetime]::Now
-        Domain         = $domain
-        GPOs           = $gpoRecords
-        Settings       = $allSettingsList
-        LoopbackMode   = $loopbackMode
-    }
-
-    Write-DebugLog "Local RSoP scan complete: $($gpoRecords.Count) GPOs, $($allSettingsList.Count) settings" -Level SUCCESS
-    return $scanResult
-}
 
 # ===============================================================================
 
@@ -2131,296 +1806,6 @@ function Invoke-LocalRSoPScan {
 
 
 
-function Invoke-IntunePolicyScan {
-    function Format-PolicyName([string]$name) {
-        ($name -creplace '([a-z])([A-Z])', '$1 $2' -creplace '([A-Z]+)([A-Z][a-z])', '$1 $2').Trim()
-    }
-
-    # H4: Helper to fetch assignments for a given policy endpoint
-    function Get-PolicyAssignments([string]$policyId, [string]$policyType) {
-        $assignments = [System.Collections.Generic.List[string]]::new()
-        try {
-            $uri = switch ($policyType) {
-                'DeviceConfig' { "https://graph.microsoft.com/v1.0/deviceManagement/deviceConfigurations/$policyId/assignments" }
-                'Compliance'   { "https://graph.microsoft.com/v1.0/deviceManagement/deviceCompliancePolicies/$policyId/assignments" }
-                'SettingsCatalog' { "https://graph.microsoft.com/beta/deviceManagement/configurationPolicies/$policyId/assignments" }
-            }
-            $resp = Invoke-MgGraphRequest -Method GET -Uri $uri -ErrorAction Stop
-            foreach ($a in $resp.value) {
-                $target = $a.target
-                $targetType = $target.'@odata.type' -replace '#microsoft.graph.',''
-                $groupId = $target.groupId
-                $label = switch -Wildcard ($targetType) {
-                    '*allLicensedUsers*' { 'All Users' }
-                    '*allDevices*'       { 'All Devices' }
-                    '*exclusionGroup*'   { "Exclude: $groupId" }
-                    default              { $groupId }
-                }
-                [void]$assignments.Add($label)
-            }
-        } catch { }
-        return ($assignments -join '; ')
-    }
-
-    $gpoRecords     = [System.Collections.Generic.List[PSCustomObject]]::new()
-
-    $allSettingsList = [System.Collections.Generic.List[PSCustomObject]]::new()
-
-    $gpoIdCounter   = 0
-
-    $settIdCounter  = 0
-
-
-
-    try {
-
-        Import-Module Microsoft.Graph.Authentication -ErrorAction Stop
-
-        Import-Module Microsoft.Graph.DeviceManagement -ErrorAction Stop
-
-    } catch {
-
-        try { Import-Module Microsoft.Graph.Intune -ErrorAction Stop } catch {
-
-            return @{ Error = 'Microsoft.Graph.DeviceManagement not found. Install: Install-Module Microsoft.Graph -Scope CurrentUser' }
-
-        }
-
-    }
-
-    try {
-
-        $ctx = Get-MgContext -ErrorAction SilentlyContinue
-
-        if (-not $ctx) {
-
-            Connect-MgGraph -Scopes @('DeviceManagementConfiguration.Read.All','DeviceManagementManagedDevices.Read.All') -ErrorAction Stop
-
-        }
-
-    } catch { return @{ Error = "Graph auth failed: $($_.Exception.Message)" } }
-
-
-
-    $domain = try { (Get-MgContext).TenantId } catch { 'Intune' }
-
-
-
-    # Device Configuration Profiles
-
-    try {
-
-        $configs = Get-MgDeviceManagementDeviceConfiguration -All -ErrorAction Stop
-
-        foreach ($cfg in $configs) {
-
-            $gpoIdCounter++; $sc = 0
-
-            # H7: Capture scope tags
-            $scopeTags = $cfg.AdditionalProperties['roleScopeTagIds']
-            $scopeTagStr = if ($scopeTags -is [System.Collections.IEnumerable]) { ($scopeTags | ForEach-Object { "$_" }) -join ', ' } elseif ($scopeTags) { "$scopeTags" } else { '0' }
-            # H4: Fetch assignments
-            $assignStr = Get-PolicyAssignments -policyId $cfg.Id -policyType 'DeviceConfig'
-
-            [void]$gpoRecords.Add([PSCustomObject]@{
-
-                Id=$gpoIdCounter; DisplayName=$cfg.DisplayName; GpoId=$cfg.Id; Status='Enabled'
-
-                CreatedTime=if($cfg.CreatedDateTime){$cfg.CreatedDateTime.ToString('yyyy-MM-dd HH:mm')}else{''}
-
-                ModifiedTime=if($cfg.LastModifiedDateTime){$cfg.LastModifiedDateTime.ToString('yyyy-MM-dd HH:mm')}else{''}
-
-                WmiFilter=''; LinkPath='Intune > Device Configuration'; IsLinked=$true
-
-                UserVersion='0'; ComputerVersion='0'; Description=if($cfg.Description){$cfg.Description}else{'Device Configuration'}
-
-                SettingCount=0; LinkCount=1; Links='Intune > Device Configuration'
-                ScopeTags=$scopeTagStr; Assignments=$assignStr
-
-            })
-
-            $odt = $cfg.AdditionalProperties['@odata.type'] -replace '#microsoft.graph.',''
-
-            foreach ($kv in $cfg.AdditionalProperties.GetEnumerator()) {
-
-                if ($kv.Key.StartsWith('@') -or $kv.Key -in @('id','displayName','description','version','createdDateTime','lastModifiedDateTime','roleScopeTagIds')) { continue }
-
-                $pv = $kv.Value; if ($null -eq $pv) { continue }
-
-                if ($pv -is [System.Collections.IEnumerable] -and $pv -isnot [string]) { $pv = ($pv | ForEach-Object { $_.ToString() }) -join ', ' }
-
-                $settIdCounter++; $sc++
-
-                [void]$allSettingsList.Add([PSCustomObject]@{
-
-                    Id=$settIdCounter; GPOName=$cfg.DisplayName; GPOGuid=$cfg.Id
-
-                    Category="DeviceConfig ($odt)"; PolicyName=(Format-PolicyName $kv.Key)
-
-                    SettingKey="DeviceConfig|$odt\$($kv.Key)"; State='Applied'
-
-                    RegistryKey=''; ValueData="$pv"; Scope='Device'; Source='Intune'; IntuneGroup='Configuration Profiles'
-
-                })
-
-            }
-
-            $gpoRecords[$gpoRecords.Count - 1].SettingCount = $sc
-
-        }
-
-    } catch { try { Write-DebugLog "Unhandled: $_" -Level ERROR } catch {} }
-
-
-
-    # Compliance Policies
-
-    try {
-
-        $compliance = Get-MgDeviceManagementDeviceCompliancePolicy -All -ErrorAction Stop
-
-        foreach ($cp in $compliance) {
-
-            $gpoIdCounter++; $sc = 0
-
-            # H7: Capture scope tags
-            $scopeTags = $cp.AdditionalProperties['roleScopeTagIds']
-            $scopeTagStr = if ($scopeTags -is [System.Collections.IEnumerable]) { ($scopeTags | ForEach-Object { "$_" }) -join ', ' } elseif ($scopeTags) { "$scopeTags" } else { '0' }
-            # H4: Fetch assignments
-            $assignStr = Get-PolicyAssignments -policyId $cp.Id -policyType 'Compliance'
-
-            [void]$gpoRecords.Add([PSCustomObject]@{
-
-                Id=$gpoIdCounter; DisplayName=$cp.DisplayName; GpoId=$cp.Id; Status='Enabled'
-
-                CreatedTime=if($cp.CreatedDateTime){$cp.CreatedDateTime.ToString('yyyy-MM-dd HH:mm')}else{''}
-
-                ModifiedTime=if($cp.LastModifiedDateTime){$cp.LastModifiedDateTime.ToString('yyyy-MM-dd HH:mm')}else{''}
-
-                WmiFilter=''; LinkPath='Intune > Compliance'; IsLinked=$true
-
-                UserVersion='0'; ComputerVersion='0'; Description=if($cp.Description){$cp.Description}else{'Compliance Policy'}
-
-                SettingCount=0; LinkCount=1; Links='Intune > Compliance'
-                ScopeTags=$scopeTagStr; Assignments=$assignStr
-
-            })
-
-            $odt = $cp.AdditionalProperties['@odata.type'] -replace '#microsoft.graph.',''
-
-            foreach ($kv in $cp.AdditionalProperties.GetEnumerator()) {
-
-                if ($kv.Key.StartsWith('@') -or $kv.Key -in @('id','displayName','description','version','createdDateTime','lastModifiedDateTime','roleScopeTagIds')) { continue }
-
-                $pv = $kv.Value; if ($null -eq $pv) { continue }
-
-                if ($pv -is [System.Collections.IEnumerable] -and $pv -isnot [string]) { $pv = ($pv | ForEach-Object { $_.ToString() }) -join ', ' }
-
-                $settIdCounter++; $sc++
-
-                [void]$allSettingsList.Add([PSCustomObject]@{
-
-                    Id=$settIdCounter; GPOName=$cp.DisplayName; GPOGuid=$cp.Id
-
-                    Category="Compliance ($odt)"; PolicyName=(Format-PolicyName $kv.Key)
-
-                    SettingKey="Compliance|$odt\$($kv.Key)"; State='Applied'
-
-                    RegistryKey=''; ValueData="$pv"; Scope='Device'; Source='Intune'; IntuneGroup='Device Compliance'
-
-                })
-
-            }
-
-            $gpoRecords[$gpoRecords.Count - 1].SettingCount = $sc
-
-        }
-
-    } catch { try { Write-DebugLog "Unhandled: $_" -Level ERROR } catch {} }
-
-
-
-    # Settings Catalog
-
-    try {
-
-        $catPols = Invoke-MgGraphRequest -Method GET -Uri 'https://graph.microsoft.com/beta/deviceManagement/configurationPolicies' -ErrorAction Stop
-
-        foreach ($pol in $catPols.value) {
-
-            $gpoIdCounter++; $sc = 0
-
-            # H7: Capture scope tags
-            $scopeTagStr = if ($pol.roleScopeTagIds) { ($pol.roleScopeTagIds | ForEach-Object { "$_" }) -join ', ' } else { '0' }
-            # H4: Fetch assignments
-            $assignStr = Get-PolicyAssignments -policyId $pol.id -policyType 'SettingsCatalog'
-
-            [void]$gpoRecords.Add([PSCustomObject]@{
-
-                Id=$gpoIdCounter; DisplayName=$pol.name; GpoId=$pol.id; Status='Enabled'
-
-                CreatedTime=if($pol.createdDateTime){([datetime]$pol.createdDateTime).ToString('yyyy-MM-dd HH:mm')}else{''}
-
-                ModifiedTime=if($pol.lastModifiedDateTime){([datetime]$pol.lastModifiedDateTime).ToString('yyyy-MM-dd HH:mm')}else{''}
-
-                WmiFilter=''; LinkPath='Intune > Settings Catalog'; IsLinked=$true
-
-                UserVersion='0'; ComputerVersion='0'; Description=if($pol.description){$pol.description}else{'Settings Catalog'}
-
-                SettingCount=0; LinkCount=1; Links='Intune > Settings Catalog'
-                ScopeTags=$scopeTagStr; Assignments=$assignStr
-
-            })
-
-            try {
-
-                $pu = "https://graph.microsoft.com/beta/deviceManagement/configurationPolicies/$($pol.id)/settings"
-
-                $pss = Invoke-MgGraphRequest -Method GET -Uri $pu -ErrorAction Stop
-
-                foreach ($s in $pss.value) {
-
-                    $settIdCounter++; $sc++
-
-                    $defId = $s.settingInstance.settingDefinitionId
-
-                    $sName = if ($defId) { $defId.Split('_')[-1] } else { "Setting-$settIdCounter" }
-
-                    $sVal = ''
-
-                    if ($s.settingInstance.PSObject.Properties['simpleSettingValue']) { $sVal = "$($s.settingInstance.simpleSettingValue.value)" }
-
-                    elseif ($s.settingInstance.PSObject.Properties['choiceSettingValue']) { $sVal = "$($s.settingInstance.choiceSettingValue.value)" }
-
-                    else { $sVal = ($s.settingInstance | ConvertTo-Json -Compress -Depth 3 -ErrorAction SilentlyContinue) }
-
-                    [void]$allSettingsList.Add([PSCustomObject]@{
-
-                        Id=$settIdCounter; GPOName=$pol.name; GPOGuid=$pol.id
-
-                        Category='Settings Catalog'; PolicyName=(Format-PolicyName $sName)
-
-                        SettingKey="SettingsCatalog|$defId"; State='Applied'
-
-                        RegistryKey=if($defId){$defId}else{''}; ValueData=$sVal; Scope='Device'; Source='Intune'; IntuneGroup='Configuration Profiles'
-
-                    })
-
-                }
-
-            } catch { try { Write-DebugLog "Unhandled: $_" -Level ERROR } catch {} }
-
-            $gpoRecords[$gpoRecords.Count - 1].SettingCount = $sc
-
-        }
-
-    } catch { try { Write-DebugLog "Unhandled: $_" -Level ERROR } catch {} }
-
-
-
-    return @{ Timestamp=[datetime]::Now; Domain=$domain; GPOs=$gpoRecords; Settings=$allSettingsList }
-
-}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -3723,6 +3108,7 @@ $ui.BtnScanGPOs.Add_Click({
         $runLocal  = $ScanMode -in @('Local','Combined')
         $runIntune = $ScanMode -in @('Intune','Combined')
         $runAD     = $ScanMode -eq 'AD'
+        $localScanError = $null
 
         if ($runLocal) {
             # â”€â”€ LOCAL RSoP via gpresult â”€â”€
@@ -3745,92 +3131,62 @@ $ui.BtnScanGPOs.Add_Click({
                 $outFile = [IO.Path]::Combine($runDir, 'gpresult_out.txt')
                 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
                 $SyncH.StatusQueue.Enqueue(@{Type='Log';Text="[Local] Admin: $isAdmin, TEMP: $([IO.Path]::GetTempPath())";Level='DEBUG'})
-                # Note: /scope computer requires admin; captures computer policy only (user RSoP may be empty for local admin accounts)
-                # PS 5.1 Start-Process joins -ArgumentList unquoted; quote the path for TEMP folders with spaces
-                $gpArgs  = @('/scope', 'computer', '/x', "`"$tmpFile`"", '/f')
-                $SyncH.StatusQueue.Enqueue(@{Type='Log';Text="[Local] gpresult args: $($gpArgs -join ' ')";Level='DEBUG'})
+                # Elevated with a signed-in user: omitting /scope returns computer AND user results, like plain gpresult
+                $consoleUser = if ($cs -and $cs.UserName) { "$($cs.UserName)" } else { '' }
+                $gpAttempts = [System.Collections.Generic.List[object]]::new()
+                # PS 5.1 Start-Process joins -ArgumentList unquoted; quote values that can contain spaces
+                if ($isAdmin -and $consoleUser) { $gpAttempts.Add(@{ Label = "computer + user $consoleUser"; Args = @('/user', "`"$consoleUser`"", '/x', "`"$tmpFile`"", '/f') }) }
+                $gpAttempts.Add(@{ Label = 'computer'; Args = @('/scope', 'computer', '/x', "`"$tmpFile`"", '/f') })
+                $gpAttempts.Add(@{ Label = 'user'; Args = @('/scope', 'user', '/x', "`"$tmpFile`"", '/f') })
                 $SyncH.StatusQueue.Enqueue(@{Type='Log';Text='[Local] Launching gpresult.exe (RSoP generation may take 30-60s)...';Level='INFO'})
-                $gpError = $null
-                $proc = try {
-                    Start-Process -FilePath 'gpresult.exe' -ArgumentList $gpArgs `
-                        -WindowStyle Hidden -PassThru `
-                        -RedirectStandardError $errFile -RedirectStandardOutput $outFile
-                } catch { $gpError = $_.Exception.Message; $null }
 
-                if (-not $proc) {
-                    $SyncH.StatusQueue.Enqueue(@{Type='Log';Text="[Local] Start-Process returned null. Error: $gpError";Level='WARN'})
-                    $SyncH.StatusQueue.Enqueue(@{Type='Log';Text='[Local] Retrying without -RedirectStandardError...';Level='WARN'})
+                $timeout = 120
+                $gpOk = $false
+                $exitCode = 'N/A'
+                foreach ($gpAttempt in $gpAttempts) {
+                    if (Test-Path $tmpFile) { Remove-Item $tmpFile -Force -ErrorAction SilentlyContinue }
+                    $SyncH.StatusQueue.Enqueue(@{Type='Log';Text="[Local] gpresult ($($gpAttempt.Label)) args: $($gpAttempt.Args -join ' ')";Level='DEBUG'})
+                    $gpError = $null
                     $proc = try {
-                        Start-Process -FilePath 'gpresult.exe' -ArgumentList $gpArgs `
-                            -WindowStyle Hidden -PassThru
+                        Start-Process -FilePath 'gpresult.exe' -ArgumentList $gpAttempt.Args -WindowStyle Hidden -PassThru `
+                            -RedirectStandardError $errFile -RedirectStandardOutput $outFile
                     } catch { $gpError = $_.Exception.Message; $null }
                     if (-not $proc) {
-                        $SyncH.StatusQueue.Enqueue(@{Type='Log';Text="[Local] Start-Process still null. Error: $gpError";Level='ERROR'})
+                        $SyncH.StatusQueue.Enqueue(@{Type='Log';Text="[Local] Start-Process failed ($gpError), retrying without redirection...";Level='WARN'})
+                        $proc = try { Start-Process -FilePath 'gpresult.exe' -ArgumentList $gpAttempt.Args -WindowStyle Hidden -PassThru } catch { $gpError = $_.Exception.Message; $null }
                     }
-                }
+                    if (-not $proc) {
+                        $SyncH.StatusQueue.Enqueue(@{Type='Log';Text="[Local] gpresult could not be started: $gpError";Level='ERROR'})
+                        continue
+                    }
 
-                # Poll with timeout (do NOT use -Wait — it blocks the runspace and prevents timeout)
-                $timeout = 120; $elapsed = 0; $interval = 2
-                if ($proc) {
+                    # Poll with timeout (do NOT use -Wait: it blocks the runspace and prevents the timeout)
+                    $elapsed = 0
                     while (-not $proc.HasExited -and $elapsed -lt $timeout) {
-                        Start-Sleep -Seconds $interval; $elapsed += $interval
-                        if ($elapsed % 10 -eq 0) {
-                            $SyncH.StatusQueue.Enqueue(@{Type='Log';Text="[Local] gpresult running... (${elapsed}s)";Level='DEBUG'})
-                        }
+                        Start-Sleep -Seconds 2; $elapsed += 2
+                        if ($elapsed % 10 -eq 0) { $SyncH.StatusQueue.Enqueue(@{Type='Log';Text="[Local] gpresult running... (${elapsed}s)";Level='DEBUG'}) }
                     }
                     if (-not $proc.HasExited) {
                         try { $proc.Kill() } catch { }
-                        return @{ Error = 'gpresult timed out after 120s - is the domain controller reachable?' }
+                        throw "gpresult timed out after ${timeout}s - is the domain controller reachable?"
                     }
-                }
 
-                # Log process result details
-                try {
-                    $exitCode = if ($proc) { $proc.ExitCode } else { 'NULL-PROC' }
-                    $fileExists = Test-Path $tmpFile
-                    $fileSize = if ($fileExists) { (Get-Item $tmpFile).Length } else { 0 }
-                    $stderrContent = if ($errFile -and (Test-Path $errFile)) { (Get-Content $errFile -Raw -ErrorAction SilentlyContinue) } else { '' }
-                    $stdoutContent = if ($outFile -and (Test-Path $outFile)) { (Get-Content $outFile -Raw -ErrorAction SilentlyContinue) } else { '' }
-                    $SyncH.StatusQueue.Enqueue(@{Type='Log';Text="[Local] gpresult exit=$exitCode, file=$fileExists (${fileSize}b), stderr='$(if($stderrContent){$stderrContent.Trim()})', stdout='$(if($stdoutContent){$stdoutContent.Trim()})'";Level='DEBUG'})
-                } catch {
-                    $SyncH.StatusQueue.Enqueue(@{Type='Log';Text="[Local] DIAGNOSTIC ERROR: $($_.Exception.Message) at line $($_.InvocationInfo.ScriptLineNumber)";Level='ERROR'})
-                }
-
-                # Check result
-                $timeout = 120
-
-                $gpFailed = $true
-                if ($proc) {
-                    $gpFailed = ($null -ne $proc.ExitCode -and $proc.ExitCode -ne 0) -or (-not (Test-Path $tmpFile))
-                }
-                if ($gpFailed) {
-                    $exitInfo = if ($proc -and $null -ne $proc.ExitCode) { $proc.ExitCode } else { 'N/A' }
-                    $SyncH.StatusQueue.Enqueue(@{Type='Log';Text="[Local] Full RSoP failed (exit=$exitInfo), trying user-scope only...";Level='WARN'})
-                    $gpArgs2 = @('/scope', 'user', '/x', "`"$tmpFile`"", '/f')
-                    $proc2 = try {
-                        Start-Process -FilePath 'gpresult.exe' -ArgumentList $gpArgs2 `
-                            -WindowStyle Hidden -PassThru
-                    } catch { $gpError = $_.Exception.Message; $SyncH.StatusQueue.Enqueue(@{Type='Log';Text="[Local] User-scope Start-Process error: $($_.Exception.Message)";Level='ERROR'}); $null }
-                    if ($proc2) {
-                        $elapsed2 = 0
-                        while (-not $proc2.HasExited -and $elapsed2 -lt $timeout) {
-                            Start-Sleep -Seconds 2; $elapsed2 += 2
-                        }
-                        if (-not $proc2.HasExited) { try { $proc2.Kill() } catch { } }
+                    $exitCode = if ($null -ne $proc.ExitCode) { $proc.ExitCode } else { 'N/A' }
+                    $stderrContent = if (Test-Path $errFile) { Get-Content $errFile -Raw -ErrorAction SilentlyContinue } else { '' }
+                    $SyncH.StatusQueue.Enqueue(@{Type='Log';Text="[Local] gpresult ($($gpAttempt.Label)) exit=$exitCode, file=$(Test-Path $tmpFile), stderr='$(if ($stderrContent) { $stderrContent.Trim() })'";Level='DEBUG'})
+                    if ((Test-Path $tmpFile) -and ($null -eq $proc.ExitCode -or $proc.ExitCode -eq 0)) {
+                        $gpOk = $true
+                        $SyncH.StatusQueue.Enqueue(@{Type='Log';Text="[Local] gpresult succeeded: $($gpAttempt.Label) scope";Level='INFO'})
+                        break
                     }
-                    $proc = $proc2
+                    $SyncH.StatusQueue.Enqueue(@{Type='Log';Text="[Local] gpresult ($($gpAttempt.Label)) failed (exit=$exitCode), trying next scope...";Level='WARN'})
                 }
 
-                # Final check after all attempts
-                $finalFailed = (-not $proc) -or (-not (Test-Path $tmpFile))
-                if (-not $finalFailed -and $proc -and $null -ne $proc.ExitCode -and $proc.ExitCode -ne 0) { $finalFailed = $true }
-                if ($finalFailed) {
-                    $exitCode = if ($proc -and $null -ne $proc.ExitCode) { $proc.ExitCode } else { 'N/A' }
+                if (-not $gpOk) {
                     $errText = ''
                     if (Test-Path $errFile) { $raw = Get-Content $errFile -Raw -ErrorAction SilentlyContinue; if ($raw) { $errText = $raw.Trim() } }
-                    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
                     $hint = if (-not $isAdmin) { ' (not running as admin - computer policies require elevation)' } else { '' }
-                    return @{ Error = "gpresult failed (exit $exitCode)$hint$(if ($errText) { ": $errText" })" }
+                    throw "gpresult failed (exit $exitCode)$hint$(if ($errText) { ": $errText" })"
                 }
 
                 $SyncH.StatusQueue.Enqueue(@{Type='Log';Text='[Local] gpresult completed, parsing RSoP XML...';Level='INFO'})
@@ -4080,7 +3436,10 @@ $ui.BtnScanGPOs.Add_Click({
 
             $SyncH.StatusQueue.Enqueue(@{Type='Log';Text="[Local] Scan complete: $($gpoRecords.Count) GPOs, $($allSettingsList.Count) settings";Level='SUCCESS'})
             } catch {
-                return @{ Error = $_.Exception.Message }
+                if ($ScanMode -ne 'Combined') { return @{ Error = $_.Exception.Message } }
+                # Combined: keep going so the Intune half still reports; the report shows this as a banner
+                $localScanError = $_.Exception.Message
+                $SyncH.StatusQueue.Enqueue(@{Type='Log';Text="[Local] Group Policy part failed, continuing with Intune: $localScanError";Level='WARN'})
             } finally {
                 if ($runDir -and (Test-Path -LiteralPath $runDir)) { Remove-Item -LiteralPath $runDir -Recurse -Force -ErrorAction SilentlyContinue }
             }
@@ -4313,7 +3672,12 @@ $ui.BtnScanGPOs.Add_Click({
                 $mdmDiagDir = Join-Path ([IO.Path]::GetTempPath()) "PolicyPilot_MdmDiag_$(Get-Random)"
                 [void][IO.Directory]::CreateDirectory($mdmDiagDir)
                 $SyncH.StatusQueue.Enqueue(@{Type='Log';Text="[Intune] Running mdmdiagnosticstool.exe -> $mdmDiagDir";Level='INFO'})
-                $mdmProc = Start-Process -FilePath 'mdmdiagnosticstool.exe' -ArgumentList '-out', "`"$mdmDiagDir`"" -NoNewWindow -Wait -PassThru -ErrorAction Stop
+                $mdmProc = Start-Process -FilePath 'mdmdiagnosticstool.exe' -ArgumentList '-out', "`"$mdmDiagDir`"" -NoNewWindow -PassThru -ErrorAction Stop
+                # Bounded wait: the tool can hang on broken enrollments
+                if (-not $mdmProc.WaitForExit(180000)) {
+                    try { $mdmProc.Kill() } catch { }
+                    $SyncH.StatusQueue.Enqueue(@{Type='Log';Text='[Intune] mdmdiagnosticstool timed out after 180s; continuing without its report';Level='WARN'})
+                }
                 $mdmHtml = Join-Path $mdmDiagDir 'MDMDiagReport.html'
                 if ((Test-Path $mdmHtml) -and $mdmProc.ExitCode -eq 0) {
                     $SyncH.StatusQueue.Enqueue(@{Type='Log';Text="[Intune] MDM diagnostic report captured ($([math]::Round((Get-Item $mdmHtml).Length/1KB))KB)";Level='INFO'})
@@ -5852,6 +5216,7 @@ public static class RegKeyTs {
             CspDbCount = $cspMeta.Count   # number of CSP entries loaded
             MdmInfo   = $mdmInfo
             ImeBackfillCount = $imeAdded
+            LocalScanError = $localScanError
         }
 
         } catch {
@@ -5883,6 +5248,7 @@ public static class RegKeyTs {
         }
 
         $Script:ScanData = $scanResult
+        if ($scanResult.LocalScanError) { Show-Toast 'Group Policy part failed' "$($scanResult.LocalScanError) - Intune results are shown." 'warning' }
         if ($scanResult.CspMeta) { $Script:CspMetaKeys = $scanResult.CspMeta }
         $Script:CspDbAge   = $scanResult.CspDbAge
         $Script:CspDbCount = $scanResult.CspDbCount
@@ -5929,6 +5295,23 @@ public static class RegKeyTs {
                             if ($hasProp) { try { $s.Explain = $resolved.Desc } catch { } }
                             else { $s | Add-Member -NotePropertyName 'Explain' -NotePropertyValue $resolved.Desc -Force }
                         }
+                        $enriched++
+                    }
+                } elseif ($s.ExtensionType -eq 'RegistrySettings' -and $Script:AdmxByLocalName.Count -gt 0) {
+                    # No registry key (non-elevated or user scope): match the display name, disambiguate by category path
+                    $candidates = $Script:AdmxByLocalName["$($s.PolicyName)".Trim().ToLower()]
+                    $match = $null
+                    if ($candidates -and $candidates.Count -eq 1) { $match = $candidates[0].Entry }
+                    elseif ($candidates) {
+                        $rowCategory = ("$($s.Category)" -replace '\s*>\s*', '/').Trim().ToLower()
+                        $byCategory = @($candidates | Where-Object { $_.Category -eq $rowCategory })
+                        if ($byCategory.Count -eq 1) { $match = $byCategory[0].Entry }
+                    }
+                    if ($match) {
+                        $s.PolicyName = $match.Friendly
+                        if ($match.Category) { $s.Category = $match.Category }
+                        if ($match.RegistryKey) { $s.RegistryKey = if ($match.ValueName) { "$($match.RegistryKey)\$($match.ValueName)" } else { "$($match.RegistryKey)" } }
+                        if ($match.Desc) { $s | Add-Member -NotePropertyName 'Explain' -NotePropertyValue $match.Desc -Force }
                         $enriched++
                     }
                 }
@@ -6429,6 +5812,8 @@ function Build-HtmlReport {
     $notCfgCount    = if ($notCfg) { $notCfg.Count } else { 0 }
 
     $enc = { param($s) [System.Web.HttpUtility]::HtmlEncode("$s") }
+    $ico = { param($n) "<svg class=`"ico`" aria-hidden=`"true`" focusable=`"false`"><use href=`"#i-$n`"/></svg>" }
+    $generator = if ($Script:ReportGenerator) { $Script:ReportGenerator } else { "PolicyPilot v$($Script:AppVersion)" }
 
     $html = [System.Text.StringBuilder]::new(65536)
     [void]$html.Append(@"
@@ -6485,6 +5870,14 @@ body { font-family:var(--font); background:var(--bg); color:var(--text); line-he
   transition:all 0.15s; }
 .btn:hover { background:var(--card-hover); border-color:var(--border-strong); }
 .btn-icon { padding:6px 8px; font-size:16px; line-height:1; }
+.ico { width:1em; height:1em; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round;
+  vertical-align:-0.15em; flex-shrink:0; }
+.btn-icon .ico { width:16px; height:16px; }
+.toolbar h1 .ico { color:var(--accent-text); margin-right:4px; }
+:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+a.stat-card { display:block; text-decoration:none; color:inherit; }
+details.section { scroll-margin-top:72px; }
+.app-id { display:block; font-family:var(--mono); font-size:10px; color:var(--muted); font-weight:400; }
 
 .container { max-width:1320px; margin:0 auto; padding:24px 32px 64px; }
 
@@ -6518,7 +5911,9 @@ body { font-family:var(--font); background:var(--bg); color:var(--text); line-he
   padding:14px 18px; cursor:pointer; display:flex; align-items:center; gap:12px;
   transition:all 0.15s; user-select:none; }
 .section-header:hover { background:var(--card-hover); }
-.section-header .icon { font-size:18px; width:24px; text-align:center; }
+.section-header .icon { font-size:18px; width:24px; text-align:center; color:var(--accent-text);
+  display:inline-flex; align-items:center; justify-content:center; }
+.section-header .icon .ico { width:18px; height:18px; }
 .section-header .title { font-size:14px; font-weight:600; color:var(--text-bright); flex:1; }
 .section-header .count { background:var(--accent-dim); color:var(--accent-text); padding:2px 10px;
   border-radius:12px; font-size:11px; font-weight:600; }
@@ -6621,6 +6016,8 @@ tr.non-default td:first-child { border-left:3px solid var(--orange); }
 .group-heading { background:var(--card); padding:10px 14px; font-size:12px; font-weight:600;
   color:var(--accent-text); border-bottom:1px solid var(--border); display:flex; align-items:center; gap:8px; }
 .group-heading .cnt { color:var(--muted); font-weight:400; }
+.scan-warn { margin:0 0 20px; padding:10px 14px; border-radius:var(--radius-sm); background:var(--yellow-dim);
+  border-left:3px solid var(--yellow); color:var(--text); font-size:12.5px; }
 details.gpo-group > summary { list-style:none; cursor:pointer; }
 details.gpo-group > summary::-webkit-details-marker { display:none; }
 .grp-chevron { color:var(--subtle); font-size:10px; transition:transform 0.2s; }
@@ -6664,22 +6061,42 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
 </style>
 </head>
 <body>
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
+<symbol id="i-report" viewBox="0 0 24 24"><rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4.5V3h6v1.5M9 10h6M9 14h6M9 18h3"/></symbol>
+<symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h3M11 7h9M4 17h9M17 17h3"/><circle cx="9" cy="7" r="2"/><circle cx="15" cy="17" r="2"/></symbol>
+<symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+<symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 4 2.5 20h19z"/><path d="M12 10v4M12 17h.01"/></symbol>
+<symbol id="i-box" viewBox="0 0 24 24"><path d="M3 8l9-5 9 5v8l-9 5-9-5z"/><path d="M3 8l9 5 9-5M12 13v8"/></symbol>
+<symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="M11 12l8-8M16 7l2 2M14 9l2 2"/></symbol>
+<symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></symbol>
+<symbol id="i-script" viewBox="0 0 24 24"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6M10 13l-2 2 2 2M14 13l2 2-2 2"/></symbol>
+<symbol id="i-list" viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/></symbol>
+<symbol id="i-chart" viewBox="0 0 24 24"><path d="M3 20h18M6 20v-7M11 20V5M16 20V10"/></symbol>
+<symbol id="i-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 12.5l3 3 5-6"/></symbol>
+<symbol id="i-stop" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 12h8"/></symbol>
+<symbol id="i-unset" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" stroke-dasharray="3 3"/></symbol>
+<symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/></symbol>
+<symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+<symbol id="i-print" viewBox="0 0 24 24"><path d="M7 9V3h10v6M7 18H5a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="7" y="14" width="10" height="7"/></symbol>
+<symbol id="i-book" viewBox="0 0 24 24"><path d="M4 19V5a2 2 0 0 1 2-2h14v14H6a2 2 0 0 0-2 2 2 2 0 0 0 2 2h14"/></symbol>
+<symbol id="i-cloud" viewBox="0 0 24 24"><path d="M7 18h10a4 4 0 0 0 .6-7.95A6 6 0 0 0 6 11.2 3.5 3.5 0 0 0 7 18z"/></symbol>
+</svg>
 <div class="toolbar">
-  <h1>&#x1F4CB; Policy Report</h1>
+  <h1>$(& $ico 'report') Policy Report</h1>
   <span class="domain-badge">$(& $enc $domain)</span>
   <span class="spacer"></span>
   <input type="text" class="search-box" id="globalSearch" placeholder="Search policies, values, categories..." aria-label="Search report" />
   <button class="btn" onclick="expandAll()" title="Expand all sections">&#x25BC; Expand</button>
   <button class="btn" onclick="collapseAll()" title="Collapse all sections">&#x25B6; Collapse</button>
-  <button class="btn btn-icon" id="themeToggle" onclick="toggleTheme()" title="Toggle dark/light mode" aria-label="Toggle dark/light mode">&#x263E;</button>
-  <button class="btn btn-icon" onclick="window.print()" title="Print report" aria-label="Print report">&#x1F5A8;&#xFE0F;</button>
+  <button class="btn btn-icon" id="themeToggle" onclick="toggleTheme()" title="Toggle dark/light mode" aria-label="Toggle dark/light mode">$(& $ico 'moon')</button>
+  <button class="btn btn-icon" onclick="window.print()" title="Print report" aria-label="Print report">$(& $ico 'print')</button>
 </div>
 
 <main class="container">
 <div class="meta-bar">
   <span>Generated: <strong>$genDate</strong></span>
   <span>Scan mode: <strong>$($Script:Prefs.ScanMode)</strong></span>
-  <span>PolicyPilot <strong>v$($Script:AppVersion)</strong></span>
+  <span><strong>$(& $enc $generator)</strong></span>
 </div>
 
 <div class="device-info">
@@ -6706,23 +6123,27 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
 </div>
 
 <div class="stats">
-  <div class="stat-card green"><div class="stat-num">$activeCount</div><div class="stat-label">Active GPOs / Areas</div></div>
-  <div class="stat-card"><div class="stat-num">$totalSettings</div><div class="stat-label">Total Settings</div></div>
-  <div class="stat-card red"><div class="stat-num">$conflictCount</div><div class="stat-label">Conflicts</div></div>
-  <div class="stat-card yellow"><div class="stat-num">$redundantCount</div><div class="stat-label">Redundant</div></div>
+  <a class="stat-card green" href="#sec-inventory"><div class="stat-num">$activeCount</div><div class="stat-label">Active GPOs / Areas</div></a>
+  <a class="stat-card" href="#sec-settings"><div class="stat-num">$totalSettings</div><div class="stat-label">Total Settings</div></a>
+  <a class="stat-card red" href="#sec-conflicts"><div class="stat-num">$conflictCount</div><div class="stat-label">Conflicts</div></a>
+  <a class="stat-card yellow" href="#sec-conflicts"><div class="stat-num">$redundantCount</div><div class="stat-label">Redundant</div></a>
 "@)
 
     if ($scanMode -eq 'AD') {
-        [void]$html.Append("<div class=`"stat-card`"><div class=`"stat-num`">$unlinkedCount</div><div class=`"stat-label`">Unlinked GPOs</div></div>")
+        [void]$html.Append("<a class=`"stat-card`" href=`"#sec-unlinked`"><div class=`"stat-num`">$unlinkedCount</div><div class=`"stat-label`">Unlinked GPOs</div></a>")
     }
     if ($appCount -gt 0) {
-        [void]$html.Append("<div class=`"stat-card accent`"><div class=`"stat-num`">$appCount</div><div class=`"stat-label`">Intune Apps</div></div>")
+        [void]$html.Append("<a class=`"stat-card accent`" href=`"#sec-apps`"><div class=`"stat-num`">$appCount</div><div class=`"stat-label`">Intune Apps</div></a>")
     }
     if ($notCfgCount -gt 0) {
-        [void]$html.Append("<div class=`"stat-card`"><div class=`"stat-num`">$notCfgCount</div><div class=`"stat-label`">Not Configured (CSP)</div></div>")
+        [void]$html.Append("<a class=`"stat-card`" href=`"#sec-notcfg`"><div class=`"stat-num`">$notCfgCount</div><div class=`"stat-label`">Not Configured (CSP)</div></a>")
     }
 
     [void]$html.Append('</div>') # close .stats
+
+    if ($Script:ScanData.LocalScanError) {
+        [void]$html.Append("<div class=`"scan-warn`" role=`"alert`">&#x26A0; Group Policy results are missing: $(& $enc $Script:ScanData.LocalScanError). Intune/MDM results are shown.</div>")
+    }
 
     # CSP database info for report enrichment
     $cspDb    = $Script:CspMetaKeys
@@ -6743,7 +6164,7 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
         [void]$html.Append(@"
 <details class="section" open>
 <summary class="section-header">
-  <span class="icon" style="color:$compColor">$(if ($comp.Status -eq 'Compliant') { '&#x2705;' } else { '&#x26A0;&#xFE0F;' })</span>
+  <span class="icon" style="color:$compColor">$(if ($comp.Status -eq 'Compliant') { & $ico 'check' } else { & $ico 'alert' })</span>
   <h2 class="title">Local Health &amp; App Install Summary</h2>
   <span class="count" style="background:$(if($comp.Status -eq 'Compliant'){'var(--green-dim)'}else{'var(--yellow-dim)'});color:$compColor">$healthLabel</span>
   <span class="chevron">&#x25B6;</span>
@@ -6778,9 +6199,9 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
     $states = @($settings | ForEach-Object { $_.State } | Sort-Object -Unique | Where-Object { $_ })
 
     [void]$html.Append(@"
-<details class="section" open>
+<details class="section" id="sec-settings" open>
 <summary class="section-header">
-  <span class="icon">&#x2699;</span>
+  <span class="icon">$(& $ico 'sliders')</span>
   <h2 class="title">All Policy Settings</h2>
   <span class="count">$totalSettings</span>
   <span class="chevron">&#x25B6;</span>
@@ -6842,7 +6263,7 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
 
             if ($resolved -and $resolved.Source -in @('ADMX','CSP')) {
                 $srcBadge = if ($resolved.Source -eq 'ADMX') { "&#x1F4D6; ADMX: $($resolved.AdmxFile)" } else { "&#x2601; CSP: $($resolved.CspPath)" }
-                [void]$html.Append("<tr class=`"csp-row`"><td colspan=`"6`"><details class=`"csp-ref`"><summary><span class=`"csp-chevron`">&#x25B6;</span><span class=`"csp-sum-icon`">$(if ($resolved.Source -eq 'ADMX') {'&#x1F4D6;'} else {'&#x2601;'})</span> <span class=`"csp-sum-label`">$($resolved.Source) Reference:</span> $(& $enc $resolved.Name)</summary><div class=`"csp-body`">")
+                [void]$html.Append("<tr class=`"csp-row`"><td colspan=`"6`"><details class=`"csp-ref`"><summary><span class=`"csp-chevron`">&#x25B6;</span><span class=`"csp-sum-icon`">$(if ($resolved.Source -eq 'ADMX') { & $ico 'book' } else { & $ico 'cloud' })</span> <span class=`"csp-sum-label`">$($resolved.Source) Reference:</span> $(& $enc $resolved.Name)</summary><div class=`"csp-body`">")
                 if ($resolved.Desc) { [void]$html.Append("<div class=`"csp-desc`">$(& $enc $resolved.Desc)</div>") }
                 [void]$html.Append('<div class="csp-grid">')
                 if ($resolved.Source -eq 'CSP') {
@@ -6913,9 +6334,9 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
 
     # ── Section 2: GPO / Area Inventory ──
     [void]$html.Append(@"
-<details class="section">
+<details class="section" id="sec-inventory">
 <summary class="section-header">
-  <span class="icon">&#x1F4C1;</span>
+  <span class="icon">$(& $ico 'folder')</span>
   <h2 class="title">GPO / Area Inventory</h2>
   <span class="count">$($gpos.Count)</span>
   <span class="chevron">&#x25B6;</span>
@@ -6940,9 +6361,9 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
 
     # ── Section 3: Conflicts & Redundancies ──
     [void]$html.Append(@"
-<details class="section"$(if ($conflicts.Count -gt 0) { ' open' } else { '' })>
+<details class="section" id="sec-conflicts"$(if ($conflicts.Count -gt 0) { ' open' } else { '' })>
 <summary class="section-header">
-  <span class="icon">&#x26A0;</span>
+  <span class="icon">$(& $ico 'alert')</span>
   <h2 class="title">Conflicts &amp; Redundancies</h2>
   <span class="count">$($conflicts.Count)</span>
   <span class="chevron">&#x25B6;</span>
@@ -6950,7 +6371,7 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
 <div class="section-body">
 "@)
     if ($conflicts.Count -eq 0) {
-        [void]$html.Append('<div class="empty">&#x2705; No conflicts or redundancies detected. Your configuration is clean.</div>')
+        [void]$html.Append("<div class=`"empty`">$(& $ico 'check') No conflicts or redundancies detected. Your configuration is clean.</div>")
     } else {
         [void]$html.Append('<table><thead><tr><th style="width:8%">Severity</th><th style="width:28%">Setting</th><th style="width:6%">Scope</th><th style="width:22%">Affected GPOs</th><th style="width:14%">Winner GPO</th><th style="width:22%">Values</th></tr></thead><tbody>')
         foreach ($c in $conflicts) {
@@ -6972,9 +6393,9 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
         $installedCnt = @($apps | Where-Object { $_.InstallState -eq 'Installed' }).Count
         $failedCnt    = @($apps | Where-Object { $_.InstallState -eq 'Failed' }).Count
         [void]$html.Append(@"
-<details class="section">
+<details class="section" id="sec-apps">
 <summary class="section-header">
-  <span class="icon">&#x1F4E6;</span>
+  <span class="icon">$(& $ico 'box')</span>
   <h2 class="title">Intune Managed Apps</h2>
   <span class="count">$appCount apps &middot; $installedCnt installed &middot; $failedCnt failed</span>
   <span class="chevron">&#x25B6;</span>
@@ -6983,8 +6404,12 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
 <table><thead><tr><th>Application</th><th>Type</th><th>Version</th><th>Enforcement</th><th>Install State</th></tr></thead><tbody>
 "@)
         $stateOrder = @{ 'Failed' = 0; 'Installed' = 2 }
+        # Same display name, different app: show the ID so the rows can be told apart
+        $dupAppNames = @{}
+        foreach ($dupGroup in @($apps | Group-Object AppName | Where-Object Count -gt 1)) { $dupAppNames[$dupGroup.Name] = $true }
         foreach ($a in ($apps | Sort-Object @{ Expression = { if ($stateOrder.ContainsKey("$($_.InstallState)")) { $stateOrder["$($_.InstallState)"] } else { 1 } } }, AppName)) {
             $appNameEnc = & $enc $a.AppName
+            if ($dupAppNames.ContainsKey("$($a.AppName)") -and $a.AppId) { $appNameEnc += "<span class=`"app-id`">$(& $enc $a.AppId)</span>" }
             $typeEnc = & $enc $a.AppType
             $verEnc = & $enc $a.AppVersion
             $statusBadge = switch ($a.InstallState) {
@@ -6992,7 +6417,7 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
                 'Failed'    { 'badge-failed' }
                 default     { 'badge-pending' }
             }
-            [void]$html.Append("<tr><td class=`"policy-name`">$appNameEnc</td><td>$typeEnc</td><td class=`"val`">$verEnc</td><td>$(& $enc $a.EnforcementState)</td><td><span class=`"badge $statusBadge`">$(& $enc $a.InstallState)</span></td></tr>")
+            [void]$html.Append("<tr><td class=`"policy-name`" title=`"App ID: $(& $enc $a.AppId)`">$appNameEnc</td><td>$typeEnc</td><td class=`"val`">$verEnc</td><td>$(& $enc $a.EnforcementState)</td><td><span class=`"badge $statusBadge`">$(& $enc $a.InstallState)</span></td></tr>")
         }
         [void]$html.Append('</tbody></table></div></details>')
     }
@@ -7004,7 +6429,7 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
         [void]$html.Append(@"
 <details class="section">
 <summary class="section-header">
-  <span class="icon">&#x1F511;</span>
+  <span class="icon">$(& $ico 'key')</span>
   <h2 class="title">MDM Enrollment &amp; Certificates</h2>
   <span class="count">$certCount certs &middot; $mgdPolCount managed policies</span>
   <span class="chevron">&#x25B6;</span>
@@ -7026,7 +6451,7 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
         if ($laps -and $laps.BackupDirectory -and $laps.BackupDirectory -ne 'Not Configured') {
             [void]$html.Append(@"
 <div class="device-info" style="border-top:1px solid var(--border);margin:12px 0 0;padding:12px 16px 0;">
-  <div style="font-weight:600;font-size:12px;margin-bottom:8px;">&#x1F512; LAPS (Local Admin Password Solution)</div>
+  <div style="font-weight:600;font-size:12px;margin-bottom:8px;">$(& $ico 'lock') LAPS (Local Admin Password Solution)</div>
   <div class="di-item"><span class="di-label">Backup Directory</span><span class="di-value">$(& $enc $laps.BackupDirectory)</span></div>
   <div class="di-item"><span class="di-label">Password Age</span><span class="di-value">$(& $enc $laps.PasswordAgeDays)</span></div>
   <div class="di-item"><span class="di-label">Complexity</span><span class="di-value">$(& $enc $laps.PasswordComplexity)</span></div>
@@ -7067,7 +6492,7 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
         [void]$html.Append(@"
 <details class="section">
 <summary class="section-header">
-  <span class="icon">&#x1F4DD;</span>
+  <span class="icon">$(& $ico 'script')</span>
   <h2 class="title">Script Policies (Proactive Remediations)</h2>
   <span class="count">$($spList.Count) scripts &middot; $spFailed failed</span>
   <span class="chevron">&#x25B6;</span>
@@ -7090,7 +6515,7 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
         [void]$html.Append(@"
 <details class="section">
 <summary class="section-header">
-  <span class="icon">&#x2699;</span>
+  <span class="icon">$(& $ico 'list')</span>
   <h2 class="title">Configuration Profile Status</h2>
   <span class="count">$($cpList.Count) profiles &middot; $cpErrors errors</span>
   <span class="chevron">&#x25B6;</span>
@@ -7115,7 +6540,7 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
         [void]$html.Append(@"
 <details class="section"$ppkgOpen>
 <summary class="section-header">
-  <span class="icon">&#x1F4E6;</span>
+  <span class="icon">$(& $ico 'box')</span>
   <h2 class="title">Provisioning Packages (.ppkg)</h2>
   <span class="count">$($ppkgList.Count) packages$(if($ppkgFailCount -gt 0){" &middot; <span style=`"color:var(--red)`">$ppkgFailCount with failures</span>"})</span>
   <span class="chevron">&#x25B6;</span>
@@ -7136,7 +6561,7 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
             [void]$html.Append("<tr><td class=`"policy-name`">$pkgNameEnc</td><td style=`"font-size:11px`">$descEnc</td><td>$ownerEnc</td><td class=`"val`">$verEnc</td><td style=`"font-family:var(--mono);font-size:10px`">$idShort</td><td>$xmlCount</td><td><span class=`"badge $statusBadge`">$statusText</span></td></tr>")
             # Sub-rows for provisioned XML settings
             if ($xmlCount -gt 0) {
-                [void]$html.Append('<tr class="csp-row"><td colspan="7"><details class="csp-ref"><summary><span class="csp-chevron">&#x25B6;</span> <span class="csp-sum-icon">&#x1F4CB;</span> <span class="csp-sum-label">Provisioned settings')
+                [void]$html.Append('<tr class="csp-row"><td colspan="7"><details class="csp-ref"><summary><span class="csp-chevron">&#x25B6;</span> <span class="csp-sum-icon">' + (& $ico 'report') + '</span> <span class="csp-sum-label">Provisioned settings')
                 [void]$html.Append(" ($xmlCount)</span></summary><div class=`"csp-body`">")
                 [void]$html.Append('<table style="width:100%;margin:0"><thead><tr><th>Setting (XMLName)</th><th>Area</th><th>Message</th><th>Result</th><th>Failures</th></tr></thead><tbody>')
                 foreach ($xe in $ppkg.XMLEntries) {
@@ -7162,7 +6587,7 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
         [void]$html.Append(@"
 <details class="section" open>
 <summary class="section-header">
-  <span class="icon" style="color:var(--red)">&#x26D4;</span>
+  <span class="icon" style="color:var(--red)">$(& $ico 'stop')</span>
   <h2 class="title">Enrollment Issues</h2>
   <span class="count" style="background:rgba(239,68,68,0.12);color:var(--red)">$($eiList.Count)</span>
   <span class="chevron">&#x25B6;</span>
@@ -7182,9 +6607,9 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
     $unlinked = @($gpos | Where-Object { -not $_.IsLinked })
     if ($unlinked.Count -gt 0) {
         [void]$html.Append(@"
-<details class="section">
+<details class="section" id="sec-unlinked">
 <summary class="section-header">
-  <span class="icon" style="color:var(--yellow)">&#x26A0;</span>
+  <span class="icon" style="color:var(--yellow)">$(& $ico 'alert')</span>
   <h2 class="title">Unlinked GPOs</h2>
   <span class="count" style="background:var(--yellow-dim);color:var(--yellow)">$($unlinked.Count)</span>
   <span class="chevron">&#x25B6;</span>
@@ -7202,9 +6627,9 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
     # ── Section 7: Not Configured (CSP defaults) ──
     if ($notCfgCount -gt 0) {
         [void]$html.Append(@"
-<details class="section" data-print="skip">
+<details class="section" id="sec-notcfg" data-print="skip">
 <summary class="section-header">
-  <span class="icon" style="color:var(--muted)">&#x2B55;</span>
+  <span class="icon" style="color:var(--muted)">$(& $ico 'unset')</span>
   <h2 class="title">Not Configured (CSP Defaults)</h2>
   <span class="count" style="background:rgba(113,113,122,0.12);color:var(--muted)">$notCfgCount</span>
   <span class="chevron">&#x25B6;</span>
@@ -7222,7 +6647,7 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
     [void]$html.Append(@"
 <details class="section">
 <summary class="section-header">
-  <span class="icon">&#x1F4CA;</span>
+  <span class="icon">$(& $ico 'chart')</span>
   <h2 class="title">Settings by Category Breakdown</h2>
   <span class="count">$($categories.Count) categories</span>
   <span class="chevron">&#x25B6;</span>
@@ -7241,25 +6666,35 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
     [void]$html.Append(@"
 
 <div class="footer">
-  Generated by <strong>PolicyPilot v$($Script:AppVersion)</strong> on $genDate &middot;
+  Generated by <strong>$(& $enc $generator)</strong> on $genDate &middot;
   Scan mode: $($Script:Prefs.ScanMode) &middot; Domain: $(& $enc $domain)
 </div>
 </main>
 
 <script>
+const ICON_SUN = '<svg class="ico" aria-hidden="true" focusable="false"><use href="#i-sun"/></svg>';
+const ICON_MOON = '<svg class="ico" aria-hidden="true" focusable="false"><use href="#i-moon"/></svg>';
 function toggleTheme() {
   const html = document.documentElement;
   const isDark = html.getAttribute('data-theme') === 'dark';
   html.setAttribute('data-theme', isDark ? 'light' : 'dark');
-  document.getElementById('themeToggle').textContent = isDark ? '\u2600' : '\u263E';
+  document.getElementById('themeToggle').innerHTML = isDark ? ICON_SUN : ICON_MOON;
   try { localStorage.setItem('gpo-theme', isDark ? 'light' : 'dark'); } catch(e) {}
 }
 (function() {
   try {
     const saved = localStorage.getItem('gpo-theme');
-    if (saved === 'light') { document.documentElement.setAttribute('data-theme','light'); document.getElementById('themeToggle').textContent = '\u2600'; }
+    if (saved === 'light') { document.documentElement.setAttribute('data-theme','light'); document.getElementById('themeToggle').innerHTML = ICON_SUN; }
   } catch(e) {}
 })();
+
+// Stat cards jump to their section; open it so the target is visible
+document.querySelectorAll('a.stat-card').forEach(function(a) {
+  a.addEventListener('click', function() {
+    const target = document.getElementById(a.getAttribute('href').slice(1));
+    if (target) target.open = true;
+  });
+});
 
 function expandAll() { document.querySelectorAll('details.section, details.gpo-group').forEach(d => d.open = true); }
 function collapseAll() { document.querySelectorAll('details.section, details.gpo-group').forEach(d => d.open = false); }
@@ -7388,242 +6823,20 @@ function Get-DomainList {
 }
 
 # --- #5: Snapshot Diff ---
-function Compare-Snapshots {
-    param([hashtable]$Baseline, [hashtable]$Current)
-    $diffs = [System.Collections.Generic.List[PSCustomObject]]::new()
-
-    # Build lookup by composite key
-    $baseSettings = @{}
-    foreach ($s in $Baseline.Settings) {
-        $key = "$($s.GPOName)|$($s.SettingKey)|$($s.Scope)"
-        $baseSettings[$key] = $s
-    }
-    $currSettings = @{}
-    foreach ($s in $Current.Settings) {
-        $key = "$($s.GPOName)|$($s.SettingKey)|$($s.Scope)"
-        $currSettings[$key] = $s
-    }
-
-    # Find added / modified
-    foreach ($key in $currSettings.Keys) {
-        if (-not $baseSettings.ContainsKey($key)) {
-            $c = $currSettings[$key]
-            [void]$diffs.Add([PSCustomObject]@{ Change='Added'; PolicyName=$c.PolicyName; Category=$c.Category; Scope=$c.Scope; GPOName=$c.GPOName; OldValue=''; NewValue=$c.ValueData })
-        } elseif ("$($currSettings[$key].ValueData)" -ne "$($baseSettings[$key].ValueData)") {
-            $c = $currSettings[$key]; $b = $baseSettings[$key]
-            [void]$diffs.Add([PSCustomObject]@{ Change='Modified'; PolicyName=$c.PolicyName; Category=$c.Category; Scope=$c.Scope; GPOName=$c.GPOName; OldValue=$b.ValueData; NewValue=$c.ValueData })
-        }
-    }
-
-    # Find removed
-    foreach ($key in $baseSettings.Keys) {
-        if (-not $currSettings.ContainsKey($key)) {
-            $b = $baseSettings[$key]
-            [void]$diffs.Add([PSCustomObject]@{ Change='Removed'; PolicyName=$b.PolicyName; Category=$b.Category; Scope=$b.Scope; GPOName=$b.GPOName; OldValue=$b.ValueData; NewValue='' })
-        }
-    }
-
-    # GPO-level diffs
-    $baseGPOs = @{}; foreach ($g in $Baseline.GPOs) { $baseGPOs[$g.DisplayName] = $g }
-    $currGPOs = @{}; foreach ($g in $Current.GPOs) { $currGPOs[$g.DisplayName] = $g }
-    foreach ($name in $currGPOs.Keys) {
-        if (-not $baseGPOs.ContainsKey($name)) {
-            [void]$diffs.Add([PSCustomObject]@{ Change='GPO Added'; PolicyName=$name; Category='GPO'; Scope=''; GPOName=$name; OldValue=''; NewValue='New' })
-        }
-    }
-    foreach ($name in $baseGPOs.Keys) {
-        if (-not $currGPOs.ContainsKey($name)) {
-            [void]$diffs.Add([PSCustomObject]@{ Change='GPO Removed'; PolicyName=$name; Category='GPO'; Scope=''; GPOName=$name; OldValue='Existed'; NewValue='' })
-        }
-    }
-
-    $diffs
-}
 
 # --- #24: Script Generation ---
-function Export-AsScript {
-    if (-not $Script:ScanData) {
-        Show-Toast 'No Data' 'Run a scan first.' 'warning'
-        return
-    }
-    $dlg = [Microsoft.Win32.SaveFileDialog]::new()
-    $dlg.Filter = 'PowerShell scripts (*.ps1)|*.ps1'
-    $dlg.FileName = "GPO_Recreate_$(Get-Date -Format 'yyyyMMdd_HHmmss').ps1"
-    $dlg.InitialDirectory = $Script:ReportsDir
-    if (-not $dlg.ShowDialog()) { return }
-
-    $sb = [System.Text.StringBuilder]::new()
-    $null = $sb.AppendLine('#Requires -Modules GroupPolicy')
-    $null = $sb.AppendLine('# GPO Recreation Script')
-    $null = $sb.AppendLine("# Generated by PolicyPilot on $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
-    $null = $sb.AppendLine("# Source domain: $($Script:ScanData.Domain)")
-    $null = $sb.AppendLine("# WARNING: Review before running. This script modifies Group Policy.")
-    $null = $sb.AppendLine('')
-    $null = $sb.AppendLine('param([switch]$WhatIf)')
-    $null = $sb.AppendLine('')
-
-    $grouped = $Script:ScanData.Settings | Group-Object GPOName
-    foreach ($group in $grouped) {
-        $gpoName = $group.Name
-        $null = $sb.AppendLine("# --- GPO: $gpoName ---")
-        $null = $sb.AppendLine("Write-Host `"Processing GPO: $gpoName`"")
-        $null = $sb.AppendLine("`$gpo = Get-GPO -Name '$($gpoName -replace "'","''")' -ErrorAction SilentlyContinue")
-        $null = $sb.AppendLine("if (-not `$gpo) { `$gpo = New-GPO -Name '$($gpoName -replace "'","''")' -WhatIf:`$WhatIf }")
-        $null = $sb.AppendLine('')
-
-        foreach ($s in $group.Group) {
-            if ($s.RegistryKey -and $s.ValueData) {
-                $regPath = $s.RegistryKey -replace '\\[^\\]+$', ''
-                $valName = $s.RegistryKey -replace '^.*\\', ''
-                $null = $sb.AppendLine("# $($s.PolicyName)")
-                $null = $sb.AppendLine("if (-not `$WhatIf) { Set-GPRegistryValue -Name '$($gpoName -replace "'","''")' -Key '$regPath' -ValueName '$valName' -Value '$($s.ValueData -replace "'","''")' -Type String }")
-                $null = $sb.AppendLine('')
-            }
-        }
-    }
-
-    [System.IO.File]::WriteAllText($dlg.FileName, $sb.ToString(), [System.Text.Encoding]::UTF8)
-    Write-DebugLog "Script exported: $($dlg.FileName)" -Level SUCCESS
-    Show-Toast 'Script Exported' "GPO recreation script saved" 'success'
-}
 
 # --- #16: Print via HTML in browser ---
-function Invoke-PrintReport {
-    if (-not $Script:ScanData) {
-        Show-Toast 'No Data' 'Run a scan first.' 'warning'
-        return
-    }
-    $tmpFile = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), "PolicyPilot_Print_$(Get-Date -Format 'yyyyMMddHHmmss').html")
-    # Reuse Export-Html logic to temp file
-    $script:_printPath = $tmpFile
-    Export-HtmlToPath $tmpFile
-    Start-Process $tmpFile
-    Write-DebugLog "Opened report in browser for printing" -Level SUCCESS
-}
 
-function Export-HtmlToPath([string]$Path) {
-    $htmlContent = Build-HtmlReport
-    [System.IO.File]::WriteAllText($Path, $htmlContent, [System.Text.Encoding]::UTF8)
-}
 
 # --- #25: Registry .reg Export ---
-function Export-RegistryFile {
-    if (-not $Script:ScanData) {
-        Show-Toast 'No Data' 'Run a scan first.' 'warning'
-        return
-    }
-    $regSettings = @($Script:ScanData.Settings | Where-Object { $_.RegistryKey })
-    if ($regSettings.Count -eq 0) {
-        Show-Toast 'No Registry Settings' 'No registry-based settings found in scan data.' 'info'
-        return
-    }
-    $dlg = [Microsoft.Win32.SaveFileDialog]::new()
-    $dlg.Filter = 'Registry files (*.reg)|*.reg'
-    $dlg.FileName = "GPO_Registry_$(Get-Date -Format 'yyyyMMdd_HHmmss').reg"
-    $dlg.InitialDirectory = $Script:ReportsDir
-    if (-not $dlg.ShowDialog()) { return }
-
-    $sb = [System.Text.StringBuilder]::new()
-    $null = $sb.AppendLine('Windows Registry Editor Version 5.00')
-    $null = $sb.AppendLine('')
-    $null = $sb.AppendLine('; GPO Registry Export')
-    $null = $sb.AppendLine("; Generated by PolicyPilot on $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
-    $null = $sb.AppendLine("; Domain: $($Script:ScanData.Domain)")
-    $null = $sb.AppendLine('; WARNING: Review carefully before importing.')
-    $null = $sb.AppendLine('')
-
-    $grouped = $regSettings | Group-Object { ($_.RegistryKey -replace '\\[^\\]+$','') }
-    foreach ($g in ($grouped | Sort-Object Name)) {
-        $null = $sb.AppendLine("[$($g.Name)]")
-        foreach ($s in $g.Group) {
-            $valName = $s.RegistryKey -replace '^.*\\',''
-            $val = "$($s.ValueData)" -replace '\\','\\' -replace '"','\"'
-            $null = $sb.AppendLine("`"$valName`"=`"$val`"")
-        }
-        $null = $sb.AppendLine('')
-    }
-
-    [System.IO.File]::WriteAllText($dlg.FileName, $sb.ToString(), [System.Text.Encoding]::UTF8)
-    Write-DebugLog "Registry export: $($dlg.FileName)" -Level SUCCESS
-    Show-Toast 'Registry Exported' "$($regSettings.Count) registry settings exported to .reg file" 'success'
-}
 
 # --- #27: Impact Simulator (simple remove-and-re-diff) ---
-function Invoke-ImpactSimulation {
-    param([string]$GPONameToRemove)
-    if (-not $Script:ScanData -or -not $GPONameToRemove) { return $null }
-
-    $remainingSettings = [System.Collections.Generic.List[PSCustomObject]]::new()
-    foreach ($s in $Script:ScanData.Settings) {
-        if ($s.GPOName -ne $GPONameToRemove) { [void]$remainingSettings.Add($s) }
-    }
-    $removedSettings = @($Script:ScanData.Settings | Where-Object { $_.GPOName -eq $GPONameToRemove })
-    $originalConflicts = Find-Conflicts $Script:ScanData.Settings
-    $newConflicts = Find-Conflicts $remainingSettings
-
-    $resolvedConflicts = @($originalConflicts | Where-Object { $_.GPONames -like "*$GPONameToRemove*" }) |
-        Where-Object { $_.SettingKey -notin @($newConflicts | ForEach-Object { $_.SettingKey }) }
-
-    [PSCustomObject]@{
-        GPORemoved        = $GPONameToRemove
-        SettingsLost      = $removedSettings.Count
-        SettingsRemaining = $remainingSettings.Count
-        ConflictsBefore   = $originalConflicts.Count
-        ConflictsAfter    = $newConflicts.Count
-        ConflictsResolved = $resolvedConflicts.Count
-        OrphanedSettings  = @($removedSettings | Where-Object { $_.SettingKey -notin @($remainingSettings | ForEach-Object { $_.SettingKey }) })
-        Details           = $removedSettings
-    }
-}
 
 # --- #12: Baseline Comparison Framework ---
 $Script:ActiveBaseline = $null
 
-function Import-Baseline {
-    $dlg = [Microsoft.Win32.OpenFileDialog]::new()
-    $dlg.Filter = 'JSON Baseline (*.json)|*.json'
-    $dlg.Title = 'Import Security Baseline'
-    $dlg.InitialDirectory = $Script:SnapshotDir
-    if (-not $dlg.ShowDialog()) { return }
 
-    try {
-        $json = [System.IO.File]::ReadAllText($dlg.FileName) | ConvertFrom-Json
-        $Script:ActiveBaseline = @{
-            Name     = if ($json.Name) { $json.Name } else { [System.IO.Path]::GetFileNameWithoutExtension($dlg.FileName) }
-            Settings = @{}
-        }
-        foreach ($entry in $json.Settings) {
-            $Script:ActiveBaseline.Settings[$entry.SettingKey] = @{
-                ExpectedValue = $entry.ExpectedValue
-                Severity      = if ($entry.Severity) { $entry.Severity } else { 'Medium' }
-                Reference     = if ($entry.Reference) { $entry.Reference } else { '' }
-            }
-        }
-        Write-DebugLog "Baseline loaded: $($Script:ActiveBaseline.Name) ($($Script:ActiveBaseline.Settings.Count) settings)" -Level SUCCESS
-        Show-Toast 'Baseline Loaded' "$($Script:ActiveBaseline.Name): $($Script:ActiveBaseline.Settings.Count) settings" 'success'
-
-        if ($Script:ScanData) { Update-BaselineCompliance }
-    } catch {
-        Write-DebugLog "Baseline import error: $($_.Exception.Message)" -Level ERROR
-        Show-Toast 'Import Failed' $_.Exception.Message 'error'
-    }
-}
-
-function Update-BaselineCompliance {
-    if (-not $Script:ActiveBaseline -or -not $Script:ScanData) { return }
-    $pass = 0; $fail = 0; $missing = 0
-    foreach ($key in $Script:ActiveBaseline.Settings.Keys) {
-        $expected = $Script:ActiveBaseline.Settings[$key]
-        $actual = $Script:ScanData.Settings | Where-Object { $_.SettingKey -eq $key } | Select-Object -First 1
-        if (-not $actual) { $missing++ }
-        elseif ("$($actual.ValueData)" -eq "$($expected.ExpectedValue)") { $pass++ }
-        else { $fail++ }
-    }
-    $total = $Script:ActiveBaseline.Settings.Count
-    $pct = if ($total -gt 0) { [math]::Round(($pass / $total) * 100, 1) } else { 0 }
-    $ui.BaselineStatus.Text = "$($Script:ActiveBaseline.Name): ${pct}% compliant ($pass pass, $fail fail, $missing missing)"
-    Write-DebugLog "Baseline compliance: $pct% ($pass/$total pass)" -Level INFO
-}
 
 
 # ── N7: Import MDMDiagReport.xml from another device ──
@@ -7783,230 +6996,14 @@ function Import-MdmXml {
     }
 }
 
-function Export-BaselineTemplate {
-    if (-not $Script:ScanData) {
-        Show-Toast 'No Data' 'Run a scan to create a baseline template from current settings.' 'warning'
-        return
-    }
-    $dlg = [Microsoft.Win32.SaveFileDialog]::new()
-    $dlg.Filter = 'JSON Baseline (*.json)|*.json'
-    $dlg.FileName = "Baseline_$(Get-Date -Format 'yyyyMMdd').json"
-    $dlg.InitialDirectory = $Script:SnapshotDir
-    if (-not $dlg.ShowDialog()) { return }
-
-    $entries = @($Script:ScanData.Settings | Where-Object { $_.ValueData } | ForEach-Object {
-        @{ SettingKey = $_.SettingKey; ExpectedValue = "$($_.ValueData)"; Severity = 'Medium'; Reference = '' }
-    })
-    $baseline = @{ Name = "Custom Baseline $(Get-Date -Format 'yyyy-MM-dd')"; Settings = $entries }
-    $baseline | ConvertTo-Json -Depth 4 -Compress | Set-Content -Path $dlg.FileName -Encoding UTF8
-    Write-DebugLog "Baseline template exported: $($dlg.FileName)" -Level SUCCESS
-    Show-Toast 'Baseline Created' "$($entries.Count) settings saved as baseline template" 'success'
-}
 
 # --- #9+#10: Copy/Clipboard helpers ---
-function Copy-GridRowToClipboard([object]$Item) {
-    if (-not $Item) { return }
-    $props = $Item.PSObject.Properties | ForEach-Object { "$($_.Name): $($_.Value)" }
-    [System.Windows.Clipboard]::SetText(($props -join "`r`n"))
-    Show-Toast 'Copied' 'Row data copied to clipboard' 'info'
-}
 
-function Copy-GridCellToClipboard([object]$Item, [string]$Property) {
-    if (-not $Item -or -not $Property) { return }
-    $val = $Item.$Property
-    if ($val) { [System.Windows.Clipboard]::SetText("$val") }
-}
 
-function Export-SelectedToCsv {
-    param([System.Collections.IList]$Items, [string]$DefaultName)
-    if (-not $Items -or $Items.Count -eq 0) {
-        Show-Toast 'No Selection' 'Select rows first.' 'info'
-        return
-    }
-    $dlg = [Microsoft.Win32.SaveFileDialog]::new()
-    $dlg.Filter = 'CSV files (*.csv)|*.csv'
-    $dlg.FileName = "${DefaultName}_$(Get-Date -Format 'yyyyMMdd_HHmmss').csv"
-    $dlg.InitialDirectory = $Script:ReportsDir
-    if (-not $dlg.ShowDialog()) { return }
-
-    $list = [System.Collections.Generic.List[object]]::new()
-    foreach ($item in $Items) { [void]$list.Add($item) }
-    $list | Export-Csv -Path $dlg.FileName -NoTypeInformation -Encoding UTF8
-    Show-Toast 'Exported' "$($list.Count) rows saved to CSV" 'success'
-}
 
 # --- #1: GPO Precedence (basic link-order) ---
-function Resolve-GPOPrecedence {
-    param([array]$Settings, [array]$GPOs)
-    # Build link-order map from GPO Links property
-    $linkOrder = @{}
-    foreach ($gpo in $GPOs) {
-        $links = "$($gpo.Links)" -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
-        if ($links.Count -gt 0) {
-            # Lower link index = higher precedence (applied later = wins)
-            $linkOrder[$gpo.DisplayName] = $links.Count
-        } else {
-            $linkOrder[$gpo.DisplayName] = 999
-        }
-    }
-    $linkOrder
-}
 
 # --- #17: Dashboard Chart helpers ---  
-function Update-DashboardCharts {
-    if (-not $Script:ScanData -or -not $ui.ChartCanvas) { return }
-    $canvas = $ui.ChartCanvas
-    $canvas.Children.Clear()
-
-    if ($ui.ChartPanel) { $ui.ChartPanel.Visibility = "Visible" }
-    $gpos = $Script:ScanData.GPOs
-    $settings = $Script:ScanData.Settings
-
-    # Stacked bar: GPO status distribution
-    $enabled = @($gpos | Where-Object { $_.Status -eq 'Enabled' -or $_.Status -eq 'Computer Only' -or $_.Status -eq 'User Only' }).Count
-    $disabled = @($gpos | Where-Object { $_.Status -eq 'Disabled' }).Count
-    $total = $enabled + $disabled
-    if ($total -eq 0) { return }
-
-    # Bar label
-    $lbl = [System.Windows.Controls.TextBlock]::new()
-    $lbl.Text = "GPO Status"
-    $lbl.FontSize = 10
-    $lbl.Foreground = (Get-CachedBrush '#FFA1A1AA')
-    $lbl.FontWeight = 'SemiBold'
-    [System.Windows.Controls.Canvas]::SetLeft($lbl, 0)
-    [System.Windows.Controls.Canvas]::SetTop($lbl, 0)
-    [void]$canvas.Children.Add($lbl)
-
-    $barWidth = 220
-    $barH = 20
-    $barTop = 20
-
-    # Enabled bar
-    $ew = [math]::Max(2, [math]::Round(($enabled / $total) * $barWidth))
-    $enabledRect = [System.Windows.Shapes.Rectangle]::new()
-    $enabledRect.Width = $ew; $enabledRect.Height = $barH
-    $enabledRect.RadiusX = 4; $enabledRect.RadiusY = 4
-    $enabledRect.Fill = (Get-CachedBrush '#FF00C853')
-    [System.Windows.Controls.Canvas]::SetLeft($enabledRect, 0)
-    [System.Windows.Controls.Canvas]::SetTop($enabledRect, $barTop)
-    [void]$canvas.Children.Add($enabledRect)
-
-    # Disabled bar
-    if ($disabled -gt 0) {
-        $dw = $barWidth - $ew
-        $disabledRect = [System.Windows.Shapes.Rectangle]::new()
-        $disabledRect.Width = [math]::Max(2, $dw); $disabledRect.Height = $barH
-        $disabledRect.RadiusX = 4; $disabledRect.RadiusY = 4
-        $disabledRect.Fill = (Get-CachedBrush '#FFFF5000')
-        [System.Windows.Controls.Canvas]::SetLeft($disabledRect, $ew)
-        [System.Windows.Controls.Canvas]::SetTop($disabledRect, $barTop)
-        [void]$canvas.Children.Add($disabledRect)
-    }
-
-    # Legend
-    $leg1 = [System.Windows.Controls.TextBlock]::new()
-    $leg1.Text = "Enabled: $enabled"
-    $leg1.FontSize = 9; $leg1.Foreground = (Get-CachedBrush '#FF00C853')
-    [System.Windows.Controls.Canvas]::SetLeft($leg1, 0)
-    [System.Windows.Controls.Canvas]::SetTop($leg1, 44)
-    [void]$canvas.Children.Add($leg1)
-
-    $leg2 = [System.Windows.Controls.TextBlock]::new()
-    $leg2.Text = "Disabled: $disabled"
-    $leg2.FontSize = 9; $leg2.Foreground = (Get-CachedBrush '#FFFF5000')
-    [System.Windows.Controls.Canvas]::SetLeft($leg2, 100)
-    [System.Windows.Controls.Canvas]::SetTop($leg2, 44)
-    [void]$canvas.Children.Add($leg2)
-
-    # Settings scope bar
-    $compCount = @($settings | Where-Object { $_.Scope -eq 'Computer' -or $_.Scope -eq 'Device' }).Count
-    $userCount = @($settings | Where-Object { $_.Scope -eq 'User' }).Count
-    $sTotal = $compCount + $userCount
-    if ($sTotal -gt 0) {
-        $lbl2 = [System.Windows.Controls.TextBlock]::new()
-        $lbl2.Text = "Settings Scope"
-        $lbl2.FontSize = 10
-        $lbl2.Foreground = (Get-CachedBrush '#FFA1A1AA')
-        $lbl2.FontWeight = 'SemiBold'
-        [System.Windows.Controls.Canvas]::SetLeft($lbl2, 0)
-        [System.Windows.Controls.Canvas]::SetTop($lbl2, 68)
-        [void]$canvas.Children.Add($lbl2)
-
-        $cw = [math]::Max(2, [math]::Round(($compCount / $sTotal) * $barWidth))
-        $compRect = [System.Windows.Shapes.Rectangle]::new()
-        $compRect.Width = $cw; $compRect.Height = $barH
-        $compRect.RadiusX = 4; $compRect.RadiusY = 4
-        $compRect.Fill = (Get-CachedBrush '#FF0078D4')
-        [System.Windows.Controls.Canvas]::SetLeft($compRect, 0)
-        [System.Windows.Controls.Canvas]::SetTop($compRect, 88)
-        [void]$canvas.Children.Add($compRect)
-
-        $uw = $barWidth - $cw
-        if ($userCount -gt 0) {
-            $userRect = [System.Windows.Shapes.Rectangle]::new()
-            $userRect.Width = [math]::Max(2, $uw); $userRect.Height = $barH
-            $userRect.RadiusX = 4; $userRect.RadiusY = 4
-            $userRect.Fill = (Get-CachedBrush '#FF60CDFF')
-            [System.Windows.Controls.Canvas]::SetLeft($userRect, $cw)
-            [System.Windows.Controls.Canvas]::SetTop($userRect, 88)
-            [void]$canvas.Children.Add($userRect)
-        }
-
-        $leg3 = [System.Windows.Controls.TextBlock]::new()
-        $leg3.Text = "Computer: $compCount"
-        $leg3.FontSize = 9; $leg3.Foreground = (Get-CachedBrush '#FF0078D4')
-        [System.Windows.Controls.Canvas]::SetLeft($leg3, 0)
-        [System.Windows.Controls.Canvas]::SetTop($leg3, 112)
-        [void]$canvas.Children.Add($leg3)
-
-        $leg4 = [System.Windows.Controls.TextBlock]::new()
-        $leg4.Text = "User: $userCount"
-        $leg4.FontSize = 9; $leg4.Foreground = (Get-CachedBrush '#FF60CDFF')
-        [System.Windows.Controls.Canvas]::SetLeft($leg4, 100)
-        [System.Windows.Controls.Canvas]::SetTop($leg4, 112)
-        [void]$canvas.Children.Add($leg4)
-    }
-
-    # Top 5 categories mini-bar
-    $catGroups = $settings | Group-Object Category | Sort-Object Count -Descending | Select-Object -First 5
-    if ($catGroups.Count -gt 0) {
-        $lbl3 = [System.Windows.Controls.TextBlock]::new()
-        $lbl3.Text = "Top Categories"
-        $lbl3.FontSize = 10
-        $lbl3.Foreground = (Get-CachedBrush '#FFA1A1AA')
-        $lbl3.FontWeight = 'SemiBold'
-        [System.Windows.Controls.Canvas]::SetLeft($lbl3, 0)
-        [System.Windows.Controls.Canvas]::SetTop($lbl3, 136)
-        [void]$canvas.Children.Add($lbl3)
-
-        $maxCat = ($catGroups | Measure-Object Count -Maximum).Maximum
-        $yOff = 156
-        foreach ($cg in $catGroups) {
-            $catLbl = [System.Windows.Controls.TextBlock]::new()
-            $catLbl.Text = "$($cg.Name) ($($cg.Count))"
-            $catLbl.FontSize = 9
-            $catLbl.Foreground = (Get-CachedBrush '#FFE0E0E0')
-            $catLbl.MaxWidth = 220
-            $catLbl.TextTrimming = 'CharacterEllipsis'
-            [System.Windows.Controls.Canvas]::SetLeft($catLbl, 0)
-            [System.Windows.Controls.Canvas]::SetTop($catLbl, $yOff)
-            [void]$canvas.Children.Add($catLbl)
-            $yOff += 14
-
-            $bw = [math]::Max(4, [math]::Round(($cg.Count / $maxCat) * $barWidth))
-            $catBar = [System.Windows.Shapes.Rectangle]::new()
-            $catBar.Width = $bw; $catBar.Height = 8
-            $catBar.RadiusX = 3; $catBar.RadiusY = 3
-            $catBar.Fill = (Get-CachedBrush '#FF0078D4')
-            $catBar.Opacity = 0.7
-            [System.Windows.Controls.Canvas]::SetLeft($catBar, 0)
-            [System.Windows.Controls.Canvas]::SetTop($catBar, $yOff)
-            [void]$canvas.Children.Add($catBar)
-            $yOff += 16
-        }
-    }
-}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -13105,17 +12102,6 @@ $Script:MdmPresets = @{
     'BitLocker'   = '/bitlocker|encrypt|recovery key|TPM/i'
 }
 
-function Apply-MdmContentFilter([string]$filterText) {
-    $Script:MdmContentFilter = $filterText
-    if ($ui.TxtMdmContentFilter) { $ui.TxtMdmContentFilter.Text = $filterText }
-    if ($Script:MdmTailing) {
-        $Script:MdmLastEventTime = $null
-        Clear-MdmLogDisplay
-        Read-MdmEventLogDelta
-    } else {
-        Load-MdmLogFile
-    }
-}
 
 foreach ($presetName in @('PresetMdmNone','PresetMdmSync','PresetMdmCSP','PresetMdmCert','PresetMdmCompliance','PresetMdmEnroll','PresetMdmWipe','PresetMdmBitLocker')) {
     if ($ui[$presetName]) {
@@ -13564,6 +12550,20 @@ if ($Headless) {
     }
 
     $Script:Prefs.ScanMode = $ReportType
+
+    if ($ReportType -ne 'AD') {
+        # Device reports come from mdmresult: the GUI's own scan and report code, packaged without the GUI
+        $mdmresult = Join-Path (Split-Path -Parent $Script:AppDir) 'mdmresult\mdmresult.ps1'
+        if (-not (Test-Path -LiteralPath $mdmresult)) {
+            Write-Host "[PolicyPilot] ERROR: headless $ReportType reports are produced by tools\mdmresult\mdmresult.ps1 (not found: $mdmresult)" -ForegroundColor Red
+            exit 1
+        }
+        $mdmArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $mdmresult, '-Mode', $ReportType, '-Force')
+        if ($OutputPath) { $mdmArgs += @('-Path', $OutputPath) }
+        & (Get-Process -Id $PID).Path @mdmArgs
+        exit $LASTEXITCODE
+    }
+
     Write-Host "[PolicyPilot] Headless mode - generating $ReportType policy report..." -ForegroundColor Cyan
 
     # Determine output path
@@ -13587,40 +12587,7 @@ if ($Headless) {
 
     # Run scan
     Write-Host "[PolicyPilot] Running $ReportType scan..." -ForegroundColor Cyan
-    $scanResult = $null
-    switch ($ReportType) {
-        'Local' {
-            $scanResult = Invoke-LocalRSoPScan
-        }
-        'AD' {
-            $scanResult = Invoke-GPOScan
-        }
-        'Intune' {
-            $scanResult = Invoke-IntunePolicyScan
-        }
-        'Combined' {
-            Write-Host "[PolicyPilot]   Running Local RSoP scan..." -ForegroundColor Gray
-            $localResult = Invoke-LocalRSoPScan
-            Write-Host "[PolicyPilot]   Running Intune scan..." -ForegroundColor Gray
-            $intuneResult = Invoke-IntunePolicyScan
-            if ($localResult -and -not $localResult.Error -and $intuneResult -and -not $intuneResult.Error) {
-                $mergedGPOs = [System.Collections.Generic.List[PSCustomObject]]::new()
-                $mergedSettings = [System.Collections.Generic.List[PSCustomObject]]::new()
-                foreach ($g in $localResult.GPOs) { [void]$mergedGPOs.Add($g) }
-                foreach ($g in $intuneResult.GPOs) { [void]$mergedGPOs.Add($g) }
-                foreach ($s in $localResult.Settings) { [void]$mergedSettings.Add($s) }
-                foreach ($s in $intuneResult.Settings) { [void]$mergedSettings.Add($s) }
-                $domain = if ($localResult.Domain -ne 'LocalMachine') { "$($localResult.Domain) + Intune" } else { 'Local policy + Intune' }
-                $scanResult = @{ Timestamp=[datetime]::Now; Domain=$domain; GPOs=$mergedGPOs; Settings=$mergedSettings }
-            } elseif ($localResult -and -not $localResult.Error) {
-                $scanResult = $localResult
-            } elseif ($intuneResult -and -not $intuneResult.Error) {
-                $scanResult = $intuneResult
-            } else {
-                $scanResult = @{ Error = "Both scans failed" }
-            }
-        }
-    }
+    $scanResult = Invoke-GPOScan
 
     if (-not $scanResult -or $scanResult.Error) {
         $errMsg = if ($scanResult.Error) { $scanResult.Error } else { 'Scan returned no data' }

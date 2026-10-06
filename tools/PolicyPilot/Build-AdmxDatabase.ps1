@@ -15,6 +15,9 @@
     Output JSON path. Default: admx_metadata.json in script directory
 .PARAMETER IncludeAll
     Parse ALL ADMX files (241+). Default: only security-relevant subset (~50 files)
+.PARAMETER NameLanguages
+    Extra ADML languages whose display names and category paths are stored (L10n) so
+    gpresult rows from non-English devices can be matched by name. Default: de-DE, fr-FR.
 .NOTES
     Author : Anton Romanyuk
     Version: 1.0.0
@@ -25,7 +28,8 @@ param(
     [string]$AdmxPath = "$env:SystemRoot\PolicyDefinitions",
     [string]$Language = 'en-US',
     [string]$OutputPath,
-    [switch]$IncludeAll
+    [switch]$IncludeAll,
+    [string[]]$NameLanguages = @('de-DE', 'fr-FR')
 )
 
 $ErrorActionPreference = 'Continue'
@@ -130,10 +134,10 @@ $GlobalCategories = @{}
 $XmlCache = @{}
 
 function Get-AdmlFile {
-    param($AdmxFile)
-    $local = Join-Path (Join-Path $AdmxFile.DirectoryName $Language) "$($AdmxFile.BaseName).adml"
+    param($AdmxFile, [string]$Lang = $Language)
+    $local = Join-Path (Join-Path $AdmxFile.DirectoryName $Lang) "$($AdmxFile.BaseName).adml"
     if (Test-Path $local) { return $local }
-    return (Join-Path $AdmlPath "$($AdmxFile.BaseName).adml")
+    return (Join-Path (Join-Path $AdmxPath $Lang) "$($AdmxFile.BaseName).adml")
 }
 
 function Get-Namespaces {
@@ -174,10 +178,17 @@ foreach ($f in $AllAdmx) {
         $XmlCache[$f.FullName] = $x
         $ns = Get-Namespaces $x
         $catStrings = Load-StringTable (Get-AdmlFile $f)
+        $langStrings = @{}
+        foreach ($lang in $NameLanguages) { $langStrings[$lang] = Load-StringTable (Get-AdmlFile $f $lang) }
         foreach ($c in @($x.policyDefinitions.categories.category)) {
             if (-not $c -or -not $c.name) { continue }
+            $localNames = @{}
+            foreach ($lang in $NameLanguages) {
+                if ($c.displayName -match '^\$\(string\.(.+)\)$' -and $langStrings[$lang].ContainsKey($Matches[1])) { $localNames[$lang] = $langStrings[$lang][$Matches[1]] }
+            }
             $GlobalCategories[(Get-QualifiedRef $c.name $ns)] = @{
                 Name   = Resolve-String $c.displayName $catStrings
+                Names  = $localNames
                 Parent = Get-QualifiedRef $c.parentCategory.ref $ns
             }
         }
@@ -185,9 +196,10 @@ foreach ($f in $AllAdmx) {
 }
 
 function Resolve-Category {
-    param([string]$QualifiedRef)
+    param([string]$QualifiedRef, [string]$Lang = '', [string]$Separator = ' > ')
     if (-not $QualifiedRef) { return '' }
-    if ($CategoryNames.ContainsKey($QualifiedRef)) { return $CategoryNames[$QualifiedRef] }
+    $cacheKey = "$Lang|$QualifiedRef"
+    if ($CategoryNames.ContainsKey($cacheKey)) { return $CategoryNames[$cacheKey] }
 
     # Build path: walk up parentCategory chain
     $path = @()
@@ -198,12 +210,13 @@ function Resolve-Category {
         $cat = $GlobalCategories[$current]
         $shortName = $current -replace '^.*:', ''
         if (-not $cat) { $path += $shortName; break }
-        if ($cat.Name) { $path += $cat.Name } else { $path += $shortName }
+        if ($Lang -and $cat.Names[$Lang]) { $path += $cat.Names[$Lang] }
+        elseif ($cat.Name) { $path += $cat.Name } else { $path += $shortName }
         $current = $cat.Parent
     }
     [array]::Reverse($path)
-    $fullPath = $path -join ' > '
-    $CategoryNames[$QualifiedRef] = $fullPath
+    $fullPath = $path -join $Separator
+    $CategoryNames[$cacheKey] = $fullPath
     return $fullPath
 }
 
@@ -247,7 +260,20 @@ foreach ($admxFile in $AdmxFiles) {
             $class = $pol.class  # Machine, User, Both
 
             # Category path
-            $catPath = Resolve-Category (Get-QualifiedRef $pol.parentCategory.ref $namespaces)
+            $catRef = Get-QualifiedRef $pol.parentCategory.ref $namespaces
+            $catPath = Resolve-Category $catRef
+
+            # Localized name + category path in gpresult's 'A/B' form
+            $l10n = [ordered]@{}
+            if ($pol.displayName -match '^\$\(string\.(.+)\)$') {
+                $nameId = $Matches[1]
+                foreach ($lang in $NameLanguages) {
+                    $ls = Load-StringTable (Get-AdmlFile $admxFile $lang)
+                    if ($ls.ContainsKey($nameId) -and $ls[$nameId] -ne $displayName) {
+                        $l10n[$lang] = @($ls[$nameId], (Resolve-Category $catRef -Lang $lang -Separator '/'))
+                    }
+                }
+            }
 
             # Enabled/Disabled values
             $enabledValue = Get-ValueText $pol.enabledValue
@@ -301,6 +327,7 @@ foreach ($admxFile in $AdmxFiles) {
                 SupportedOn  = $supportedOn
             }
             if ($elements.Count -gt 0) { $entry['Elements'] = $elements }
+            if ($l10n.Count -gt 0) { $entry['L10n'] = $l10n }
 
             $Database[$key] = $entry
             $count++
@@ -334,6 +361,7 @@ $Output = [ordered]@{
         totalPolicies = $TotalPolicies
         filesProcessed = $ParsedFiles
         includeAll    = [bool]$IncludeAll
+        nameLanguages = @($NameLanguages)
     }
     policies = $Database
 }
