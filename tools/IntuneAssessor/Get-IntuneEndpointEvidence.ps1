@@ -1,7 +1,43 @@
+<#
+.SYNOPSIS
+    Exports read-only Defender, firewall, BitLocker and Device Guard evidence from this device.
+.DESCRIPTION
+    Companion to Invoke-IntuneDiscovery.ps1 -EndpointEvidencePaths. Reads local status with
+    Get-MpComputerStatus, Get-MpPreference, Get-NetFirewallProfile, Get-BitLockerVolume and
+    Win32_DeviceGuard, keeps only reviewed fields, and replaces signature-share paths with
+    Empty/NonEmpty states. The Entra device ID from dsregcmd links the evidence to the tenant.
+    Nothing is changed on the device. The export is written with CreateNew and a restricted ACL
+    and carries a Privacy manifest.
+.PARAMETER TenantId
+    Entra tenant GUID the device must be joined to.
+.PARAMETER OutputPath
+    New export file. Existing files are never overwritten.
+.PARAMETER LibraryOnly
+    Load the functions without collecting. Used by the offline tests.
+.EXAMPLE
+    .\Get-IntuneEndpointEvidence.ps1 -TenantId '<tenant-guid>' -OutputPath .\endpoint.json
+.NOTES
+    Author    : Anton Romanyuk
+    Requires  : Windows PowerShell 5.1 or PowerShell 7; Defender, NetSecurity and BitLocker modules
+    Disclaimer: This script is provided "AS IS" with no warranties and confers no rights.
+#>
 #Requires -Version 5.1
 [CmdletBinding()]
 param([string]$TenantId, [string]$OutputPath, [switch]$LibraryOnly)
 
+
+<#
+.SYNOPSIS
+    Builds the endpoint evidence document from module readers.
+.PARAMETER SelectedTenant
+    Tenant GUID recorded in the document.
+.PARAMETER DeviceId
+    Entra device ID recorded in the document.
+.PARAMETER Read
+    Script block that returns the rows for one module name; replaceable for offline tests.
+.OUTPUTS
+    Hashtable with SchemaVersion, TenantId, DeviceId, CollectedAtUtc and Modules.
+#>
 function New-IntuneEndpointEvidence {
     param([string]$SelectedTenant, [string]$DeviceId, [scriptblock]$Read)
     . (Join-Path $PSScriptRoot 'IntuneEndpointTimestamps.ps1')

@@ -1,7 +1,40 @@
+<#
+.SYNOPSIS
+    Exports read-only Microsoft Defender for Endpoint machine metadata.
+.DESCRIPTION
+    Companion to Invoke-IntuneDiscovery.ps1 -DefenderEvidencePath. Pages
+    https://api.security.microsoft.com/api/machines with a delegated Machine.Read token and keeps
+    only id, aadDeviceId, onboarding and health state, first/last seen, OS platform, build and
+    version. Device names are not exported. Device-group visibility and retention limit coverage.
+    The export is written with CreateNew and a restricted ACL and carries a Privacy manifest.
+.PARAMETER TenantId
+    Entra tenant GUID the token must belong to.
+.PARAMETER AccessToken
+    Unexpired delegated Defender token with the Machine.Read scope, as a SecureString.
+.PARAMETER OutputPath
+    New export file. Existing files are never overwritten.
+.PARAMETER LibraryOnly
+    Load the functions without collecting. Used by the offline tests.
+.EXAMPLE
+    .\Get-IntuneDefenderEvidence.ps1 -TenantId '<tenant-guid>' -AccessToken $Token -OutputPath .\defender.json
+.NOTES
+    Author    : Anton Romanyuk
+    Requires  : Windows PowerShell 5.1 or PowerShell 7
+    Disclaimer: This script is provided "AS IS" with no warranties and confers no rights.
+#>
 #Requires -Version 5.1
 [CmdletBinding()]
 param([string]$TenantId, [securestring]$AccessToken, [string]$OutputPath, [switch]$LibraryOnly)
 
+
+<#
+.SYNOPSIS
+    Tests whether a URI is an allowed Defender machines page request.
+.PARAMETER Address
+    Request URI; only /api/machines with $top=1000 and a bounded $skip is allowed.
+.OUTPUTS
+    System.Boolean
+#>
 function Test-IntuneDefenderUri {
     param([string]$Address)
     $Parsed = $null
@@ -16,6 +49,16 @@ function Test-IntuneDefenderUri {
     return $null -eq $Query['$skip'] -or ($Query['$skip'] -cmatch '^(0|[1-9][0-9]{0,5})$' -and [int]::TryParse($Query['$skip'], [ref]$Skip) -and $Skip -le 100000)
 }
 
+<#
+.SYNOPSIS
+    Reads all visible Defender machines with paging, retries and budgets.
+.PARAMETER Request
+    Script block that performs one GET and returns StatusCode, Body and RetryAfter.
+.PARAMETER Delay
+    Script block that waits for a retry interval.
+.OUTPUTS
+    Hashtable with Rows, State (Complete, Partial or Error), PagesRead and ErrorCode.
+#>
 function Read-IntuneDefenderMachines {
     param([scriptblock]$Request, [scriptblock]$Delay = { param($Seconds) [Threading.Tasks.Task]::Delay([timespan]::FromSeconds($Seconds)).GetAwaiter().GetResult() })
     $Next = 'https://api.security.microsoft.com/api/machines?$top=1000'

@@ -1,5 +1,25 @@
+<#
+.SYNOPSIS
+    Cloud PC report contracts and page decoding for the Windows 365 collector.
+.DESCRIPTION
+    Dot-sourced by Invoke-W365Discovery.ps1. Only reviewed read-permission report actions have a
+    contract. One bounded page is decoded against the expected columns and reduced to page metadata.
+.NOTES
+    Author    : Anton Romanyuk
+    Requires  : Windows PowerShell 5.1 or PowerShell 7
+    Disclaimer: This script is provided "AS IS" with no warranties and confers no rights.
+#>
 #Requires -Version 5.1
 
+
+<#
+.SYNOPSIS
+    Returns the report name and expected columns for a report action.
+.PARAMETER Action
+    retrieveConnectionQualityReports or retrieveCloudPcTenantMetricsReport. Other values throw.
+.OUTPUTS
+    Hashtable with ReportName and Columns.
+#>
 function Get-W365ReportContract {
     param([string]$Action)
     switch -CaseSensitive ($Action) {
@@ -13,6 +33,19 @@ function Get-W365ReportContract {
     }
 }
 
+<#
+.SYNOPSIS
+    Validates one report page and returns its metadata.
+.DESCRIPTION
+    Accepts a stream, string or object response of at most 1 MB, checks the schema against the
+    action contract and returns row counts and page coverage. Row values are not exported.
+.PARAMETER Response
+    Report response from Invoke-MgGraphRequest.
+.PARAMETER Action
+    Report action that produced the response.
+.OUTPUTS
+    PSCustomObject with ReportName, RowsReturned, ReportedTotalRowCount and PageCoverage.
+#>
 function ConvertTo-W365ReportPageEvidence {
     param([object]$Response, [string]$Action)
     $Contract = Get-W365ReportContract $Action

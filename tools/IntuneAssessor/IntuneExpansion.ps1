@@ -1,7 +1,27 @@
+<#
+.SYNOPSIS
+    Opt-in configuration, RBAC, Entra, recovery, enrollment and Apple modules for the Intune collector.
+.DESCRIPTION
+    Dot-sourced by Invoke-IntuneDiscovery.ps1. Field allowlists, nested-value projection and
+    settings-catalog decoding keep only reviewed metadata; credential fields are never requested.
+.NOTES
+    Author    : Anton Romanyuk
+    Requires  : Windows PowerShell 5.1 or PowerShell 7
+    Disclaimer: This script is provided "AS IS" with no warranties and confers no rights.
+#>
 . (Join-Path $PSScriptRoot 'IntunePolicyPayloads.ps1')
 . (Join-Path $PSScriptRoot 'IntuneServices.ps1')
 . (Join-Path $PSScriptRoot 'IntuneEpmRules.ps1')
 
+
+<#
+.SYNOPSIS
+    Returns the exported fields for an expansion module.
+.PARAMETER Module
+    Inventory module name.
+.OUTPUTS
+    System.String[]; empty for modules outside the expansion set.
+#>
 function Get-IntuneExpansionFields {
     param([string]$Module)
     $ServiceFields = @(Get-IntuneServiceFields $Module)
@@ -50,6 +70,16 @@ function Get-IntuneExpansionFields {
     }
 }
 
+<#
+.SYNOPSIS
+    Projects a nested Graph value to allowlisted keys and scalar types.
+.PARAMETER Value
+    Nested object, array or scalar.
+.PARAMETER Depth
+    Current recursion depth; deeper than 12 throws.
+.OUTPUTS
+    Projected value.
+#>
 function ConvertTo-IntuneExpansionValue {
     param($Value, [int]$Depth = 0)
     if ($Depth -gt 12) { throw 'Nested metadata limit' }
@@ -70,11 +100,27 @@ function ConvertTo-IntuneExpansionValue {
     return $Result
 }
 
+<#
+.SYNOPSIS
+    Tests whether a CSP path is a reviewed Defender, LAPS, Device Guard, BitLocker or firewall setting.
+.PARAMETER Path
+    CSP path.
+.OUTPUTS
+    System.Boolean
+#>
 function Test-IntuneSecurityPath {
     param([string]$Path)
     return $Path -cmatch '^((Policy/Config/Defender/(AllowBehaviorMonitoring|AllowCloudProtection|AllowRealtimeMonitoring|AllowScriptScanning|AllowIOAVProtection|AllowOnAccessProtection|PUAProtection|EnableNetworkProtection|CloudBlockLevel|CloudExtendedTimeout|SubmitSamplesConsent|AttackSurfaceReductionRules|AttackSurfaceReductionOnlyExclusions))|(LAPS/Policies/(BackupDirectory|AdministratorAccountName|PasswordAgeDays|PasswordLength|PasswordComplexity|PassphraseLength|PostAuthenticationResetDelay|PostAuthenticationActions|AutomaticAccountManagementEnabled))|(Policy/Config/(DeviceGuard/(EnableVirtualizationBasedSecurity|LsaCfgFlags|RequirePlatformSecurityFeatures)|LocalPoliciesSecurityOptions/(MicrosoftNetworkClient_DigitallySignCommunicationsAlways|MicrosoftNetworkServer_DigitallySignCommunicationsAlways|UserAccountControl_RunAllAdministratorsInAdminApprovalMode)|SmartScreen/(EnableSmartScreenInShell|PreventOverrideForFilesInShell)|LanmanWorkstation/EnableInsecureGuestLogons|MSSecurityGuide/(ConfigureSMBV1ClientDriver|ConfigureSMBV1Server)|InternetExplorer/DisableInternetExplorerLaunchViaCOM|LocalSecurityAuthority/ConfigureLsaProtectedProcess|VirtualizationBasedTechnology/HypervisorEnforcedCodeIntegrity|WindowsPowerShell/TurnOnPowerShellScriptBlockLogging))|(BitLocker/(RequireDeviceEncryption|AllowWarningForOtherDiskEncryption|AllowStandardUserEncryption|SystemDrivesRequireStartupAuthentication|ConfigureRecoveryPasswordRotation))|(Firewall/MdmStore/(DomainProfile|PrivateProfile|PublicProfile)/(EnableFirewall|DefaultInboundAction|DefaultOutboundAction|EnableLogDroppedPackets|EnableLogSuccessConnections|AllowLocalPolicyMerge|AllowLocalIpsecPolicyMerge)))$'
 }
 
+<#
+.SYNOPSIS
+    Tests whether a setting value defers to an unresolved template default.
+.PARAMETER SettingValue
+    Choice, simple or group setting value.
+.OUTPUTS
+    System.Boolean
+#>
 function Test-IntuneTemplateUnresolved {
     param($SettingValue)
     $Reference = Get-IntuneValue $SettingValue 'settingValueTemplateReference'
@@ -84,6 +130,16 @@ function Test-IntuneTemplateUnresolved {
     return $UseDefault -isnot [bool] -or $UseDefault
 }
 
+<#
+.SYNOPSIS
+    Returns the option value selected by a choice setting.
+.PARAMETER Definitions
+    Exactly one matching setting definition.
+.PARAMETER ChoiceId
+    Selected option itemId.
+.OUTPUTS
+    Option value object, or $null when the option is missing, duplicated or malformed.
+#>
 function Get-IntuneSelectedOptionValue {
     param($Definitions, $ChoiceId)
     if (@($Definitions).Count -ne 1 -or $ChoiceId -isnot [string] -or [string]::IsNullOrWhiteSpace($ChoiceId)) { return $null }
@@ -104,6 +160,29 @@ function Get-IntuneSelectedOptionValue {
     return $null
 }
 
+<#
+.SYNOPSIS
+    Decodes a settings-catalog setting instance into reviewed security facts.
+.DESCRIPTION
+    Emits one fact per reviewed CSP path with a resolution state. Values are kept only when the
+    definition, option and template context are unambiguous. Child settings are decoded recursively.
+.PARAMETER Instance
+    Setting instance.
+.PARAMETER Definitions
+    Setting definitions for the policy.
+.PARAMETER PolicyId
+    Parent configuration policy ID.
+.PARAMETER SettingId
+    Setting ID used to build fact IDs.
+.PARAMETER Depth
+    Current recursion depth; deeper than 12 throws.
+.PARAMETER InheritedTemplateUnresolved
+    True when an ancestor uses an unresolved template default.
+.PARAMETER InheritedChoiceUnresolved
+    True when an ancestor choice could not be resolved.
+.OUTPUTS
+    Ordered dictionaries with id, parentId, definitionId, resolution and, when resolved, cspUri and value.
+#>
 function ConvertTo-IntuneSettingFacts {
     param($Instance, $Definitions, [string]$PolicyId, [string]$SettingId, [int]$Depth = 0, [bool]$InheritedTemplateUnresolved = $false, [bool]$InheritedChoiceUnresolved = $false)
     if ($Depth -gt 12) { throw 'Setting depth limit' }
@@ -183,6 +262,14 @@ function ConvertTo-IntuneSettingFacts {
     }
 }
 
+<#
+.SYNOPSIS
+    Projects imported endpoint evidence modules to their reviewed fields.
+.PARAMETER Modules
+    Modules object from an endpoint evidence document.
+.OUTPUTS
+    Ordered dictionary of module name to State and Rows.
+#>
 function ConvertTo-IntuneEndpointModules {
     param($Modules)
     . (Join-Path $PSScriptRoot 'IntuneEndpointTimestamps.ps1')
@@ -214,6 +301,32 @@ function ConvertTo-IntuneEndpointModules {
     return $Safe
 }
 
+<#
+.SYNOPSIS
+    Collects the opt-in expansion modules into the inventory.
+.PARAMETER Inventory
+    Inventory dictionary to populate.
+.PARAMETER States
+    Collection-state dictionary to populate.
+.PARAMETER Request
+    Script block that performs one Graph GET.
+.PARAMETER Delay
+    Script block that waits for a retry interval.
+.PARAMETER Deadline
+    UTC time after which collection stops.
+.PARAMETER Configuration
+    Collect configuration policies, settings, intents, templates, scope tags, filters and assignments.
+.PARAMETER Rbac
+    Collect role assignments.
+.PARAMETER Entra
+    Collect the device registration policy and Conditional Access policies.
+.PARAMETER Recovery
+    Collect LAPS and BitLocker recovery metadata (never the secrets).
+.PARAMETER Enrollment
+    Collect enrollment configurations and Autopilot profiles.
+.PARAMETER Apple
+    Collect the Apple push certificate and VPP token metadata.
+#>
 function Invoke-IntuneExpansion {
     param($Inventory, $States, [scriptblock]$Request, [scriptblock]$Delay, [datetime]$Deadline,
         [bool]$Configuration, [bool]$Rbac, [bool]$Entra, [bool]$Recovery, [bool]$Enrollment, [bool]$Apple)

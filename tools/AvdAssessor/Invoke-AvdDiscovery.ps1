@@ -50,6 +50,7 @@
     Author : Anton Romanyuk
     Version: 0.7.0
     Date   : 2026-10-05
+    Disclaimer: This script is provided "AS IS" with no warranties and confers no rights.
 #>
 
 [CmdletBinding()]
@@ -152,6 +153,14 @@ function Write-Status {
 
 $Script:AvdRdpAllowlist = @('drivestoredirect','redirectclipboard','redirectprinters','usbdevicestoredirect','redirectcomports','camerastoredirect','audiocapturemode','enablerdsaadauth','targetisaadjoined')
 
+<#
+.SYNOPSIS
+    Returns the sorted tag names of an Azure resource.
+.PARAMETER Tags
+    Tag dictionary or object. Values are not returned.
+.OUTPUTS
+    System.String[]
+#>
 function ConvertTo-AvdTagKeys {
     param($Tags)
     if ($null -eq $Tags) { return }
@@ -159,12 +168,35 @@ function ConvertTo-AvdTagKeys {
     $Keys | ForEach-Object { [string]$_ } | Where-Object { $_ } | Sort-Object -Unique
 }
 
+<#
+.SYNOPSIS
+    Adds tag values to an inventory row when the operator opted in.
+.DESCRIPTION
+    Values are added only with -PrivacyMode Identified and -IncludeTagValues; otherwise the row is unchanged.
+.PARAMETER Target
+    Inventory row.
+.PARAMETER Tags
+    Tag dictionary of the resource.
+.OUTPUTS
+    The Target row.
+#>
 function Add-AvdTagValues {
     param($Target, $Tags)
     if ($Script:ExportTagValues -and $null -ne $Tags) { $Target | Add-Member -NotePropertyName Tags -NotePropertyValue $Tags -Force }
     return $Target
 }
 
+<#
+.SYNOPSIS
+    Parses a host pool's custom RDP properties and keeps only the evaluated ones.
+.DESCRIPTION
+    The allowlist covers the properties used by the SEC-DRIVE, SEC-CLIP, SEC-PRINT, SEC-USB,
+    SEC-COM, SEC-CAM, SEC-AUDIO, SEC-RDP and IAM-SSO checks. Other properties are counted only.
+.PARAMETER CustomRdpProperty
+    Raw name:type:value;... string from the host pool.
+.OUTPUTS
+    PSCustomObject with Properties (ordered, lowercase names) and UnknownPropertyCount.
+#>
 function ConvertTo-AvdRdpProperties {
     param([string]$CustomRdpProperty)
     $Properties = [ordered]@{}
@@ -178,6 +210,17 @@ function ConvertTo-AvdRdpProperties {
     return [pscustomobject]@{ Properties = $Properties; UnknownPropertyCount = $Unknown }
 }
 
+<#
+.SYNOPSIS
+    Summarizes role assignments for RBAC finding details.
+.DESCRIPTION
+    Identified mode lists "Role (principal display name)". Pseudonymous mode lists
+    "Role (ObjectType xCount)" without principal names.
+.PARAMETER Assignments
+    Role assignments from Get-AzRoleAssignment.
+.OUTPUTS
+    System.String[]
+#>
 function Get-AvdRoleAssignmentSummary {
     param($Assignments)
     if ($Script:PrivacyContext.Mode -eq 'Identified') {
@@ -266,6 +309,14 @@ function New-CheckResult {
     }
 }
 
+<#
+.SYNOPSIS
+    Reads all pages of an ARM list operation.
+.PARAMETER Path
+    ARM path with api-version, as accepted by Invoke-AzRestMethod -Path.
+.OUTPUTS
+    The value rows of every page. Repeated nextLinks, failed requests and invalid pages throw.
+#>
 function Get-AvdArmList {
     param([string]$Path)
     $VisitedPages = @{}
@@ -290,6 +341,16 @@ function Get-AvdArmList {
     }
 }
 
+<#
+.SYNOPSIS
+    Determines whether a matching ZRS SKU is offered in a storage account's region.
+.PARAMETER StorageAccount
+    Storage account from Get-AzStorageAccount.
+.PARAMETER Cache
+    Per-subscription SKU listing cache shared across accounts.
+.OUTPUTS
+    PSCustomObject describing availability, restrictions and lookup errors.
+#>
 function Get-AvdStorageZrsAvailability {
     param($StorageAccount, [hashtable]$Cache)
     $Location = ([string]$StorageAccount.PrimaryLocation -replace '\s', '').ToLowerInvariant()
@@ -380,6 +441,16 @@ function Get-AvdStorageZrsAvailability {
     return $Availability
 }
 
+<#
+.SYNOPSIS
+    Assesses a storage account's replication against regional ZRS availability.
+.PARAMETER StorageAccount
+    Storage account from Get-AzStorageAccount.
+.PARAMETER Cache
+    SKU listing cache passed to Get-AvdStorageZrsAvailability.
+.OUTPUTS
+    PSCustomObject with Status, Details, Recommendation and Evidence.
+#>
 function Get-AvdStorageReplicationAssessment {
     param($StorageAccount, [hashtable]$Cache)
     $Replication = [string]$StorageAccount.Sku.Name
@@ -413,6 +484,16 @@ function Get-AvdStorageReplicationAssessment {
     }
 }
 
+<#
+.SYNOPSIS
+    Reads Azure Monitor Agent extension state for a VM.
+.PARAMETER ResourceId
+    Full ARM resource ID of the VM.
+.PARAMETER Cache
+    Cache keyed by lowercase resource ID.
+.OUTPUTS
+    PSCustomObject with installation, provisioning and extension evidence.
+#>
 function Get-AvdAmaEvidence {
     param([string]$ResourceId, [hashtable]$Cache)
     $CacheKey = ([string]$ResourceId).TrimEnd('/').ToLowerInvariant()
@@ -488,6 +569,19 @@ function Get-AvdAmaEvidence {
     return $Evidence
 }
 
+<#
+.SYNOPSIS
+    Reads Defender for Endpoint extension deployment state for a VM.
+.DESCRIPTION
+    The extension is a deployment hint only; onboarding and sensor health come from
+    Update-AvdMdeDeviceInventory with -IncludeMdeDeviceChecks.
+.PARAMETER ResourceId
+    Full ARM resource ID of the VM.
+.PARAMETER Cache
+    Cache keyed by lowercase resource ID.
+.OUTPUTS
+    PSCustomObject with extension evidence and placeholders for device evidence.
+#>
 function Get-AvdMdeEvidence {
     param([string]$ResourceId, [hashtable]$Cache)
     $CacheKey = ([string]$ResourceId).TrimEnd('/').ToLowerInvariant()
@@ -547,6 +641,19 @@ function Get-AvdMdeEvidence {
     return $Evidence
 }
 
+<#
+.SYNOPSIS
+    Runs a bounded Defender advanced-hunting DeviceInfo query for Azure VM resource IDs.
+.DESCRIPTION
+    Matches devices by Azure resource ID only; there is no hostname fallback. Device names are
+    returned only in Identified mode.
+.PARAMETER ResourceIds
+    1-100 Azure VM resource IDs.
+.PARAMETER Token
+    Graph bearer token with ThreatHunting.Read.All.
+.OUTPUTS
+    PSCustomObject with Ok, Rows and Error.
+#>
 function Invoke-AvdMdeHuntingQuery {
     param([string[]]$ResourceIds, [string]$Token)
     try {
@@ -585,6 +692,19 @@ function Invoke-AvdMdeHuntingQuery {
     }
 }
 
+<#
+.SYNOPSIS
+    Applies a hunting-query result to one session host's Defender evidence.
+.DESCRIPTION
+    Records matched devices, onboarding, sensor health and freshness. No match, duplicates and
+    query errors are reported as not assessed, never as EDR absence.
+.PARAMETER SessionHost
+    Session host inventory row with MDEDiscovery.
+.PARAMETER QueryResult
+    Result from Invoke-AvdMdeHuntingQuery.
+.PARAMETER Now
+    Evaluation time. Default: current UTC time.
+#>
 function Set-AvdMdeDeviceEvidence {
     param($SessionHost, $QueryResult, [DateTimeOffset]$Now = [DateTimeOffset]::UtcNow)
     $Evidence = $SessionHost.MDEDiscovery
@@ -652,6 +772,19 @@ function Set-AvdMdeDeviceEvidence {
     }
 }
 
+<#
+.SYNOPSIS
+    Collects Defender device evidence for session hosts, tenant by tenant.
+.DESCRIPTION
+    Switches context per tenant, obtains a Graph token, queries in batches and restores the
+    original Az context.
+.PARAMETER SessionHosts
+    Session host inventory rows.
+.PARAMETER Subscriptions
+    Discovered subscriptions with tenant IDs.
+.PARAMETER Checks
+    Check list that receives the per-host Defender results.
+#>
 function Update-AvdMdeDeviceInventory {
     param([object[]]$SessionHosts, [object[]]$Subscriptions, [System.Collections.ArrayList]$Checks)
     $OriginalContext = Get-AzContext -ErrorAction Stop
@@ -696,6 +829,16 @@ function Update-AvdMdeDeviceInventory {
     }
 }
 
+<#
+.SYNOPSIS
+    Reads the data collection rule associations and referenced rules of a VM.
+.PARAMETER ResourceId
+    Full ARM resource ID of the VM.
+.PARAMETER RuleCache
+    Cache of data collection rule facts keyed by rule ID.
+.OUTPUTS
+    PSCustomObject with CollectionStatus, Associations, Rules and Errors.
+#>
 function Get-AvdAmaConfiguration {
     param([string]$ResourceId, [hashtable]$RuleCache)
     $Configuration = [PSCustomObject]@{
@@ -780,6 +923,14 @@ function Get-AvdAmaConfiguration {
     return $Configuration
 }
 
+<#
+.SYNOPSIS
+    Queries Log Analytics for Azure Monitor Agent heartbeats of each session host.
+.PARAMETER SessionHosts
+    Session host inventory rows with AMADiscovery.
+.PARAMETER Checks
+    Check list whose AMA results receive the runtime observation.
+#>
 function Update-AvdAmaHeartbeats {
     param([object[]]$SessionHosts, [System.Collections.ArrayList]$Checks)
     $WorkspaceHosts = @{}
@@ -864,6 +1015,18 @@ function Update-AvdAmaHeartbeats {
     }
 }
 
+<#
+.SYNOPSIS
+    Determines whether a reservation's applied scope covers the assessed subscriptions.
+.PARAMETER Reservation
+    Reservation resource from the Capacity API.
+.PARAMETER Subscriptions
+    Discovered subscriptions.
+.PARAMETER SessionHosts
+    Session host inventory rows.
+.OUTPUTS
+    PSCustomObject with State and SubscriptionIds.
+#>
 function Get-AvdReservationScopeMatch {
     param($Reservation, [object[]]$Subscriptions, [object[]]$SessionHosts)
     $Properties = $Reservation.properties
@@ -971,6 +1134,8 @@ function Test-NsgRulePort {
 <#
 .SYNOPSIS
     Returns true when an NSG rule's source is the public internet ('*', 'Internet', or 0.0.0.0/0).
+.PARAMETER Rule
+    NSG security rule.
 #>
 function Test-NsgInternetSource {
     param($Rule)
@@ -982,7 +1147,7 @@ function Test-NsgInternetSource {
     Acquires a Microsoft Graph bearer token from the existing Az login, returning a plain string.
 .DESCRIPTION
     Uses Get-AzAccessToken -ResourceUrl https://graph.microsoft.com. Handles both the legacy plain-string
-    .Token (Az.Accounts 2.x) and the SecureString .Token returned by Az.Accounts 5.x. Returns $null when
+    Token property (Az.Accounts 2.x) and the SecureString Token returned by Az.Accounts 5.x. Returns $null when
     a token cannot be obtained (caller degrades the identity checks to Status 'Error').
 #>
 function Get-GraphTokenString {
@@ -4336,6 +4501,23 @@ Write-Status "Microsoft Graph (Intune)" -Level 'SECTION'
 $IntuneScopeMsg = 'insufficient Graph permissions - grant DeviceManagementConfiguration.Read.All / DeviceManagementManagedDevices.Read.All for Intune checks'
 
 # Helper: emit an Error result for an Intune singleton check.
+
+<#
+.SYNOPSIS
+    Adds an Error (not assessed) result for an Intune-backed check.
+.PARAMETER Id
+    Check ID; the prefix selects the category.
+.PARAMETER Name
+    Display name.
+.PARAMETER Desc
+    Check description.
+.PARAMETER Msg
+    Error details, already minimized with Get-CollectorErrorText.
+.PARAMETER Ref
+    Documentation URL.
+.PARAMETER Sev
+    Severity. Default: Medium.
+#>
 function Add-IntuneError {
     param([string]$Id, [string]$Name, [string]$Desc, [string]$Msg, [string]$Ref, [string]$Sev = 'Medium')
     [void]$AllChecks.Add((New-CheckResult -Id $Id -Category $(if ($Id -like 'SEC-*') { 'Security' } elseif ($Id -like 'PROF-*') { 'FSLogix & Profiles' } else { 'Session Hosts' }) `
@@ -4966,6 +5148,15 @@ Write-Status "In-Guest FSLogix (Run Command)" -Level 'SECTION'
 $FslMinVersion = [Version]'2.9.8612.60056'  # UPDATE PERIODICALLY: 2024-era FSLogix agent floor.
 
 # Emits the seven guest-derived checks as N/A with a shared reason (switch off / no eligible hosts).
+
+<#
+.SYNOPSIS
+    Adds the seven in-guest FSLogix checks as N/A with a shared reason.
+.PARAMETER Suffix
+    Check ID suffix, for example DISABLED or NORUNNING.
+.PARAMETER Reason
+    Details text explaining why the checks were not run.
+#>
 function Add-GuestNA {
     param([string]$Suffix, [string]$Reason)
     $Defs = @(
@@ -5160,6 +5351,7 @@ $res = [ordered]@{
 # ═══════════════════════════════════════════════════════════════════════════
 
 # Map check ID prefixes to maturity dimensions
+
 <#
 .SYNOPSIS
     Calculates maturity scores across six dimensions from automated check results.
@@ -5276,12 +5468,34 @@ $FileSize     = [math]::Round((Get-Item $OutputPath).Length / 1KB, 1)
 
 # Box helper - fixed inner width of 54 chars
 $BW = 54
+<#
+.SYNOPSIS
+    Writes one line inside the summary box.
+.PARAMETER Text
+    Line text, padded to the box width.
+.PARAMETER Color
+    Text color.
+.PARAMETER Prefix
+    Indent before the box border.
+#>
 function Write-BoxLine { param([string]$Text, [string]$Color = 'White', [string]$Prefix = '  ')
     $Pad = $BW - $Text.Length
     Write-Host "${Prefix}║" -NoNewline -ForegroundColor DarkCyan
     Write-Host $Text -NoNewline -ForegroundColor $Color
     Write-Host "$(' ' * [math]::Max(0,$Pad))║" -ForegroundColor DarkCyan
 }
+<#
+.SYNOPSIS
+    Writes an aligned label/value line inside the summary box.
+.PARAMETER Label
+    Label text.
+.PARAMETER Value
+    Value text.
+.PARAMETER LabelColor
+    Line color.
+.PARAMETER ValueColor
+    Reserved for value coloring; the line currently uses LabelColor.
+#>
 function Write-BoxKV { param([string]$Label, [string]$Value, [string]$LabelColor = 'Gray', [string]$ValueColor = 'White')
     $LblPad = $Label.PadRight(22)
     $ValPad = $Value.PadLeft(5)

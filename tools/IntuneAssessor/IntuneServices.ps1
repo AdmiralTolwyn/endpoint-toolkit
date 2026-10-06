@@ -1,5 +1,25 @@
+<#
+.SYNOPSIS
+    Opt-in Intune service modules: app protection, Remote Help, connectors and Tunnel.
+.DESCRIPTION
+    Dot-sourced by IntuneExpansion.ps1. Each module runs only when its switch is set; otherwise its
+    state is NotRequested. Only allowlisted fields are kept.
+.NOTES
+    Author    : Anton Romanyuk
+    Requires  : Windows PowerShell 5.1 or PowerShell 7
+    Disclaimer: This script is provided "AS IS" with no warranties and confers no rights.
+#>
 . (Join-Path $PSScriptRoot 'IntuneMamLaunch.ps1')
 
+
+<#
+.SYNOPSIS
+    Maps an EPM client-settings definition to its CSP path.
+.PARAMETER Definition
+    Setting definition object.
+.OUTPUTS
+    System.String, or $null for unmapped definitions.
+#>
 function Get-IntuneEpmPath {
     param($Definition)
     $Mappings = @{
@@ -16,6 +36,14 @@ function Get-IntuneEpmPath {
     return $null
 }
 
+<#
+.SYNOPSIS
+    Returns the exported fields for a service module.
+.PARAMETER Module
+    Inventory module name.
+.OUTPUTS
+    System.String[]; empty for modules this file does not own.
+#>
 function Get-IntuneServiceFields {
     param([string]$Module)
     $LaunchFields = @(Get-IntuneMamLaunchFields $Module)
@@ -40,6 +68,14 @@ function Get-IntuneServiceFields {
     }
 }
 
+<#
+.SYNOPSIS
+    Tests whether a Graph path is an allowed service-module endpoint.
+.PARAMETER Path
+    Absolute Graph URI path including the API version.
+.OUTPUTS
+    System.Boolean
+#>
 function Test-IntuneServicePath {
     param([string]$Path)
     if ($Path -cin @('/beta/deviceAppManagement/androidManagedAppProtections', '/beta/deviceAppManagement/iosManagedAppProtections')) { return $true }
@@ -49,6 +85,20 @@ function Test-IntuneServicePath {
     return $Path -ceq '/beta/deviceManagement/remoteAssistanceSettings' -or $Path -ceq '/v1.0/deviceManagement/mobileThreatDefenseConnectors' -or $Path -ceq '/v1.0/deviceAppManagement/managedAppPolicies' -or $Path -cmatch '^/v1\.0/deviceAppManagement/(androidManagedAppProtections|iosManagedAppProtections)/[^/]+/(assignments|apps)$'
 }
 
+<#
+.SYNOPSIS
+    Collects Microsoft Tunnel sites and the servers of each site.
+.PARAMETER Inventory
+    Inventory dictionary to populate.
+.PARAMETER States
+    Collection-state dictionary to populate.
+.PARAMETER Request
+    Script block that performs one Graph GET.
+.PARAMETER Delay
+    Script block that waits for a retry interval.
+.PARAMETER Deadline
+    UTC time after which collection stops.
+#>
 function Invoke-IntuneTunnel {
     param($Inventory, $States, [scriptblock]$Request, [scriptblock]$Delay, [datetime]$Deadline)
     $Root = 'https://graph.microsoft.com/beta/deviceManagement/microsoftTunnelSites'
@@ -70,6 +120,32 @@ function Invoke-IntuneTunnel {
     $States['TunnelServers'] = @{ State = $(if ($Failure) { 'Partial' } else { 'Complete' }); ApiVersion = 'beta'; PagesRead = [math]::Max(1, $Pages); RowsRead = $Rows.Count; CompletedParentIds = @($Completed.ToArray()); Details = 'Visible Tunnel server metadata only; no probes, upgrades, log actions or configuration changes.' }
 }
 
+<#
+.SYNOPSIS
+    Collects the opt-in service modules.
+.PARAMETER Inventory
+    Inventory dictionary to populate.
+.PARAMETER States
+    Collection-state dictionary to populate.
+.PARAMETER Request
+    Script block that performs one Graph GET.
+.PARAMETER Delay
+    Script block that waits for a retry interval.
+.PARAMETER Deadline
+    UTC time after which collection stops.
+.PARAMETER Mam
+    Collect app-protection policies.
+.PARAMETER RemoteHelp
+    Collect Remote Help settings.
+.PARAMETER Connectors
+    Collect Mobile Threat Defense connectors.
+.PARAMETER AppConfiguration
+    Collect app-configuration policies.
+.PARAMETER PlatformCompliance
+    Collect modern compliance policies.
+.PARAMETER MamLaunch
+    Collect app-protection launch conditions.
+#>
 function Invoke-IntuneServices {
     param($Inventory, $States, [scriptblock]$Request, [scriptblock]$Delay, [datetime]$Deadline, [bool]$Mam, [bool]$RemoteHelp, [bool]$Connectors, [bool]$AppConfiguration, [bool]$PlatformCompliance, [bool]$MamLaunch)
     foreach ($Module in @('AppProtectionPolicies', 'RemoteAssistanceSettings', 'ThreatConnectors')) {

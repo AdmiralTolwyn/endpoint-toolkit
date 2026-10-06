@@ -1,5 +1,26 @@
+<#
+.SYNOPSIS
+    Conditional Access evidence projection for the Windows 365 collector.
+.DESCRIPTION
+    Dot-sourced by Invoke-W365Discovery.ps1 with -IncludeConditionalAccess. Reduces Conditional
+    Access policies to per-app targeting, MFA intent and sign-in frequency. User, group and role
+    targets are not exported, and no enforcement verdict is inferred.
+.NOTES
+    Author    : Anton Romanyuk
+    Requires  : Windows PowerShell 5.1 or PowerShell 7
+    Disclaimer: This script is provided "AS IS" with no warranties and confers no rights.
+#>
 #Requires -Version 5.1
 
+
+<#
+.SYNOPSIS
+    Validates a Graph string list.
+.PARAMETER Value
+    Candidate list. Accepted only as an IList of at most 1000 non-empty strings of 256 characters or less.
+.OUTPUTS
+    PSCustomObject with Known (bool) and Values (accepted strings, or empty when unknown).
+#>
 function Get-W365CaStringList {
     param([object]$Value)
     $Known = $Value -is [Collections.IList] -and @($Value).Count -le 1000
@@ -11,12 +32,32 @@ function Get-W365CaStringList {
     return [pscustomobject]@{ Known = $Known; Values = $(if ($Known) { @($Value) } else { @() }) }
 }
 
+<#
+.SYNOPSIS
+    Tests whether a value is an application GUID.
+.PARAMETER Value
+    Candidate application identifier.
+.OUTPUTS
+    System.Boolean
+#>
 function Test-W365CaAppIdentifier {
     param([string]$Value)
     $Identifier = [guid]::Empty
     return [guid]::TryParse($Value, [ref]$Identifier)
 }
 
+<#
+.SYNOPSIS
+    Converts Conditional Access policies to Cloud PC sign-in evidence.
+.DESCRIPTION
+    For each policy, records state, targeting of the Windows 365, Azure Virtual Desktop and
+    Windows Cloud Login apps (Included, Excluded, NotDirectlyIncluded or Unknown), MFA grant intent
+    and sign-in frequency. Malformed or unrecognized data becomes Unknown rather than a guess.
+.PARAMETER Policies
+    Policies from /v1.0/identity/conditionalAccess/policies. At most 10000.
+.OUTPUTS
+    One PSCustomObject per policy.
+#>
 function ConvertTo-W365ConditionalAccessEvidence {
     param([object[]]$Policies)
     if ($Policies.Count -gt 10000) { throw 'Conditional Access evidence row limit exceeded' }

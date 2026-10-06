@@ -1,5 +1,25 @@
+<#
+.SYNOPSIS
+    Signature-timestamp handling for Intune endpoint evidence.
+.DESCRIPTION
+    Dot-sourced by the Intune collector and Get-IntuneEndpointEvidence.ps1. Keeps Defender signature
+    timestamps only as explicit instants so collection and import never guess a time zone.
+.NOTES
+    Author    : Anton Romanyuk
+    Requires  : Windows PowerShell 5.1 or PowerShell 7
+    Disclaimer: This script is provided "AS IS" with no warranties and confers no rights.
+#>
 #Requires -Version 5.1
 
+
+<#
+.SYNOPSIS
+    Converts a signature-update timestamp to a round-trip UTC string.
+.PARAMETER Value
+    DateTimeOffset, DateTime or string. Unspecified-kind, ambiguous or invalid local times return $null.
+.OUTPUTS
+    System.String (ISO 8601 UTC), or $null when the instant cannot be established.
+#>
 function ConvertTo-IntuneSignatureTimestamp {
     param($Value)
     if ($Value -is [datetimeoffset]) {
@@ -20,6 +40,17 @@ function ConvertTo-IntuneSignatureTimestamp {
     return $Instant.UtcDateTime.ToString('o', [Globalization.CultureInfo]::InvariantCulture)
 }
 
+<#
+.SYNOPSIS
+    Parses endpoint evidence JSON without losing signature-timestamp offsets.
+.DESCRIPTION
+    PowerShell 7 converts JSON date strings to local DateTime values. This function re-reads the
+    original DefenderStatus timestamp text so the explicit offset is preserved.
+.PARAMETER Json
+    Endpoint evidence document produced by Get-IntuneEndpointEvidence.ps1.
+.OUTPUTS
+    PSCustomObject
+#>
 function ConvertFrom-IntuneEndpointJson {
     param([string]$Json)
     $Parsed = ConvertFrom-Json -InputObject $Json -ErrorAction Stop

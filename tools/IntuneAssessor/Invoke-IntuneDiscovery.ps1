@@ -1,3 +1,102 @@
+<#
+.SYNOPSIS
+    Intune Discovery for Assay - read-only Microsoft Intune evidence collector.
+.DESCRIPTION
+    Reads Intune and related Entra configuration through allowlisted Microsoft Graph GET contracts
+    and exports observations for Assay's Intune pack. The collector never changes a tenant, never
+    requests credential fields and records per-module collection state so failures are not read
+    as absence. Opt-in switches widen collection; each needs its own delegated read scope.
+
+    Privacy: the default Pseudonymous mode pseudonymizes device names, reduces Conditional Access and
+    device-registration member lists to counts, classifies the LAPS account name and masks
+    user-profile and UNC segments in exclusion and EPM paths. Exports are written with CreateNew and
+    a restricted ACL and carry a Privacy manifest.
+.PARAMETER TenantId
+    Required Entra tenant GUID. The Graph token must belong to this tenant.
+.PARAMETER OutputPath
+    New export file. Existing files are never overwritten. Default:
+    %LOCALAPPDATA%\AssayCollections\intune\intune_<collectionId>.json.
+.PARAMETER IncludeRbac
+    Collect Intune role definitions and assignments. Requires DeviceManagementRBAC.Read.All.
+.PARAMETER IncludeAudit
+    Collect Intune audit events since AuditSinceUtc.
+.PARAMETER IncludeConfiguration
+    Collect settings-catalog policies and decoded security settings, intents, templates, scope tags,
+    assignment filters and assignments.
+.PARAMETER IncludeEntra
+    Collect the device registration policy and Conditional Access policies.
+    Requires Policy.Read.DeviceConfiguration and Policy.Read.All.
+.PARAMETER IncludeRecoveryMetadata
+    Collect LAPS and BitLocker recovery metadata, never passwords or keys.
+    Requires DeviceLocalCredential.ReadBasic.All and BitlockerKey.ReadBasic.All.
+.PARAMETER IncludeEnrollment
+    Collect enrollment configurations and Autopilot profiles. Requires DeviceManagementServiceConfig.Read.All.
+.PARAMETER IncludeApple
+    Collect Apple push certificate and VPP token metadata. Requires DeviceManagementServiceConfig.Read.All.
+.PARAMETER IncludeMam
+    Collect app-protection policies. Requires DeviceManagementApps.Read.All.
+.PARAMETER IncludeMamLaunch
+    Collect app-protection launch conditions. Requires DeviceManagementApps.Read.All.
+.PARAMETER IncludeRemoteHelp
+    Collect Remote Help tenant settings.
+.PARAMETER IncludeConnectors
+    Collect Mobile Threat Defense connectors. Requires DeviceManagementServiceConfig.Read.All.
+.PARAMETER IncludeAppConfiguration
+    Collect app-configuration policy metadata. Requires DeviceManagementApps.Read.All.
+.PARAMETER IncludePlatformCompliance
+    Collect modern (settings-catalog) compliance policies.
+.PARAMETER IncludeTunnel
+    Collect Microsoft Tunnel sites and servers.
+.PARAMETER EndpointEvidencePaths
+    Endpoint evidence files from Get-IntuneEndpointEvidence.ps1 (1 MB each, same tenant).
+.PARAMETER DefenderEvidencePath
+    Defender machine evidence from Get-IntuneDefenderEvidence.ps1 (64 MB, same tenant).
+.PARAMETER AppControlPolicyPaths
+    App Control (WDAC) policy XML files to summarize (1 MB each).
+.PARAMETER AuditSinceUtc
+    Start of the audit-event window. Default: seven days ago.
+.PARAMETER UseExistingConnection
+    Reuse the current Az.Accounts context instead of signing in.
+.PARAMETER GraphAccessToken
+    Delegated Graph token as a SecureString from an approved authentication flow. Its tenant, audience,
+    expiry and scopes are checked locally before any request.
+.PARAMETER Assessor
+    Operator-supplied assessor label. Recorded with ScopeDescription in AssessmentRequirements.
+.PARAMETER ScopeDescription
+    Operator description of the assessed scope. Required for AssessmentRequirements to be written.
+.PARAMETER MaxCollectionAgeHours
+    Customer target for maximum collection age, recorded for Assay (1-87600).
+.PARAMETER MaxPolicyReportAgeHours
+    Customer target for maximum policy-report age, recorded for Assay (1-87600).
+.PARAMETER MaxDeviceSyncAgeDays
+    Customer target for maximum device sync age, recorded for Assay (1-87600).
+.PARAMETER PrivacyMode
+    Pseudonymous (default) or Identified. Identified keeps device names, member lists, LAPS account
+    names and literal paths, and requires -ConfirmIdentifiedExport.
+.PARAMETER ConfirmIdentifiedExport
+    Required with -PrivacyMode Identified.
+.PARAMETER PseudonymKeyPath
+    Existing or new 32-byte pseudonym key file. Default: a new key next to the output file.
+.PARAMETER IdentityMapPath
+    Optional new file mapping pseudonyms to original values. Keep it separate from the export.
+.PARAMETER LibraryOnly
+    Load the functions without collecting. Used by the offline tests.
+.EXAMPLE
+    .\Invoke-IntuneDiscovery.ps1 -TenantId '<tenant-guid>'
+    Collects the core modules after an interactive Az.Accounts sign-in.
+.EXAMPLE
+    .\Invoke-IntuneDiscovery.ps1 -TenantId '<tenant-guid>' -IncludeConfiguration -IncludeEntra -UseExistingConnection
+    Adds configuration and Entra modules using the current Az.Accounts context.
+.EXAMPLE
+    .\Invoke-IntuneDiscovery.ps1 -TenantId '<tenant-guid>' -PrivacyMode Identified -ConfirmIdentifiedExport -OutputPath .\intune.json
+    Exports identifiable values to a chosen file.
+.NOTES
+    Author    : Anton Romanyuk
+    Version   : 0.6.0
+    Date      : 2026-10-05
+    Requires  : Windows PowerShell 5.1 or PowerShell 7; Az.Accounts unless -GraphAccessToken is supplied
+    Disclaimer: This script is provided "AS IS" with no warranties and confers no rights.
+#>
 #Requires -Version 5.1
 [CmdletBinding()]
 param(
@@ -41,6 +140,18 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'CollectorPrivacy.ps1')
 $script:IntuneGraphContracts = @(foreach ($Contract in (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'GraphContracts.json') -Raw | ConvertFrom-Json)) { $Contract })
 
+<#
+.SYNOPSIS
+    Reads a property from a dictionary or object without failing under strict mode.
+.PARAMETER Object
+    Dictionary or object to read.
+.PARAMETER Name
+    Property or key name.
+.PARAMETER Default
+    Value returned when the property is missing.
+.OUTPUTS
+    The value, or Default. Collections are returned as one object, not unrolled.
+#>
 function Get-IntuneValue {
     param($Object, [string]$Name, $Default = $null)
     if ($null -eq $Object) { return $Default }
@@ -52,6 +163,16 @@ function Get-IntuneValue {
     return $Default
 }
 
+<#
+.SYNOPSIS
+    Finds the Graph contract that matches a request path.
+.PARAMETER Path
+    Absolute Graph URI path including the API version.
+.PARAMETER Module
+    Optional module name the contract must belong to.
+.OUTPUTS
+    Contract object from GraphContracts.json, or $null.
+#>
 function Get-IntuneGraphContract {
     param([string]$Path, [string]$Module)
     foreach ($Contract in $script:IntuneGraphContracts) {
@@ -61,6 +182,19 @@ function Get-IntuneGraphContract {
     return $null
 }
 
+<#
+.SYNOPSIS
+    Tests whether a URI is an allowed Graph read.
+.DESCRIPTION
+    Requires https://graph.microsoft.com on the default port, an enabled contract, allowlisted
+    query keys and, for expansion modules, reviewed select lists without credential fields.
+.PARAMETER Uri
+    Request URI.
+.PARAMETER AllowExpansion
+    Also allow the opt-in expansion and service endpoints.
+.OUTPUTS
+    System.Boolean
+#>
 function Test-IntuneUri {
     param([string]$Uri, [switch]$AllowExpansion)
     $Parsed = $null
@@ -90,6 +224,14 @@ function Test-IntuneUri {
     return $Parsed.AbsolutePath -match '^/v1\.0/(deviceManagement/(managedDevices|deviceCompliancePolicies|deviceConfigurations|roleDefinitions|auditEvents)|deviceManagement/deviceCompliancePolicies/[^/]+/(assignments|deviceStatuses)|deviceManagement/deviceConfigurations/[^/]+/assignments|deviceManagement/roleDefinitions/[^/]+/roleAssignments|deviceAppManagement/mobileApps(/[^/]+/assignments)?)$'
 }
 
+<#
+.SYNOPSIS
+    Returns the exported fields for a module.
+.PARAMETER Module
+    Inventory module name.
+.OUTPUTS
+    System.String[]
+#>
 function Get-IntuneFieldList {
     param([string]$Module)
     $Expanded = @(Get-IntuneExpansionFields $Module)
@@ -109,6 +251,18 @@ function Get-IntuneFieldList {
     }
 }
 
+<#
+.SYNOPSIS
+    Projects one Graph row to the module's allowlisted fields and safe types.
+.PARAMETER Row
+    Graph row.
+.PARAMETER Module
+    Inventory module name.
+.PARAMETER ParentId
+    Parent object ID for child collections.
+.OUTPUTS
+    Ordered dictionary. Rows without an id throw.
+#>
 function ConvertTo-IntuneSafeRow {
     param($Row, [string]$Module, [string]$ParentId)
     if ($Module -in @('RawSettings', 'RawDefinitions')) {
@@ -181,6 +335,16 @@ function ConvertTo-IntuneSafeRow {
     return $Safe
 }
 
+<#
+.SYNOPSIS
+    Replaces user, group and role ID lists with special tokens and counts, in place.
+.DESCRIPTION
+    Keeps All, None and GuestsOrExternalUsers and adds <list>Count with the number of removed entries.
+.PARAMETER Value
+    Nested dictionary or array to transform.
+.PARAMETER Depth
+    Current recursion depth; deeper than 12 stops.
+#>
 function ConvertTo-IntuneMemberSummary {
     param($Value, [int]$Depth = 0)
     if ($Depth -gt 12 -or $null -eq $Value) { return }
@@ -200,6 +364,16 @@ function ConvertTo-IntuneMemberSummary {
     }
 }
 
+<#
+.SYNOPSIS
+    Masks each path in a |, ; or newline separated list.
+.PARAMETER Context
+    Privacy context from New-CollectorPrivacyContext.
+.PARAMETER Value
+    Path list. Non-string values are returned unchanged.
+.OUTPUTS
+    System.String
+#>
 function ConvertTo-IntunePathList {
     param($Context, $Value)
     if ($Value -isnot [string]) { return $Value }
@@ -208,6 +382,18 @@ function ConvertTo-IntunePathList {
     })
 }
 
+<#
+.SYNOPSIS
+    Applies the Pseudonymous-mode transforms to the collected inventory, in place.
+.DESCRIPTION
+    Pseudonymizes device names, counts Conditional Access and registration members, classifies the
+    LAPS account name and masks Defender exclusion and EPM paths. No-op without a context or in
+    Identified mode.
+.PARAMETER Inventory
+    Inventory dictionary from Invoke-IntuneDiscoveryCore.
+.PARAMETER Context
+    Privacy context from New-CollectorPrivacyContext.
+#>
 function ConvertTo-IntunePrivacyInventory {
     param($Inventory, $Context)
     if ($null -eq $Context -or $Context.Mode -eq 'Identified') { return }
@@ -238,6 +424,14 @@ function ConvertTo-IntunePrivacyInventory {
     }
 }
 
+<#
+.SYNOPSIS
+    Performs one Graph GET with the authenticated HTTP client.
+.PARAMETER Uri
+    Request URI; disallowed URIs are not sent.
+.OUTPUTS
+    Hashtable with StatusCode, RetryAfter, Body and, on failure, ErrorCode.
+#>
 function Get-IntuneHttpPage {
     param([string]$Uri)
     if (-not (Test-IntuneUri $Uri -AllowExpansion)) { return @{ StatusCode = 0; ErrorCode = 'BlockedEndpoint'; Body = $null } }
@@ -260,6 +454,35 @@ function Get-IntuneHttpPage {
     }
 }
 
+<#
+.SYNOPSIS
+    Reads a Graph collection with paging, retries and budgets.
+.DESCRIPTION
+    Retries 429/503/504 with Retry-After or exponential backoff, rejects changed or repeated
+    continuations, duplicate IDs and invalid rows, and reports Complete, Partial or Error.
+.PARAMETER Uri
+    Collection URI.
+.PARAMETER Module
+    Inventory module name; selects the contract and field list.
+.PARAMETER ParentId
+    Parent object ID for child collections.
+.PARAMETER AllowExpansion
+    Allow opt-in expansion endpoints.
+.PARAMETER Singleton
+    Treat a non-collection response as one row.
+.PARAMETER Request
+    Script block that performs one GET.
+.PARAMETER Delay
+    Script block that waits for a retry interval.
+.PARAMETER Now
+    Script block returning the current UTC time.
+.PARAMETER Deadline
+    UTC time after which collection stops.
+.PARAMETER MaxRows
+    Row budget. Default: 100000.
+.OUTPUTS
+    Hashtable with Rows and Status.
+#>
 function Get-IntuneCollection {
     param(
         [string]$Uri, [string]$Module, [string]$ParentId,
@@ -328,6 +551,61 @@ function Get-IntuneCollection {
     } }
 }
 
+<#
+.SYNOPSIS
+    Runs the collection and builds the export document.
+.DESCRIPTION
+    Library entry point used by the script and the offline tests. Applies the privacy transforms
+    only when PrivacyContext is supplied.
+.PARAMETER SelectedTenant
+    Tenant GUID recorded in the export and required of companion evidence.
+.PARAMETER Rbac
+    Collect role definitions and assignments.
+.PARAMETER Audit
+    Collect audit events.
+.PARAMETER AuditSince
+    Start of the audit-event window.
+.PARAMETER Configuration
+    Collect configuration modules.
+.PARAMETER Entra
+    Collect Entra device registration and Conditional Access policies.
+.PARAMETER Recovery
+    Collect LAPS and BitLocker metadata.
+.PARAMETER Enrollment
+    Collect enrollment configurations and Autopilot profiles.
+.PARAMETER Apple
+    Collect Apple push certificate and VPP token metadata.
+.PARAMETER Mam
+    Collect app-protection policies.
+.PARAMETER RemoteHelp
+    Collect Remote Help settings.
+.PARAMETER Connectors
+    Collect Mobile Threat Defense connectors.
+.PARAMETER AppConfiguration
+    Collect app-configuration policies.
+.PARAMETER PlatformCompliance
+    Collect modern compliance policies.
+.PARAMETER Tunnel
+    Collect Microsoft Tunnel sites and servers.
+.PARAMETER MamLaunch
+    Collect app-protection launch conditions.
+.PARAMETER EndpointPaths
+    Endpoint evidence files to import.
+.PARAMETER DefenderPath
+    Defender evidence file to import.
+.PARAMETER AppControlPaths
+    App Control policy XML files to summarize.
+.PARAMETER Request
+    Script block that performs one Graph GET.
+.PARAMETER Delay
+    Script block that waits for a retry interval.
+.PARAMETER Requirements
+    Assessment requirements recorded for Assay.
+.PARAMETER PrivacyContext
+    Privacy context from New-CollectorPrivacyContext. Omit for untransformed library output.
+.OUTPUTS
+    Ordered dictionary: the export document without the Privacy manifest.
+#>
 function Invoke-IntuneDiscoveryCore {
     param([string]$SelectedTenant, [bool]$Rbac, [bool]$Audit, [datetime]$AuditSince,
     [bool]$Configuration, [bool]$Entra, [bool]$Recovery, [bool]$Enrollment, [bool]$Apple,

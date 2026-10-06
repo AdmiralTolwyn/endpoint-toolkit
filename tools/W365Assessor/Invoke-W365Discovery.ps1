@@ -1,5 +1,4 @@
-﻿#Requires -Version 5.1
-<#
+﻿<#
 .SYNOPSIS
     Windows 365 Discovery — Automated Cloud PC environment inventory and assessment.
 .DESCRIPTION
@@ -52,6 +51,7 @@
     Author : Anton Romanyuk
     Version: 0.4.0
     Date   : 2026-10-05
+    Disclaimer: This script is provided "AS IS" with no warranties and confers no rights.
 
     Required Graph scopes (core tier — requested unconditionally):
       CloudPC.Read.All                          Cloud PCs, provisioning/user policies, ANCs, images, reports
@@ -71,6 +71,7 @@
     Required PowerShell modules:
       Microsoft.Graph.Authentication (>= 2.0.0)
 #>
+#Requires -Version 5.1
 
 [CmdletBinding()]
 param(
@@ -137,6 +138,14 @@ $CaPolicyUri   = 'https://graph.microsoft.com/v1.0/identity/conditionalAccess/po
 # HELPERS
 # ═══════════════════════════════════════════════════════════════════════════
 
+<#
+.SYNOPSIS
+    Writes a timestamped, colored status line to the console.
+.PARAMETER Message
+    Status text. Console only; never exported.
+.PARAMETER Level
+    INFO, WARN, ERROR, SUCCESS, CHECK or SECTION (renders a section header).
+#>
 function Write-Status {
     param([string]$Message, [string]$Level = 'INFO')
     $ts = (Get-Date).ToString('HH:mm:ss')
@@ -170,6 +179,16 @@ function Write-Status {
     }
 }
 
+<#
+.SYNOPSIS
+    Writes one aligned label/value line for the console summary.
+.PARAMETER Label
+    Metric label.
+.PARAMETER Value
+    Metric value.
+.PARAMETER Icon
+    Leading marker character.
+#>
 function Write-Metric {
     param([string]$Label, [int]$Value, [string]$Icon = '|')
     Write-Host "  $Icon  " -NoNewline -ForegroundColor DarkCyan
@@ -177,6 +196,17 @@ function Write-Metric {
     Write-Host $Value -ForegroundColor White
 }
 
+<#
+.SYNOPSIS
+    Reduces policy assignments to a count and target-type counts.
+.DESCRIPTION
+    Raw assignment objects, including group IDs, are never exported. Unrecognized target types
+    are counted as 'unknown'.
+.PARAMETER Assignments
+    Assignments expanded on a provisioning or user-settings policy.
+.OUTPUTS
+    PSCustomObject with AssignmentCount and AssignmentTargetTypes.
+#>
 function ConvertTo-W365AssignmentSummary {
     param($Assignments)
     $Types = [ordered]@{}
@@ -192,6 +222,14 @@ function ConvertTo-W365AssignmentSummary {
     return [pscustomobject]@{ AssignmentCount = $Count; AssignmentTargetTypes = $Types }
 }
 
+<#
+.SYNOPSIS
+    Converts a timestamp to a UTC date string (yyyy-MM-dd).
+.PARAMETER Value
+    DateTime, DateTimeOffset or ISO 8601 string. DateTimes without a kind are treated as UTC.
+.OUTPUTS
+    System.String, or $null when the value is missing or unparseable.
+#>
 function ConvertTo-W365UtcDate {
     param($Value)
     if ($Value -is [DateTimeOffset]) { return $Value.UtcDateTime.ToString('yyyy-MM-dd') }
@@ -207,6 +245,14 @@ function ConvertTo-W365UtcDate {
     return $null
 }
 
+<#
+.SYNOPSIS
+    Returns the UTC date of a Cloud PC's last sign-in.
+.PARAMETER LastLoginResult
+    cloudPcLoginResult object; lastLoginDateTime or time is read.
+.OUTPUTS
+    System.String (yyyy-MM-dd), or $null when no login data exists.
+#>
 function Get-W365LastLoginDate {
     param($LastLoginResult)
     if ($null -eq $LastLoginResult) { return $null }
@@ -217,6 +263,14 @@ function Get-W365LastLoginDate {
     return $null
 }
 
+<#
+.SYNOPSIS
+    Returns the user label for findings: the UPN in Identified mode, otherwise the user pseudonym.
+.PARAMETER CloudPc
+    Projected Cloud PC inventory row.
+.OUTPUTS
+    System.String; 'none' when no user is assigned.
+#>
 function Get-W365UserLabel {
     param($CloudPc)
     $Label = if ($CloudPc.PSObject.Properties['UserPrincipalName']) { [string]$CloudPc.UserPrincipalName } else { [string]$CloudPc.UserKey }
@@ -224,6 +278,17 @@ function Get-W365UserLabel {
     return $Label
 }
 
+<#
+.SYNOPSIS
+    Projects Azure Network Connection health checks to the reviewed fields.
+.DESCRIPTION
+    Reads healthCheckStatusDetail.healthChecks, the legacy plural detail key or a flat healthChecks
+    list, and keeps only displayName, status, errorType, recommendedAction and timestamps.
+.PARAMETER Connection
+    onPremisesConnection object from Graph.
+.OUTPUTS
+    One PSCustomObject per health check.
+#>
 function ConvertTo-W365HealthChecks {
     param($Connection)
     $Rows = if ($Connection.healthCheckStatusDetail -and $Connection.healthCheckStatusDetail.healthChecks) {
@@ -246,6 +311,32 @@ function ConvertTo-W365HealthChecks {
     }
 }
 
+<#
+.SYNOPSIS
+    Creates an automated check result in the shape the WPF assessor and Assay import.
+.PARAMETER Id
+    Check ID; per-object checks append the object ID.
+.PARAMETER Category
+    Assessment category.
+.PARAMETER Name
+    Display name.
+.PARAMETER Description
+    What the check evaluates.
+.PARAMETER Status
+    Pass, Fail, Warning, N/A or Error (not assessed).
+.PARAMETER Severity
+    Severity label. Default: Medium.
+.PARAMETER Details
+    Observed values. Must not contain raw person data in Pseudonymous mode.
+.PARAMETER Recommendation
+    Remediation guidance.
+.PARAMETER Reference
+    Documentation URL.
+.PARAMETER Evidence
+    Structured evidence object.
+.OUTPUTS
+    PSCustomObject
+#>
 function New-CheckResult {
     param(
         [string]$Id,
@@ -275,6 +366,21 @@ function New-CheckResult {
     }
 }
 
+<#
+.SYNOPSIS
+    Validates a Microsoft Graph context for this collector.
+.DESCRIPTION
+    Requires a delegated Global context with a valid tenant GUID, account metadata, the expected
+    tenant when one is supplied, and every required scope.
+.PARAMETER SessionContext
+    Result of Get-MgContext.
+.PARAMETER ExpectedTenantId
+    Tenant GUID that the context must match. Empty accepts any valid tenant.
+.PARAMETER RequiredScopes
+    Delegated scopes that must be granted.
+.OUTPUTS
+    System.String describing the first problem, or $null when the context is usable.
+#>
 function Get-W365GraphContextIssue {
     param([object]$SessionContext, [string]$ExpectedTenantId, [string[]]$RequiredScopes)
     if ($null -eq $SessionContext) { return 'No Graph context is available.' }
@@ -297,6 +403,20 @@ function Invoke-GraphPaged {
     <#
     .SYNOPSIS
         Invokes a Graph GET and follows @odata.nextLink, returning all pages.
+    .DESCRIPTION
+        Only https://graph.microsoft.com URIs with a fixed path and an allowlisted query are
+        accepted; continuations must keep the same path and query. Duplicate row IDs, repeated
+        pages and exceeded budgets throw, so partial collections are never returned.
+    .PARAMETER Uri
+        Initial Graph collection URI.
+    .PARAMETER MaxPages
+        Page budget. Default: 1000.
+    .PARAMETER MaxRows
+        Row budget. Default: 100000.
+    .PARAMETER MaxDurationSeconds
+        Time budget. Default: 1800.
+    .OUTPUTS
+        System.Object[] of Graph rows.
     #>
     param(
         [Parameter(Mandatory = $true)] [string]$Uri,
@@ -355,6 +475,12 @@ function Invoke-GraphReport {
     <#
     .SYNOPSIS
         Reads one report page through a fixed contract and returns validated page metadata only.
+    .PARAMETER Action
+        Report action with a contract in W365Reports.ps1.
+    .PARAMETER Body
+        Request options. Only @{ top = 25 } is accepted.
+    .OUTPUTS
+        Page metadata from ConvertTo-W365ReportPageEvidence.
     #>
     param(
         [Parameter(Mandatory = $true)] [string]$Action,
@@ -499,6 +625,14 @@ function Add-DiscoveryError {
         Records a collection failure to $Discovery.Errors AND emits a Status 'Error' CheckResult
         (A-3) so the failure is visible in the GUI import instead of being silently swallowed —
         a missing scope must never look like "no resources exist".
+    .PARAMETER Section
+        Inventory section that failed, for example CloudPCs.
+    .PARAMETER Message
+        Error text already minimized with Get-CollectorErrorText.
+    .PARAMETER Category
+        Check category. Default: Discovery.
+    .PARAMETER Scope
+        Graph scope the section needs. Default: CloudPC.Read.All.
     #>
     param(
         [string]$Section,

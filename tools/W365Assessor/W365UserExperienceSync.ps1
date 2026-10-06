@@ -1,5 +1,28 @@
+<#
+.SYNOPSIS
+    User Experience Sync evidence for shared Windows 365 provisioning policies.
+.DESCRIPTION
+    Dot-sourced by Invoke-W365Discovery.ps1 with -IncludeUserExperienceSync. Reads beta
+    provisioning-policy metadata and compares sharedByEntraGroup policies with an explicit
+    customer target. No policy is changed.
+.NOTES
+    Author    : Anton Romanyuk
+    Requires  : Windows PowerShell 5.1 or PowerShell 7
+    Disclaimer: This script is provided "AS IS" with no warranties and confers no rights.
+#>
 #Requires -Version 5.1
 
+
+<#
+.SYNOPSIS
+    Assesses one provisioning policy's User Experience Sync configuration.
+.PARAMETER Policy
+    Beta cloudPcProvisioningPolicy object.
+.PARAMETER ExpectedState
+    Review (no verdict), Enabled or Disabled.
+.OUTPUTS
+    PSCustomObject with PolicyId, Status, Details and the collected settings.
+#>
 function Get-W365UserExperienceSyncAssessment {
     param(
         [object]$Policy,
@@ -36,6 +59,16 @@ function Get-W365UserExperienceSyncAssessment {
     return [pscustomobject]$Result
 }
 
+<#
+.SYNOPSIS
+    Reads beta provisioning policies and assesses User Experience Sync.
+.PARAMETER ExpectedState
+    Review (no verdict), Enabled or Disabled.
+.PARAMETER Request
+    Script block that performs one Graph GET; replaceable for offline tests.
+.OUTPUTS
+    One assessment object per applicable policy.
+#>
 function Invoke-W365UserExperienceSyncRead {
     param(
         [ValidateSet('Review','Enabled','Disabled')][string]$ExpectedState = 'Review',

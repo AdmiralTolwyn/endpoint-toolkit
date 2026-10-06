@@ -1,5 +1,25 @@
+<#
+.SYNOPSIS
+    Endpoint Analytics and update-summary evidence projection for the Windows 365 collector.
+.DESCRIPTION
+    Dot-sourced by Invoke-W365Discovery.ps1. Keeps typed score and counter values and records
+    missing or invalid fields as Unknown. Device names and identifiers are not exported.
+.NOTES
+    Author    : Anton Romanyuk
+    Requires  : Windows PowerShell 5.1 or PowerShell 7
+    Disclaimer: This script is provided "AS IS" with no warranties and confers no rights.
+#>
 #Requires -Version 5.1
 
+
+<#
+.SYNOPSIS
+    Converts Endpoint Analytics device-score rows to tenant score evidence.
+.PARAMETER Rows
+    Rows from userExperienceAnalyticsDeviceScores. At most 10000.
+.OUTPUTS
+    One PSCustomObject per row with ScoreEntryId, HealthStatus, Scores and FieldState.
+#>
 function ConvertTo-W365AnalyticsEvidence {
     param([object[]]$Rows)
     if ($Rows.Count -gt 10000) { throw 'Analytics evidence row limit exceeded' }
@@ -27,6 +47,14 @@ function ConvertTo-W365AnalyticsEvidence {
     }
 }
 
+<#
+.SYNOPSIS
+    Converts the software-update status summary to typed counter evidence.
+.PARAMETER Response
+    Response from softwareUpdateStatusSummary, with or without a value wrapper.
+.OUTPUTS
+    PSCustomObject with Counts, UnknownFields and FieldState.
+#>
 function ConvertTo-W365UpdateSummaryEvidence {
     param([object]$Response)
     $Fields = @('compliantDeviceCount','nonCompliantDeviceCount','remediatedDeviceCount','errorDeviceCount','unknownDeviceCount','conflictDeviceCount','notApplicableDeviceCount')

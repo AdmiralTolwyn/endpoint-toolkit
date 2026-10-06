@@ -1,3 +1,26 @@
+<#
+.SYNOPSIS
+    Safe parsing of ADMX setting fragments and App Control policy XML.
+.DESCRIPTION
+    Dot-sourced by IntuneExpansion.ps1. XML is parsed with DTD processing prohibited, no resolver and
+    size limits. Only reviewed data IDs and metadata are returned.
+.NOTES
+    Author    : Anton Romanyuk
+    Requires  : Windows PowerShell 5.1 or PowerShell 7
+    Disclaimer: This script is provided "AS IS" with no warranties and confers no rights.
+#>
+
+
+<#
+.SYNOPSIS
+    Parses policy XML with DTDs and external resolution disabled.
+.PARAMETER Text
+    XML text, at most 1 MB.
+.PARAMETER Fragment
+    Wrap the text in a root element before parsing.
+.OUTPUTS
+    System.Xml.XmlDocument
+#>
 function Read-IntunePolicyXml {
     param([string]$Text, [switch]$Fragment)
     if ($Text.Length -gt 1MB) { throw 'Policy XML limit' }
@@ -16,6 +39,14 @@ function Read-IntunePolicyXml {
     } finally { $Reader.Dispose(); $TextReader.Dispose() }
 }
 
+<#
+.SYNOPSIS
+    Returns the reviewed ADMX data IDs and value types for a CSP path.
+.PARAMETER CspPath
+    CSP path of an ADMX-backed setting.
+.OUTPUTS
+    Hashtable of data ID to type. Unreviewed paths throw.
+#>
 function Get-IntuneAdmxDataContract {
     param([string]$CspPath)
     switch -CaseSensitive ($CspPath) {
@@ -41,6 +72,16 @@ function Get-IntuneAdmxDataContract {
     }
 }
 
+<#
+.SYNOPSIS
+    Decodes an ADMX setting fragment into its state and typed data values.
+.PARAMETER Text
+    ADMX fragment such as <enabled/><data id="..." value="..."/>.
+.PARAMETER CspPath
+    CSP path that selects the data contract.
+.OUTPUTS
+    Hashtable with enabled (bool) and data (ordered dictionary). Unknown IDs or values throw.
+#>
 function ConvertTo-IntuneAdmxMetadata {
     param([string]$Text, [string]$CspPath)
     $Document = Read-IntunePolicyXml $Text -Fragment
@@ -83,6 +124,14 @@ function ConvertTo-IntuneAdmxMetadata {
     return @{ enabled = $State; data = $Data }
 }
 
+<#
+.SYNOPSIS
+    Extracts identity and option metadata from an App Control (WDAC) policy.
+.PARAMETER Text
+    SiPolicy XML text, at most 1 MB.
+.OUTPUTS
+    Hashtable with id, basePolicyId, policyType, auditMode and related option metadata; rule contents are not exported.
+#>
 function ConvertTo-IntuneAppControlMetadata {
     param([string]$Text)
     $Document = Read-IntunePolicyXml $Text
@@ -99,11 +148,27 @@ function ConvertTo-IntuneAppControlMetadata {
     return @{ id = $Identity.ToString(); basePolicyId = $Base.ToString(); policyType = $Root.GetAttribute('PolicyType'); auditMode = ($Options -contains 'Enabled:Audit Mode'); managedInstaller = ($Options -contains 'Enabled:Managed Installer'); options = $Options; source = 'Explicit XML file; assignment and runtime not established' }
 }
 
+<#
+.SYNOPSIS
+    Tests whether a CSP path holds an ADMX fragment decoded by ConvertTo-IntuneAdmxMetadata.
+.PARAMETER Path
+    CSP path.
+.OUTPUTS
+    System.Boolean
+#>
 function Test-IntuneStructuredPath {
     param([string]$Path)
     return $Path -ceq 'Policy/Config/InternetExplorer/DisableInternetExplorerLaunchViaCOM' -or $Path -cmatch '^BitLocker/(SystemDrivesRequireStartupAuthentication|SystemDrivesRecoveryOptions|FixedDrivesRecoveryOptions)$'
 }
 
+<#
+.SYNOPSIS
+    Tests whether a CSP path is in the extended setting set (structured, Defender exclusions, firewall rules).
+.PARAMETER Path
+    CSP path.
+.OUTPUTS
+    System.Boolean
+#>
 function Test-IntuneExtendedPath {
     param([string]$Path)
     return (Test-IntuneStructuredPath $Path) -or $Path -cmatch '^Policy/Config/Defender/Excluded(Paths|Processes|Extensions)$' -or $Path -cmatch '^Firewall/MdmStore/FirewallRules/[^/|]+/(Protocol|Direction|LocalPortRanges|RemotePortRanges|EdgeTraversal|InterfaceTypes|Action/Type|Enabled)$'

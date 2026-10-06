@@ -1,3 +1,32 @@
+<#
+.SYNOPSIS
+    Endpoint Privilege Management elevation-rule decoding for the Intune collector.
+.DESCRIPTION
+    Dot-sourced by IntuneExpansion.ps1. Decodes settings-catalog elevation rules into name, file
+    name, file path and elevation type. Ambiguous, duplicate or template-default values stay null.
+.NOTES
+    Author    : Anton Romanyuk
+    Requires  : Windows PowerShell 5.1 or PowerShell 7
+    Disclaimer: This script is provided "AS IS" with no warranties and confers no rights.
+#>
+
+
+<#
+.SYNOPSIS
+    Flattens EPM rule child settings while carrying template and choice context.
+.PARAMETER Children
+    Child setting instances of one rule group.
+.PARAMETER Depth
+    Current recursion depth; deeper than 12 throws.
+.PARAMETER Definitions
+    Setting definitions for the policy.
+.PARAMETER InheritedTemplateUnresolved
+    True when an ancestor uses an unresolved template default.
+.PARAMETER InheritedChoiceUnresolved
+    True when an ancestor choice could not be resolved.
+.OUTPUTS
+    PSCustomObject per child with Instance, TemplateUnresolved and ChoiceUnresolved.
+#>
 function Get-IntuneEpmRuleChildren {
     param($Children, [int]$Depth = 0, $Definitions = @(), [bool]$InheritedTemplateUnresolved = $false, [bool]$InheritedChoiceUnresolved = $false)
     if ($Depth -gt 12) { throw 'EPM rule depth limit' }
@@ -50,6 +79,20 @@ function Get-IntuneEpmRuleChildren {
     }
 }
 
+<#
+.SYNOPSIS
+    Decodes the elevation rules in one settings-catalog setting instance.
+.PARAMETER Instance
+    Setting instance; only the elevation-rules root definition is decoded.
+.PARAMETER Definitions
+    Setting definitions for the policy.
+.PARAMETER PolicyId
+    Parent configuration policy ID.
+.PARAMETER SettingId
+    Setting ID used to build rule row IDs.
+.OUTPUTS
+    One ordered dictionary per rule with id, parentId, name, fileName, filePath and elevationType.
+#>
 function ConvertTo-IntuneEpmRules {
     param($Instance, $Definitions, [string]$PolicyId, [string]$SettingId)
     $RootId = 'device_vendor_msft_policy_privilegemanagement_elevationrules_{elevationrulename}'
