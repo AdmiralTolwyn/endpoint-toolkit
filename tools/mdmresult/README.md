@@ -5,7 +5,9 @@ copy the folder to a device, run it, get an HTML report.
 
 The report is the same as PolicyPilot's **Export HTML**: Group Policy result and local MDM
 policy state with English ADMX/CSP names and descriptions, CSP gap analysis, GPO conflicts,
-Intune apps, certificates, LAPS, provisioning packages and compliance summary.
+Intune apps, certificates, LAPS, provisioning packages and a local health summary. The local
+health summary checks evidence on the device (remediation scripts, configuration profiles,
+enrollment, app installs); it is not the Intune compliance state.
 
 ## Package
 
@@ -54,8 +56,8 @@ These come from PolicyPilot's scan code and apply to the GUI as well:
 ## Data handling
 
 The report contains the computer and user name, enrollment UPN, policy values, installed
-apps and certificate details. Treat it as internal. The scan leaves `gpresult_out.txt` and
-`gpresult_err.txt` in `%TEMP%`; the RSoP XML and the MDM diagnostics folder are deleted.
+apps and certificate details. Treat it as internal. gpresult output goes to a per-run folder
+under `%TEMP%` that is deleted after the scan, as is the MDM diagnostics folder.
 
 ## Rebuilding
 

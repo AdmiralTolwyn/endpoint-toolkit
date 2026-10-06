@@ -2440,12 +2440,13 @@ function Find-Conflicts {
         }
     }
 
-    # Group settings by SettingKey (case-insensitive to prevent registry path case duplication)
+    # Group by machine/user scope + setting key (case-insensitive); GPO 'Computer' and MDM 'Device' are both machine
     $settingMap = @{}
     foreach ($s in $SettingsList) {
         $key = $s.SettingKey
         if ([string]::IsNullOrWhiteSpace($key)) { continue }
-        $normKey = $key.ToLower()
+        $scopeClass = if ($s.Scope -eq 'User') { 'user' } else { 'machine' }
+        $normKey = "$scopeClass|$($key.ToLower())"
         if (-not $settingMap.ContainsKey($normKey)) {
             $settingMap[$normKey] = [System.Collections.Generic.List[PSCustomObject]]::new()
         }
@@ -2483,8 +2484,8 @@ function Find-Conflicts {
         $dedupGroup = @($byGpo.Values)
         if ($dedupGroup.Count -lt 2) { continue }
 
-        # Check if all values are the same
-        $uniqueStates = @($dedupGroup | Select-Object -ExpandProperty State -Unique)
+        # Applied/Superseded is precedence, not a configured difference
+        $uniqueStates = @($dedupGroup | Where-Object { $_.State -notin @('Applied', 'Superseded') } | Select-Object -ExpandProperty State -Unique)
         $uniqueValues = @($dedupGroup | Where-Object { $_.ValueData } | Select-Object -ExpandProperty ValueData -Unique)
 
         $severity = if ($uniqueStates.Count -gt 1 -or $uniqueValues.Count -gt 1) {
@@ -3732,17 +3733,21 @@ $ui.BtnScanGPOs.Add_Click({
                 if ($cs.PartOfDomain) { $domain = $cs.Domain }
             } catch { }
 
-            $tmpFile = [IO.Path]::Combine([IO.Path]::GetTempPath(), 'PolicyPilot_RSoP.xml')
+            # Per-run folder: no collisions between concurrent scans, removed in finally
+            $runDir  = [IO.Path]::Combine([IO.Path]::GetTempPath(), "PolicyPilot_$([guid]::NewGuid().ToString('N'))")
+            [void][IO.Directory]::CreateDirectory($runDir)
+            $tmpFile = [IO.Path]::Combine($runDir, 'RSoP.xml')
             $SyncH.StatusQueue.Enqueue(@{Type='Log';Text="[Local] RSoP XML path: $tmpFile";Level='DEBUG'})
             # Clean up any stale file from previous run
             if (Test-Path $tmpFile) { Remove-Item $tmpFile -Force -ErrorAction SilentlyContinue }
             try {
-                $errFile = [IO.Path]::Combine([IO.Path]::GetTempPath(), 'gpresult_err.txt')
-                $outFile = [IO.Path]::Combine([IO.Path]::GetTempPath(), 'gpresult_out.txt')
+                $errFile = [IO.Path]::Combine($runDir, 'gpresult_err.txt')
+                $outFile = [IO.Path]::Combine($runDir, 'gpresult_out.txt')
                 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
                 $SyncH.StatusQueue.Enqueue(@{Type='Log';Text="[Local] Admin: $isAdmin, TEMP: $([IO.Path]::GetTempPath())";Level='DEBUG'})
                 # Note: /scope computer requires admin; captures computer policy only (user RSoP may be empty for local admin accounts)
-                $gpArgs  = @('/scope', 'computer', '/x', $tmpFile, '/f')
+                # PS 5.1 Start-Process joins -ArgumentList unquoted; quote the path for TEMP folders with spaces
+                $gpArgs  = @('/scope', 'computer', '/x', "`"$tmpFile`"", '/f')
                 $SyncH.StatusQueue.Enqueue(@{Type='Log';Text="[Local] gpresult args: $($gpArgs -join ' ')";Level='DEBUG'})
                 $SyncH.StatusQueue.Enqueue(@{Type='Log';Text='[Local] Launching gpresult.exe (RSoP generation may take 30-60s)...';Level='INFO'})
                 $gpError = $null
@@ -3801,7 +3806,7 @@ $ui.BtnScanGPOs.Add_Click({
                 if ($gpFailed) {
                     $exitInfo = if ($proc -and $null -ne $proc.ExitCode) { $proc.ExitCode } else { 'N/A' }
                     $SyncH.StatusQueue.Enqueue(@{Type='Log';Text="[Local] Full RSoP failed (exit=$exitInfo), trying user-scope only...";Level='WARN'})
-                    $gpArgs2 = @('/scope', 'user', '/x', $tmpFile, '/f')
+                    $gpArgs2 = @('/scope', 'user', '/x', "`"$tmpFile`"", '/f')
                     $proc2 = try {
                         Start-Process -FilePath 'gpresult.exe' -ArgumentList $gpArgs2 `
                             -WindowStyle Hidden -PassThru
@@ -3889,6 +3894,8 @@ $ui.BtnScanGPOs.Add_Click({
                         $category    = if ($extNameNode) { $extNameNode.InnerText } else { 'General' }
                         $extNode = $extData.SelectSingleNode('*[local-name()="Extension"]')
                         if (-not $extNode) { continue }
+                        # xsi:type is language-independent, unlike the extension Name
+                        $extType = $extNode.GetAttribute('type', 'http://www.w3.org/2001/XMLSchema-instance') -replace '^.*:', ''
 
                         $policies = $extNode.SelectNodes('*[local-name()="Policy"]')
                         foreach ($pol in $policies) {
@@ -3908,7 +3915,7 @@ $ui.BtnScanGPOs.Add_Click({
                             [void]$allSettingsList.Add([PSCustomObject]@{
                                 Id=($settIdCounter); GPOName=$sGPO; GPOGuid=$sGPORaw; Category=$sCat
                                 PolicyName=$sName; SettingKey="$sCat\$sName"; State=$sState
-                                RegistryKey=''; ValueData=$sValue; Scope=$scope; Source='Local GPO'; IntuneGroup=(Get-IntuneGroup $sCat 'Local GPO')
+                                RegistryKey=''; ValueData=$sValue; Scope=$scope; Source='Local GPO'; IntuneGroup=(Get-IntuneGroup $sCat 'Local GPO'); ExtensionType=$extType
                             })
                         }
 
@@ -3929,7 +3936,7 @@ $ui.BtnScanGPOs.Add_Click({
                             [void]$allSettingsList.Add([PSCustomObject]@{
                                 Id=($settIdCounter); GPOName=$sGPO; GPOGuid=$sGPORaw; Category="$category (Registry)"
                                 PolicyName=$sName; SettingKey=$fullPath; State='Applied'
-                                RegistryKey=$fullPath; ValueData="AdmSetting=$admSet"; Scope=$scope; Source='Local GPO'; IntuneGroup=(Get-IntuneGroup "$category (Registry)" 'Local GPO')
+                                RegistryKey=$fullPath; ValueData="AdmSetting=$admSet"; Scope=$scope; Source='Local GPO'; IntuneGroup=(Get-IntuneGroup "$category (Registry)" 'Local GPO'); ExtensionType=$extType
                             })
                         }
 
@@ -3994,7 +4001,8 @@ $ui.BtnScanGPOs.Add_Click({
                     # 1) <Policy> entries (German, no reg key) — always replaced
                     # 2) <RegistrySetting> entries (have reg key) — WMI covers same data + precedence
                     # Keep: Security/Account/Audit/Script entries (not in WMI RSoP)
-                    $replaceableEntries = @($allSettingsList | Where-Object { $_.Category -notmatch 'Security|Account|Audit|Script' })
+                    # WMI covers computer-scope registry policy only; keep user scope and every other extension
+                    $replaceableEntries = @($allSettingsList | Where-Object { $_.Scope -eq 'Computer' -and $_.ExtensionType -eq 'RegistrySettings' })
                     foreach ($pe in $replaceableEntries) { [void]$allSettingsList.Remove($pe) }
                     $SyncH.StatusQueue.Enqueue(@{Type='Log';Text="[Local] Replaced $($replaceableEntries.Count) gpresult entries with WMI RSoP data";Level='DEBUG'})
                     # Add WMI entries with proper registry keys (includes precedence for conflict detection)
@@ -4074,7 +4082,7 @@ $ui.BtnScanGPOs.Add_Click({
             } catch {
                 return @{ Error = $_.Exception.Message }
             } finally {
-                if (Test-Path $tmpFile) { Remove-Item $tmpFile -Force -ErrorAction SilentlyContinue }
+                if ($runDir -and (Test-Path -LiteralPath $runDir)) { Remove-Item -LiteralPath $runDir -Recurse -Force -ErrorAction SilentlyContinue }
             }
 
         }
@@ -6660,7 +6668,7 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
   <button class="btn btn-icon" onclick="window.print()" title="Print report" aria-label="Print report">&#x1F5A8;&#xFE0F;</button>
 </div>
 
-<div class="container">
+<main class="container">
 <div class="meta-bar">
   <span>Generated: <strong>$genDate</strong></span>
   <span>Scan mode: <strong>$($Script:Prefs.ScanMode)</strong></span>
@@ -6722,17 +6730,21 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
         $comp = $mdmInfo.MdmDiag.Compliance
         $appSum = $mdmInfo.MdmDiag.AppSummary
         $compColor = switch ($comp.Status) { 'Compliant' { 'var(--green)' } 'Non-compliant' { 'var(--red)' } 'At Risk' { 'var(--yellow)' } default { 'var(--muted)' } }
+        # Derived from local evidence only, so avoid Intune's compliance vocabulary
+        $healthLabel = switch ($comp.Status) { 'Compliant' { 'No issues found' } 'Non-compliant' { 'Issues found' } 'At Risk' { 'Warnings' } default { "$($comp.Status)" } }
+        $reportIsAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
         [void]$html.Append(@"
 <details class="section" open>
 <summary class="section-header">
   <span class="icon" style="color:$compColor">$(if ($comp.Status -eq 'Compliant') { '&#x2705;' } else { '&#x26A0;&#xFE0F;' })</span>
-  <span class="title">Compliance &amp; App Install Summary</span>
-  <span class="count" style="background:$(if($comp.Status -eq 'Compliant'){'var(--green-dim)'}else{'var(--yellow-dim)'});color:$compColor">$($comp.Status)</span>
+  <h2 class="title">Local Health &amp; App Install Summary</h2>
+  <span class="count" style="background:$(if($comp.Status -eq 'Compliant'){'var(--green-dim)'}else{'var(--yellow-dim)'});color:$compColor">$healthLabel</span>
   <span class="chevron">&#x25B6;</span>
 </summary>
 <div class="section-body">
 <div class="device-info" style="border:none;margin:0;padding:12px 16px;">
-  <div class="di-item"><span class="di-label">Overall Status</span><span class="di-value" style="color:$compColor;font-weight:600">$(& $enc $comp.Status)</span></div>
+  <div class="di-item" style="grid-column:1/-1"><span class="di-value" style="color:var(--muted)">Checks local evidence on this device: remediation scripts, configuration profiles, enrollment and app installs. This is not the Intune compliance state.$(if (-not $reportIsAdmin) { ' Scan was not elevated, so some evidence was unavailable.' })</span></div>
+  <div class="di-item"><span class="di-label">Local Health</span><span class="di-value" style="color:$compColor;font-weight:600">$(& $enc $healthLabel)</span></div>
   <div class="di-item"><span class="di-label">Configured Policies</span><span class="di-value">$($comp.ConfiguredPolicies)</span></div>
 "@)
         if ($appSum -and $appSum.Total -gt 0) {
@@ -6762,7 +6774,7 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
 <details class="section" open>
 <summary class="section-header">
   <span class="icon">&#x2699;</span>
-  <span class="title">All Policy Settings</span>
+  <h2 class="title">All Policy Settings</h2>
   <span class="count">$totalSettings</span>
   <span class="chevron">&#x25B6;</span>
 </summary>
@@ -6894,7 +6906,7 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
 <details class="section">
 <summary class="section-header">
   <span class="icon">&#x1F4C1;</span>
-  <span class="title">GPO / Area Inventory</span>
+  <h2 class="title">GPO / Area Inventory</h2>
   <span class="count">$($gpos.Count)</span>
   <span class="chevron">&#x25B6;</span>
 </summary>
@@ -6921,7 +6933,7 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
 <details class="section"$(if ($conflicts.Count -gt 0) { ' open' } else { '' })>
 <summary class="section-header">
   <span class="icon">&#x26A0;</span>
-  <span class="title">Conflicts &amp; Redundancies</span>
+  <h2 class="title">Conflicts &amp; Redundancies</h2>
   <span class="count">$($conflicts.Count)</span>
   <span class="chevron">&#x25B6;</span>
 </summary>
@@ -6953,7 +6965,7 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
 <details class="section">
 <summary class="section-header">
   <span class="icon">&#x1F4E6;</span>
-  <span class="title">Intune Managed Apps</span>
+  <h2 class="title">Intune Managed Apps</h2>
   <span class="count">$appCount apps &middot; $installedCnt installed &middot; $failedCnt failed</span>
   <span class="chevron">&#x25B6;</span>
 </summary>
@@ -6983,7 +6995,7 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
 <details class="section">
 <summary class="section-header">
   <span class="icon">&#x1F511;</span>
-  <span class="title">MDM Enrollment &amp; Certificates</span>
+  <h2 class="title">MDM Enrollment &amp; Certificates</h2>
   <span class="count">$certCount certs &middot; $mgdPolCount managed policies</span>
   <span class="chevron">&#x25B6;</span>
 </summary>
@@ -7046,7 +7058,7 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
 <details class="section">
 <summary class="section-header">
   <span class="icon">&#x1F4DD;</span>
-  <span class="title">Script Policies (Proactive Remediations)</span>
+  <h2 class="title">Script Policies (Proactive Remediations)</h2>
   <span class="count">$($spList.Count) scripts &middot; $spFailed failed</span>
   <span class="chevron">&#x25B6;</span>
 </summary>
@@ -7069,7 +7081,7 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
 <details class="section">
 <summary class="section-header">
   <span class="icon">&#x2699;</span>
-  <span class="title">Configuration Profile Status</span>
+  <h2 class="title">Configuration Profile Status</h2>
   <span class="count">$($cpList.Count) profiles &middot; $cpErrors errors</span>
   <span class="chevron">&#x25B6;</span>
 </summary>
@@ -7094,7 +7106,7 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
 <details class="section"$ppkgOpen>
 <summary class="section-header">
   <span class="icon">&#x1F4E6;</span>
-  <span class="title">Provisioning Packages (.ppkg)</span>
+  <h2 class="title">Provisioning Packages (.ppkg)</h2>
   <span class="count">$($ppkgList.Count) packages$(if($ppkgFailCount -gt 0){" &middot; <span style=`"color:var(--red)`">$ppkgFailCount with failures</span>"})</span>
   <span class="chevron">&#x25B6;</span>
 </summary>
@@ -7141,7 +7153,7 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
 <details class="section" open>
 <summary class="section-header">
   <span class="icon" style="color:var(--red)">&#x26D4;</span>
-  <span class="title">Enrollment Issues</span>
+  <h2 class="title">Enrollment Issues</h2>
   <span class="count" style="background:rgba(239,68,68,0.12);color:var(--red)">$($eiList.Count)</span>
   <span class="chevron">&#x25B6;</span>
 </summary>
@@ -7163,7 +7175,7 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
 <details class="section">
 <summary class="section-header">
   <span class="icon" style="color:var(--yellow)">&#x26A0;</span>
-  <span class="title">Unlinked GPOs</span>
+  <h2 class="title">Unlinked GPOs</h2>
   <span class="count" style="background:var(--yellow-dim);color:var(--yellow)">$($unlinked.Count)</span>
   <span class="chevron">&#x25B6;</span>
 </summary>
@@ -7183,7 +7195,7 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
 <details class="section" data-print="skip">
 <summary class="section-header">
   <span class="icon" style="color:var(--muted)">&#x2B55;</span>
-  <span class="title">Not Configured (CSP Defaults)</span>
+  <h2 class="title">Not Configured (CSP Defaults)</h2>
   <span class="count" style="background:rgba(113,113,122,0.12);color:var(--muted)">$notCfgCount</span>
   <span class="chevron">&#x25B6;</span>
 </summary>
@@ -7201,7 +7213,7 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
 <details class="section">
 <summary class="section-header">
   <span class="icon">&#x1F4CA;</span>
-  <span class="title">Settings by Category Breakdown</span>
+  <h2 class="title">Settings by Category Breakdown</h2>
   <span class="count">$($categories.Count) categories</span>
   <span class="chevron">&#x25B6;</span>
 </summary>
@@ -7222,7 +7234,7 @@ details.gpo-group[open] > summary .grp-chevron { transform:rotate(90deg); }
   Generated by <strong>PolicyPilot v$($Script:AppVersion)</strong> on $genDate &middot;
   Scan mode: $($Script:Prefs.ScanMode) &middot; Domain: $(& $enc $domain)
 </div>
-</div>
+</main>
 
 <script>
 function toggleTheme() {
