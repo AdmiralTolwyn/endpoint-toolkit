@@ -2565,7 +2565,7 @@ foreach ($SubId in $SubscriptionId) {
                             AllowGateway   = $_.AllowGatewayTransit
                         }
                     })
-                    DnsServers    = @($VNet.DhcpOptions.DnsServers | ForEach-Object { (ConvertTo-CollectorNetworkValue $Script:PrivacyContext $_) -replace '^Public/\d+$', 'Public' })
+                    DnsServers    = @($VNet.DhcpOptions.DnsServers | Where-Object { $_ } | ForEach-Object { (ConvertTo-CollectorNetworkValue $Script:PrivacyContext $_) -replace '^Public/\d+$', 'Public' })
                     HasPeering    = $VNet.VirtualNetworkPeerings.Count -gt 0
                     Location      = $VNet.Location
                     TagKeys       = @(ConvertTo-AvdTagKeys $VNet.Tag)
@@ -2738,7 +2738,7 @@ foreach ($SubId in $SubscriptionId) {
                                 AllowGateway   = $_.properties.allowGatewayTransit
                             }
                         })
-                        DnsServers    = @($FbProps.dhcpOptions.dnsServers | ForEach-Object { (ConvertTo-CollectorNetworkValue $Script:PrivacyContext $_) -replace '^Public/\d+$', 'Public' })
+                        DnsServers    = @($FbProps.dhcpOptions.dnsServers | Where-Object { $_ } | ForEach-Object { (ConvertTo-CollectorNetworkValue $Script:PrivacyContext $_) -replace '^Public/\d+$', 'Public' })
                         HasPeering    = @($FbProps.virtualNetworkPeerings).Count -gt 0
                         Location      = $FallbackVNet.Location
                     }

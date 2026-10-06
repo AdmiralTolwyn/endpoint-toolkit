@@ -86,6 +86,9 @@ foreach ($Mode in @('Pseudonymous','Identified')) {
         Assert-Privacy ((@($VNetObj.DnsServers) -join ',') -ceq '10.0.0.4,198.51.100.53' -and $Rules[0].SourceAddressPrefix -ceq '203.0.113.77/32') 'Identified network values not retained'
     }
 }
+$VNet.DhcpOptions = $null
+. ([scriptblock]::Create($VNetStatement.Extent.Text))
+Assert-Privacy (@($VNetObj.DnsServers).Count -eq 0) 'Missing DNS servers exported as a placeholder value'
 
 # RBAC labels and Defender device names.
 $Assignments = @(

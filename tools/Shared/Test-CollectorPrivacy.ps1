@@ -42,6 +42,20 @@ try {
     Assert-Privacy $Rejected 'Short key accepted'
     Assert-Privacy ((ConvertTo-CollectorIdentity $Context 'usr' '') -ceq '' -and $null -eq (ConvertTo-CollectorIdentity $Context 'usr' $null)) 'Empty identities must be preserved'
 
+    $Relative = Join-Path $Root 'relative'
+    [void][IO.Directory]::CreateDirectory($Relative)
+    $OriginalProcessDirectory = [Environment]::CurrentDirectory
+    Push-Location $Relative
+    try {
+        [Environment]::CurrentDirectory = [IO.Path]::GetTempPath()
+        Assert-Privacy ((Resolve-CollectorOutputPath -Collector 'Test' -OutputPath '.\relative.json' -CollectionId 'x') -ceq (Join-Path $Relative 'relative.json')) 'Relative output path ignored the PowerShell location'
+        [void](Write-CollectorProtectedFile -Path '.\relative.bin' -Bytes ([byte[]](1)))
+        Assert-Privacy (Test-Path -LiteralPath (Join-Path $Relative 'relative.bin')) 'Relative protected write ignored the PowerShell location'
+    } finally {
+        Pop-Location
+        [Environment]::CurrentDirectory = $OriginalProcessDirectory
+    }
+
     $Map = Join-Path $Root 'identities.json'
     $Written = Write-CollectorExport $Context $Output '{"ok":true}' $Map
     Assert-Privacy ($Written -eq $Output -and [IO.File]::ReadAllText($Output) -ceq '{"ok":true}') 'Export not written exactly'

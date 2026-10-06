@@ -61,7 +61,7 @@ function Write-AssessorProtectedText {
     $Temp = "$FullPath.$Token.tmp"
     $Old = "$FullPath.$Token.old"
     [void](Write-CollectorProtectedFile -Path $Temp -Bytes $Bytes)
-    [IO.File]::Move($FullPath, $Old)
+    try { [IO.File]::Move($FullPath, $Old) } catch { [IO.File]::Delete($Temp); throw }
     try { [IO.File]::Move($Temp, $FullPath) } catch { [IO.File]::Move($Old, $FullPath); [IO.File]::Delete($Temp); throw }
     [IO.File]::Delete($Old)
 }

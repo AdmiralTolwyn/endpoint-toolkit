@@ -507,15 +507,20 @@ Auto-save interval, backup management, cache purge, debug overlay toggle, animat
 
 ## Discovery Script Details
 
-`Invoke-AvdDiscovery.ps1` (v0.6.0) runs as a standalone script that scans Azure subscriptions and produces a structured JSON file.
+`Invoke-AvdDiscovery.ps1` (v0.7.0) runs as a standalone script that scans Azure subscriptions and produces a structured JSON file.
 
 ### Parameters
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `-SubscriptionId` | String or String[] | Current Az context | One or more subscription IDs to scan |
-| `-OutputPath` | String | `assessments/discovery_<timestamp>.json` | Path for output JSON |
+| `-OutputPath` | String | `%LOCALAPPDATA%\AssayCollections\avd\avd_<collectionId>.json` | New output file; existing files are never overwritten |
 | `-SkipLogin` | Switch | `$false` | Skip interactive login, use existing Az context |
+| `-PrivacyMode` | String | `Pseudonymous` | `Identified` keeps names and literal network values; requires `-ConfirmIdentifiedExport` |
+| `-PseudonymKeyPath` | String | next to the output | Existing or new 32-byte key for stable pseudonyms |
+| `-IdentityMapPath` | String | none | Optional separate pseudonym-to-name map |
+| `-Assessor` | String | none | Operator-supplied label exported as-is |
+| `-IncludeTagValues` | Switch | `$false` | Export tag values; Identified mode only |
 
 ### Discovery Sections
 

@@ -640,7 +640,7 @@ W365Assessor/
 
 | Component | Version |
 |---|---|
-| `Invoke-W365Discovery.ps1` | 0.3.7 |
+| `Invoke-W365Discovery.ps1` | 0.4.0 |
 | `checks.json` | 1.1 (schema), 132 checks |
 | `W365Assessor.ps1` | 0.2.0 |
 

@@ -57,6 +57,8 @@ windows/
 | [W365Assessor](tools/W365Assessor/) | Windows 365 (Cloud PC) Enterprise & Frontline tenant assessment — 128 checks, 23 automated via Microsoft Graph |
 | [WinGetManifestManager](tools/WinGetManifestManager/) | WinGet package manifest manager for private repos |
 
+The AVD, Windows 365, Intune and Baseline collectors pseudonymize personal data by default and write Confidential exports to `%LOCALAPPDATA%\AssayCollections`. See each tool's README for `-PrivacyMode`.
+
 ## Scripts
 
 | Area | Description |

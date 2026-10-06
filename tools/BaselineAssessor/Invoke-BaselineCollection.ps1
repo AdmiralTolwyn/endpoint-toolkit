@@ -108,6 +108,12 @@ $Script:Errors           = [System.Collections.ArrayList]::new()
 # region CollectorPrivacy
 # Canonical source: tools/Shared/CollectorPrivacy.ps1. Collector copies must remain identical.
 
+# Relative paths resolve against the PowerShell location, not the process working directory.
+function Resolve-CollectorFullPath {
+    param([string]$Path)
+    return $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
+}
+
 function Resolve-CollectorOutputPath {
     param([string]$Collector, [string]$OutputPath, [string]$CollectionId)
     if ([string]::IsNullOrWhiteSpace($OutputPath)) {
@@ -115,14 +121,14 @@ function Resolve-CollectorOutputPath {
         $Name = $Collector.ToLowerInvariant()
         $OutputPath = Join-Path $env:LOCALAPPDATA ('AssayCollections\{0}\{0}_{1}.json' -f $Name, $CollectionId)
     }
-    $FullPath = [IO.Path]::GetFullPath($OutputPath)
+    $FullPath = Resolve-CollectorFullPath $OutputPath
     if (Test-Path -LiteralPath $FullPath) { throw 'Output already exists; choose a new output path.' }
     return $FullPath
 }
 
 function Test-CollectorSyncedPath {
     param([string]$Path)
-    $FullPath = [IO.Path]::GetFullPath($Path)
+    $FullPath = Resolve-CollectorFullPath $Path
     foreach ($Root in @($env:OneDrive, $env:OneDriveCommercial, $env:OneDriveConsumer)) {
         if ([string]::IsNullOrWhiteSpace($Root)) { continue }
         $Prefix = [IO.Path]::GetFullPath($Root).TrimEnd('\') + '\'
@@ -134,7 +140,7 @@ function Test-CollectorSyncedPath {
 function Write-CollectorProtectedFile {
     param([string]$Path, [byte[]]$Bytes)
     if ($PSVersionTable.PSEdition -eq 'Core') { Add-Type -AssemblyName System.IO.FileSystem.AccessControl -ErrorAction SilentlyContinue }
-    $FullPath = [IO.Path]::GetFullPath($Path)
+    $FullPath = Resolve-CollectorFullPath $Path
     $Directory = [IO.Path]::GetDirectoryName($FullPath)
     if (-not [IO.Directory]::Exists($Directory)) { [void][IO.Directory]::CreateDirectory($Directory) }
     $Security = New-Object Security.AccessControl.FileSecurity
@@ -169,7 +175,7 @@ function New-CollectorPrivacyContext {
     $KeyId = $null
     $ResolvedKeyPath = $null
     if ($Mode -eq 'Pseudonymous') {
-        $ResolvedKeyPath = if ($KeyPath) { [IO.Path]::GetFullPath($KeyPath) } else { [IO.Path]::ChangeExtension([IO.Path]::GetFullPath($OutputPath), '.pseudonym-key') }
+        $ResolvedKeyPath = if ($KeyPath) { Resolve-CollectorFullPath $KeyPath } else { [IO.Path]::ChangeExtension((Resolve-CollectorFullPath $OutputPath), '.pseudonym-key') }
         if (Test-Path -LiteralPath $ResolvedKeyPath) {
             try { $Key = [Convert]::FromBase64String(([IO.File]::ReadAllText($ResolvedKeyPath)).Trim()) } catch { throw 'Pseudonym key file is not valid Base64.' }
             if ($Key.Length -ne 32) { throw 'Pseudonym key must contain exactly 32 bytes.' }
