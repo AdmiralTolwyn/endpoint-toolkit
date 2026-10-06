@@ -31,9 +31,9 @@ param(
 $ErrorActionPreference = 'Continue'
 $ScriptVersion = '1.0.0'
 
+$Root = $PSScriptRoot
+if (-not $Root) { $Root = $PWD.Path }
 if (-not $OutputPath) {
-    $Root = $PSScriptRoot
-    if (-not $Root) { $Root = $PWD.Path }
     $OutputPath = Join-Path $Root 'admx_metadata.json'
 }
 

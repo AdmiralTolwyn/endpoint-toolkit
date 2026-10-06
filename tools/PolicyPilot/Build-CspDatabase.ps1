@@ -25,8 +25,11 @@
 [CmdletBinding()]
 param(
     [string[]]$Areas,
-    [string]$OutputPath = (Join-Path $PSScriptRoot 'csp_metadata.json')
+    [string]$OutputPath
 )
+
+# PS 5.1 leaves $PSScriptRoot empty inside param() defaults
+if (-not $OutputPath) { $OutputPath = Join-Path $PSScriptRoot 'csp_metadata.json' }
 
 $ErrorActionPreference = 'Stop'
 $baseUrl = 'https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-'
@@ -62,6 +65,9 @@ $allAreas = @(
 
 if ($Areas) { $targetAreas = $Areas } else { $targetAreas = $allAreas }
 
+# Learn page slugs that differ from the CSP area name
+$areaSlugs = @{ 'LocalSecurityAuthority' = 'lsa' }
+
 $database = [ordered]@{}
 $totalSettings = 0
 $failedAreas = @()
@@ -69,7 +75,8 @@ $failedAreas = @()
 Write-Host "CSP Metadata Builder - scraping $($targetAreas.Count) area(s) from MS Learn..." -ForegroundColor Cyan
 
 foreach ($area in $targetAreas) {
-    $url = "$baseUrl$($area.ToLower())"
+    $slug = if ($areaSlugs.ContainsKey($area)) { $areaSlugs[$area] } else { $area.ToLower() }
+    $url = "$baseUrl$slug"
     Write-Host "  [$($targetAreas.IndexOf($area)+1)/$($targetAreas.Count)] $area ... " -NoNewline
 
     try {
