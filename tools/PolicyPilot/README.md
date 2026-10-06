@@ -49,6 +49,29 @@ Select a scan mode in the sidebar, configure domain/DC/OU scope if needed, and c
 .\PolicyPilot.ps1 -Headless -ReportType Local
 ```
 
+### 4. mdmresult — gpresult for Intune / hybrid devices
+
+`mdmresult.ps1` runs the GUI's device scan without a window and writes the same HTML
+report as **Export HTML**: ADMX/CSP names, CSP gap analysis, conflicts, apps, compliance.
+Scan and report code are loaded from `PolicyPilot.ps1` at runtime, so both stay identical.
+
+```powershell
+# Combined GPO + MDM (default) — run elevated for computer-scope GPO and Win32 app state
+.\mdmresult.ps1
+
+# Intune only, fixed path, overwrite, open when done
+.\mdmresult.ps1 -Mode Intune -Path C:\Temp\policy.html -Force -Open
+```
+
+| Parameter | Default | Description |
+|---|---|---|
+| `-Mode` | `Combined` | `Local` (GPO), `Intune` (MDM), `Combined` (hybrid / co-managed) |
+| `-Path` (`-H`) | `.\mdmresult_<COMPUTER>_<timestamp>.html` | Report file |
+| `-Force` (`-F`) | off | Overwrite an existing report |
+| `-Open` | off | Open the report when finished |
+
+A gpresult `/r`-style summary is printed to the console. `-Verbose` shows the full scan log.
+
 ## Scan Modes
 
 ### AD Mode (LDAP + SYSVOL)
@@ -225,10 +248,12 @@ PolicyPilot/
 ├── PolicyPilot.ps1            # Main WPF application (~12,000 lines)
 ├── PolicyPilot_UI.xaml        # WPF XAML layout (~3,000 lines)
 ├── Launch_PolicyPilot.bat     # Batch launcher (auto-detects PS7/PS5.1)
+├── mdmresult.ps1              # GUI-less gpresult-style report (same HTML as the GUI)
 ├── Build-AdmxDatabase.ps1    # ADMX → JSON metadata builder
 ├── Build-CspDatabase.ps1     # CSP → JSON metadata scraper
-├── admx_metadata.json         # Pre-built ADMX database (2,027 policies, 2.4 MB)
-├── csp_metadata.json          # Pre-built CSP database (~3,000 settings, 1.5 MB)
+├── admx_metadata.json         # Pre-built ADMX database (26H2 + SecGuide/MSS-legacy, 3,726 policies, 8.9 MB)
+├── csp_metadata.json          # Pre-built CSP database (1,617 settings)
+├── templates/                 # SecGuide / MSS-legacy ADMX from the Security Baseline
 ├── README.md                  # This file
 ├── reports/                   # Generated HTML/CSV reports (auto-created)
 └── snapshots/                 # Scan snapshots for comparison (auto-created)

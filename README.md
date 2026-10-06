@@ -53,7 +53,7 @@ windows/
 | [AzChangeTracker](tools/AzChangeTracker/) | Azure resource change tracking |
 | [BaselineAssessor](tools/BaselineAssessor/) | Windows security baseline assessment (263 checks) |
 | [DeviceDecommissioner](tools/DeviceDecommissioner/) | Remove a device from AD, Entra ID, Intune, Autopilot, and SCCM in one guided workflow — pre-flight cards, BitLocker/LAPS warnings, dry-run, audit trail |
-| [PolicyPilot](tools/PolicyPilot/) | Group Policy & MDM documentation — scans AD/Local/Intune, conflict detection, ADMX/CSP enrichment |
+| [PolicyPilot](tools/PolicyPilot/) | Group Policy & MDM documentation — scans AD/Local/Intune, conflict detection, ADMX/CSP enrichment; `mdmresult.ps1` gives a gpresult-style report for Intune / hybrid devices |
 | [W365Assessor](tools/W365Assessor/) | Windows 365 (Cloud PC) Enterprise & Frontline tenant assessment — 128 checks, 23 automated via Microsoft Graph |
 | [WinGetManifestManager](tools/WinGetManifestManager/) | WinGet package manifest manager for private repos |
 
