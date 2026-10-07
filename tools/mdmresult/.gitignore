@@ -1,0 +1,3 @@
+# Reports written by mdmresult.ps1 contain device and user data
+mdmresult_*.html
+mdmresult_*.json
