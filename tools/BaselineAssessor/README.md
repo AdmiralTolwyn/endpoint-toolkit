@@ -1,6 +1,6 @@
 # Baseline Collector and BaselinePilot
 
-`Invoke-BaselineCollection.ps1` 1.4.1 collects Windows configuration and event evidence for
+`Invoke-BaselineCollection.ps1` 1.4.2 collects Windows configuration and event evidence for
 [Assay](https://github.com/AdmiralTolwyn/assay). BaselinePilot is the legacy Windows/WPF assessor;
 its catalog and evaluator are separate from Assay's 312 checks.
 
@@ -47,6 +47,11 @@ Use `Get-Help .\Invoke-BaselineCollection.ps1 -Full` for detailed help.
 
 - Area completion is not evidence completeness. Inspect query states, provider errors and missing
   values. Registry absence does not prove secure defaults or a disabled policy.
+- 1.4.2 records `registryBaselines._readStates` (Present/Missing/Error) and adds three bounded
+  device PolicyManager reads: SmartScreen enablement, VBS enablement and diagnostic-data level.
+  Values come from the winning provider store; provider IDs are not exported.
+  Explicit provider markers and integer enums are required; no Windows defaults are synthesized.
+  See [policy evidence](https://github.com/AdmiralTolwyn/assay/blob/main/docs/BASELINE_POLICY_EVIDENCE.md).
 - 1.4.1 preserves empty arrays and limits crashes to `Application Error` event 1000 with validated
   named filenames. WER 1001 is excluded to avoid unrelated providers and duplicate crash counts.
 - Metadata records query outcomes, caps and the oldest retained record per log. Assay withholds
@@ -58,7 +63,7 @@ Use `Get-Help .\Invoke-BaselineCollection.ps1 -Full` for detailed help.
 - Cloud PC applicability is bounded. SCT profiles override only two audit controls and require
   matching build/role evidence. Do not select a profile merely to reduce unknown results.
 
-Recollect older exports with 1.4.1 and re-import into an updated Assay build. Missing provider and
+Recollect older exports with 1.4.2 and re-import into an updated Assay build. Missing provider and
 retention evidence cannot be reconstructed; saved assessments are not automatically migrated.
 
 ## Data Handling
@@ -72,6 +77,7 @@ The privacy helper is embedded, so this collector remains a single deployable sc
 
 ```powershell
 .\Test-BaselinePrivacy.ps1
+.\Test-BaselinePolicyEvidence.ps1
 .\Test-BaselineCollector.ps1
 .\Test-BaselineApplicability.ps1
 .\Test-SpeculationEvidence.ps1

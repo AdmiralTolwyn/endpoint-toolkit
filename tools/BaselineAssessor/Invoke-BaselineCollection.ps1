@@ -55,8 +55,8 @@
     This does not skip collection, change policy, or update the legacy WPF evaluator.
 .NOTES
     Author : Anton Romanyuk
-    Version: 1.4.1
-    Date   : 2026-10-06
+    Version: 1.4.2
+    Date   : 2026-10-07
     Requires: PowerShell 5.1, Local Admin, No external modules
     Runs headless on arbitrary Windows targets (client, member server, DC, Server Core).
     Disclaimer: This script is provided "AS IS" with no warranties and confers no rights.
@@ -97,7 +97,7 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
-$Script:CollectorVersion = '1.4.1'
+$Script:CollectorVersion = '1.4.2'
 $Script:StartTime        = [DateTime]::Now
 # Area 3 (GPO/gpresult) only runs when -IncludeGpoData; Area 22 (events) only when not -SkipEventCollection.
 $Script:TotalAreas       = 20
@@ -105,6 +105,7 @@ if (-not $SkipEventCollection) { $Script:TotalAreas++ }
 if ($IncludeGpoData)          { $Script:TotalAreas++ }
 $Script:AreaResults      = @{}
 $Script:Errors           = [System.Collections.ArrayList]::new()
+$Script:RegistryReadStates = @{}
 
 # region CollectorPrivacy
 <#
@@ -1686,25 +1687,46 @@ function Invoke-CollectionArea {
 
 <#
 .SYNOPSIS
-    Reads a single registry value, returning $null if the key or value doesn't exist.
+    Reads a registry value and records Present, Missing or Error evidence separately.
+.DESCRIPTION
+    Read states use literal registry paths and bounded reason codes. Environment strings are
+    not expanded. Missing values and failed reads return null but have distinct states.
 .PARAMETER Path
     Registry path without the provider prefix (e.g. 'HKLM\SOFTWARE\...').
 .PARAMETER Name
     The value name to read.
 .OUTPUTS
-    The registry value, or $null if not found.
+    The registry value without array enumeration, or $null for a missing or failed read.
 #>
 function Read-RegistryValue {
     param([string]$Path, [string]$Name)
+    if ($Script:RegistryReadStates -isnot [hashtable]) { $Script:RegistryReadStates = @{} }
+    $Identity = "$Path\$Name"
     try {
-        $val = Get-ItemProperty -Path "Registry::$Path" -Name $Name -ErrorAction Stop
-        return $val.$Name
-    } catch { return $null }
+        $Item = Get-Item -LiteralPath "Registry::$Path" -ErrorAction Stop
+        if ($Name -notin @($Item.GetValueNames())) {
+            $Script:RegistryReadStates[$Identity] = @{ state = 'Missing'; reason = 'ValueNotFound' }
+            return $null
+        }
+        $Value = $Item.GetValue($Name, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+        $Script:RegistryReadStates[$Identity] = @{ state = 'Present' }
+        return ,$Value
+    } catch [System.Management.Automation.ItemNotFoundException] {
+        $Script:RegistryReadStates[$Identity] = @{ state = 'Missing'; reason = 'KeyNotFound' }
+        return $null
+    } catch {
+        $Reason = if ($_.Exception -is [UnauthorizedAccessException] -or $_.Exception -is [Security.SecurityException] -or $_.CategoryInfo.Category -eq 'PermissionDenied') { 'AccessDenied' } else { 'ReadFailed' }
+        $Script:RegistryReadStates[$Identity] = @{ state = 'Error'; reason = $Reason }
+        return $null
+    }
 }
 
 <#
 .SYNOPSIS
-    Reads all values from a registry key, returning an empty hashtable if the key doesn't exist.
+    Reads registry key values and records Present, Missing or Error evidence separately.
+.DESCRIPTION
+    Environment strings are not expanded. Missing keys and failed reads return an empty
+    hashtable but have distinct states; partially read values are discarded on failure.
 .PARAMETER Path
     Registry path without the provider prefix (e.g. 'HKLM\SOFTWARE\...').
 .OUTPUTS
@@ -1712,19 +1734,80 @@ function Read-RegistryValue {
 #>
 function Read-RegistryValues {
     param([string]$Path)
+    if ($Script:RegistryReadStates -isnot [hashtable]) { $Script:RegistryReadStates = @{} }
     try {
-        $item = Get-Item -Path "Registry::$Path" -ErrorAction Stop
+        $item = Get-Item -LiteralPath "Registry::$Path" -ErrorAction Stop
         $result = @{}
         foreach ($name in $item.GetValueNames()) {
-            $result[$name] = $item.GetValue($name)
+            $result[$name] = $item.GetValue($name, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
         }
+        $Script:RegistryReadStates[$Path] = @{ state = 'Present' }
         return $result
-    } catch { return @{} }
+    } catch [System.Management.Automation.ItemNotFoundException] {
+        $Script:RegistryReadStates[$Path] = @{ state = 'Missing'; reason = 'KeyNotFound' }
+        return @{}
+    } catch {
+        $Reason = if ($_.Exception -is [UnauthorizedAccessException] -or $_.Exception -is [Security.SecurityException] -or $_.CategoryInfo.Category -eq 'PermissionDenied') { 'AccessDenied' } else { 'ReadFailed' }
+        $Script:RegistryReadStates[$Path] = @{ state = 'Error'; reason = $Reason }
+        return @{}
+    }
 }
 
 # ═══════════════════════════════════════════════════════════════════════
 # BANNER
 # ═══════════════════════════════════════════════════════════════════════
+
+<#
+.SYNOPSIS
+    Reads three catalog-bound numeric policies from the local PolicyManager device store.
+.DESCRIPTION
+    Requires an explicit provider-set marker, reads the value from the winning provider's device
+    store (current\device usually holds only markers), and accepts documented integer enums.
+    Missing, failed or malformed reads retain state but no value. Provider IDs are not exported.
+    This reports configuration, not runtime enforcement.
+.PARAMETER Enrolled
+    Whether local enrollment evidence was found. False skips these policy reads.
+.OUTPUTS
+    Hashtable with Values and ReadStates keyed by policy area and leaf.
+#>
+function Read-BaselineMappedPolicies {
+    param([bool]$Enrolled)
+    $Bindings = @(
+        @{ Area = 'SmartScreen'; Name = 'EnableSmartScreenInShell'; Allowed = @(0, 1) },
+        @{ Area = 'DeviceGuard'; Name = 'EnableVirtualizationBasedSecurity'; Allowed = @(0, 1) },
+        @{ Area = 'System'; Name = 'AllowTelemetry'; Allowed = @(0, 1, 3) }
+    )
+    $Values = @{}
+    $States = @{}
+    foreach ($Binding in $Bindings) {
+        $Area = $Binding.Area
+        $Name = $Binding.Name
+        $Values[$Area] = @{}
+        $States[$Area] = @{}
+        $Evidence = @{ state = 'NotCollected'; source = 'PolicyManagerDevice'; providerSet = $false }
+        $States[$Area][$Name] = $Evidence
+        if (-not $Enrolled) { continue }
+        $Path = "HKLM\SOFTWARE\Microsoft\PolicyManager\current\device\$Area"
+        $Marker = Read-RegistryValue -Path $Path -Name ($Name + '_ProviderSet')
+        $MarkerState = $Script:RegistryReadStates["$Path\${Name}_ProviderSet"]
+        $Evidence.state = if ($MarkerState.state -eq 'Missing') { 'NotConfigured' } else { $MarkerState.state }
+        if ($MarkerState.state -ne 'Present') { continue }
+        if (($Marker -isnot [int] -and $Marker -isnot [long]) -or $Marker -notin @(0, 1)) { $Evidence.state = 'Invalid'; continue }
+        if ($Marker -ne 1) { $Evidence.state = 'NotConfigured'; continue }
+        $Evidence.providerSet = $true
+        $Winner = Read-RegistryValue -Path $Path -Name ($Name + '_WinningProvider')
+        $Evidence.state = $Script:RegistryReadStates["$Path\${Name}_WinningProvider"].state
+        if ($Evidence.state -ne 'Present') { continue }
+        if ($Winner -isnot [string] -or $Winner -notmatch '^\{?[0-9A-Fa-f]{8}(-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}\}?$') { $Evidence.state = 'Invalid'; continue }
+        $ValuePath = "HKLM\SOFTWARE\Microsoft\PolicyManager\providers\$Winner\default\Device\$Area"
+        $Value = Read-RegistryValue -Path $ValuePath -Name $Name
+        $Evidence.state = $Script:RegistryReadStates["$ValuePath\$Name"].state
+        if ($Evidence.state -ne 'Present') { continue }
+        if (($Value -isnot [int] -and $Value -isnot [long]) -or $Value -notin $Binding.Allowed) { $Evidence.state = 'Invalid'; continue }
+        $Values[$Area][$Name] = $Value
+    }
+    return @{ Values = $Values; ReadStates = $States }
+}
 
 $osInfo   = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
 $osBuild  = if ($osInfo) { $osInfo.BuildNumber } else { 'Unknown' }
@@ -2129,6 +2212,8 @@ $mdmEnrollment = Invoke-CollectionArea -Step 4 -Name 'MDM Enrollment' -Sections 
             -Detail "$($managedAreas.Count) MDM-managed areas"
     }
 
+    $MappedPolicies = Read-BaselineMappedPolicies -Enrolled $enrolled
+    foreach ($Area in $MappedPolicies['Values'].Keys) { $policyValues[$Area] = $MappedPolicies['Values'][$Area] }
     $detail = if ($enrolled) { "$provider$(if ($mdmWinsOverGP -eq 1) { ' (MDM wins over GPO)' } else { '' })" } else { 'Not enrolled' }
     @{
         mdmEnrolled    = $enrolled
@@ -2136,6 +2221,7 @@ $mdmEnrollment = Invoke-CollectionArea -Step 4 -Name 'MDM Enrollment' -Sections 
         mdmWinsOverGP  = $mdmWinsOverGP
         managedAreas   = $managedAreas
         policyValues   = $policyValues
+        policyReadStates = $MappedPolicies['ReadStates']
         _detail        = $detail
     }
 }
@@ -2397,6 +2483,7 @@ $registryBaselines = Invoke-CollectionArea -Step 7 -Name 'Registry Baselines' -S
         @{ Path = 'HKLM\SYSTEM\CurrentControlSet\Control\Lsa\Kerberos\Parameters'; Values = @('DefaultEncryptionType') }
     )
 
+    $Script:RegistryReadStates = @{}
     $result = @{}
     $readCount = 0
     foreach ($entry in $paths) {
@@ -2416,6 +2503,7 @@ $registryBaselines = Invoke-CollectionArea -Step 7 -Name 'Registry Baselines' -S
         }
     }
     $result['_detail'] = "$readCount keys read"
+    $result['_readStates'] = $Script:RegistryReadStates.Clone()
     $result
 }
 
