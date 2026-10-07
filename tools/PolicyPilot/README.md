@@ -53,8 +53,7 @@ Select a scan mode in the sidebar, configure domain/DC/OU scope if needed, and c
 
 [mdmresult](../mdmresult/) is a standalone, GUI-less package generated from this tool. It
 writes the same HTML report as **Export HTML** and needs only its own script and copies of
-the two metadata files. Re-run `..\mdmresult\build\Build-MdmResult.ps1` after changing
-`PolicyPilot.ps1` or the metadata.
+the two metadata files.
 
 ## Scan Modes
 
@@ -246,8 +245,6 @@ PolicyPilot/
 ├── admx_metadata.json         # Pre-built ADMX database (26H2 + SecGuide/MSS-legacy, 3,726 policies, de/fr names, 14 MB)
 ├── csp_metadata.json          # Pre-built CSP database (1,617 settings)
 ├── templates/                 # SecGuide / MSS-legacy ADMX from the Security Baseline
-├── Test-PolicyPilot.ps1       # Offline regression tests (conflicts, name matching, report, metadata)
-├── tests/                     # Test fixtures (German gpresult policy names)
 ├── README.md                  # This file
 ├── reports/                   # Generated HTML/CSV reports (auto-created)
 └── snapshots/                 # Scan snapshots for comparison (auto-created)

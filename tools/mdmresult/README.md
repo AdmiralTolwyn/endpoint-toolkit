@@ -27,8 +27,6 @@ Screenshots use placeholder identities (CONTOSO-LT042, jdoe@contoso.com).
 | `admx_metadata.json` | ADMX/ADML metadata: Windows 11 26H2 + SecGuide / MSS-legacy (3,726 policies), with German and French names for matching localized gpresult output |
 | `csp_metadata.json` | Policy CSP metadata from Microsoft Learn (1,617 settings) |
 
-`build/` is only needed to regenerate and test the package; don't ship it.
-
 **Size and load time.** The package is about 17 MB on disk, almost all of it the ADMX
 metadata (14 MB). The files are shipped uncompressed so the script runs as-is and the metadata
 stays readable and diffable; zip the folder yourself if you need a smaller download. Loading
@@ -93,30 +91,3 @@ The report contains the computer and user name, enrollment UPN, policy values, i
 apps and certificate details; the JSON contains the same data. Treat both as internal.
 gpresult output goes to a per-run folder under `%TEMP%` that is deleted after the scan, as is
 the MDM diagnostics folder.
-
-## Rebuilding
-
-`mdmresult.ps1` is generated from [PolicyPilot](../PolicyPilot/). Don't edit it directly.
-
-```powershell
-.\build\Build-MdmResult.ps1
-```
-
-The build takes PolicyPilot's scan block, post-scan enrichment and gap analysis, conflict
-detection and HTML report code from `PolicyPilot.ps1`, fills them into
-`build/mdmresult.template.ps1`, and copies both metadata files from PolicyPilot. Run it after
-any change to `PolicyPilot.ps1` or the metadata. It stops with an error if PolicyPilot's code
-no longer has the expected shape, rather than generating a report that differs from the GUI.
-
-## Testing
-
-```powershell
-# Offline: generated script parses, matches PolicyPilot.ps1 and the metadata, generator guards
-powershell.exe -NoProfile -File .\build\Test-MdmResult.ps1
-
-# Plus a real read-only Intune scan: HTML, JSON and exit code
-powershell.exe -NoProfile -File .\build\Test-MdmResult.ps1 -Scan
-```
-
-PolicyPilot's own tests (conflict detection, name matching, report encoding, metadata
-parsing) are in `..\PolicyPilot\Test-PolicyPilot.ps1`.
