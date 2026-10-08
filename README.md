@@ -40,7 +40,7 @@ Each guide includes prerequisites, examples, a complete argument table and evide
 | [intune/mdm-sync-service](intune/mdm-sync-service/README.md) | Local diagnostics, service repair and opt-in sync |
 | [intune/onedrive-photos](intune/onedrive-photos/) | Shortcut-only detection/remediation |
 | [macos/servicing](macos/servicing/) | Developer-storage cleanup |
-| [windows/applications](windows/applications/UninstallMsiProduct/README.md) | Registry-based MSI uninstallation |
+| [windows/applications](windows/applications/) | Registry-based [MSI uninstallation](windows/applications/UninstallMsiProduct/README.md) and [outdated per-user Appx cleanup](windows/applications/StaleAppxPackage/README.md) |
 | [windows/configuration](windows/configuration/README.md) | Startup delay, power plans and [processor boost](windows/configuration/ProcessorBoost/README.md) |
 | [windows/diagnostics](windows/diagnostics/) | Location, Defender coexistence, Delivery Optimization, power and audio diagnostics |
 | [NTLM usage](windows/diagnostics/NtlmUsageDetection/README.md) | Read-only NTLM evidence detector for Ivanti |
