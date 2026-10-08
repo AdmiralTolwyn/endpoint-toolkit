@@ -72,6 +72,54 @@ for one run, pass `-MinimumVersion`.
 
 Without `-WhatIf` or `-Confirm` the script runs unattended and never prompts.
 
+### Passing your own package list
+
+`-MinimumVersion` takes a hashtable: one `'PackageName' = 'MinimumVersion'`
+entry per package, separated by `;` on one line or by line breaks. Every
+package you want checked must be in it - the built-in list is not used.
+
+From a PowerShell prompt, inline:
+
+```powershell
+.\Remove-StaleAppxPackage.ps1 -WhatIf -MinimumVersion @{
+    'Microsoft.VP9VideoExtensions' = '1.0.52781.0'
+    'Microsoft.WebMediaExtensions' = '1.0.62192.0'
+    'Microsoft.HEVCVideoExtension' = '2.1.1803.0'
+}
+```
+
+Or built up in a variable first:
+
+```powershell
+$list = [ordered]@{
+    'Microsoft.VP9VideoExtensions' = '1.0.52781.0'
+    'Microsoft.WebMediaExtensions' = '1.0.62192.0'
+    'Microsoft.HEVCVideoExtension' = '2.1.1803.0'
+}
+.\Remove-StaleAppxPackage.ps1 -MinimumVersion $list -WhatIf
+```
+
+Use `[ordered]@{...}` if packages must be processed in the listed order;
+a plain `@{...}` processes them in arbitrary order.
+
+From `cmd.exe`, ConfigMgr, an RMM tool or a scheduled task, launch with
+**`-Command`**, not `-File`. With `-File` every argument arrives as a plain
+string and the script fails with *Cannot process argument transformation on
+parameter 'MinimumVersion'*.
+
+```text
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "& '.\Remove-StaleAppxPackage.ps1' -MinimumVersion @{ 'Microsoft.VP9VideoExtensions' = '1.0.52781.0'; 'Microsoft.WebMediaExtensions' = '1.0.62192.0'; 'Microsoft.HEVCVideoExtension' = '2.1.1803.0' }; exit $LASTEXITCODE"
+```
+
+`exit $LASTEXITCODE` passes the script's exit code through explicitly to the
+caller.
+
+Intune platform scripts cannot pass parameters. For Intune, edit the built-in
+list in the script instead.
+
+The package names and versions above are placeholders. Use the names reported
+by your scanner or by `Get-AppxPackage -AllUsers | Select-Object Name, Version`.
+
 ## Exit codes
 
 | Code | Meaning |
@@ -118,7 +166,13 @@ Log lines use the format:
 
 # One package with a custom minimum, prompting per user
 .\Remove-StaleAppxPackage.ps1 -MinimumVersion @{ 'Microsoft.VP9VideoExtensions' = '1.0.52781.0' } -Confirm
+
+# Two packages on one line, dry run
+.\Remove-StaleAppxPackage.ps1 -WhatIf -MinimumVersion @{ 'Microsoft.VP9VideoExtensions' = '1.0.52781.0'; 'Microsoft.WebMediaExtensions' = '1.0.62192.0' }
 ```
+
+See [Passing your own package list](#passing-your-own-package-list) for
+command-line and deployment-tool syntax.
 
 ## Deployment
 

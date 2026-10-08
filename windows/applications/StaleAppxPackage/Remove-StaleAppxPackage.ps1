@@ -49,6 +49,11 @@
     are four-part version strings. Replaces the built-in list entirely, it is
     not merged. Example: @{ 'Microsoft.MSPaint' = '6.2203.1037.0' }
 
+    Separate multiple entries with ';' or line breaks. Use [ordered]@{...} to
+    keep processing order. From cmd.exe or a deployment tool, launch with
+    powershell.exe -Command, not -File: -File passes the hashtable as a string
+    and parameter binding fails.
+
     To maintain the built-in list, edit the ordered table at the top of the
     script body. Packages are processed in the listed order.
 
@@ -93,6 +98,22 @@
 
     Checks a single package against a custom minimum and prompts before each
     removal.
+
+.EXAMPLE
+    .\Remove-StaleAppxPackage.ps1 -WhatIf -MinimumVersion ([ordered]@{
+        'Microsoft.VP9VideoExtensions' = '1.0.52781.0'
+        'Microsoft.WebMediaExtensions' = '1.0.62192.0'
+        'Microsoft.HEVCVideoExtension' = '2.1.1803.0'
+    })
+
+    Dry run against three packages with custom minimums, in the listed order.
+    Versions shown are placeholders.
+
+.EXAMPLE
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "& '.\Remove-StaleAppxPackage.ps1' -MinimumVersion @{ 'Microsoft.VP9VideoExtensions' = '1.0.52781.0'; 'Microsoft.WebMediaExtensions' = '1.0.62192.0' }; exit $LASTEXITCODE"
+
+    Same from cmd.exe, ConfigMgr or an RMM tool. Must be -Command, not -File;
+    'exit $LASTEXITCODE' passes the script's exit code through explicitly.
 
 .EXAMPLE
     (.\Remove-StaleAppxPackage.ps1 -WhatIf).Details | Format-Table Name, Version, User, InstallState, Outcome
