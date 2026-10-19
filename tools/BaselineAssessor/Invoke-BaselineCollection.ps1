@@ -1941,7 +1941,7 @@ $systemInfo = Invoke-CollectionArea -Step 1 -Name 'System Information' -Sections
         isServer         = $isServer
         isDomainController = $isDomainController
         hostname         = $hostname
-        domain           = if ($cs) { $cs.Domain } else { $null }
+        domain           = if ($cs -and $cs.Domain) { if ($cs.Domain -imatch '^WORKGROUP$') { $cs.Domain } else { ConvertTo-CollectorIdentity $Script:PrivacyContext 'grp' $cs.Domain } } else { $null }
         ramGB            = if ($cs -and $cs.TotalPhysicalMemory) { [math]::Round($cs.TotalPhysicalMemory / 1GB, 1) } else { $null }
         cpuName          = if ($cpu) { $cpu.Name } else { $env:PROCESSOR_IDENTIFIER }
         cpuCores         = if ($cpu) { $cpu.NumberOfCores } else { $null }
@@ -2244,6 +2244,7 @@ $securityPolicy = Invoke-CollectionArea -Step 5 -Name 'Security Policy Export' -
                 $val = $Matches[2].Trim()
                 # Try to convert numeric values
                 if ($val -match '^\d+$') { $val = [int]$val }
+                else { $val = ConvertTo-BaselineSidMask $val }
                 $result[$key] = $val
             }
         }
@@ -2269,6 +2270,77 @@ $auditPolicy = Invoke-CollectionArea -Step 6 -Name 'Audit Policy' -Sections @('a
     $result = @{}
     # _names maps subcategory GUID -> display name (for consumers that want the reverse lookup).
     $names  = @{}
+    $canonicalByGuid = @{
+        '0CCE9210-69AE-11D9-BED3-505054503030' = 'Security State Change'
+        '0CCE9211-69AE-11D9-BED3-505054503030' = 'Security System Extension'
+        '0CCE9212-69AE-11D9-BED3-505054503030' = 'System Integrity'
+        '0CCE9213-69AE-11D9-BED3-505054503030' = 'IPsec Driver'
+        '0CCE9214-69AE-11D9-BED3-505054503030' = 'Other System Events'
+        '0CCE9215-69AE-11D9-BED3-505054503030' = 'Logon'
+        '0CCE9216-69AE-11D9-BED3-505054503030' = 'Logoff'
+        '0CCE9217-69AE-11D9-BED3-505054503030' = 'Account Lockout'
+        '0CCE9218-69AE-11D9-BED3-505054503030' = 'IPsec Main Mode'
+        '0CCE9219-69AE-11D9-BED3-505054503030' = 'IPsec Quick Mode'
+        '0CCE921A-69AE-11D9-BED3-505054503030' = 'IPsec Extended Mode'
+        '0CCE921B-69AE-11D9-BED3-505054503030' = 'Special Logon'
+        '0CCE921C-69AE-11D9-BED3-505054503030' = 'Other Logon/Logoff Events'
+        '0CCE921D-69AE-11D9-BED3-505054503030' = 'File System'
+        '0CCE921E-69AE-11D9-BED3-505054503030' = 'Registry'
+        '0CCE921F-69AE-11D9-BED3-505054503030' = 'Kernel Object'
+        '0CCE9220-69AE-11D9-BED3-505054503030' = 'SAM'
+        '0CCE9221-69AE-11D9-BED3-505054503030' = 'Certification Services'
+        '0CCE9222-69AE-11D9-BED3-505054503030' = 'Application Generated'
+        '0CCE9223-69AE-11D9-BED3-505054503030' = 'Handle Manipulation'
+        '0CCE9224-69AE-11D9-BED3-505054503030' = 'File Share'
+        '0CCE9225-69AE-11D9-BED3-505054503030' = 'Filtering Platform Packet Drop'
+        '0CCE9226-69AE-11D9-BED3-505054503030' = 'Filtering Platform Connection'
+        '0CCE9227-69AE-11D9-BED3-505054503030' = 'Other Object Access Events'
+        '0CCE9228-69AE-11D9-BED3-505054503030' = 'Sensitive Privilege Use'
+        '0CCE9229-69AE-11D9-BED3-505054503030' = 'Non Sensitive Privilege Use'
+        '0CCE922A-69AE-11D9-BED3-505054503030' = 'Other Privilege Use Events'
+        '0CCE922B-69AE-11D9-BED3-505054503030' = 'Process Creation'
+        '0CCE922C-69AE-11D9-BED3-505054503030' = 'Process Termination'
+        '0CCE922D-69AE-11D9-BED3-505054503030' = 'DPAPI Activity'
+        '0CCE922E-69AE-11D9-BED3-505054503030' = 'RPC Events'
+        '0CCE922F-69AE-11D9-BED3-505054503030' = 'Audit Policy Change'
+        '0CCE9230-69AE-11D9-BED3-505054503030' = 'Authentication Policy Change'
+        '0CCE9231-69AE-11D9-BED3-505054503030' = 'Authorization Policy Change'
+        '0CCE9232-69AE-11D9-BED3-505054503030' = 'MPSSVC Rule-Level Policy Change'
+        '0CCE9233-69AE-11D9-BED3-505054503030' = 'Filtering Platform Policy Change'
+        '0CCE9234-69AE-11D9-BED3-505054503030' = 'Other Policy Change Events'
+        '0CCE9235-69AE-11D9-BED3-505054503030' = 'User Account Management'
+        '0CCE9236-69AE-11D9-BED3-505054503030' = 'Computer Account Management'
+        '0CCE9237-69AE-11D9-BED3-505054503030' = 'Security Group Management'
+        '0CCE9238-69AE-11D9-BED3-505054503030' = 'Distribution Group Management'
+        '0CCE9239-69AE-11D9-BED3-505054503030' = 'Application Group Management'
+        '0CCE923A-69AE-11D9-BED3-505054503030' = 'Other Account Management Events'
+        '0CCE923B-69AE-11D9-BED3-505054503030' = 'Directory Service Access'
+        '0CCE923C-69AE-11D9-BED3-505054503030' = 'Directory Service Changes'
+        '0CCE923D-69AE-11D9-BED3-505054503030' = 'Directory Service Replication'
+        '0CCE923E-69AE-11D9-BED3-505054503030' = 'Detailed Directory Service Replication'
+        '0CCE923F-69AE-11D9-BED3-505054503030' = 'Credential Validation'
+        '0CCE9240-69AE-11D9-BED3-505054503030' = 'Kerberos Service Ticket Operations'
+        '0CCE9241-69AE-11D9-BED3-505054503030' = 'Other Account Logon Events'
+        '0CCE9242-69AE-11D9-BED3-505054503030' = 'Kerberos Authentication Service'
+        '0CCE9243-69AE-11D9-BED3-505054503030' = 'Network Policy Server'
+        '0CCE9244-69AE-11D9-BED3-505054503030' = 'Detailed File Share'
+        '0CCE9245-69AE-11D9-BED3-505054503030' = 'Removable Storage'
+        '0CCE9246-69AE-11D9-BED3-505054503030' = 'Central Policy Staging'
+        '0CCE9247-69AE-11D9-BED3-505054503030' = 'User / Device Claims'
+        '0CCE9248-69AE-11D9-BED3-505054503030' = 'Plug and Play Events'
+        '0CCE9249-69AE-11D9-BED3-505054503030' = 'Group Membership'
+        '0CCE924A-69AE-11D9-BED3-505054503030' = 'Token Right Adjusted Events'
+        '0CCE924B-69AE-11D9-BED3-505054503030' = 'Access Rights'
+    }
+    $normalizeSetting = {
+        param([string]$Raw)
+        $Val = $Raw.Trim()
+        if ($Val -imatch '^(?:No Auditing|Keine (?:\u00dc|Ue)berwachung|Pas d''audit|Aucun audit|Sin auditor(?:\u00ed|i)a|Nessun controllo|(?:Sem|Nenhuma) Auditoria|Geen controle)$') { return 'No Auditing' }
+        if ($Val -imatch '^(?:Success and Failure|Erfolg und Fehler|R(?:\u00e9|e)ussite et (?:\u00e9|e)chec|Succ(?:\u00e8|e)s et (?:\u00e9|e)chec|Correcto e incorrecto|(?:\u00c9|E)xito y error|Acierto y fallo|Operazioni riuscite e non riuscite|(?:\u00ca|E)xito e Falha|Sucesso e Falha|Geslaagd en mislukt)$') { return 'Success and Failure' }
+        if ($Val -imatch '^(?:Success|Erfolg|R(?:\u00e9|e)ussite|Succ(?:\u00e8|e)s|Correcto|(?:\u00c9|E)xito|Acierto|Operazioni riuscite|(?:\u00ca|E)xito|Sucesso|Geslaagd)$') { return 'Success' }
+        if ($Val -imatch '^(?:Failure|Fehler|(?:\u00c9|E)chec|Incorrecto|Error|Fallo|Operazioni non riuscite|Falha|Mislukt)$') { return 'Failure' }
+        return $Val
+    }
 
     # Check if /r succeeded (requires admin; returns CSV with Machine Name,Policy Target,Subcategory,...)
     $csvLines = @($rawCsv | Where-Object { $_ -is [string] -and $_ -match ',' })
@@ -2276,17 +2348,29 @@ $auditPolicy = Invoke-CollectionArea -Step 6 -Name 'Audit Policy' -Sections @('a
         # CSV format: Machine Name,Policy Target,Subcategory,Subcategory GUID,Inclusion Setting,Exclusion Setting
         # Column 2 = Subcategory (display name, localized), Column 3 = GUID (locale-independent), Column 4 = Inclusion Setting
         foreach ($csvLine in $csvLines | Select-Object -Skip 1) {
-            $cols = $csvLine -split ','
-            if ($cols.Count -ge 5) {
-                $subcat  = $cols[2].Trim()
-                $guid    = $cols[3].Trim() -replace '[{}]', ''
-                $setting = $cols[4].Trim()
-                if ($subcat -and $setting) {
-                    # A-1: emit BOTH keys (GUID + localized display name) with the PLAIN setting STRING
-                    # as value (e.g. "Success and Failure"), so MON-* checks keyed on either resolve.
-                    if ($guid)   { $result[$guid] = $setting; $names[$guid] = $subcat }
-                    $result[$subcat] = $setting
+            $subcat = ''; $guid = ''; $setting = ''
+            if ($csvLine -match '^(?:[^,]*,){2}(.+?),\{?([0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12})\}?,([^,]+)') {
+                $subcat  = $Matches[1].Trim()
+                $guid    = $Matches[2].Trim()
+                $setting = & $normalizeSetting $Matches[3]
+            } else {
+                $cols = $csvLine -split ','
+                if ($cols.Count -ge 5) {
+                    $subcat  = $cols[2].Trim()
+                    $guid    = $cols[3].Trim() -replace '[{}]', ''
+                    $setting = & $normalizeSetting $cols[4]
                 }
+            }
+            if ($subcat -and $setting) {
+                $canonical = if ($guid -and $canonicalByGuid.ContainsKey($guid)) { $canonicalByGuid[$guid] } else { $subcat }
+                if ($guid) {
+                    $result[$guid] = $setting
+                    $names[$guid]  = $canonical
+                }
+                $result[$canonical] = $setting
+                if ($canonical -ceq 'Plug and Play Events') { $result['PNP Activity'] = $setting }
+                elseif ($canonical -ceq 'Token Right Adjusted Events') { $result['Token Right Adjusted'] = $setting }
+                if ($subcat -cne $canonical) { $result[$subcat] = $setting }
             }
         }
     } else {
@@ -2294,13 +2378,9 @@ $auditPolicy = Invoke-CollectionArea -Step 6 -Name 'Audit Policy' -Sections @('a
         $rawText = auditpol /get /category:* 2>&1
         foreach ($line in $rawText) {
             # Match subcategory lines: 2+ leading spaces, then name, then 2+ spaces, then setting
-            # Settings: EN (Success and Failure|Success|Failure|No Auditing)
-            #           DE (Erfolg und Fehler|Erfolg|Fehler|Keine Ueberwachung)
-            #           FR (Reussite et echec|Reussite|Echec|Pas d'audit)
-            #           ES (Correcto e incorrecto|Correcto|Incorrecto|Sin auditoria)
             if ($line -match '^\s{2}(\S.+?)\s{2,}(\S.+?)\s*$') {
                 $subcat  = $Matches[1].Trim()
-                $setting = $Matches[2].Trim()
+                $setting = & $normalizeSetting $Matches[2]
                 # Exclude category headers (no setting value, or suspiciously short)
                 if ($setting.Length -gt 2) {
                     $result[$subcat] = $setting
@@ -2896,7 +2976,13 @@ $tlsConfig = Invoke-CollectionArea -Step 18 -Name 'TLS Configuration' -Sections 
     }
     $CipherInventory = @{ provider = 'Get-TlsCipherSuite'; collectionState = 'Error'; names = @() }
     try {
-        $Suites = @(Get-TlsCipherSuite -ErrorAction Stop)
+        $Suites = @(foreach ($Item in @(Get-TlsCipherSuite -ErrorAction Stop)) {
+            if ($Item -is [System.Collections.IEnumerable] -and $Item -isnot [string] -and $Item -isnot [System.Collections.IDictionary]) {
+                foreach ($Sub in $Item) { $Sub }
+            } else {
+                $Item
+            }
+        })
         $Names = [Collections.Generic.List[string]]::new()
         $Invalid = $false
         foreach ($Suite in $Suites) {
@@ -2924,14 +3010,24 @@ $powershellConfig = Invoke-CollectionArea -Step 19 -Name 'PowerShell Configurati
                 $LegacyEngine.provider = 'Get-WindowsFeature'
                 $LegacyEngine.featureName = 'PowerShell-V2'
                 $Feature = @(Get-WindowsFeature -Name 'PowerShell-V2' -ErrorAction Stop)
-                if ($Feature.Count -ne 1 -or $Feature[0].Name -cne 'PowerShell-V2') { throw 'Unexpected feature identity' }
-                $LegacyEngine.state = [string]$Feature[0].InstallState
+                if ($Feature.Count -eq 0) {
+                    $LegacyEngine.state = 'Removed'
+                } elseif ($Feature.Count -eq 1 -and $Feature[0].Name -ceq 'PowerShell-V2') {
+                    $LegacyEngine.state = [string]$Feature[0].InstallState
+                } else {
+                    throw 'Unexpected feature identity'
+                }
             } else {
                 $LegacyEngine.provider = 'Get-WindowsOptionalFeature'
                 $LegacyEngine.featureName = 'MicrosoftWindowsPowerShellV2'
                 $Feature = @(Get-WindowsOptionalFeature -Online -FeatureName 'MicrosoftWindowsPowerShellV2' -ErrorAction Stop)
-                if ($Feature.Count -ne 1 -or $Feature[0].FeatureName -cne 'MicrosoftWindowsPowerShellV2') { throw 'Unexpected feature identity' }
-                $LegacyEngine.state = [string]$Feature[0].State
+                if ($Feature.Count -eq 0) {
+                    $LegacyEngine.state = 'Removed'
+                } elseif ($Feature.Count -eq 1 -and $Feature[0].FeatureName -ceq 'MicrosoftWindowsPowerShellV2') {
+                    $LegacyEngine.state = [string]$Feature[0].State
+                } else {
+                    throw 'Unexpected feature identity'
+                }
             }
             $LegacyEngine.collectionState = 'Complete'
         } catch {

@@ -185,6 +185,18 @@ function Get-NetFirewallProfile { throw 'Access denied for C:\Users\PII_SENTINEL
 $Firewall = & (Get-Area '$firewallProfiles')
 Assert-Privacy ($Firewall._collectionFailed -and -not $Firewall._error.Contains('PII_SENTINEL')) 'Provider error text leaked'
 Remove-Item Function:\Get-NetFirewallProfile
+function Get-CimInstance {
+    param([string]$ClassName, $Namespace, $Filter, $ErrorAction)
+    if ($ClassName -eq 'Win32_ComputerSystem') { return [pscustomobject]@{ Domain = 'PII_DOMAIN.example.test'; TotalPhysicalMemory = 16GB } }
+    if ($ClassName -eq 'Win32_OperatingSystem') { return [pscustomobject]@{ Caption = 'Windows 11'; Version = '10.0.26100'; BuildNumber = '26100'; ProductType = 1 } }
+    return $null
+}
+function Confirm-SecureBootUEFI { return $true }
+$hostname = ConvertTo-CollectorIdentity $script:PrivacyContext 'dev' 'PII_HOST'
+$SysInfo = & (Get-Area '$systemInfo')
+Assert-Privacy ($SysInfo.domain -cmatch '^grp_[0-9a-f]{16}$' -and -not ($SysInfo | ConvertTo-Json -Depth 6).Contains('PII_DOMAIN')) 'System domain not pseudonymized'
+Remove-Item Function:\Get-CimInstance, Function:\Confirm-SecureBootUEFI
+Assert-Privacy ((ConvertTo-BaselineSidMask '*S-1-5-21-802076587-4101678423-1004071298-512,*S-1-5-32-546') -cmatch '^\*sid_[0-9a-f]{16},\*S-1-5-32-546$') 'Privilege-right domain SID not pseudonymized'
 Write-Output 'PASS: driver names, task SIDs, exclusion paths and provider errors are minimized in default mode.'
 
 if ($env:ASSAY_BASELINE_PRIVACY_FIXTURE) {

@@ -63,7 +63,12 @@ Write-Output 'PASS: observed Defender and Device Guard runtime evidence remains 
 
 $TlsArea = Get-CollectorArea '$tlsConfig'
 function Read-RegistryValue { $null }
-function Get-TlsCipherSuite { [pscustomobject]@{ Name = 'TLS_AES_256_GCM_SHA384' }; [pscustomobject]@{ Name = 'TLS_RSA_WITH_NULL_SHA256' } }
+function Get-TlsCipherSuite {
+    $List = [Collections.Generic.List[object]]::new()
+    $List.Add([pscustomobject]@{ Name = 'TLS_AES_256_GCM_SHA384' })
+    $List.Add([pscustomobject]@{ Name = 'TLS_RSA_WITH_NULL_SHA256' })
+    return ,$List
+}
 try { $Result = & $TlsArea } finally { Remove-Item Function:\Get-TlsCipherSuite }
 if ($Result.cipherSuites.collectionState -ne 'Complete' -or $Result.cipherSuites.names.Count -ne 2 -or $Result.cipherSuites.names -cnotcontains 'TLS_RSA_WITH_NULL_SHA256') { throw 'Cipher-suite inventory incomplete' }
 $TlsFixture = $Result
@@ -87,13 +92,19 @@ function Get-WindowsOptionalFeature {
     if (-not $Online -or $FeatureName -cne 'MicrosoftWindowsPowerShellV2') { throw 'Unexpected feature query' }
     [pscustomobject]@{ FeatureName = $FeatureName; State = $script:FeatureState }
 }
-foreach ($State in @('Enabled','Disabled','DisablePending','Unknown')) {
+foreach ($State in @('Enabled','Disabled','DisabledWithPayloadRemoved','DisablePending','Unknown')) {
     $script:FeatureState = $State
     $Result = & $PowerShellArea
     if ($Result.legacyEngine.collectionState -ne 'Complete' -or $Result.legacyEngine.state -cne $State) { throw 'Feature state was guessed or lost' }
     if ($State -eq 'Disabled') { $DisabledFeature = $Result }
 }
 Remove-Item Function:\Get-WindowsOptionalFeature
+function Get-WindowsOptionalFeature {
+    param([switch]$Online, [string]$FeatureName)
+    if (-not $Online -or $FeatureName -cne 'MicrosoftWindowsPowerShellV2') { throw 'Unexpected feature query' }
+}
+try { $Result = & $PowerShellArea } finally { Remove-Item Function:\Get-WindowsOptionalFeature }
+if ($Result.legacyEngine.collectionState -ne 'Complete' -or $Result.legacyEngine.state -cne 'Removed') { throw 'Absent optional feature was not recorded as Removed' }
 function Get-WindowsOptionalFeature { throw 'Synthetic feature query failure' }
 try { $Result = & $PowerShellArea } finally { Remove-Item Function:\Get-WindowsOptionalFeature }
 if ($Result.legacyEngine.collectionState -ne 'Error' -or $null -ne $Result.legacyEngine.state) { throw 'Feature query error inferred removal' }
@@ -108,6 +119,18 @@ if ($Result.legacyEngine.provider -ne 'Get-WindowsFeature' -or $Result.legacyEng
 $systemInfo.isServer = $null
 try { $Result = & $PowerShellArea } finally { Remove-Item Function:\Read-RegistryValue, Function:\Get-ExecutionPolicy }
 if ($Result.legacyEngine.collectionState -ne 'Unsupported') { throw 'Unknown platform was guessed' }
+
+$AuditArea = Get-CollectorArea '$auditPolicy'
+function auditpol {
+    'Machine Name,Policy Target,Subcategory,Subcategory GUID,Inclusion Setting,Exclusion Setting'
+    "synthetic,System,Anmelden,{0CCE9215-69AE-11D9-BED3-505054503030},Erfolg und Fehler,"
+    "synthetic,System,Plug &amp; Play-Ereignisse,{0CCE9248-69AE-11D9-BED3-505054503030},Erfolg,"
+    "synthetic,System,Ereignisse zu angepassten Tokenrechten,{0CCE924A-69AE-11D9-BED3-505054503030},Keine $([char]0x00DC)berwachung,"
+}
+try { $AuditResult = & $AuditArea } finally { Remove-Item Function:\auditpol }
+if ($AuditResult['Logon'] -cne 'Success and Failure' -or $AuditResult['PNP Activity'] -cne 'Success' -or $AuditResult['Token Right Adjusted'] -cne 'No Auditing') {
+    throw 'Localized auditpol output was not normalized to canonical English keys and settings'
+}
 if ($env:ASSAY_BASELINE_COLLECTOR_FIXTURE) {
     [IO.File]::WriteAllText($env:ASSAY_BASELINE_COLLECTOR_FIXTURE, (@{ systemInfo = @{ hostname = 'synthetic'; isServer = $false }; powershellConfig = $DisabledFeature; tlsConfig = $TlsFixture } | ConvertTo-Json -Depth 10), [Text.UTF8Encoding]::new($false))
 }

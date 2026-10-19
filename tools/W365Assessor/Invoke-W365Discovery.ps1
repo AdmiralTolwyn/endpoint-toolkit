@@ -774,16 +774,18 @@ try {
             HealthChecks                 = @(ConvertTo-W365HealthChecks $anc)
             InUse                        = $anc.inUse
             SubscriptionId               = $anc.subscriptionId
-            SubscriptionName             = $anc.subscriptionName
-            ResourceGroupId              = $anc.resourceGroupId
-            VirtualNetworkId             = $anc.virtualNetworkId
+            SubscriptionName             = ConvertTo-CollectorIdentity $Script:PrivacyContext 'grp' $anc.subscriptionName
             VirtualNetworkLocation       = $anc.virtualNetworkLocation
-            SubnetId                     = $anc.subnetId
-            AdDomainName                 = $anc.adDomainName
+            AdDomainName                 = ConvertTo-CollectorIdentity $Script:PrivacyContext 'grp' $anc.adDomainName
             HasDomainJoinAccount         = -not [string]::IsNullOrWhiteSpace([string]$anc.adDomainUsername)
             HasOrganizationalUnit        = -not [string]::IsNullOrWhiteSpace([string]$anc.organizationalUnit)
         }
-        if ($Script:PrivacyContext.Mode -eq 'Identified') { $Row.OrganizationalUnit = $anc.organizationalUnit }
+        if ($Script:PrivacyContext.Mode -eq 'Identified') {
+            $Row.ResourceGroupId    = $anc.resourceGroupId
+            $Row.VirtualNetworkId   = $anc.virtualNetworkId
+            $Row.SubnetId           = $anc.subnetId
+            $Row.OrganizationalUnit = $anc.organizationalUnit
+        }
         $Row.ConnectionStatus = $anc.connectionStatus
         $Discovery.Inventory.AzureNetworkConnections += [PSCustomObject]$Row
     }

@@ -60,7 +60,7 @@ function Invoke-GraphPaged {
             return @(@{ id = 'settings-1'; displayName = 'Settings'; assignments = @(@{ id = 'assignment-3'; target = @{ '@odata.type' = '#microsoft.graph.cloudPcManagementGroupAssignmentTarget'; groupId = 'ASSIGN_SENTINEL_3' } }) })
         }
         '*/onPremisesConnections' {
-            return @(@{ id = 'anc-1'; displayName = 'Network'; healthCheckStatus = 'failed'; adDomainUsername = 'DOMAIN_JOIN_SENTINEL'; organizationalUnit = 'OU=OU_SENTINEL,DC=example,DC=test'; healthCheckStatusDetail = @{ healthChecks = @(
+            return @(@{ id = 'anc-1'; displayName = 'Network'; healthCheckStatus = 'failed'; subscriptionName = 'SUB_NAME_SENTINEL'; resourceGroupId = 'RG_ID_SENTINEL'; virtualNetworkId = 'VNET_ID_SENTINEL'; subnetId = 'SUBNET_ID_SENTINEL'; adDomainName = 'DOMAIN_NAME_SENTINEL'; adDomainUsername = 'DOMAIN_JOIN_SENTINEL'; organizationalUnit = 'OU=OU_SENTINEL,DC=example,DC=test'; healthCheckStatusDetail = @{ healthChecks = @(
                 @{ displayName = 'DNS'; status = 'failed'; errorType = 'dnsCheckFqdnNotFound'; recommendedAction = 'Review DNS'; additionalDetails = 'HEALTH_SENTINEL'; correlationId = 'CORR_SENTINEL'; startDateTime = '2026-10-01T00:00:00Z'; endDateTime = '2026-10-01T00:05:00Z' }
             ) } })
         }
@@ -97,7 +97,7 @@ function Invoke-W365PrivacyRun($PrivacyContext) {
     return $Discovery
 }
 
-$Sentinels = 'pii\.sentinel|idle\.sentinel|grace\.sentinel|PIISENTINEL|ORPHANSENTINEL|IDLESENTINEL|GRACESENTINEL|DESC_SENTINEL|GROUP_SENTINEL|ASSIGN_SENTINEL|DOMAIN_JOIN_SENTINEL|OU_SENTINEL|actor\.sentinel|AUDIT_ID_SENTINEL|HEALTH_SENTINEL|CORR_SENTINEL|MANAGED_SENTINEL|AAD_SENTINEL|ERROR_SENTINEL|operator\.sentinel|13:45:12'
+$Sentinels = 'pii\.sentinel|idle\.sentinel|grace\.sentinel|PIISENTINEL|ORPHANSENTINEL|IDLESENTINEL|GRACESENTINEL|DESC_SENTINEL|GROUP_SENTINEL|ASSIGN_SENTINEL|DOMAIN_JOIN_SENTINEL|SUB_NAME_SENTINEL|RG_ID_SENTINEL|VNET_ID_SENTINEL|SUBNET_ID_SENTINEL|DOMAIN_NAME_SENTINEL|OU_SENTINEL|actor\.sentinel|AUDIT_ID_SENTINEL|HEALTH_SENTINEL|CORR_SENTINEL|MANAGED_SENTINEL|AAD_SENTINEL|ERROR_SENTINEL|operator\.sentinel|13:45:12'
 $Key = [byte[]](1..32)
 $Pseudo = Invoke-W365PrivacyRun (New-TestContext 'Pseudonymous' $Key)
 $PseudoJson = $Pseudo | ConvertTo-Json -Depth 12
@@ -114,7 +114,7 @@ Assert-Privacy ($Policy.AssignmentCount -eq 2 -and $Policy.AssignmentTargetTypes
 Assert-Privacy ($null -eq $Policy.PSObject.Properties['Description'] -and $null -eq $Policy.PSObject.Properties['CloudPcGroupDisplayName']) 'Provisioning free text exported'
 Assert-Privacy ($Pseudo.Inventory.UserSettings[0].AssignmentCount -eq 1 -and $null -eq $Pseudo.Inventory.UserSettings[0].PSObject.Properties['Assignments']) 'User settings assignment summary incorrect'
 $Network = $Pseudo.Inventory.AzureNetworkConnections[0]
-Assert-Privacy ($Network.HasDomainJoinAccount -eq $true -and $Network.HasOrganizationalUnit -eq $true -and $null -eq $Network.PSObject.Properties['OrganizationalUnit'] -and $null -eq $Network.PSObject.Properties['HealthCheckStatusDetail']) 'Network identity fields not classified'
+Assert-Privacy ($Network.HasDomainJoinAccount -eq $true -and $Network.HasOrganizationalUnit -eq $true -and $Network.SubscriptionName -cmatch '^grp_[0-9a-f]{16}$' -and $Network.AdDomainName -cmatch '^grp_[0-9a-f]{16}$' -and $null -eq $Network.PSObject.Properties['ResourceGroupId'] -and $null -eq $Network.PSObject.Properties['VirtualNetworkId'] -and $null -eq $Network.PSObject.Properties['SubnetId'] -and $null -eq $Network.PSObject.Properties['OrganizationalUnit'] -and $null -eq $Network.PSObject.Properties['HealthCheckStatusDetail']) 'Network identity fields not classified'
 Assert-Privacy ((@($Network.HealthChecks[0].PSObject.Properties.Name) -join ',') -ceq 'displayName,status,errorType,recommendedAction,startDateTime,endDateTime') 'Health checks not reduced to the allowlist'
 $Audit = $Pseudo.Inventory.AuditEvents[0]
 Assert-Privacy ($Audit.ActivityDateTime -ceq '2026-10-01' -and $null -eq $Audit.PSObject.Properties['Id'] -and $null -eq $Audit.PSObject.Properties['ActorUpn'] -and $Audit.ActivityType -ceq 'delete') 'Audit event not minimized'

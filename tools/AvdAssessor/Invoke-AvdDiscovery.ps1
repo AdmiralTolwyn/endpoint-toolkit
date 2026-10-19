@@ -500,7 +500,7 @@ function Get-AvdAmaEvidence {
     if ($Cache.ContainsKey($CacheKey)) { return $Cache[$CacheKey] }
     $Evidence = [PSCustomObject]@{
         ResourceId = $ResourceId
-        VM = ($CacheKey -split '/')[-1]
+        VM = ConvertTo-CollectorIdentity $Script:PrivacyContext 'dev' (($CacheKey -split '/')[-1])
         CollectionStatus = 'Error'
         Installed = $null
         Status = 'Error'
@@ -588,7 +588,7 @@ function Get-AvdMdeEvidence {
     if ($Cache.ContainsKey($CacheKey)) { return $Cache[$CacheKey] }
     $Evidence = [PSCustomObject]@{
         ResourceId = $ResourceId
-        VM = ($CacheKey -split '/')[-1]
+        VM = ConvertTo-CollectorIdentity $Script:PrivacyContext 'dev' (($CacheKey -split '/')[-1])
         Status = 'Error'
         Onboarded = $null
         SensorHealth = 'NotAssessed'
@@ -1853,8 +1853,9 @@ foreach ($SubId in $SubscriptionId) {
             Write-Status "  $($HP.Name): $($SessionHosts.Count) session host(s)" -Level 'INFO'
 
             foreach ($SH in $SessionHosts) {
-                $VMName = ($SH.ResourceId -split '/')[-1]
-                $VMRG   = ($SH.ResourceId -split '/')[4]
+                $RawVMName = ($SH.ResourceId -split '/')[-1]
+                $VMName    = ConvertTo-CollectorIdentity $Script:PrivacyContext 'dev' $RawVMName
+                $VMRG      = ($SH.ResourceId -split '/')[4]
 
                 # Batch-load all VMs in this RG (model + status) on first encounter.
                 if (-not $VMRGLoaded.ContainsKey($VMRG)) {
@@ -1876,10 +1877,10 @@ foreach ($SubId in $SubscriptionId) {
                 }
 
                 # VM model (size, security, storage, zones) from cache
-                $VMKey = "$VMRG/$VMName".ToLower()
+                $VMKey = "$VMRG/$RawVMName".ToLower()
                 $VMModel = $VMModelCache[$VMKey]
                 if (-not $VMModel) {
-                    Write-Status "    Could not get VM model for $VMName (not in RG batch)" -Level 'WARN'
+                    Write-Status "    Could not get VM model for $RawVMName (not in RG batch)" -Level 'WARN'
                 }
                 # VM instance view (power state, extensions) from cache
                 $VMInstance = $VMStatusCache[$VMKey]
@@ -1924,7 +1925,8 @@ foreach ($SubId in $SubscriptionId) {
 
                 $SHObj = [PSCustomObject]@{
                     HostPoolName        = $HP.Name
-                    Name                = $SH.Name
+                    Name                = if ($Script:PrivacyContext.Mode -eq 'Identified') { $SH.Name } else { "$($HP.Name)/$VMName" }
+                    VMName              = $VMName
                     ResourceId          = $SH.ResourceId
                     AzureVmId           = if ($VMModel -and $VMModel.Id -ieq $SH.ResourceId) { $VMModel.VmId } else { $null }
                     ResourceGroup       = $VMRG
@@ -2679,7 +2681,7 @@ foreach ($SubId in $SubscriptionId) {
         # pass (E-7) instead of re-fetching VM + NIC per host.
         $DiscoveredVNetIds = @{}
         foreach ($SH in $CurrentSessionHosts) {
-            $VMName = if ($SH.ResourceId) { ($SH.ResourceId -split '/')[-1] } else { $SH.Name }
+            $VMName = ConvertTo-CollectorIdentity $Script:PrivacyContext 'dev' $(if ($SH.ResourceId) { ($SH.ResourceId -split '/')[-1] } else { $SH.Name })
             $SubnetId = $SH.NicSubnetId
             if (-not $SubnetId) { continue }
             $VNetId = ($SubnetId -split '/subnets/')[0]
@@ -5063,7 +5065,7 @@ try {
     $FleetMax = if ($FleetSorted.Count -gt 0) { $FleetSorted[0] } else { $null }
     foreach ($SH in $Discovery.Inventory.SessionHosts) {
         if (-not $SH.AgentVersion) { continue }
-        $VMName = if ($SH.ResourceId) { ($SH.ResourceId -split '/')[-1] } else { $SH.Name }
+        $VMName = ConvertTo-CollectorIdentity $Script:PrivacyContext 'dev' $(if ($SH.ResourceId) { ($SH.ResourceId -split '/')[-1] } else { $SH.Name })
         $ParsedAgent = $null
         try { $ParsedAgent = [Version]$SH.AgentVersion } catch { }
         $AgentStatus = 'Pass'
@@ -5222,21 +5224,22 @@ $res = [ordered]@{
     } else {
         $CurrentGuestSub = $null
         foreach ($SH in $Sampled) {
-            $VMName = ($SH.ResourceId -split '/')[-1]
+            $RawVMName = ($SH.ResourceId -split '/')[-1]
+            $VMName = ConvertTo-CollectorIdentity $Script:PrivacyContext 'dev' $RawVMName
             $VMRG   = $SH.ResourceGroup
             $VMSub  = ($SH.ResourceId -split '/')[2]
-            $HostTag = ($SH.Name -split '/')[-1]
+            $HostTag = if ($Script:PrivacyContext.Mode -eq 'Identified') { ($SH.Name -split '/')[-1] } else { $VMName }
             if (-not $HostTag) { $HostTag = $VMName }
             $SafeTag = ($HostTag -replace '[^A-Za-z0-9]', '_')
 
             if ($VMSub -and $VMSub -ne $CurrentGuestSub) {
                 try { Set-AzContext -SubscriptionId $VMSub -ErrorAction Stop -WarningAction SilentlyContinue | Out-Null; $CurrentGuestSub = $VMSub }
-                catch { Write-Status "    Could not switch context to $VMSub for $VMName" -Level 'WARN' }
+                catch { Write-Status "    Could not switch context to $VMSub for $RawVMName" -Level 'WARN' }
             }
 
             $Parsed = $null; $RunError = $null
             try {
-                $RunResult = Invoke-AzVMRunCommand -ResourceGroupName $VMRG -VMName $VMName -CommandId 'RunPowerShellScript' -ScriptPath $GuestTmp -ErrorAction Stop
+                $RunResult = Invoke-AzVMRunCommand -ResourceGroupName $VMRG -VMName $RawVMName -CommandId 'RunPowerShellScript' -ScriptPath $GuestTmp -ErrorAction Stop
                 $OutText = ''
                 if ($RunResult -and $RunResult.Value) { $OutText = ($RunResult.Value | ForEach-Object { $_.Message }) -join "`n" }
                 $JsonLine = @($OutText -split "`n" | Where-Object { $_ -match 'FSLOGIXJSON:' } | Select-Object -First 1)

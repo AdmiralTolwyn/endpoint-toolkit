@@ -126,13 +126,13 @@ try {
     $FslMinVersion = [version]'2.9.8612.60056'
     $Discovery = [pscustomobject]@{ Inventory = [pscustomobject]@{
         HostPools = @([pscustomobject]@{ Name = 'hp1' })
-        SessionHosts = @([pscustomobject]@{ HostPoolName = 'hp1'; PowerState = 'VM running'; ResourceId = $VmId; ResourceGroup = 'rg'; Name = 'hp1/vm1' })
+        SessionHosts = @([pscustomobject]@{ HostPoolName = 'hp1'; PowerState = 'VM running'; ResourceId = '/subscriptions/s/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/HOST_SENTINEL'; ResourceGroup = 'rg'; Name = 'hp1/HOST_SENTINEL' })
     } }
     $AllChecks = [Collections.ArrayList]::new()
     $script:GuestScriptSeen = $false
     . ([scriptblock]::Create($GuestBranch.Extent.Text))
     Assert-Privacy ($script:GuestScriptSeen -and @(Get-ChildItem -LiteralPath $Temp -Filter 'avd_fslogix_guest_*.ps1').Count -eq 0) 'Guest script not removed after handled failure'
-    Assert-Privacy ((@($AllChecks.ToArray()) | ConvertTo-Json -Depth 6) -notmatch $Sentinels) 'Guest error text leaked'
+    Assert-Privacy ((@($AllChecks.ToArray()) | ConvertTo-Json -Depth 6) -notmatch $Sentinels -and $AllChecks[0].Id -cmatch '^PROF-INSTALLED-dev_[0-9a-f]{16}$') 'Guest error text or raw VM name leaked'
     function Write-Status { param($Message, $Level) if ($Message -match 'Run Command failed') { throw 'escaping failure' } }
     $Escaped = $false
     try { . ([scriptblock]::Create($GuestBranch.Extent.Text)) } catch { $Escaped = $true }
