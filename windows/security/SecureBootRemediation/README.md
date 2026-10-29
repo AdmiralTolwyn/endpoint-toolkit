@@ -20,6 +20,7 @@ The second family exists because at fleet scale a large share of devices land in
 | Find out why devices show **Unknown** / never report | [Get-SecureBootCertInventory.ps1](Get-SecureBootCertInventory.ps1) |
 | Fix the reporting blockers (without touching certificates) | [Repair-SecureBootReportingPrereqs.ps1](Repair-SecureBootReportingPrereqs.ps1) |
 | Split "Not up to date" into who needs firmware vs. who is a false positive | [Split-SecureBootPopulation.ps1](Split-SecureBootPopulation.ps1) |
+| Evaluate VMware vSphere VMs for `VMW.NULLPK`, Capsule PK, SilentPK, and pre-populated KEK 2023 | [Detect_VMwareSecureBootUEFICA2023.ps1](Detect_VMwareSecureBootUEFICA2023.ps1) |
 | Find devices that will drop into BitLocker recovery when the certificate update lands | [BitLockerPcrDetection-Ivanti.ps1](BitLockerPcrDetection-Ivanti.ps1) |
 
 > **The two remediation scripts have opposite philosophies — do not treat them as interchangeable.** `Remediate_SecureBootUEFICA2023.ps1` arms the certificate update and deliberately exits `1` even when it takes no action, so the Intune dashboard never says `Fixed` for a device that is still non-compliant. `Repair-SecureBootReportingPrereqs.ps1` only repairs *reporting* prerequisites and exits `0` when it succeeds, because for that package "success" means the device can now report. Deploy them as separate Intune packages.
@@ -33,6 +34,7 @@ References:
 - [KB5080921 - Monitoring Secure Boot certificate status with Intune Remediations](https://support.microsoft.com/en-US/servicing/os/secure-boot/2026/02/monitoring-secure-boot-certificate-status-with-microsoft-intune-remediations) (the reporting path used by the inventory script)
 - [KB5085790 - Known issues and resolutions](https://support.microsoft.com/en-US/servicing/os/secure-boot/2026/03/known-issues-and-resolutions-for-secure-boot-certificates-updates) (hypervisor and OEM issues)
 - [KB5080931 - Secure Boot certificate updates for Azure Virtual Desktop](https://support.microsoft.com/en-US/servicing/os/secure-boot/2026/02/secure-boot-certificate-updates-for-azure-virtual-desktop)
+- [Broadcom KB 423893 - Secure Boot Certificate Expirations and Update Failures in VMware VMs](https://knowledge.broadcom.com/external/article/423893/secure-boot-certificate-expirations-and.html) (VMware vSphere `VMW.NULLPK`, SilentPK, Capsule PK, and ESXi NVRAM defaults)
 - [Secure Boot status report in Windows Autopatch](https://learn.microsoft.com/en-us/windows/deployment/windows-autopatch/monitor/secure-boot-status-report) (the report whose Unknown bucket this tooling explains)
 
 ## Scripts
@@ -52,9 +54,10 @@ These four share the same TPM-WMI event-id classification and diagnostic signals
 
 | File | Purpose | Modifies System? |
 |------|---------|------------------|
-| [Get-SecureBootCertInventory.ps1](Get-SecureBootCertInventory.ps1) | Intune Remediations **detection** script. Emits one compact JSON line covering every documented signal. | Never |
+| [Get-SecureBootCertInventory.ps1](Get-SecureBootCertInventory.ps1) | Intune Remediations **detection** script. Emits one compact JSON line covering every documented signal, including UEFI PK/KEK/db state and VMware guest telemetry. | Never |
+| [Detect_VMwareSecureBootUEFICA2023.ps1](Detect_VMwareSecureBootUEFICA2023.ps1) | Intune Remediations **detection-only** script for VMware vSphere guests. Evaluates live UEFI PK/KEK/db NVRAM, vTPM, VMware Tools version, and Capsule PK PnP state against Broadcom KB 423893. | Never |
 | [Repair-SecureBootReportingPrereqs.ps1](Repair-SecureBootReportingPrereqs.ps1) | Intune Remediations **remediation** script. Fixes only the three conditions that stop a device *reporting*. | Yes, narrowly (scheduled task, OneSettings, telemetry) |
-| [Split-SecureBootPopulation.ps1](Split-SecureBootPopulation.ps1) | Offline. Segments the Intune CSV export into actionable populations. | Never (runs on your workstation) |
+| [Split-SecureBootPopulation.ps1](Split-SecureBootPopulation.ps1) | Offline. Segments the Intune CSV export (or JSON / VMware PR detection lines) into actionable populations. | Never (runs on your workstation) |
 
 None of these three write `AvailableUpdates`, `MicrosoftUpdateManagedOptIn` or `HighConfidenceOptOut`, and none touch DBX, the boot manager, boot order or BitLocker. See [Fleet inventory and reporting prerequisites](#fleet-inventory-and-reporting-prerequisites).
 
@@ -491,19 +494,54 @@ SecureBoot         AvailableUpdates, AvailableUpdatesPolicy, HighConfidenceOptOu
 SecureBoot\Servicing
                    UEFICA2023Status (NoValue when the key is absent), UEFICA2023Error,
                    UEFICA2023ErrorEvent, WindowsUEFICA2023Capable, BucketHash, ConfidenceLevel
-UEFI variables     KEK 2023 / KEK 2011; db: Windows UEFI CA 2023, Option ROM UEFI CA 2023,
+UEFI variables     PK state (pkSt: WinOemPK / NullPK / None / OtherCertPK / UnrecognizedPK / Unreadable);
+                   KEK 2023 / KEK 2011; db: Windows UEFI CA 2023, Option ROM UEFI CA 2023,
                    Microsoft UEFI CA 2023, Microsoft Corporation UEFI CA 2011,
                    Windows Production PCA 2011  -> derived trust configuration
 Scheduled task     \Microsoft\Windows\PI\Secure-Boot-Update  state + last run
 Policy             AllowTelemetry, DisableOneSettingsDownloads
-Events             counts of 1795/1801/1802/1803/1032, latest event id + time, 1802 SkipReason
+Events             counts of 1795/1796/1801/1802/1803/1032/1808, latest event id + time,
+                   1802 SkipReason, chronology-validated completion (compOk) and current-boot
+                   pending restart (rebootPend)
 Platform           manufacturer, model, firmware version, OS build,
-                   VMware / HyperV / Azure / OtherVM / Physical
+                   VMware / HyperV / Azure / OtherVM / Physical / Unknown
+VMware guest       vTPM presence (vtpm), VMware Tools version (vmt), and
+                   'Platform Key Firmware' PnP ConfigManagerErrorCode (pkCap)
 ```
 
 Output is one JSON line with deliberately short keys, because **Intune truncates detection output at 2048 characters**. Check the length before adding fields.
 
-Exit `0` when Secure Boot is disabled (out of scope) or `UEFICA2023Status = Updated`; exit `1` otherwise.
+Exit `0` when Secure Boot is confirmed disabled/unsupported (out of scope) or when the device is confirmed compliant (`UEFICA2023Status = Updated`, `Error = 0` or absent, `AvailableUpdates = 0x4000`, live NVRAM contains `KEK 2023` + all required `2023 DB` certs, and event chronology confirms `1808`/`1799` with no newer blocker or current-boot `1800`); exit `1` on any non-compliant or unknown/unreadable state.
+
+### `Detect_VMwareSecureBootUEFICA2023.ps1`
+
+Standalone read-only Intune Remediations **detection** script purpose-built for VMware vSphere virtual machines (`Run script in 64-bit PowerShell = Yes`, run as `SYSTEM`, leave the remediation script empty). Writes detailed CMTrace diagnostics to `%ProgramData%\Microsoft\IntuneManagementExtension\Logs\PR_VMwareSecureBootCA2023.log` and emits a single-line summary (`<MARKER>: <Reason> | <Key=Value ...>`) bounded under 2000 characters.
+
+#### Why VMware guests need a separate decision tree
+
+Per [Broadcom KB 423893](https://knowledge.broadcom.com/external/article/423893/secure-boot-certificate-expirations-and.html) and [Microsoft KB 5085046](https://support.microsoft.com/en-US/servicing/os/secure-boot/2026/03/secure-boot-troubleshooting-guide), a vSphere VM's initial UEFI Secure Boot NVRAM depends on the ESXi release and VM Hardware Version at the time the VM (or its source template) was created:
+
+1. **ESXi < 8.0 U2 (or VM HW v13):** Initialized with `VMW.NULLPK` (an empty/zeroed PK payload) and 2011-only KEK/db certificates. Windows can update `db` using the existing 2011 KEK, but **cannot authorize an OS-driven KEK 2023 update** (`Event 1803` / `1795`) until `VMW.NULLPK` is replaced with `Windows OEM Devices PK`:
+   - **`vTPM = False`:** SilentPK update applies `Windows OEM Devices PK` automatically on a guest restart once the host is on **ESXi 8.0 U3j (P09)+** or **ESX 9.1.1.0+** (requires VM HW v14+).
+   - **`vTPM = True`:** Capsule PK update delivers the PK via a Windows firmware capsule driver (`Platform Key Firmware` in Device Manager) during a guest restart. Requires **ESX 9.1.1.0+**, VM HW v14+ (with a cold power-on on the upgraded host), **July 2026+ Windows Cumulative Update**, and **VMware Tools 13.1.5+** on supported Windows versions (note: Windows Server 2016, Windows 10 22H2, and Windows 10 1809 are deferred to a future VMware Tools release).
+2. **ESXi 8.0 U2 through 8.0 U3i (P08) (VM HW v14+):** Also initialized with `VMW.NULLPK`, **but `Microsoft Corporation KEK 2K CA 2023`, `Windows UEFI CA 2023`, and `Microsoft UEFI CA 2023` are already pre-populated in vUEFI NVRAM** at VM creation (only `Microsoft Option ROM UEFI CA 2023` is omitted). Because `KEK 2023` is already enrolled in NVRAM, **`VMW.NULLPK` does not block Windows Secure Boot CA 2023 servicing** — Windows can add the missing Option ROM CA 2023 (`0x0800`) and stage the 2023 Boot Manager (`0x0100`) without replacing PK.
+3. **ESXi 8.0 U3j (P09)+ and ESX 9.x (VM HW v14+):** Initialized with `Windows OEM Devices PK`, `KEK 2023`, `Windows UEFI CA 2023`, and `Microsoft UEFI CA 2023`. Only OS-side servicing (`0x5944`) is needed to add `Microsoft Option ROM UEFI CA 2023` and switch to the 2023-signed Boot Manager.
+
+#### Verdict markers and exit codes
+
+| Marker | Exit | Meaning |
+|--------|------|---------|
+| `COMPLIANT` | `0` | Live NVRAM has `KEK 2023` + all required `2023 DB` certs, `UEFICA2023Status=Updated`, `Err=0`, `AvailableUpdates=0x4000`, Capsule PnP is clean, and `Event 1808`/`1799` is confirmed with no newer blocker or pending restart |
+| `NOT-APPLICABLE` | `0` | Confirmed non-VMware machine, or VMware VM with Secure Boot confirmed disabled / Legacy BIOS |
+| `PREREQ` | `1` | Script was invoked in 32-bit PowerShell |
+| `NON-COMPLIANT-COLLECTION-ERROR` | `1` | WMI/CIM, Secure Boot state, UEFI NVRAM (`PK`/`KEK`/`db`), PnP, or TPM-WMI event log could not be read (fail-closed — unknown states never exit `0`) |
+| `NON-COMPLIANT-VMWARE-CAPSULE-REBOOT` | `1` | VMware `Platform Key Firmware` PnP device has `ConfigManagerErrorCode = 14` (`CM_PROB_NEED_RESTART`); guest restart required to finish Capsule PK update |
+| `NON-COMPLIANT-VMWARE-CAPSULE-ERROR` | `1` | VMware `Platform Key Firmware` PnP device has a non-zero error code other than `14` (e.g. `10`, `28`, `31`); inspect Device Manager rather than rebooting in a loop |
+| `NON-COMPLIANT-PENDING-REBOOT` | `1` | `KEK 2023` is in NVRAM and `AvailableUpdates = 0x4100` (or a current-boot `Event 1800` is pending); guest restart needed to finalize the 2023 Boot Manager |
+| `NON-COMPLIANT-OS-SERVICING-NEEDED` | `1` | `KEK 2023` is already in NVRAM (PK replacement not required even if `PK=NullPK`), but missing 2023 DB cert(s) (such as `Microsoft Option ROM UEFI CA 2023`) or Boot Manager servicing still needs to complete |
+| `NON-COMPLIANT-VMWARE-PK-BLOCKED` | `1` | `KEK 2023` is missing from NVRAM and `PK` is `NullPK` or `None`; blocked on hypervisor PK update (`SilentPK` when `vTPM=False`, `Capsule PK` when `vTPM=True`) |
+| `NON-COMPLIANT-PK-READY-NEEDS-KEK` | `1` | `KEK 2023` is missing from NVRAM, but `Windows OEM Devices PK` (`WinOemPK`) is present; ready for OS-side `AvailableUpdates=0x5944` servicing |
+| `NON-COMPLIANT-VMWARE-PK-UNRECOGNIZED` | `1` | `KEK 2023` is missing from NVRAM and `PK` contains a non-null certificate or payload that does not match `Windows OEM Devices PK` |
 
 ### `Repair-SecureBootReportingPrereqs.ps1`
 
@@ -523,22 +561,29 @@ If those policy values arrive from Group Policy or a Policy CSP, **fix them at s
 .\Split-SecureBootPopulation.ps1 -Path .\DeviceStatus.csv -OutputCsv .\segmented.csv
 ```
 
-Accepts the CSV export, a folder, or a file of one JSON object per line. First match wins:
+Accepts the CSV export, a folder, or a file of JSON inventory lines (`Get-SecureBootCertInventory.ps1`) or `Detect_VMwareSecureBootUEFICA2023.ps1` summary lines. First match wins:
 
 | Segment | Meaning | Action |
 |---------|---------|--------|
-| `SecureBootOff` | Secure Boot disabled | Out of scope. Do **not** toggle Secure Boot to "fix" this — toggling can erase already-applied certificates |
-| `ReportingBlocked` | Task not Ready, telemetry below Required, or OneSettings blocked | **This is the Unknown bucket.** Run the reporting-prereq remediation |
-| `Updated` | `UEFICA2023Status = Updated` | None |
+| `CollectionError` | Secure Boot state, platform, UEFI variables, PnP status, or event log query failed | Fix script execution context (`SYSTEM` + 64-bit PS) or WMI health |
+| `SecureBootOff` | Secure Boot confirmed disabled or unsupported | Out of scope. Do **not** toggle Secure Boot to "fix" this — toggling can erase already-applied certificates |
+| `Updated` | `UEFICA2023Status = Updated`, `Error = 0`, `AvailableUpdates = 0x4000`, live NVRAM has `KEK 2023` + required `2023 DB` certs, and completion event verified | None |
 | `OptionRomNotApplicable` | Microsoft-only trust, with Windows UEFI CA 2023 and KEK 2023 both present | None — report false positive |
-| `VirtualVMware` | VMware guest, not updated | Hypervisor-side. Microsoft lists no VMware entry in KB5085790; track Broadcom KB 423893 |
+| `VMwareCapsuleReboot` | VMware guest with `Platform Key Firmware` PnP error code `14` | Restart guest to complete staged Capsule PK update |
+| `VMwareCapsuleError` | VMware guest with `Platform Key Firmware` PnP error code other than `0`/`14` | Inspect Device Manager / VMware Tools driver state |
+| `VMwareOsServicing` | VMware guest with `KEK 2023` already in NVRAM (including ESXi 8.0 U2–U3i P08 VMs with `NullPK`) | PK replacement not required; run OS-side Secure Boot servicing (`0x5944`) |
+| `VMwarePkReadyNeedsKek` | VMware guest missing `KEK 2023`, but `Windows OEM Devices PK` (`WinOemPK`) is in NVRAM | Run OS-side Secure Boot servicing (`0x5944`) |
+| `VMwarePkBlockedVtpm` | VMware guest missing `KEK 2023` with `NullPK`/`None` and `vTPM = True` | Apply Broadcom Capsule PK (ESX 9.1.1.0+, VM HW v14+ cold power-on, July 2026+ CU, VMTools 13.1.5+) or manual PK update with BitLocker suspended |
+| `VMwarePkBlockedNoVtpm` | VMware guest missing `KEK 2023` with `NullPK`/`None` and `vTPM = False` | Restart guest on ESXi 8.0 U3j (P09)+ or ESX 9.1.1.0+ (VM HW v14+) for SilentPK |
+| `VMwarePkBlocked` | VMware guest missing `KEK 2023` with `NullPK`/`None` and unknown vTPM state | Verify vTPM in vCenter, then apply Capsule PK or SilentPK |
+| `VMwarePkUnrecognized` | VMware guest missing `KEK 2023` with custom/unrecognized PK | Verify PK against Broadcom KB 423893 |
+| `VirtualVMware` | VMware guest from legacy export without PK/KEK NVRAM fields | Re-inventory with updated `Get-SecureBootCertInventory.ps1` or `Detect_VMwareSecureBootUEFICA2023.ps1` |
+| `ReportingBlocked` | Task not Ready/Running, telemetry below Required, or OneSettings blocked | **This is the Unknown bucket.** Run the reporting-prereq remediation |
 | `VirtualOtherHV` | Hyper-V / Azure / other guest | Hyper-V KEK 1795 fixed Mar 2026 (Apr 2026 for Server 2025) and needs the fix on **host and guest**. Azure Trusted Launch 1795 on KEK is an open known issue with no customer action |
 | `FirmwareBlocked` | Event 1795/1802/1803/1032, or confidence `Temporarily Paused` / `Not Supported` | OEM firmware update, or document as an accepted exception |
-| `PendingRestart` | `InProgress` with `AvailableUpdates = 0x4100` | Only the boot manager step remains; lands on the next restart |
+| `PendingRestart` | `InProgress` with `AvailableUpdates = 0x4100`, or current-boot `Event 1800` pending | Only the boot manager step remains; lands on the next restart |
 | `NotTargeted` | Servicing key absent or `NotStarted`, prerequisites healthy | Nothing wrong — not yet targeted or not yet in a high-confidence bucket |
 | `NeedsInvestigation` | Anything else | Manual |
-
-`ReportingBlocked` is evaluated **before** status, so telemetry problems separate cleanly from certificate problems.
 
 ### Notes and caveats
 
