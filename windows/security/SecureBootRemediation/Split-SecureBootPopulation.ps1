@@ -129,6 +129,7 @@ function ConvertFrom-DetectionLine {
             dbWin23    = ConvertTo-NullableBool $map['DbWin23']
             dbOr23     = ConvertTo-NullableBool $map['DbOptRom23']
             db3p23     = ConvertTo-NullableBool $map['Db3P23']
+            dbAll23    = ConvertTo-NullableBool $map['DbAll23']
             vtpm       = ConvertTo-NullableBool $map['vTPM']
             vmt        = $map['VMTools']
             pkCap      = $map['CapPnP']
@@ -216,6 +217,7 @@ function Get-Segment {
     $dbWin23    = ConvertTo-NullableBool (Get-Prop $R 'dbWin23')
     $dbOr23     = ConvertTo-NullableBool (Get-Prop $R 'dbOr23')
     $db3p23     = ConvertTo-NullableBool (Get-Prop $R 'db3p23')
+    $db3p11     = ConvertTo-NullableBool (Get-Prop $R 'db3p11')
     $vtpm       = ConvertTo-NullableBool (Get-Prop $R 'vtpm')
     $pkCap      = Get-Prop $R 'pkCap'
     $rebootPend = ConvertTo-NullableBool (Get-Prop $R 'rebootPend')
@@ -266,7 +268,12 @@ function Get-Segment {
 
     $errParsed = 0L
     $errOk     = ($null -eq $err) -or ("$err" -eq '0x0') -or ([int64]::TryParse("$err", [ref]$errParsed) -and $errParsed -eq 0)
-    $db3pOk    = ($trust -eq 'MSOnly') -or ($trust -eq 'MSAnd3P' -and $dbOr23 -eq $true -and $db3p23 -eq $true)
+    $need3pDb  = if (Test-HasProp $R 'db3p11') { $db3p11 -eq $true } else { $trust -eq 'MSAnd3P' }
+    $db3pOk    = if (Test-HasProp $R 'dbAll23') {
+        (ConvertTo-NullableBool (Get-Prop $R 'dbAll23')) -eq $true
+    } else {
+        (-not $need3pDb) -or ($dbOr23 -eq $true -and $db3p23 -eq $true)
+    }
     $nvramOk   = ($kek23 -eq $true -and $dbWin23 -eq $true -and $db3pOk)
     $capOk     = ($null -eq $pkCap -or "$pkCap" -in @('', 'Absent', '0', 'N/A'))
     $compEvtOk = if ($hasCompOkProp) {

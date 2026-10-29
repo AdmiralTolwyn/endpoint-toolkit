@@ -34,7 +34,7 @@
     System.String (single-line compressed JSON) and System.Int32 exit code.
 
 .NOTES
-    PowerShell 5.1. Must run as SYSTEM in 64-bit PowerShell (Get-SecureBootUEFI requires both).
+    PowerShell 5.1. Must run in 64-bit PowerShell with elevated Administrator or SYSTEM privileges.
     Exit 0 = Confirmed compliant (Status=Updated, Error=0, KEK 2023 + required 2023 DB certs in NVRAM),
              or Secure Boot confirmed disabled/unsupported.
     Exit 1 = Non-compliant or unknown/unreadable state (belongs in follow-up population).
@@ -244,9 +244,9 @@ try {
     }
 }
 
-if ((@($events | Where-Object { $_.Id -in @(1808, 1799) }).Count -eq 0)) {
+if (-not ((@($events | Where-Object { $_.Id -in @(1808, 1799) }).Count -gt 0) -and (@($events | Where-Object { $_.Id -eq 1800 }).Count -gt 0))) {
     try {
-        $compFb = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Microsoft-Windows-TPM-WMI'; Id = @(1808, 1799) } -MaxEvents 5 -ErrorAction Stop)
+        $compFb = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Microsoft-Windows-TPM-WMI'; Id = @(1808, 1799, 1800) } -MaxEvents 10 -ErrorAction Stop)
         if ($compFb.Count -gt 0) { $events = @($events + $compFb) }
     } catch {
         if ($_.Exception.Message -notmatch 'No events were found|not find any events') { $evtQueryOk = $false }
@@ -296,13 +296,22 @@ if ($events.Count -gt 0 -or $op1799.Count -gt 0) {
     $blkEvts    = @($allBlk | Where-Object { $null -ne $_.TimeCreated } | Sort-Object TimeCreated -Descending)
     $compTime   = if ($compEvts.Count -gt 0) { ([datetime]$compEvts[0].TimeCreated).ToUniversalTime() } else { $null }
 
-    $ev1800 = @($sorted | Where-Object { $_.Id -eq 1800 -and $null -ne $_.TimeCreated } | Sort-Object TimeCreated -Descending)
-    if ($ev1800.Count -gt 0 -and $null -ne $lastBootUtc) {
+    $all1800     = @($sorted | Where-Object { $_.Id -eq 1800 })
+    $undated1800 = (@($all1800 | Where-Object { $null -eq $_.TimeCreated }).Count -gt 0)
+    $ev1800      = @($all1800 | Where-Object { $null -ne $_.TimeCreated } | Sort-Object TimeCreated -Descending)
+    if ($undated1800) {
+        $evtQueryOk = $false
+    } elseif ($ev1800.Count -gt 0) {
         $t1800     = ([datetime]$ev1800[0].TimeCreated).ToUniversalTime()
-        $afterBoot = ($t1800 -gt $lastBootUtc)
         $afterComp = ($null -eq $compTime) -or ($t1800 -gt $compTime)
         $afterBlk  = (-not $undatedBlk) -and ($blkEvts.Count -eq 0 -or $t1800 -ge ([datetime]$blkEvts[0].TimeCreated).ToUniversalTime())
-        $rebootPendingCurrent = ($afterBoot -and $afterComp -and $afterBlk)
+        if ($afterComp -and $afterBlk) {
+            if ($null -eq $lastBootUtc) {
+                $evtQueryOk = $false
+            } elseif ($t1800 -gt $lastBootUtc) {
+                $rebootPendingCurrent = $true
+            }
+        }
     }
 
     if ($null -ne $compTime -and -not $undatedBlk -and -not $rebootPendingCurrent) {
@@ -395,7 +404,7 @@ Write-Output $json
 
 if ($sbEnabled -eq $false -and $plat -ne 'Unknown') { exit 0 }
 
-$dbAllOk    = ($o.dbWin23 -eq $true) -and ($o.trust -eq 'MSOnly' -or ($o.trust -eq 'MSAnd3P' -and $o.dbOr23 -eq $true -and $o.db3p23 -eq $true))
+$dbAllOk    = ($o.dbWin23 -eq $true) -and ($o.db3p11 -ne $true -or ($o.dbOr23 -eq $true -and $o.db3p23 -eq $true))
 $errParsed  = 0L
 $errOk      = ($null -eq $o.err) -or ([int64]::TryParse("$($o.err)", [ref]$errParsed) -and $errParsed -eq 0)
 $pkReadOk   = ($o.pkSt -notin @('Unreadable', 'N/A'))

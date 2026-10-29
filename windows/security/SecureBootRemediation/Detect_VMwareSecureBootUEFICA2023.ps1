@@ -528,14 +528,16 @@ function Get-UefiVariableState {
             $state.DbPca2011    = Test-UefiCertPresent -Bytes $dbBytes -Subject 'Microsoft Windows Production PCA 2011'
 
             # Per MS KB 5085046, the 0x4000 modifier bit applies Microsoft Option ROM UEFI CA 2023 (0x0800)
-            # and Microsoft UEFI CA 2023 (0x1000) when Microsoft Corporation UEFI CA 2011 is present in db.
+            # and Microsoft UEFI CA 2023 (0x1000) only when Microsoft Corporation UEFI CA 2011 is present in db.
             $missing = New-Object System.Collections.Generic.List[string]
             if (-not $state.DbWin2023) { [void]$missing.Add('WindowsUEFICA2023') }
 
-            if ($state.Db3p2011 -or $state.Db3p2023 -or $state.DbOptRom2023) {
+            if ($state.Db3p2011) {
                 $state.TrustMode = 'MSAnd3P'
                 if (-not $state.DbOptRom2023) { [void]$missing.Add('MSOptionRomUEFICA2023') }
                 if (-not $state.Db3p2023)     { [void]$missing.Add('MSUEFICA2023') }
+            } elseif ($state.Db3p2023 -or $state.DbOptRom2023) {
+                $state.TrustMode = 'MSAnd3P'
             } else {
                 $state.TrustMode = 'MSOnly'
             }
@@ -819,22 +821,23 @@ function Get-SecureBootEvents {
         }
     }
 
-    # Ensure completion (1808/1799) and blocking events are never hidden if noisy 1801 assessment events filled the top 100 window.
-    $hasCompletionInBatch = (@($events | Where-Object { $_.Id -in @(1808, 1799) }).Count -gt 0)
-    if (-not $hasCompletionInBatch) {
+    # Ensure completion (1808/1799), pending-restart (1800), and blocking events are never hidden
+    # if noisy 1801 assessment events filled the top 100 window.
+    $hasCompOr1800InBatch = ((@($events | Where-Object { $_.Id -in @(1808, 1799) }).Count -gt 0) -and (@($events | Where-Object { $_.Id -eq 1800 }).Count -gt 0))
+    if (-not $hasCompOr1800InBatch) {
         try {
             $eCompFallback = @(Get-WinEvent -FilterHashtable @{
                 LogName      = 'System'
                 ProviderName = $Script:EventProvider
-                Id           = @(1808, 1799)
-            } -MaxEvents 5 -ErrorAction Stop)
+                Id           = @(1808, 1799, 1800)
+            } -MaxEvents 10 -ErrorAction Stop)
             if ($eCompFallback.Count -gt 0) {
                 $events = @($events + $eCompFallback)
             }
         } catch {
             if ($_.Exception.Message -notmatch 'No events were found|not find any events') {
                 $res.QueryOk = $false
-                Write-Log "Get-WinEvent completion fallback query failed: $($_.Exception.Message)" -Level WARN
+                Write-Log "Get-WinEvent completion/1800 fallback query failed: $($_.Exception.Message)" -Level WARN
             }
         }
     }
@@ -919,12 +922,22 @@ function Get-SecureBootEvents {
 
     # Historical Event 1800 must not imply a current reboot requirement: require known LastBootUtc
     # and Event 1800 newer than LastBootUtc, newer than any completion event, and not superseded by a blocker.
-    if ($ev1800.Count -gt 0 -and $null -ne $ev1800[0].TimeCreated -and $null -ne $LastBootUtc) {
-        $t1800           = ([datetime]$ev1800[0].TimeCreated).ToUniversalTime()
-        $afterBoot       = ($t1800 -gt $LastBootUtc)
+    # If Event 1800 is newer than completion (or undated) and LastBootUtc is unknown, fail closed by setting QueryOk=$false.
+    $undated1800 = (@($ev1800 | Where-Object { $null -eq $_.TimeCreated }).Count -gt 0)
+    $dated1800   = @($ev1800 | Where-Object { $null -ne $_.TimeCreated } | Sort-Object TimeCreated -Descending)
+    if ($undated1800) {
+        $res.QueryOk = $false
+    } elseif ($dated1800.Count -gt 0) {
+        $t1800           = ([datetime]$dated1800[0].TimeCreated).ToUniversalTime()
         $afterCompletion = ($null -eq $latestCompletionTime) -or ($t1800 -gt $latestCompletionTime)
         $afterBlocker    = ($evBlock.Count -eq 0 -or $null -eq $evBlock[0].TimeCreated) -or ($t1800 -ge ([datetime]$evBlock[0].TimeCreated).ToUniversalTime())
-        $res.RebootPendingCurrent = ($afterBoot -and $afterCompletion -and $afterBlocker)
+        if ($afterCompletion -and $afterBlocker) {
+            if ($null -eq $LastBootUtc) {
+                $res.QueryOk = $false
+            } elseif ($t1800 -gt $LastBootUtc) {
+                $res.RebootPendingCurrent = $true
+            }
+        }
     }
 
     if ($ev1802.Count -gt 0) {
@@ -1109,7 +1122,13 @@ if ($sbInfo.State -ne 'Enabled') {
 
 if (-not $uefi.UefiReadable) {
     Complete-Detection -ExitCode 1 -Marker 'NON-COMPLIANT-COLLECTION-ERROR' `
-        -Reason "Unable to read UEFI Secure Boot variables (PKRead=$($uefi.PkReadOk), KEKRead=$($uefi.KekReadOk), DBRead=$($uefi.DbReadOk)); verify SYSTEM privileges" `
+        -Reason "Unable to read UEFI Secure Boot variables (PKRead=$($uefi.PkReadOk), KEKRead=$($uefi.KekReadOk), DBRead=$($uefi.DbReadOk)); verify elevated Administrator or SYSTEM privileges" `
+        -Telemetry $telemetry
+}
+
+if (-not $evt.QueryOk) {
+    Complete-Detection -ExitCode 1 -Marker 'NON-COMPLIANT-COLLECTION-ERROR' `
+        -Reason 'Unable to query System Microsoft-Windows-TPM-WMI event log or verify event chronology against OS boot time' `
         -Telemetry $telemetry
 }
 
@@ -1156,7 +1175,7 @@ if ($servicingComplete -and -not $nvramComplete) {
 if ($uefi.Kek2023 -eq $true) {
     if ($avUpdates -eq 0x4100 -or $evt.RebootPendingCurrent) {
         Complete-Detection -ExitCode 1 -Marker 'NON-COMPLIANT-PENDING-REBOOT' `
-            -Reason 'KEK 2023 is present in NVRAM (PK update not required); guest reboot required to finalize 2023 Boot Manager' `
+            -Reason 'KEK 2023 is present in NVRAM (PK update not required); guest reboot required before Secure Boot servicing can continue' `
             -Telemetry $telemetry
     }
 
