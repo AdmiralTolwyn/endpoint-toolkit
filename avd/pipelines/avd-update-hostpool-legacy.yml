@@ -41,6 +41,10 @@ variables:
     value: 'avdadmin'
   - name: baseName
     value: '<YOURVMPREFIX>'
+  - name: namingScheme
+    value: 'WeekBased' # 'WeekBased' (<BaseName><WW><NN>, up to 11-char prefix) or 'Sequential' (<BaseName><NNN>, up to 12-char prefix e.g. FSAVDP11002)
+  - name: indexPadLength
+    value: 0 # 0 = auto (2 for WeekBased, 3 for Sequential)
   - name: vmCountOverride
     value: 0 # Set to desired count to bypass circuit breaker (0 = auto-detect)
 
@@ -99,6 +103,8 @@ stages:
                 -ImageDefinitionName "$(imageDef)"
                 -ComputeResourceGroupName "$(computeRg)"
                 -BaseName "$(baseName)"
+                -NamingScheme "$(namingScheme)"
+                -IndexPadLength $(indexPadLength)
                 -VmCountOverride $(vmCountOverride)
               azurePowerShellVersion: 'LatestVersion'
 

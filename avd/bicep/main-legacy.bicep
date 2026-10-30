@@ -22,9 +22,9 @@ param osDiskType string = 'StandardSSD_LRS'
 param osDiskSizeGB int = 128
 param availabilityZones array = []                // Default: No zone pinning
 param acceleratedNetworking bool = false          // Default: Off
-// Version-less AVD DSC agent package; override from the pipeline to pin a build.
+// Pinned AVD DSC agent package that includes -AadJoin support; override from the pipeline to pin a different build.
 #disable-next-line no-hardcoded-env-urls
-param avdAgentPackageUrl string = 'https://wvdportalstorageblob.blob.core.windows.net/galleryartifacts/Configuration.zip'
+param avdAgentPackageUrl string = 'https://wvdportalstorageblob.blob.core.windows.net/galleryartifacts/Configuration_1.0.03299.1133.zip'
 
 // --- LEGACY AD PARAMS ---
 param domainName string

@@ -23,10 +23,10 @@ param osDiskType string
 param osDiskSizeGB int
 param availabilityZone string = ''
 param acceleratedNetworking bool = false
-// Version-less AVD DSC agent package (Microsoft rolls this forward automatically).
-// Override from the pipeline to pin a specific build without touching code.
+// Pinned AVD DSC agent package that includes -AadJoin support (Configuration.zip is a 2020 package lacking -AadJoin).
+// Override from the pipeline to pin a different build without touching code.
 #disable-next-line no-hardcoded-env-urls
-param avdAgentPackageUrl string = 'https://wvdportalstorageblob.blob.core.windows.net/galleryartifacts/Configuration.zip'
+param avdAgentPackageUrl string = 'https://wvdportalstorageblob.blob.core.windows.net/galleryartifacts/Configuration_1.0.03299.1133.zip'
 // --------------------------------
 
 // --- LEGACY AD SPECIFIC ---
@@ -38,9 +38,9 @@ param domainJoinPassword string
 
 // 1. CALCULATE LINK TAGS
 var hostPoolResourceId = resourceId(hostPoolRg, 'Microsoft.DesktopVirtualization/hostpools', hostPoolName)
-var finalTags = union(tags, { 
-    'cm-resource-parent': hostPoolResourceId 
-    'HybridStatus': 'Pending' // Tag for Activator
+var finalTags = union(tags, {
+  'cm-resource-parent': hostPoolResourceId
+  HybridStatus: 'Pending' // Tag for Activator
 })
 
 // GPU DETECTION
@@ -180,8 +180,12 @@ resource avdAgent 'Microsoft.Compute/virtualMachines/extensions@2024-07-01' = {
       configurationFunction: 'Configuration.ps1\\AddSessionHost'
       properties: {
         hostPoolName: hostPoolName
-        registrationInfoToken: hostPoolToken
         aadJoin: false // <--- FALSE for Legacy
+      }
+    }
+    protectedSettings: {
+      properties: {
+        registrationInfoToken: hostPoolToken
       }
     }
   }

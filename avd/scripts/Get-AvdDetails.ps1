@@ -24,9 +24,15 @@
 .PARAMETER ImageDefinitionName
     The specific Image Definition to check (e.g., img-MyImageDef).
 .PARAMETER BaseName
-    The prefix for generated hostnames. Defaults to 'avd'.
+    The prefix for generated hostnames. Defaults to 'avd'. Supports up to 11 chars in WeekBased mode (<BaseName><WW><NN>) or up to 12 chars in Sequential mode (<BaseName><NNN>).
 .PARAMETER VmCountOverride
     Optional: Force the deployment of a specific number of VMs.
+.PARAMETER NamingScheme
+    Hostname generation scheme: 'WeekBased' (<BaseName><WW><NN>, default for pooled blue/green updates) or 'Sequential' (<BaseName><NNN>, default 3-digit padding for personal desktops and up to 12-char prefixes like 'FSAVDP11002').
+.PARAMETER IndexPadLength
+    Zero-padding width for the host sequence number. When 0 (default), automatically uses 2 for 'WeekBased' and 3 for 'Sequential'.
+.PARAMETER AllowConcurrentDeployments
+    Optional switch: Allow planning a new deployment even when an existing AVD deployment ('deploy-*', 'canary-*', or 'blast-*') is currently Running in ComputeResourceGroupName. By default, overlapping rollouts are blocked to prevent non-atomic hostname collisions.
 #>
 #Requires -Modules Az.Accounts, Az.Compute, Az.DesktopVirtualization, Az.Resources
 
@@ -40,7 +46,12 @@ param (
     [string]$BaseName = "avd",
     [int]$VmCountOverride = 0,
     [string]$GallerySubscriptionId = "",
-    [string]$ComputeResourceGroupName = ""
+    [string]$ComputeResourceGroupName = "",
+    [ValidateSet("WeekBased", "Sequential")]
+    [string]$NamingScheme = "WeekBased",
+    [ValidateRange(0, 4)]
+    [int]$IndexPadLength = 0,
+    [switch]$AllowConcurrentDeployments
 )
 
 # --- SILENCE INFRASTRUCTURE NOISE ---
@@ -182,32 +193,54 @@ try {
     $RunningDeploymentVMNames = @()
     if ($ComputeResourceGroupName) {
         Write-Log "Checking deployment health in '$ComputeResourceGroupName'..."
-        $Deployments = Get-AzResourceGroupDeployment -ResourceGroupName $ComputeResourceGroupName -ErrorAction SilentlyContinue |
-                       Where-Object { $_.DeploymentName -like 'deploy-*' }
+        $Deployments = @(
+            Get-AzResourceGroupDeployment -ResourceGroupName $ComputeResourceGroupName -ErrorAction Stop |
+            Where-Object {
+                $_.DeploymentName -like 'deploy-*' -or
+                $_.DeploymentName -like 'canary-*' -or
+                $_.DeploymentName -like 'blast-*'
+            }
+        )
 
         $FailedDeployments = @($Deployments | Where-Object { $_.ProvisioningState -eq 'Failed' })
         if ($FailedDeployments.Count -gt 0) {
             throw "BLOCKED: Found $($FailedDeployments.Count) failed deployment(s) in '$ComputeResourceGroupName'. Clean up before proceeding."
         }
 
-        $RunningDeployments = @($Deployments | Where-Object { $_.ProvisioningState -eq 'Running' })
+        $ActiveStates = @('Running', 'Accepted', 'Creating', 'Updating', 'Deleting')
+        $RunningDeployments = @($Deployments | Where-Object { $_.ProvisioningState -in $ActiveStates })
         if ($RunningDeployments.Count -gt 0) {
-            Write-Log "Found $($RunningDeployments.Count) running deployment(s)." "WARN"
+            Write-Log "Found $($RunningDeployments.Count) active deployment(s) ($($RunningDeployments.ProvisioningState -join ', '))." "WARN"
             $LongRunning = @($RunningDeployments | Where-Object { $_.Timestamp -lt (Get-Date).AddHours(-2) })
             if ($LongRunning.Count -gt 0) {
-                Write-Log "WARNING: $($LongRunning.Count) deployment(s) running for >2 hours. May block future deployments." "WARN"
+                Write-Log "WARNING: $($LongRunning.Count) deployment(s) active for >2 hours. May block future deployments." "WARN"
+            }
+            if (-not $AllowConcurrentDeployments) {
+                $RunningNames = ($RunningDeployments | ForEach-Object { "$($_.DeploymentName) [$($_.ProvisioningState)]" }) -join ', '
+                throw "BLOCKED: Found $($RunningDeployments.Count) active deployment(s) in '$ComputeResourceGroupName' ($RunningNames). Concurrent rollouts are blocked by default to prevent non-atomic hostname collisions. Wait for completion or pass -AllowConcurrentDeployments."
             }
         }
 
-        # Collect VM names from running deployments for collision avoidance
+        # Collect VM names from active deployments (both top-level vmList and nested deploy-<vmName>)
         foreach ($RD in $RunningDeployments) {
-            try {
-                $RDDetail = Get-AzResourceGroupDeployment -ResourceGroupName $ComputeResourceGroupName -Name $RD.DeploymentName -ErrorAction SilentlyContinue
-                if ($RDDetail.Parameters.vmList) {
-                    $RunningDeploymentVMNames += $RDDetail.Parameters.vmList.Value
-                }
-            } catch { }
+            if ($RD.DeploymentName -match '^deploy-(?!mgmt-|scaling-|powerrbac-)(.+)$') {
+                $RunningDeploymentVMNames += $Matches[1]
+            }
+            $RDDetail = Get-AzResourceGroupDeployment -ResourceGroupName $ComputeResourceGroupName -Name $RD.DeploymentName -ErrorAction Stop
+            if ($RDDetail.Parameters -and $RDDetail.Parameters['vmList'] -and $RDDetail.Parameters['vmList'].Value) {
+                $RunningDeploymentVMNames += @($RDDetail.Parameters['vmList'].Value)
+            }
+            if ($RDDetail.Parameters -and $RDDetail.Parameters['vmName'] -and $RDDetail.Parameters['vmName'].Value) {
+                $RunningDeploymentVMNames += [string]$RDDetail.Parameters['vmName'].Value
+            }
         }
+
+        # Also include existing VM resources in ComputeResourceGroupName that may not be registered in the pool yet
+        $ExistingComputeVMs = @(Get-AzVM -ResourceGroupName $ComputeResourceGroupName -ErrorAction Stop)
+        if ($ExistingComputeVMs.Count -gt 0) {
+            $RunningDeploymentVMNames += @($ExistingComputeVMs | ForEach-Object { $_.Name })
+        }
+
         Write-Log "Deployment health check passed." "SUCCESS"
     }
 
@@ -229,10 +262,16 @@ try {
     # an empty pool bootstraps with a single host.
     $TargetCount = if ($VmCountOverride -gt 0) { $VmCountOverride } elseif ($CurrentCount -eq 0) { 1 } else { $OutdatedHosts.Count }
 
-    # Generate names with collision avoidance (ISO-8601 Week-based)
-    $WeekNum = (Get-Culture).Calendar.GetWeekOfYear((Get-Date), [System.Globalization.CalendarWeekRule]::FirstFourDayWeek, [DayOfWeek]::Monday)
-    $WeekStr = "{0:D2}" -f $WeekNum
-    $Prefix  = "$BaseName" + "$WeekStr"
+    # Generate names with collision avoidance (WeekBased or Sequential)
+    $EffectivePadLength = if ($IndexPadLength -gt 0) { $IndexPadLength } elseif ($NamingScheme -eq "Sequential") { 3 } else { 2 }
+    if ($NamingScheme -eq "Sequential") {
+        $Prefix = $BaseName
+    } else {
+        $WeekNum = (Get-Culture).Calendar.GetWeekOfYear((Get-Date), [System.Globalization.CalendarWeekRule]::FirstFourDayWeek, [DayOfWeek]::Monday)
+        $WeekStr = "{0:D2}" -f $WeekNum
+        $Prefix  = "$BaseName" + "$WeekStr"
+    }
+    $FormatSpec = "{0:D$EffectivePadLength}"
     
     # Collect all existing VM names for collision avoidance
     $ExistingNames = @()
@@ -246,9 +285,9 @@ try {
     $NewNames = @()
     $vmNumber = 1
     for ($i = 0; $i -lt $TargetCount; $i++) {
-        while (("$Prefix{0:D2}" -f $vmNumber) -in $ExistingNames) { $vmNumber++ }
+        while (("$Prefix" + ($FormatSpec -f $vmNumber)) -in $ExistingNames) { $vmNumber++ }
         # Validate computerName length (15 char Windows limit)
-        $CandidateName = "$Prefix{0:D2}" -f $vmNumber
+        $CandidateName = "$Prefix" + ($FormatSpec -f $vmNumber)
         if ($CandidateName.Length -gt 15) {
             throw "Generated hostname '$CandidateName' exceeds 15-character Windows limit. Shorten -BaseName."
         }

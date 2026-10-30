@@ -141,7 +141,9 @@ cleanup step at the end of each deploy job, regardless of success or failure.
 | Variable | Pipeline(s) | Default | Purpose |
 |----------|-------------|---------|---------|
 | `vmCountOverride` | `…-entraid.yml`, `…-legacy.yml` | `0` (auto-detect) | Circuit-breaker override. `Get-AvdDetails.ps1` aborts if 100% of a multi-host pool is outdated, unless a non-zero override confirms the full-fleet replacement. |
-| `baseName` | `…-entraid.yml`, `…-legacy.yml` | `<YOURVMPREFIX>` | Prefix for generated ISO-8601 week-based hostnames. |
+| `baseName` | `…-entraid.yml`, `…-legacy.yml` | `<YOURVMPREFIX>` | Prefix for generated hostnames (up to 11 chars in `WeekBased` mode, or up to 12 chars in `Sequential` mode). |
+| `namingScheme` | `…-entraid.yml`, `…-legacy.yml` | `'WeekBased'` | `'WeekBased'` (`<BaseName><WW><NN>`) or `'Sequential'` (`<BaseName><NNN>`, supporting 12-char prefixes like `FSAVDP11002`). |
+| `indexPadLength` | `…-entraid.yml`, `…-legacy.yml` | `0` (auto) | Zero-padding width for host sequence numbers (`0` automatically selects `2` for `WeekBased` and `3` for `Sequential`). |
 | `enableTelemetry` | All update/cleanup pipelines | `'false'` | Set to `'true'` to send `Write-DeploymentTelemetry.ps1` events to Log Analytics. |
 
 Notes:
