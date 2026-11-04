@@ -33,6 +33,7 @@ Each guide includes prerequisites, examples, a complete argument table and evide
 | [avd/bicep](avd/bicep/) | Session-host deployment templates |
 | [avd/customizer](avd/customizer/) | AIB/Packer image customization and bundled VDOT configuration |
 | [avd/pipelines](avd/pipelines/), [avd/scripts](avd/scripts/) | Image builds and session-host lifecycle |
+| [avd/primary-user-sync](avd/primary-user-sync/README.md) | Fail-closed AVD Personal desktop to Intune Primary User propagation |
 | [devops/aib-task-v2](devops/aib-task-v2/) | Azure Image Builder pipeline task |
 | [intune/bitlocker](intune/bitlocker/) | Key-escrow detection/remediation |
 | [intune/client-health](intune/client-health/README.md) | Read-only ConfigMgr baseline discovery of Intune client faults |
