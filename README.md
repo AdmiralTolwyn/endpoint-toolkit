@@ -49,7 +49,7 @@ Each guide includes prerequisites, examples, a complete argument table and evide
 | [EntraCutover](windows/migration/EntraCutover/README.md) | Experimental Hybrid-to-Entra migration; not supported by Microsoft |
 | [windows/print](windows/print/) | Windows Protected Print readiness |
 | [windows/rdp](windows/rdp/) | Per-user RDP file signing |
-| [windows/security](windows/security/) | Speculation mitigation and [Secure Boot CA 2023](windows/security/SecureBootRemediation/README.md) detection, remediation, inventory, VMware vSphere PK/KEK readiness, and BitLocker PCR screening |
+| [windows/security](windows/security/) | Speculation mitigation, [Certificate Trust (eMudhra / CTL)](windows/security/CertTrustUpdates/README.md) detection, and [Secure Boot CA 2023](windows/security/SecureBootRemediation/README.md) detection, remediation, inventory, VMware vSphere PK/KEK readiness, and BitLocker PCR screening |
 | [windows/servicing](windows/servicing/) | Upgrade cleanup, recovery-partition resize and ESP reporting |
 | [windows/w365](windows/w365/) | Cloud PC disk and keyboard utilities |
 
