@@ -23,6 +23,7 @@ Unlike Pooled AVD session hosts—which are stateless and replaced on image upda
 4. ARM + Graph Safety Guards per Session Host:
              • AssignedUser empty           ──► UnassignedWarmHost (excluded)
              • AvdLegalHold tag enabled     ──► ExcludedByLegalHold
+             • Active AvdPatchLock tag      ──► SkippedActivePatchLock (protected during nightly patching)
              • Live sessions > 0            ──► ActiveSessionsPresent (restores allowNewSession=true if quarantined)
              • VM timeCreated < InactiveDays──► RecentlyCreatedHost
              • User assigned/reassigned     ──► AssignmentObservationWindowPending / RecentlyAssignedUser

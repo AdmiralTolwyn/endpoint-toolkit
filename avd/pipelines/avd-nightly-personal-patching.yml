@@ -1,0 +1,229 @@
+name: $(Date:yyyyMMdd)$(Rev:.r)-AVD-Personal-Nightly-Patching
+
+trigger: none
+pr: none
+
+# Nightly schedules are evaluated in UTC by Azure DevOps:
+# - 00:00 UTC = 01:00 CET (02:00 CEST): Mon-Fri 5-Cohort Shards (20% of fleet/night; or CohortCount=4 + smart Fri catch-up)
+# - 05:15 UTC = 06:15 CET (07:15 CEST): Independent MorningUnlock safety gate before business hours
+schedules:
+  - cron: "0 0 * * 1-5"
+    displayName: "Nightly Personal AVD Hotpatch & Defender Servicing (00:00 UTC)"
+    branches:
+      include:
+        - main
+    always: true
+
+  - cron: "15 5 * * 1-5"
+    displayName: "Pre-Business-Hours Drain Unlock Safety Net (05:15 UTC)"
+    branches:
+      include:
+        - main
+    always: true
+
+parameters:
+  - name: mode
+    displayName: "Execution Mode (Audit, MorningUnlock, Triage, Execute)"
+    type: string
+    default: "Audit"
+    values:
+      - Audit
+      - MorningUnlock
+      - Triage
+      - Execute
+
+  - name: cohortCount
+    displayName: "Number of SHA-256 Host Cohorts (5 = 20%/night Mon-Fri; 4 = 25% Mon-Thu + smart Fri catch-up)"
+    type: number
+    default: 5
+
+  - name: cohortIndex
+    displayName: "Cohort Index (-1 = Auto by Weekday, or 0..CohortCount-1)"
+    type: number
+    default: -1
+
+  - name: maxConcurrentVMs
+    displayName: "Max Concurrent Active VMs per Sliding Window"
+    type: number
+    default: 60
+
+  - name: maxStartsPerMinute
+    displayName: "Max VM Wake/Resume Operations per Minute"
+    type: number
+    default: 15
+
+  - name: useSelfHostedPool
+    displayName: "Use Self-Hosted Agent Pool (Required for runs > 55 min on free hosted tier)"
+    type: boolean
+    default: true
+
+  - name: selfHostedPoolName
+    displayName: "Self-Hosted Agent Pool Name"
+    type: string
+    default: "<YOURSELFHOSTEDPOOL>"
+
+variables:
+  # IMPORTANT: For runs > 55 minutes using Workload Identity Federation (OIDC), back this
+  # service connection with a User-Assigned Managed Identity (24h token lifetime) rather than
+  # an App Registration federated credential (~60m assertion lifetime, AADSTS700024).
+  serviceConnection: '<YOURSERVICECONNECTION>'
+  # Comma- or semicolon-separated full ARM IDs of target Personal Host Pools
+  hostPoolResourceIds: '/subscriptions/<YOURSUBSCRIPTIONID>/resourceGroups/<YOURRESOURCEGROUP-CORE>/providers/Microsoft.DesktopVirtualization/hostPools/<YOURHOSTPOOLNAME>'
+  # Optional comma- or semicolon-separated Scaling Plan ARM IDs (enables RG-only RBAC without subscription scalingPlans/read)
+  scalingPlanResourceIds: ''
+  # Create this Azure DevOps Environment with an Exclusive Lock check to serialize servicing runs
+  targetEnvironment: 'avd-personal-patching-prod'
+  # Keep 'Audit' until LAB-01..LAB-06 canary checks pass, then change to 'Execute'
+  scheduledDefaultMode: 'Audit'
+
+stages:
+  # Stage-level lockBehavior ensures overlapping servicing runs serialize without blocking
+  # the independent 05:15 UTC MorningDrainUnlockSafetyNet stage below.
+  - stage: PersonalHostServicing
+    displayName: "AVD Personal Host Servicing"
+    dependsOn: []
+    lockBehavior: sequential
+    condition: >-
+      and(
+        not(contains(variables['Build.CronSchedule.DisplayName'], 'Drain Unlock')),
+        ne('${{ parameters.mode }}', 'MorningUnlock')
+      )
+    jobs:
+      - deployment: RunPersonalPatching
+        displayName: "Run Invoke-AvdPersonalNightlyPatching"
+        ${{ if eq(parameters.useSelfHostedPool, true) }}:
+          pool:
+            name: ${{ parameters.selfHostedPoolName }}
+          timeoutInMinutes: 295
+        ${{ else }}:
+          pool:
+            vmImage: 'windows-latest'
+          timeoutInMinutes: 55
+        environment: ${{ variables.targetEnvironment }}
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: AzurePowerShell@5
+                  displayName: "Execute Hibernate-Safe Personal Patching Orchestrator"
+                  inputs:
+                    azureSubscription: $(serviceConnection)
+                    ScriptType: 'InlineScript'
+                    azurePowerShellVersion: 'LatestVersion'
+                    InlineScript: |
+                      $effectiveMode = '${{ parameters.mode }}'
+                      if ('$(Build.Reason)' -eq 'Schedule') {
+                          $effectiveMode = '$(scheduledDefaultMode)'
+                      }
+
+                      $poolIds = @('$(hostPoolResourceIds)' -split '[,;]' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+                      $spIds   = @('$(scalingPlanResourceIds)' -split '[,;]' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+                      Write-Host "Running Mode=$effectiveMode across $($poolIds.Count) Personal Host Pool(s)..."
+
+                      $invokeParams = @{
+                          HostPoolResourceId     = $poolIds
+                          Mode                   = $effectiveMode
+                          CohortCount            = ${{ parameters.cohortCount }}
+                          CohortIndex            = ${{ parameters.cohortIndex }}
+                          MaxConcurrentVMs       = ${{ parameters.maxConcurrentVMs }}
+                          MaxStartsPerMinute     = ${{ parameters.maxStartsPerMinute }}
+                          StopNewWakeAtLocalHour = 5
+                          MaintenanceTimeZoneId  = 'W. Europe Standard Time'
+                          AuthMode               = 'AzContext'
+                          Confirm                = $false
+                      }
+                      if ($spIds.Count -gt 0) {
+                          $invokeParams['ScalingPlanResourceId'] = $spIds
+                      }
+
+                      $results = @(
+                          & "$(System.DefaultWorkingDirectory)/avd/personal-host-patching/Invoke-AvdPersonalNightlyPatching.ps1" @invokeParams
+                      )
+
+                      $results | Format-Table ShortHostName, PriorPowerState, FinalPowerState, SessionDetected, HotpatchEligible, InstalledKbs, DeferredKbs, RebootPerformed, Status -AutoSize | Out-String -Width 240 | Write-Host
+
+                      $healthyStatuses = @(
+                          'AuditEligible', 'WhatIfPreview', 'MorningHealthy', 'NoStaleLock',
+                          'SkippedCohortFilter', 'SkippedCatchUpAlreadyHealthy',
+                          'SkippedActiveSession', 'SkippedActiveSessionPostWake', 'SkippedActiveGuestSession',
+                          'SkippedAutopatchPaused', 'SkippedQuarantined', 'SkippedLegalHold',
+                          'SkippedMaintenanceWindowCutoff', 'UpToDate', 'InstalledNoReboot',
+                          'InstalledAndRebooted', 'RebootedClearedPendingState',
+                          'DeferredBaselineForUserSession', 'HotpatchOrDefInstalled_BaselineDeferred'
+                      )
+                      $hardFailureStatuses = @(
+                          'ScalingPlanExclusionTagMissingOrMismatch', 'AbortedByCircuitBreaker',
+                          'OrchestratorError', 'HibernateRestoreFailed_LeftRunning',
+                          'PowerRestoreFailed', 'PowerRestoreTimeout', 'NeedsOperatorTriage',
+                          'PostRebootAgentTimeout', 'PostRebootBootNotAdvanced',
+                          'PostRebootVerifyFailed', 'RunCommandOutputParseFailed',
+                          'StaleLockBusyRunCommand'
+                      )
+
+                      $hardFails = @($results | Where-Object { $hardFailureStatuses -contains $_.Status })
+                      $warnHosts = @($results | Where-Object { ($healthyStatuses -notcontains $_.Status) -and ($hardFailureStatuses -notcontains $_.Status) })
+
+                      if ($hardFails.Count -gt 0) {
+                          $summary = ($hardFails | ForEach-Object { "$($_.ShortHostName)=$($_.Status)" }) -join ', '
+                          Write-Error "Critical servicing failures on $($hardFails.Count) host(s): $summary"
+                          exit 1
+                      }
+                      if ($warnHosts.Count -gt 0) {
+                          $warnSummary = ($warnHosts | ForEach-Object { "$($_.ShortHostName)=$($_.Status)" }) -join ', '
+                          Write-Warning "$($warnHosts.Count) host(s) reported transient warnings: $warnSummary"
+                          Write-Host "##vso[task.complete result=SucceededWithIssues;]Completed with $($warnHosts.Count) warning host(s)."
+                      }
+
+  # Independent MorningUnlock stage: dependsOn: [] and NOT bound to $(targetEnvironment),
+  # guaranteeing immediate execution on both the 05:15 UTC cron and manual MorningUnlock runs
+  # even if an earlier PersonalHostServicing run is still active or hung.
+  - stage: MorningDrainUnlockSafetyNet
+    displayName: "Pre-Business-Hours Drain Unlock Safety Net"
+    dependsOn: []
+    condition: >-
+      or(
+        contains(variables['Build.CronSchedule.DisplayName'], 'Drain Unlock'),
+        eq('${{ parameters.mode }}', 'MorningUnlock')
+      )
+    jobs:
+      - job: MorningUnlockJob
+        displayName: "Ensure allowNewSession=true and Clear Expired Idle Locks"
+        ${{ if eq(parameters.useSelfHostedPool, true) }}:
+          pool:
+            name: ${{ parameters.selfHostedPoolName }}
+        ${{ else }}:
+          pool:
+            vmImage: 'windows-latest'
+        timeoutInMinutes: 30
+        steps:
+          - checkout: self
+
+          - task: AzurePowerShell@5
+            displayName: "Run MorningUnlock Sweep"
+            inputs:
+              azureSubscription: $(serviceConnection)
+              ScriptType: 'InlineScript'
+              azurePowerShellVersion: 'LatestVersion'
+              InlineScript: |
+                $poolIds = @('$(hostPoolResourceIds)' -split '[,;]' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+                $results = @(
+                    & "$(System.DefaultWorkingDirectory)/avd/personal-host-patching/Invoke-AvdPersonalNightlyPatching.ps1" `
+                        -HostPoolResourceId $poolIds `
+                        -Mode MorningUnlock `
+                        -AuthMode AzContext `
+                        -Confirm:$false
+                )
+                $results | Format-Table ShortHostName, PriorPowerState, Status, Detail -AutoSize | Out-String -Width 200 | Write-Host
+
+                $errors = @($results | Where-Object { $_.Status -in @('MorningUnlockError', 'MorningBusyRunCommand') })
+                $unlocked = @($results | Where-Object { $_.Status -eq 'MorningUnlocked' }).Count
+                if ($errors.Count -gt 0) {
+                    Write-Error "MorningUnlock encountered $($errors.Count) host(s) requiring operator attention: $(($errors | ForEach-Object { "$($_.ShortHostName)=$($_.Status)" }) -join ', ')"
+                    exit 1
+                }
+                if ($unlocked -gt 0) {
+                    Write-Warning "MorningUnlock recovered $unlocked session host(s) prior to business hours."
+                    Write-Host "##vso[task.complete result=SucceededWithIssues;]Recovered $unlocked session host(s)."
+                }

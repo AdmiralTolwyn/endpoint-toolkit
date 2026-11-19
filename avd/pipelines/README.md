@@ -12,6 +12,7 @@ Azure DevOps YAML pipelines for AVD image lifecycle and session host management.
 | [avd-update-hostpool-legacy.yml](avd-update-hostpool-legacy.yml) | Manual | Blue/green session host replacement (**legacy AD** join) |
 | [avd-cleanup-hostpool.yml](avd-cleanup-hostpool.yml) | Manual | Decommission outdated session hosts |
 | [avd-activator.yml](avd-activator.yml) | Scheduled (15 min) | Hybrid join activation for pending session hosts |
+| [avd-nightly-personal-patching.yml](avd-nightly-personal-patching.yml) | Scheduled (Mon–Fri 00:00 & 05:15 UTC) | Hibernation-safe Hotpatch & Defender servicing for **Personal** host pools ([guide](../personal-host-patching/README.md)) |
 
 ## Image Build Approaches
 

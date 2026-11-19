@@ -116,7 +116,8 @@ function Assert-AvdCleanupTest {
                     [PSCustomObject]@{ name = 'vdpool-pers-01/avd-p-002.contoso.com'; properties = [PSCustomObject]@{ assignedUser = 'user2@contoso.com'; allowNewSession = $true;  sessions = 0; resourceId = "/subscriptions/$subId/resourceGroups/rg-compute/providers/Microsoft.Compute/virtualMachines/avd-p-002" } },
                     [PSCustomObject]@{ name = 'vdpool-pers-01/avd-p-003.contoso.com'; properties = [PSCustomObject]@{ assignedUser = 'user3@contoso.com'; allowNewSession = $true;  sessions = 0; resourceId = "/subscriptions/$subId/resourceGroups/rg-compute/providers/Microsoft.Compute/virtualMachines/avd-p-003" } },
                     [PSCustomObject]@{ name = 'vdpool-pers-01/avd-p-004.contoso.com'; properties = [PSCustomObject]@{ assignedUser = 'user4@contoso.com'; allowNewSession = $false; sessions = 0; resourceId = "/subscriptions/$subId/resourceGroups/rg-compute/providers/Microsoft.Compute/virtualMachines/avd-p-004" } },
-                    [PSCustomObject]@{ name = 'vdpool-pers-01/avd-p-005.contoso.com'; properties = [PSCustomObject]@{ assignedUser = '';                  allowNewSession = $true;  sessions = 0; resourceId = "/subscriptions/$subId/resourceGroups/rg-compute/providers/Microsoft.Compute/virtualMachines/avd-p-005" } }
+                    [PSCustomObject]@{ name = 'vdpool-pers-01/avd-p-005.contoso.com'; properties = [PSCustomObject]@{ assignedUser = '';                  allowNewSession = $true;  sessions = 0; resourceId = "/subscriptions/$subId/resourceGroups/rg-compute/providers/Microsoft.Compute/virtualMachines/avd-p-005" } },
+                    [PSCustomObject]@{ name = 'vdpool-pers-01/avd-p-006.contoso.com'; properties = [PSCustomObject]@{ assignedUser = 'user6@contoso.com'; allowNewSession = $false; sessions = 0; resourceId = "/subscriptions/$subId/resourceGroups/rg-compute/providers/Microsoft.Compute/virtualMachines/avd-p-006" } }
                 )
             }
         }
@@ -134,6 +135,13 @@ function Assert-AvdCleanupTest {
                     AvdQuarantinedVmId      = $vmGuid
                     AvdQuarantinedAtUtc     = '2026-10-20T00:00:00Z'
                     AvdDecommissionAfterUtc = '2026-10-27T00:00:00Z'
+                }
+            } elseif ($idx -eq '6') {
+                $futureExp = $fixedNow.AddHours(2).ToUnixTimeSeconds()
+                $tags = [PSCustomObject]@{
+                    AvdAssignedAtUtc        = '2026-07-01T00:00:00Z'
+                    AvdAssignedUserObjectId = $uGuid
+                    AvdPatchLock            = "v2|run=11111111|vm=$vmGuid|ps=Hibernated|ans=1|pex=0|tag=exclude-sp|exp=$futureExp"
                 }
             }
             return [PSCustomObject]@{
@@ -166,14 +174,16 @@ function Assert-AvdCleanupTest {
     }
 
     $auditRes = @(& $runner -HostPoolResourceId $poolId -WorkspaceId $wsId -Mode Audit -MaxDecommissionPercent 100 -ArmAccessToken 'a' -LogAnalyticsAccessToken 'l' -GraphAccessToken 'g')
-    Assert-AvdCleanupTest ($script:mutations.Count -eq 0 -and $auditRes.Count -eq 5) 'Audit mode performs 0 mutations across all 5 hosts'
+    Assert-AvdCleanupTest ($script:mutations.Count -eq 0 -and $auditRes.Count -eq 6) 'Audit mode performs 0 mutations across all 6 hosts'
     Assert-AvdCleanupTest (($auditRes | Where-Object { $_.ShortHostName -eq 'AVD-P-001' }).Status -eq 'ActiveWithinWindow') 'AVD-P-001 protected as ActiveWithinWindow'
     Assert-AvdCleanupTest (($auditRes | Where-Object { $_.ShortHostName -eq 'AVD-P-002' }).Status -eq 'ConnectionFailuresDetected') 'AVD-P-002 protected as ConnectionFailuresDetected'
     Assert-AvdCleanupTest (($auditRes | Where-Object { $_.ShortHostName -eq 'AVD-P-003' }).Status -eq 'EligibleForQuarantine') 'AVD-P-003 identified as EligibleForQuarantine'
     Assert-AvdCleanupTest (($auditRes | Where-Object { $_.ShortHostName -eq 'AVD-P-004' }).Status -eq 'EligibleForDecommission') 'AVD-P-004 identified as EligibleForDecommission'
     Assert-AvdCleanupTest (($auditRes | Where-Object { $_.ShortHostName -eq 'AVD-P-005' }).Status -eq 'UnassignedWarmHost') 'AVD-P-005 excluded as UnassignedWarmHost'
+    Assert-AvdCleanupTest (($auditRes | Where-Object { $_.ShortHostName -eq 'AVD-P-006' }).Status -eq 'SkippedActivePatchLock') 'AVD-P-006 protected by active AvdPatchLock'
 
     $execRes = @(& $runner -HostPoolResourceId $poolId -WorkspaceId $wsId -Mode Execute -MaxDecommissionPercent 100 -ArmAccessToken 'a' -LogAnalyticsAccessToken 'l' -GraphAccessToken 'g')
+    Assert-AvdCleanupTest (($execRes | Where-Object { $_.ShortHostName -eq 'AVD-P-006' }).Status -eq 'SkippedActivePatchLock') 'Execute mode never mutates host holding active AvdPatchLock'
     Assert-AvdCleanupTest (($execRes | Where-Object { $_.ShortHostName -eq 'AVD-P-003' }).Status -eq 'TransitionedToQuarantined') 'Execute mode drains, deallocates, and quarantines AVD-P-003'
     $r4 = $execRes | Where-Object { $_.ShortHostName -eq 'AVD-P-004' }
     Assert-AvdCleanupTest ($r4.Status -eq 'Decommissioned' -and $r4.SnapshotIds.Count -eq 2) 'Execute mode snapshots OS + Data disk and decommissions AVD-P-004'

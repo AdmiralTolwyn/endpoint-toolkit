@@ -34,6 +34,7 @@ Each guide includes prerequisites, examples, a complete argument table and evide
 | [avd/connection-quality](avd/connection-quality/README.md) | Log Analytics AVD session latency, Shortpath transport, SWG hairpin and host encoding evaluation |
 | [avd/customizer](avd/customizer/) | AIB/Packer image customization and bundled VDOT configuration |
 | [avd/personal-host-cleanup](avd/personal-host-cleanup/README.md) | Fail-closed 30-day inactive AVD Personal VM quarantine, disk snapshot and decommission automation |
+| [avd/personal-host-patching](avd/personal-host-patching/README.md) | Hibernation-safe, Hotpatch-aware nocturnal Windows Update and Defender servicing for AVD Personal Host Pools |
 | [avd/pipelines](avd/pipelines/), [avd/scripts](avd/scripts/) | Image builds and session-host lifecycle |
 | [avd/primary-user-sync](avd/primary-user-sync/README.md) | Fail-closed AVD Personal desktop to Intune Primary User propagation |
 | [devops/aib-task-v2](devops/aib-task-v2/) | Azure Image Builder pipeline task |

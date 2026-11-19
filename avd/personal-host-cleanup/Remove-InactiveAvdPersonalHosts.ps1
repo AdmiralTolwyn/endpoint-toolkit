@@ -759,6 +759,13 @@ WVDConnections
             continue
         }
 
+        # Guard 1b: Active or retained nightly patch lock (Invoke-AvdPersonalNightlyPatching.ps1)
+        $patchLock = [string](Get-AvdCleanupProp -InputObject $vmTags -Name 'AvdPatchLock')
+        if (-not [string]::IsNullOrWhiteSpace($patchLock) -and $patchLock.Trim().StartsWith('v2|', [System.StringComparison]::Ordinal)) {
+            [void]$results.Add((New-AvdCleanupResult -HostPoolName $poolName -SessionHostName $shLeaf -ShortHostName $short -VmId $vmId -AssignedUser $upn -LifecycleState $curState -Action 'None' -Status 'SkippedActivePatchLock' -Detail "VM carries AvdPatchLock ('$($patchLock.Trim())')."))
+            continue
+        }
+
         # Guard 2: Live sessions
         $sessRaw = Get-AvdCleanupProp -InputObject $shProps -Name 'sessions'
         if ($null -eq $sessRaw -or [int]$sessRaw -gt 0) {
