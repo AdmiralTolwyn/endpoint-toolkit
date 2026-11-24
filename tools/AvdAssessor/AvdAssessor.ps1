@@ -4540,7 +4540,7 @@ function Export-CsvReport {
                 @{ Name = 'Notes';       Expression = { & $NoFormula $_.Notes } } |
                 ConvertTo-Csv -NoTypeInformation)
             $Header = '# ' + (Get-AssessorDataHandling)
-            Write-AssessorProtectedText -Path $dlg.FileName -Text (($Header, $Csv) -join "`r`n") -Replace
+            Write-AssessorProtectedText -Path $dlg.FileName -Text ((@($Header) + $Csv) -join "`r`n") -Replace
             Write-DebugLog "CSV exported: $($dlg.FileName)" -Level 'SUCCESS'
             Unlock-Achievement 'export_csv'
             Show-Toast "CSV exported: $(Split-Path $dlg.FileName -Leaf)" -Type 'Success'
